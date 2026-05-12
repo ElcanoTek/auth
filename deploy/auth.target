@@ -1,0 +1,12 @@
+[Unit]
+# One-liner to bring auth up or down:
+#   systemctl start auth.target
+#   systemctl stop auth.target
+# Only one service today, but the target makes the operator UX
+# symmetric with chat.target / moc.target etc.
+Description=Elcano Auth
+Wants=auth-server.service
+After=auth-server.service
+
+[Install]
+WantedBy=multi-user.target

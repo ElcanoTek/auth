@@ -24,8 +24,12 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
+# env files (.env.local holds the session secret + SendGrid key)
 .env
+.env.local
+
+# Build artifacts (Makefile drops binaries here)
+/bin/
 
 # Editor/IDE
 # .idea/

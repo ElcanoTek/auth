@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# /usr/local/bin/auth — operator entry point for Elcano auth-server.
+#
+# Thin dispatcher that forwards to:
+#   - auth-admin for `auth domain ...` and `auth user ...`
+#   - systemctl  for `auth start|stop|restart|status|logs`
+#   - scripts/   for `auth update`, `auth env`, `auth backup`
+#
+# Installed by scripts/bootstrap.sh. This file is source, not the
+# final path.
+
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/opt/auth}"
+ADMIN_BIN="$APP_DIR/bin/auth-admin"
+ENV_LOCAL="$APP_DIR/.env.local"
+
+if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
+  c_reset=$'\033[0m' c_dim=$'\033[2m' c_bold=$'\033[1m'
+  c_cyan=$'\033[0;36m' c_red=$'\033[0;31m' c_green=$'\033[0;32m' c_yellow=$'\033[0;33m'
+else
+  c_reset='' c_dim='' c_bold='' c_cyan='' c_red='' c_green='' c_yellow=''
+fi
+
+# Source the env helpers if present; otherwise fall back to a minimal
+# redacted-show for `auth env show` so the CLI keeps working before
+# the next `sudo auth update` lands the helper file.
+# shellcheck source=../scripts/lib/envfile.sh
+if [[ -f "$APP_DIR/scripts/lib/envfile.sh" ]]; then
+  . "$APP_DIR/scripts/lib/envfile.sh"
+else
+  env_show_redacted() {
+    awk '
+      /^[[:space:]]*#/ { next } /^[[:space:]]*$/ { next }
+      { eq = index($0, "="); if (eq == 0) { print; next }
+        key = substr($0, 1, eq - 1); sub(/^[[:space:]]+/, "", key)
+        if (key ~ /TOKEN|KEY|SECRET|PASSWORD|PASSWD/) printf "%s=[REDACTED]\n", key; else print }
+    ' "$1"
+  }
+fi
+
+env_cmd() {
+  local sub="${1:-show}"
+  shift || true
+  case "$sub" in
+    show|"")        _env_show ;;
+    edit)           _env_edit ;;
+    check)          _env_check ;;
+    -h|--help|help) _env_help ;;
+    *) echo "unknown env subcommand: $sub" >&2; _env_help; exit 1 ;;
+  esac
+}
+
+_env_help() {
+  cat <<EOF
+auth env — inspect + edit auth environment variables
+
+SUBCOMMANDS
+  auth env show   Print $ENV_LOCAL (secrets redacted)
+  auth env edit   Open $ENV_LOCAL in nano/vim/helix
+                  (offered via dnf install if missing)
+  auth env check  Verify $ENV_LOCAL exists, parses cleanly, and is
+                  readable by auth-server. Run BEFORE 'auth restart'
+                  if a recent edit might have changed perms or syntax.
+
+NOTES
+  • $ENV_LOCAL is the per-operator override file (gitignored).
+    auth-server re-reads it on restart, so 'auth restart' after editing.
+  • See $APP_DIR/.env.local.example for the catalog of supported keys.
+EOF
+}
+
+_env_show() {
+  if [[ -f "$ENV_LOCAL" ]]; then
+    printf '%s# %s%s\n' "$c_bold" "$ENV_LOCAL" "$c_reset"
+    env_show_redacted "$ENV_LOCAL"
+  else
+    printf '%s# %s (not present — create one with `sudo auth env edit`)%s\n' "$c_dim" "$ENV_LOCAL" "$c_reset"
+  fi
+}
+
+_env_edit() {
+  [[ $EUID -eq 0 ]] || { echo "run as root: sudo auth env edit" >&2; exit 1; }
+
+  local app_user="${APP_USER:-auth}"
+
+  if [[ ! -f "$ENV_LOCAL" ]]; then
+    install -o "$app_user" -g "$app_user" -m 0600 /dev/null "$ENV_LOCAL"
+  fi
+
+  local -a names=(nano vim helix)
+  local -a bins=(nano vim hx)
+  local -a pkgs=(nano vim helix)
+
+  echo "Pick an editor for $ENV_LOCAL:"
+  local i default=""
+  for i in 0 1 2; do
+    if command -v "${bins[i]}" >/dev/null 2>&1; then
+      printf '  %d) %s\n' "$((i+1))" "${names[i]}"
+      [[ -z "$default" ]] && default=$((i+1))
+    else
+      printf '  %d) %s %s(not installed — will dnf install on select)%s\n' \
+        "$((i+1))" "${names[i]}" "$c_dim" "$c_reset"
+    fi
+  done
+  [[ -n "$default" ]] || default=1
+
+  printf '%s?%s Choice [%d]: ' "$c_cyan" "$c_reset" "$default" >&2
+  local choice
+  read -r choice
+  choice="${choice:-$default}"
+
+  local idx
+  case "$choice" in
+    1|nano)     idx=0 ;;
+    2|vim)      idx=1 ;;
+    3|helix|hx) idx=2 ;;
+    *) echo "invalid choice: $choice" >&2; exit 1 ;;
+  esac
+
+  local bin="${bins[idx]}" pkg="${pkgs[idx]}" name="${names[idx]}"
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    printf '%s?%s %s is not installed. Run %sdnf install -y %s%s now? %s(Y/n)%s ' \
+      "$c_cyan" "$c_reset" "$name" "$c_bold" "$pkg" "$c_reset" "$c_dim" "$c_reset" >&2
+    local answer; read -r answer
+    if [[ "${answer,,}" == "n" || "${answer,,}" == "no" ]]; then
+      echo "cancelled" >&2; exit 1
+    fi
+    dnf install -y "$pkg" >/dev/null || { echo "dnf install $pkg failed" >&2; exit 1; }
+    echo "✓ $name installed"
+  fi
+
+  "$bin" "$ENV_LOCAL"
+  chown "$app_user:$app_user" "$ENV_LOCAL"
+  chmod 0600 "$ENV_LOCAL"
+  echo "✓ $ENV_LOCAL saved (run 'sudo auth env check' to validate, then 'sudo auth restart')"
+}
+
+_env_check() {
+  local app_user="${APP_USER:-auth}"
+  local fail=0 warn=0
+
+  printf '%schecking %s%s\n' "$c_bold" "$ENV_LOCAL" "$c_reset"
+
+  if [[ ! -e "$ENV_LOCAL" ]]; then
+    printf '  %s✗%s file does not exist (run %ssudo auth env edit%s)\n' \
+      "$c_red" "$c_reset" "$c_bold" "$c_reset"
+    return 1
+  fi
+  if [[ ! -f "$ENV_LOCAL" ]]; then
+    printf '  %s✗%s exists but is not a regular file\n' "$c_red" "$c_reset"
+    return 1
+  fi
+  printf '  %s✓%s exists\n' "$c_green" "$c_reset"
+
+  local owner mode
+  owner="$(stat -c '%U:%G' "$ENV_LOCAL" 2>/dev/null || echo unknown)"
+  mode="$(stat -c '%a' "$ENV_LOCAL" 2>/dev/null || echo "")"
+  if [[ "$owner" == "$app_user:$app_user" ]]; then
+    printf '  %s✓%s owned by %s\n' "$c_green" "$c_reset" "$owner"
+  else
+    printf '  %s✗%s owned by %s (expected %s:%s — auth-server runs as %s and cannot read root-owned files)\n' \
+      "$c_red" "$c_reset" "$owner" "$app_user" "$app_user" "$app_user"
+    printf '       fix: %ssudo chown %s:%s %s%s\n' "$c_dim" "$app_user" "$app_user" "$ENV_LOCAL" "$c_reset"
+    fail=1
+  fi
+  if [[ "$mode" == "600" || "$mode" == "640" || "$mode" == "400" ]]; then
+    printf '  %s✓%s mode %s (auth user can read)\n' "$c_green" "$c_reset" "$mode"
+  else
+    printf '  %s!%s mode %s (expected 600 — secrets in this file)\n' "$c_yellow" "$c_reset" "$mode"
+    warn=1
+  fi
+
+  if [[ "$EUID" -eq 0 ]]; then
+    if sudo -u "$app_user" -H test -r "$ENV_LOCAL" 2>/dev/null; then
+      printf '  %s✓%s readable by %s\n' "$c_green" "$c_reset" "$app_user"
+    else
+      printf '  %s✗%s %s cannot read %s — auth-server will fail on startup\n' \
+        "$c_red" "$c_reset" "$app_user" "$ENV_LOCAL"
+      fail=1
+    fi
+  else
+    printf '  %s!%s skipping user-read check (re-run as root for full validation)\n' \
+      "$c_yellow" "$c_reset"
+    warn=1
+  fi
+
+  local keys=0 bad=0
+  local -a bad_lines=()
+  local lineno=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    lineno=$((lineno + 1))
+    local trimmed="${line#"${line%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    [[ -z "$trimmed" ]] && continue
+    [[ "$trimmed" =~ ^# ]] && continue
+    if [[ "$trimmed" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      keys=$((keys + 1))
+    else
+      bad=$((bad + 1))
+      [[ "${#bad_lines[@]}" -lt 5 ]] && bad_lines+=("$lineno: $trimmed")
+    fi
+  done <"$ENV_LOCAL"
+  printf '  %s✓%s %d keys parsed\n' "$c_green" "$c_reset" "$keys"
+  if [[ "$bad" -gt 0 ]]; then
+    printf '  %s!%s %d line(s) without KEY= prefix (auth-server will skip them):\n' \
+      "$c_yellow" "$c_reset" "$bad"
+    for b in "${bad_lines[@]}"; do printf '       line %s\n' "$b"; done
+    warn=1
+  fi
+
+  echo
+  if [[ "$fail" -ne 0 ]]; then
+    printf '%s✗ %s has problems auth-server will trip on.%s\n' "$c_red" "$ENV_LOCAL" "$c_reset"
+    return 1
+  fi
+  if [[ "$warn" -ne 0 ]]; then
+    printf '%s! %s looks usable but has warnings.%s\n' "$c_yellow" "$ENV_LOCAL" "$c_reset"
+    return 0
+  fi
+  printf '%s✓ %s is good — auth-server should start cleanly.%s\n' "$c_green" "$ENV_LOCAL" "$c_reset"
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  domain)
+    # `auth domain <add|del|list> [name]`. Sources AUTH_DATA_DIR from
+    # .env.local so the admin CLI hits the same SQLite file the running
+    # auth-server uses.
+    # shellcheck disable=SC1090
+    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
+    export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    exec "$ADMIN_BIN" domain "$@"
+    ;;
+  user)
+    # `auth user <list|del>` — the audit log of who has actually logged
+    # in. Anyone with an allowed email can log in; this just shows who
+    # has done so.
+    # shellcheck disable=SC1090
+    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
+    export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    exec "$ADMIN_BIN" user "$@"
+    ;;
+  update)
+    exec sudo bash "$APP_DIR/scripts/update.sh" "$@"
+    ;;
+  rebuild)
+    # Rebuild and restart whatever is checked out, without git fetch.
+    exec sudo env AUTH_UPDATE_NO_PULL=1 AUTH_UPDATE_YES=1 bash "$APP_DIR/scripts/update.sh"
+    ;;
+  start)
+    exec sudo systemctl start auth.target
+    ;;
+  stop)
+    exec sudo systemctl stop auth-server.service
+    ;;
+  restart)
+    exec sudo systemctl restart auth-server.service
+    ;;
+  status)
+    exec sudo systemctl status auth-server.service
+    ;;
+  logs)
+    if [[ "$#" -eq 0 ]]; then
+      exec sudo journalctl -f -u auth-server
+    else
+      exec sudo journalctl "$@" -u auth-server
+    fi
+    ;;
+  backup)
+    dest="${1:-$APP_DIR/data/backups}"
+    mkdir -p "$dest"
+    stamp="$(date +%F-%H%M%S)"
+    # SQLite's online backup via `.backup` produces a consistent
+    # snapshot while the server is running — sqlite3 has to be present;
+    # bootstrap installs it.
+    out="$dest/auth-$stamp.db"
+    sqlite3 "$APP_DIR/data/state.db" ".backup '$out'"
+    echo "✓ backup written to $out"
+    echo "  restore with: cp $out $APP_DIR/data/state.db && sudo auth restart"
+    ;;
+  env)
+    env_cmd "$@"
+    ;;
+  help|-h|--help|"")
+    cat <<'EOF'
+auth — Elcano auth-server operator CLI
+
+DOMAIN ALLOWLIST
+  auth domain add <example.com>     allow this email domain to request links
+  auth domain del <example.com>     stop allowing
+  auth domain list                  show current allowlist
+                                    (empty allowlist = open enrollment)
+
+USERS
+  auth user list                    audit log of who has logged in
+  auth user del <email>             remove a user from the audit log
+
+UPDATES
+  auth update                       git pull + rebuild + restart
+                                    (set AUTH_UPDATE_YES=1 to skip the prompt)
+  auth rebuild                      rebuild + restart current checkout
+                                    (skip fetch — useful after manual rollback)
+
+SERVICE CONTROL
+  auth start | stop | restart       control the systemd unit
+  auth status                       show service status
+  auth logs [journalctl-args...]    tail auth-server logs
+                                    (no args = -f; passes -e, -n N, etc. through)
+
+CONFIG
+  auth env [show]                   print .env.local (secrets redacted)
+  auth env edit                     open .env.local in nano, vim, or helix
+  auth env check                    verify .env.local exists + parses cleanly
+
+DATA
+  auth backup [dest]                online-backup state.db (default:
+                                    /opt/auth/data/backups)
+EOF
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    exec "$0" --help
+    ;;
+esac

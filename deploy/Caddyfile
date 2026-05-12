@@ -1,0 +1,67 @@
+# Sample Caddyfile for auth-server.
+#
+# Caddy handles automatic TLS via Let's Encrypt — the same shape every
+# other Elcano service ships. Replace auth.example.com with your real
+# host. bootstrap.sh fills in your hostname + (optionally) an ACME
+# contact email below.
+#
+# Two roles for this Caddyfile:
+#
+# 1. PUBLIC SITE — terminates TLS for auth.example.com and proxies to
+#    auth-server on loopback:9000. The login form, /magic, /callback,
+#    /logout all hit here.
+#
+# 2. forward_auth TARGET — downstream services on chat.example.com,
+#    home.example.com, etc. point their own Caddyfiles at
+#    https://auth.example.com/verify. That endpoint reads the shared
+#    .elcano_session cookie and returns 200 + X-User-Email /
+#    X-User-Tenant headers (or 401). See the snippet at the bottom for
+#    how a downstream Caddyfile uses it.
+#
+# Renewals: Caddy auto-renews ~30 days before expiry. No cron needed.
+
+# {
+#     email ops@example.com    # Let's Encrypt contact (expiry warnings)
+# }
+
+auth.example.com {
+	reverse_proxy 127.0.0.1:9000 {
+		# auth-server is a plain request/response API; no streaming.
+		# Default timeouts are fine.
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+# ─── Snippet to drop into a downstream service's Caddyfile ─────────────
+#
+# chat.example.com {
+#     forward_auth auth.example.com {
+#         uri /verify
+#         copy_headers X-User-Email X-User-Tenant
+#         # Unauthenticated requests are redirected to the login UI;
+#         # the magic-link callback brings them right back here.
+#         @denied status 401
+#         handle_response @denied {
+#             redir https://auth.example.com/?return_to=https://{host}{uri} 302
+#         }
+#     }
+#     reverse_proxy 127.0.0.1:3000   # the app's local port
+# }
+#
+# Note: the cookie set by auth-server has Domain=elcanotek.com (or
+# whatever AUTH_COOKIE_DOMAIN is configured to), so it rides along on
+# every subdomain request automatically. forward_auth just confirms
+# it's valid and hands the email/tenant headers to the upstream.

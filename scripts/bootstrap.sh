@@ -1,0 +1,516 @@
+#!/usr/bin/env bash
+# scripts/bootstrap.sh — interactive one-shot installer for auth-server.
+#
+# Drops deploy complexity to three answers:
+#   1. The hostname (e.g. auth.elcanotek.com)
+#   2. The cookie domain (autoguessed from hostname; just confirm)
+#   3. SendGrid API key + verified sender (or "skip — use stdout for now")
+#
+# Everything else (secrets, systemd, Caddy, firewalld) is generated or
+# handled for you. Safe to re-run — it picks up where it left off.
+#
+# Usage:
+#   sudo bash scripts/bootstrap.sh
+#
+# Targets Fedora 39+ / RHEL 9+ / AlmaLinux 9+ (matches the rest of the
+# Elcano box images).
+
+set -euo pipefail
+
+# Re-open /dev/tty for curl|sudo bash flow.
+if [[ "${AUTH_BOOTSTRAP_DRY_RUN:-0}" != "1" && ! -t 0 ]]; then
+  if [[ -t 1 ]]; then
+    exec </dev/tty
+  else
+    echo "bootstrap.sh needs an interactive terminal. Re-run locally:" >&2
+    echo "  sudo bash scripts/bootstrap.sh" >&2
+    exit 1
+  fi
+fi
+
+APP_DIR="${APP_DIR:-/opt/auth}"
+APP_USER="${APP_USER:-auth}"
+CLI_PATH="/usr/local/bin/auth"
+
+DRY_RUN="${AUTH_BOOTSTRAP_DRY_RUN:-0}"
+
+if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
+  c_reset=$'\033[0m' c_dim=$'\033[2m' c_red=$'\033[0;31m'
+  c_green=$'\033[0;32m' c_yellow=$'\033[0;33m'
+  c_cyan=$'\033[0;36m' c_bold=$'\033[1m'
+else
+  c_reset='' c_dim='' c_red='' c_green='' c_yellow='' c_cyan='' c_bold=''
+fi
+
+say()  { printf '%s\n' "$*"; }
+info() { printf '%s» %s%s\n' "$c_dim" "$*" "$c_reset"; }
+step() { printf '\n%s▸ %s%s\n' "$c_bold" "$*" "$c_reset"; }
+ok()   { printf '%s✓ %s%s\n' "$c_green" "$*" "$c_reset"; }
+warn() { printf '%s! %s%s\n' "$c_yellow" "$*" "$c_reset" >&2; }
+die()  { printf '%s✗ %s%s\n' "$c_red" "$*" "$c_reset" >&2; exit 1; }
+ask()  { printf '%s?%s %s ' "$c_cyan" "$c_reset" "$*" >&2; }
+
+NON_INTERACTIVE="${AUTH_BOOTSTRAP_NON_INTERACTIVE:-0}"
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "required command '$1' not found"
+}
+
+prompt() {
+  local envvar="$1" label="$2" default="${3:-}" answer=""
+  if [[ -n "${!envvar:-}" ]]; then
+    printf '%s' "${!envvar}"; return
+  fi
+  if [[ "$NON_INTERACTIVE" == "1" ]]; then
+    if [[ -n "$default" ]]; then printf '%s' "$default"; return; fi
+    die "non-interactive mode + missing answer: set ${envvar}"
+  fi
+  if [[ -n "$default" ]]; then
+    ask "${label} ${c_dim}[${default}]${c_reset}:"
+  else
+    ask "${label}:"
+  fi
+  read -r answer
+  [[ -z "$answer" ]] && answer="$default"
+  printf '%s' "$answer"
+}
+
+prompt_secret() {
+  local envvar="$1" label="$2" answer=""
+  if [[ -n "${!envvar:-}" ]]; then
+    printf '%s' "${!envvar}"; return
+  fi
+  if [[ "$NON_INTERACTIVE" == "1" ]]; then
+    die "non-interactive mode + missing secret: set ${envvar}"
+  fi
+  ask "${label}:"
+  read -r answer
+  echo >&2
+  printf '%s' "$answer"
+}
+
+confirm() {
+  local envvar="$1" q="$2" default="${3:-y}" answer=""
+  if [[ -n "${!envvar:-}" ]]; then
+    answer="${!envvar}"
+  elif [[ "$NON_INTERACTIVE" == "1" ]]; then
+    answer="$default"
+  else
+    local hint="y/N"; [[ "$default" == "y" ]] && hint="Y/n"
+    ask "${q} ${c_dim}(${hint})${c_reset}"
+    read -r answer
+    answer="${answer:-$default}"
+  fi
+  [[ "${answer,,}" == "y" || "${answer,,}" == "yes" || "${answer,,}" == "1" ]]
+}
+
+genbase64() { openssl rand -base64 "$1" | tr -d '=\n' | tr '/+' '_-'; }
+
+# guess_cookie_domain HOSTNAME → derives the cookie domain. For
+# "auth.example.com" → "example.com"; for "auth.example.co.uk" we err
+# on the conservative side and return "example.co.uk" (the public-
+# suffix list would help here but isn't worth dragging in). For bare
+# "example.com" or "localhost" we return empty.
+guess_cookie_domain() {
+  local h="$1"
+  case "$h" in
+    localhost|127.*|192.168.*|10.*|"") echo ""; return ;;
+  esac
+  # Strip exactly one leading label if there are 3+ labels.
+  if [[ "$(awk -F. '{print NF}' <<<"$h")" -ge 3 ]]; then
+    echo "${h#*.}"
+  else
+    echo "$h"
+  fi
+}
+
+clear || true
+cat <<EOF
+${c_bold}Elcano Auth — interactive install${c_reset}
+${c_dim}Fedora / RHEL 9+  •  systemd  •  SQLite  •  optional Caddy${c_reset}
+
+This will:
+  • install system deps (git, go, openssl, caddy?, sqlite, bind-utils)
+  • create an '${APP_USER}' system user + ${APP_DIR}
+  • build the auth-server + auth-admin binaries
+  • generate an HMAC session secret
+  • seed .env.local with your hostname + cookie domain + email provider
+  • install the systemd unit and (optionally) Caddy with automatic TLS
+  • drop /usr/local/bin/auth — the operator CLI
+
+Safe to re-run: existing .env.local and data/ are preserved.
+
+EOF
+
+[[ $EUID -eq 0 ]] || die "run as root: sudo bash scripts/bootstrap.sh"
+
+if [[ ! -f /etc/fedora-release && ! -f /etc/redhat-release ]]; then
+  warn "this installer targets Fedora/RHEL. The dnf step will fail elsewhere."
+  confirm AUTH_BOOTSTRAP_CONTINUE_ON_UNSUPPORTED_OS "Continue anyway?" n || exit 1
+fi
+
+SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+[[ -d "$SRC_DIR/cmd/auth-server" ]] || die "not running from a repo checkout — clone first and re-run from inside it"
+
+# ── 1. system packages ──────────────────────────────────────────────
+step "1/6  Installing system dependencies via dnf"
+PKGS=(git curl jq golang openssl sqlite bind-utils)
+dnf install -y "${PKGS[@]}" >/dev/null
+need_cmd go
+need_cmd sqlite3
+ok "installed: ${PKGS[*]}"
+
+# ── 2. user + directory ─────────────────────────────────────────────
+step "2/6  Preparing ${APP_DIR} + '${APP_USER}' system user"
+if ! id -u "$APP_USER" >/dev/null 2>&1; then
+  useradd --system --shell /usr/sbin/nologin --home-dir "$APP_DIR" --create-home "$APP_USER"
+fi
+mkdir -p "$APP_DIR/data" "$APP_DIR/bin"
+chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+ok "user '${APP_USER}' ready, ${APP_DIR} owned"
+
+# ── 3. config — hostname + cookie domain + email provider ──────────
+step "3/6  Configuring the instance"
+
+ENV_FILE="$APP_DIR/.env.local"
+if [[ -f "$ENV_FILE" ]]; then
+  info "found existing ${ENV_FILE} — re-using values, only asking for what's missing"
+  # shellcheck disable=SC1090
+  set -a; . "$ENV_FILE"; set +a
+fi
+
+# 3a — hostname
+say
+say "  How will people reach this auth service in the browser?"
+say "    • ${c_dim}localhost${c_reset}             — dev laptop, no TLS"
+say "    • ${c_dim}auth.example.com${c_reset}      — real DNS, we'll offer auto-TLS via Caddy"
+HOSTNAME_ANSWER="$(prompt AUTH_BOOTSTRAP_HOSTNAME "Hostname" "${AUTH_HOSTNAME:-localhost}")"
+
+# 3b — cookie domain (auto-guess; let operator override)
+GUESSED_COOKIE_DOMAIN="$(guess_cookie_domain "$HOSTNAME_ANSWER")"
+say
+if [[ -n "$GUESSED_COOKIE_DOMAIN" ]]; then
+  say "  Cookie domain — the SHARED parent of every service that will see this session."
+  say "    From '${HOSTNAME_ANSWER}' we'd default to ${c_bold}${GUESSED_COOKIE_DOMAIN}${c_reset}"
+  say "    so the cookie rides to chat.${GUESSED_COOKIE_DOMAIN}, home.${GUESSED_COOKIE_DOMAIN}, etc."
+  COOKIE_DOMAIN_ANSWER="$(prompt AUTH_BOOTSTRAP_COOKIE_DOMAIN "Cookie domain" "${AUTH_COOKIE_DOMAIN:-$GUESSED_COOKIE_DOMAIN}")"
+else
+  say "  Cookie domain — leave blank for localhost / single-host dev."
+  COOKIE_DOMAIN_ANSWER="$(prompt AUTH_BOOTSTRAP_COOKIE_DOMAIN "Cookie domain" "${AUTH_COOKIE_DOMAIN:-}")"
+fi
+
+# 3c — allowlist
+say
+say "  Which email domains may request a sign-in link?"
+say "    Comma-separated. Empty = open enrollment (don't do this in prod)."
+DEFAULT_ALLOWED="${AUTH_ALLOWED_DOMAINS:-${COOKIE_DOMAIN_ANSWER}}"
+ALLOWED_DOMAINS_ANSWER="$(prompt AUTH_BOOTSTRAP_ALLOWED_DOMAINS "Allowed domains" "${DEFAULT_ALLOWED}")"
+
+# 3d — email provider
+say
+say "  How should magic links be delivered?"
+say "    • ${c_dim}sendgrid${c_reset}  — POST to api.sendgrid.com (RECOMMENDED — same"
+say "                  provider chat-server uses, one key across the stack)"
+say "    • ${c_dim}stdout${c_reset}    — print to the journal (DEV ONLY)"
+say "    • ${c_dim}smtp${c_reset}      — STARTTLS to your own relay"
+EMAIL_DRIVER_ANSWER="$(prompt AUTH_BOOTSTRAP_EMAIL_DRIVER "Email driver" "${AUTH_EMAIL_DRIVER:-sendgrid}")"
+
+EMAIL_FROM_ANSWER=""
+SENDGRID_KEY_ANSWER=""
+SMTP_HOST=""; SMTP_PORT=""; SMTP_USER=""; SMTP_PASS=""
+
+case "$EMAIL_DRIVER_ANSWER" in
+  sendgrid)
+    say
+    say "  ${c_bold}From address${c_reset} — must be a verified sender on your SendGrid"
+    say "  account (single-sender or domain-authenticated). If this doesn't match,"
+    say "  SendGrid will 4xx every send with 'from address not verified'."
+    say "    Format: ${c_dim}Display Name <login@yourdomain.com>${c_reset}"
+    default_from="${AUTH_EMAIL_FROM:-Sign in <login@${COOKIE_DOMAIN_ANSWER:-example.com}>}"
+    EMAIL_FROM_ANSWER="$(prompt AUTH_BOOTSTRAP_EMAIL_FROM "From address" "$default_from")"
+    say
+    say "  ${c_bold}SendGrid API key${c_reset} — create one at:"
+    say "    ${c_dim}https://app.sendgrid.com/settings/api_keys${c_reset}"
+    say "  (chat-server uses the SAME env var name 'SENDGRID_API_KEY', so a"
+    say "  single key can be shared across the stack.)"
+    SENDGRID_KEY_ANSWER="$(prompt_secret AUTH_BOOTSTRAP_SENDGRID_API_KEY "SendGrid API key")"
+    [[ -n "$SENDGRID_KEY_ANSWER" || -n "${SENDGRID_API_KEY:-}" ]] || die "SendGrid key required (or pick a different driver)"
+    [[ -z "$SENDGRID_KEY_ANSWER" ]] && SENDGRID_KEY_ANSWER="$SENDGRID_API_KEY"
+
+    # Shape check — SendGrid keys always start with "SG.". Catches a
+    # paste mistake (wrong line copied, OpenRouter key confusion, etc.)
+    # before the install completes and the first user gets a "failed
+    # to send" magic link.
+    if [[ "$SENDGRID_KEY_ANSWER" != SG.* ]]; then
+      warn "that doesn't look like a SendGrid key (expected 'SG....'). Continuing anyway."
+    fi
+
+    # Live check — /v3/scopes returns 200 with a valid key, 401 otherwise.
+    # Same cheap auth-gated probe chat's bootstrap uses for OpenRouter.
+    # Continues on transient network errors so a flaky box doesn't block
+    # the install; the operator will see the warning either way.
+    sg_status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+          -H "Authorization: Bearer $SENDGRID_KEY_ANSWER" \
+          https://api.sendgrid.com/v3/scopes 2>/dev/null || echo 000)"
+    case "$sg_status" in
+      200)       ok "SendGrid key verified" ;;
+      401|403)   warn "SendGrid rejected that key (status $sg_status). Continuing anyway — magic-link sends will fail until fixed." ;;
+      *)         warn "could not reach api.sendgrid.com (status $sg_status). Continuing anyway — magic-link sends will fail until it works." ;;
+    esac
+    ;;
+  smtp)
+    SMTP_HOST="$(prompt AUTH_BOOTSTRAP_SMTP_HOST "SMTP host" "${AUTH_SMTP_HOST:-smtp.example.com}")"
+    SMTP_PORT="$(prompt AUTH_BOOTSTRAP_SMTP_PORT "SMTP port" "${AUTH_SMTP_PORT:-587}")"
+    SMTP_USER="$(prompt AUTH_BOOTSTRAP_SMTP_USER "SMTP user" "${AUTH_SMTP_USER:-}")"
+    SMTP_PASS="$(prompt_secret AUTH_BOOTSTRAP_SMTP_PASS "SMTP password")"
+    EMAIL_FROM_ANSWER="$(prompt AUTH_BOOTSTRAP_EMAIL_FROM "From address" "${AUTH_EMAIL_FROM:-Sign in <login@${COOKIE_DOMAIN_ANSWER:-example.com}>}")"
+    ;;
+  stdout)
+    EMAIL_FROM_ANSWER="${AUTH_EMAIL_FROM:-Sign in <login@example.com>}"
+    warn "stdout driver = anyone with journalctl access can read magic links. DEV ONLY."
+    ;;
+  *) die "unknown email driver: $EMAIL_DRIVER_ANSWER" ;;
+esac
+
+# 3e — session secret. Reuse if present (rotation logs everyone out).
+AUTH_SESSION_SECRET="${AUTH_SESSION_SECRET:-$(genbase64 48)}"
+
+# 3f — TLS plan (only relevant for real hostnames)
+SETUP_CADDY="n"
+USE_LETSENCRYPT="n"
+LE_EMAIL=""
+COOKIE_SECURE="true"
+if [[ "$HOSTNAME_ANSWER" == "localhost" || "$HOSTNAME_ANSWER" == 127.* ]]; then
+  COOKIE_SECURE="false"
+else
+  # DNS pre-check so a misconfigured A record fails BEFORE we ask ACME.
+  if command -v dig >/dev/null 2>&1; then
+    resolved_ip="$(dig +short "$HOSTNAME_ANSWER" A | tail -n1 2>/dev/null || true)"
+  else
+    resolved_ip="$(getent hosts "$HOSTNAME_ANSWER" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
+  fi
+  public_ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  if [[ -z "$public_ip" ]] && command -v ip >/dev/null 2>&1; then
+    iface="$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1 || true)"
+    [[ -n "$iface" ]] && public_ip="$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1 || true)"
+  fi
+  if [[ -n "$resolved_ip" && -n "$public_ip" && "$resolved_ip" != "$public_ip" ]]; then
+    warn "DNS mismatch:"
+    warn "  ${HOSTNAME_ANSWER} resolves to ${resolved_ip}"
+    warn "  this box's public IP is       ${public_ip}"
+    warn "  Let's Encrypt will fail until the A record is updated."
+    warn "  You can pick 'tls internal' (self-signed) below to skip ACME."
+  elif [[ -z "$resolved_ip" ]]; then
+    warn "${HOSTNAME_ANSWER} doesn't resolve yet."
+    [[ -n "$public_ip" ]] && warn "  Add an A record → ${public_ip} (or pick 'tls internal' below)."
+  elif [[ -n "$resolved_ip" ]]; then
+    ok "DNS resolves correctly (${resolved_ip})"
+  fi
+
+  if confirm AUTH_BOOTSTRAP_SETUP_CADDY "Set up Caddy + auto-TLS for ${HOSTNAME_ANSWER}?" y; then
+    SETUP_CADDY="y"
+    if confirm AUTH_BOOTSTRAP_USE_LETSENCRYPT "Use Let's Encrypt (requires public reachability on 80/443)?" y; then
+      USE_LETSENCRYPT="y"
+      LE_EMAIL="$(prompt AUTH_BOOTSTRAP_LE_EMAIL "LE contact email for renewal warnings (blank to skip)" "")"
+    fi
+  fi
+fi
+
+# ── 4. .env.local ───────────────────────────────────────────────────
+step "4/6  Writing ${ENV_FILE}"
+
+umask 077
+cat > "$ENV_FILE" <<EOF
+# Auto-generated by bootstrap.sh on $(date -Iseconds)
+# Override anything via the process env (systemd EnvironmentFile=).
+
+# ── Transport ────────────────────────────────────────────────────
+AUTH_ADDR="127.0.0.1:9000"
+AUTH_HOSTNAME="$HOSTNAME_ANSWER"
+AUTH_DATA_DIR="$APP_DIR/data"
+
+# ── Crypto ───────────────────────────────────────────────────────
+AUTH_SESSION_SECRET="$AUTH_SESSION_SECRET"
+
+# ── Cookie ───────────────────────────────────────────────────────
+AUTH_COOKIE_NAME="elcano_auth"
+AUTH_COOKIE_DOMAIN="$COOKIE_DOMAIN_ANSWER"
+AUTH_COOKIE_SECURE="$COOKIE_SECURE"
+
+# ── Tenancy / allowlist ──────────────────────────────────────────
+AUTH_ALLOWED_DOMAINS="$ALLOWED_DOMAINS_ANSWER"
+
+# ── Email delivery ───────────────────────────────────────────────
+AUTH_EMAIL_DRIVER="$EMAIL_DRIVER_ANSWER"
+AUTH_EMAIL_FROM="$EMAIL_FROM_ANSWER"
+EOF
+
+case "$EMAIL_DRIVER_ANSWER" in
+  sendgrid)
+    cat >> "$ENV_FILE" <<EOF
+SENDGRID_API_KEY="$SENDGRID_KEY_ANSWER"
+EOF
+    ;;
+  smtp)
+    cat >> "$ENV_FILE" <<EOF
+AUTH_SMTP_HOST="$SMTP_HOST"
+AUTH_SMTP_PORT="$SMTP_PORT"
+AUTH_SMTP_USER="$SMTP_USER"
+AUTH_SMTP_PASS="$SMTP_PASS"
+EOF
+    ;;
+esac
+
+cat >> "$ENV_FILE" <<EOF
+
+# ── UX ───────────────────────────────────────────────────────────
+AUTH_BRAND_NAME="${AUTH_BRAND_NAME:-Elcano}"
+# AUTH_DEFAULT_RETURN_TO=""
+EOF
+
+chown "$APP_USER:$APP_USER" "$ENV_FILE"
+chmod 0640 "$ENV_FILE"
+ok "env seeded"
+
+# ── 5. build + install ──────────────────────────────────────────────
+step "5/6  Building auth-server + auth-admin"
+
+# Sync source into /opt/auth excluding state + secrets + binaries.
+rsync -a --delete \
+  --exclude='/.git' \
+  --exclude='/data' \
+  --exclude='/bin' \
+  --exclude='/.env.local' \
+  "$SRC_DIR/" "$APP_DIR/"
+chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+
+sudo -u "$APP_USER" -H bash -c "
+  cd '$APP_DIR'
+  GOTOOLCHAIN=auto go mod tidy
+  mkdir -p bin
+  GOTOOLCHAIN=auto go build -o bin/auth-server ./cmd/auth-server
+  GOTOOLCHAIN=auto go build -o bin/auth-admin  ./cmd/auth-admin
+"
+
+install -m 0755 "$APP_DIR/deploy/auth-cli" "$CLI_PATH"
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  info "DRY_RUN: skipping systemd install + start"
+else
+  install -m 0644 "$APP_DIR/deploy/auth-server.service" /etc/systemd/system/
+  install -m 0644 "$APP_DIR/deploy/auth.target"         /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable auth.target >/dev/null 2>&1 || true
+  systemctl restart auth-server.service
+  ok "systemd units + ${CLI_PATH} installed; auth-server is running"
+fi
+
+# Wait for /healthz before continuing.
+for _ in $(seq 1 20); do
+  curl -fsS --max-time 1 http://127.0.0.1:9000/healthz >/dev/null 2>&1 && break
+  sleep 0.5
+done
+
+# Seed the DB-side domain allowlist from .env.local (auth-server does
+# this at startup too, but doing it here means `auth domain list`
+# right after bootstrap shows the expected entries).
+if [[ -n "$ALLOWED_DOMAINS_ANSWER" ]]; then
+  IFS=',' read -ra _DOMAINS <<< "$ALLOWED_DOMAINS_ANSWER"
+  for d in "${_DOMAINS[@]}"; do
+    d="${d// /}"
+    [[ -z "$d" ]] && continue
+    sudo -u "$APP_USER" AUTH_DATA_DIR="$APP_DIR/data" \
+      "$APP_DIR/bin/auth-admin" domain add "$d" >/dev/null 2>&1 || true
+  done
+fi
+
+# ── 6. Caddy ────────────────────────────────────────────────────────
+step "6/6  Reverse proxy"
+if [[ "$DRY_RUN" == "1" ]]; then
+  info "DRY_RUN: skipping Caddy / firewalld"
+elif [[ "$SETUP_CADDY" == "y" ]]; then
+  info "installing Caddy"
+  dnf install -y caddy >/dev/null
+
+  tmp=$(mktemp)
+  if [[ -n "$LE_EMAIL" ]]; then
+    printf '{\n\temail %s\n}\n\n' "$LE_EMAIL" > "$tmp"
+  fi
+  sed "s/auth\.example\.com/$HOSTNAME_ANSWER/" "$APP_DIR/deploy/Caddyfile" >> "$tmp"
+  if [[ "$USE_LETSENCRYPT" != "y" ]]; then
+    sed -i '/^'"${HOSTNAME_ANSWER//./\\.}"' {/a\\ttls internal' "$tmp"
+  fi
+  install -m 0644 "$tmp" /etc/caddy/Caddyfile
+  rm -f "$tmp"
+
+  if systemctl is-active --quiet firewalld; then
+    firewall-cmd --add-service=http --permanent >/dev/null
+    firewall-cmd --add-service=https --permanent >/dev/null
+    firewall-cmd --reload >/dev/null
+    ok "firewalld: http + https opened"
+  fi
+
+  systemctl enable --now caddy
+  ok "Caddy running — auto-renews ~30 days before expiry"
+
+  if [[ "$USE_LETSENCRYPT" == "y" ]]; then
+    info "waiting for TLS at https://${HOSTNAME_ANSWER}"
+    tls_ok=0
+    for _ in $(seq 1 45); do
+      if curl -fsS --max-time 5 "https://${HOSTNAME_ANSWER}/healthz" -o /dev/null 2>/dev/null; then
+        tls_ok=1; break
+      fi
+      sleep 1
+    done
+    if [[ "$tls_ok" == "1" ]]; then
+      expiry=$(echo | openssl s_client -servername "$HOSTNAME_ANSWER" \
+        -connect "${HOSTNAME_ANSWER}:443" 2>/dev/null \
+        | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+      ok "TLS live — cert valid until ${expiry:-unknown}"
+    else
+      warn "https://${HOSTNAME_ANSWER} didn't come up in 45s."
+      warn "  Check: journalctl -u caddy -n 50 --no-pager"
+    fi
+  fi
+else
+  info "skipping Caddy — reach the app at http://${HOSTNAME_ANSWER}:9000"
+fi
+
+# ── motd ────────────────────────────────────────────────────────────
+tee /etc/motd > /dev/null <<'MOTD'
+     ╔══════════════════╗
+     ║   ELCANO  AUTH   ║
+     ║   ──────────     ║
+     ║   one login      ║
+     ║   for the stack  ║
+     ╚══════════════════╝
+
+To manage auth → `auth --help`
+MOTD
+
+# ── final card ──────────────────────────────────────────────────────
+say
+printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
+printf '%s ✓ Elcano Auth installed%s\n' "$c_bold" "$c_reset"
+printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
+say
+if [[ "$SETUP_CADDY" == "y" ]]; then
+  say "  URL          ${c_bold}https://${HOSTNAME_ANSWER}${c_reset}"
+else
+  say "  URL          ${c_bold}http://${HOSTNAME_ANSWER}:9000${c_reset}"
+fi
+say "  Cookie       ${c_dim}Domain=${COOKIE_DOMAIN_ANSWER:-host-only}${c_reset}"
+say "  Allowlist    ${c_dim}${ALLOWED_DOMAINS_ANSWER:-(empty — open enrollment)}${c_reset}"
+say "  Email        ${c_dim}${EMAIL_DRIVER_ANSWER}${c_reset}"
+say "  Data dir     ${APP_DIR}/data"
+say "  Logs         ${c_dim}journalctl -fu auth-server${c_reset}"
+say "  CLI          ${c_dim}auth domain add …  •  auth user list  •  auth restart${c_reset}"
+say
+if [[ "$EMAIL_DRIVER_ANSWER" == "stdout" ]]; then
+  say "  ${c_yellow}heads up:${c_reset} email driver is 'stdout' — magic links print to the journal."
+  say "  ${c_dim}Tail with: journalctl -fu auth-server | grep email/stdout${c_reset}"
+  say
+fi
+say "  Next: drop the forward_auth snippet from deploy/Caddyfile into"
+say "  each downstream service's Caddyfile to gate it on this cookie."
+say
