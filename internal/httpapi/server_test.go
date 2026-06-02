@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/store"
+	"github.com/elcanotek/auth/internal/token"
 )
 
 // captureSender stashes every (to, text) pair the server sends so the
@@ -54,9 +57,15 @@ func newTestServer(t *testing.T) (*httptest.Server, *captureSender, *store.Store
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
 	cfg := &config.Config{
 		Hostname:        "auth.example.com",
-		SessionSecret:   []byte("0123456789abcdef0123456789abcdef0123456789abcdef"),
+		SigningKey:      priv,
+		PublicKey:       pub,
 		SessionTTL:      24 * time.Hour,
 		MagicTTL:        10 * time.Minute,
 		CookieName:      "elcano_auth",
@@ -142,6 +151,39 @@ func TestVerifyWithoutCookieIs401(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 401 {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestVerifyRejectsForeignKeyCookie is the asymmetric guarantee at the HTTP
+// boundary: a session cookie minted with a DIFFERENT signing key (i.e. an
+// attacker who knows a victim's email but not the private key) must be
+// rejected. Without this, knowing/guessing an email would be enough to forge
+// a session.
+func TestVerifyRejectsForeignKeyCookie(t *testing.T) {
+	ts, _, _, cfg := newTestServer(t)
+
+	_, foreignPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("genkey: %v", err)
+	}
+	forged, err := token.Sign(foreignPriv, token.Session{
+		Email:  "ceo@example.com",
+		Tenant: "example.com",
+		Exp:    time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	req, _ := http.NewRequest("GET", ts.URL+"/verify", nil)
+	req.AddCookie(&http.Cookie{Name: cfg.CookieName, Value: forged})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Errorf("forged-key cookie: status = %d, want 401", resp.StatusCode)
 	}
 }
 

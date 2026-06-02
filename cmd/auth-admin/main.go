@@ -16,6 +16,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -42,6 +45,8 @@ func main() {
 		domainCmd(dataDir, os.Args[2:])
 	case "user":
 		userCmd(dataDir, os.Args[2:])
+	case "keygen":
+		keygenCmd()
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -63,8 +68,29 @@ USERS
   auth-admin user list                    show everyone who has ever logged in
   auth-admin user del <email>             remove a user from the audit log
 
+CRYPTO
+  auth-admin keygen                       generate a fresh Ed25519 signing keypair
+
 Reads AUTH_DATA_DIR from the env (default /opt/auth/data).
 The 'auth' shell wrapper sources .env.local before calling us.`)
+}
+
+// keygenCmd prints a fresh Ed25519 keypair as ready-to-paste env lines.
+// The private seed (AUTH_SIGNING_KEY) goes in the auth host's .env.local
+// and nowhere else; the public key (AUTH_SIGNING_PUBKEY) is handed to
+// every verifying service (home, chat, …). Because verification only needs
+// the public key, distributing it can never enable token forgery.
+func keygenCmd() {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "keygen: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("# Ed25519 signing keypair for the Elcano auth service.")
+	fmt.Println("# PRIVATE — auth host only (auth/.env.local). Never copy it anywhere else.")
+	fmt.Printf("AUTH_SIGNING_KEY=%s\n", base64.StdEncoding.EncodeToString(priv.Seed()))
+	fmt.Println("# PUBLIC — distribute to every verifying service (home, chat, …). Safe to share.")
+	fmt.Printf("AUTH_SIGNING_PUBKEY=%s\n", base64.StdEncoding.EncodeToString(pub))
 }
 
 func openStore(dataDir string) (*store.Store, context.Context) {

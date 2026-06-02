@@ -38,12 +38,14 @@ login page; authenticated ones reach the app with `X-User-Email`
 already set in the headers. **The app needs zero auth code** — it
 just trusts the header.
 
-**Pattern B — Verify the cookie natively in the app.** The app
-imports the HMAC + base64url verification logic (50 lines of Go /
-TS / Python) and reads the cookie value directly. Documented here
-for completeness; **not used by any current service**. The
-future-chat migration is the most plausible use case, since chat
-already has the verification code shape.
+**Pattern B — Verify the cookie natively in the app.** The app holds
+the Ed25519 **public** key (`AUTH_SIGNING_PUBKEY`) and verifies the
+cookie's signature + base64url payload directly (~50 lines of Go / TS /
+Python). **home uses this today** (`home/server.js` is the reference Node
+port). It needs no per-request call to `/verify`, but every Pattern-B
+service must be given the current public key — and re-given it after any
+key rotation. Because the public key can only verify, never sign,
+distributing it carries no forgery risk.
 
 ## Pattern A — the Caddy snippet
 
@@ -117,9 +119,14 @@ point:
       call in `chat/src/app/lib/auth.ts` to pass
       `domain: ".elcanotek.com"`. Without this, chat keeps minting
       host-only cookies and the cookie won't ride to other services.
-- [ ] **Match the HMAC secret.** Set `APP_SESSION_SECRET` in chat's
-      `.env.local` to the SAME value as `AUTH_SESSION_SECRET` in
-      auth's `.env.local`. Both files; restart both services.
+- [ ] **Give chat the public key + switch its verifier to Ed25519.**
+      auth signs tokens with Ed25519, so chat must verify with the
+      public key, not a shared HMAC secret. Set `AUTH_SIGNING_PUBKEY`
+      in chat's `.env.local` to auth's public key (from `auth keygen`
+      / printed at bootstrap), and update `chat/src/app/lib/auth.ts` to
+      verify the detached Ed25519 signature over the base64url body
+      (see `home/server.js` for the reference Node implementation).
+      Only chat needs the change; the public key is safe to share.
 - [ ] **Confirm token payload compatibility.** auth-server's payload
       is `{email, tenant, iat, exp}`; chat's verifier reads only
       `{email, exp}`. Extra fields are ignored, so this works as-is.
@@ -146,11 +153,14 @@ snippet as home/forwarder/explorer/voice), delete chat's
 session/login code, read `X-User-Email` from request headers in
 chat's API routes. Cleaner in the long run, more upfront work.
 
-### `home` — Pattern A (the easiest of the bunch)
+### `home` — DONE (migrated via Pattern B)
 
-home is single-password today (`HOME_PASSWORD` in env, HMAC-cookie).
-There's no per-user identity to migrate — just delete the password
-flow.
+> **Status: already migrated.** home no longer runs its own login. It
+> verifies the `elcano_auth` cookie natively with the Ed25519 public key
+> (`AUTH_SIGNING_PUBKEY`) — see `home/server.js`. The Pattern A checklist
+> below is kept as a record / alternative; you don't need to run it. The
+> legacy `HOME_PASSWORD` single-password flow has been removed from
+> `server.js`.
 
 - [ ] **Add `auth.elcanotek.com` to your DNS** if it isn't there.
 - [ ] **Edit `home/deploy/elcano-home.caddy`** (or wherever home's
@@ -346,8 +356,9 @@ isn't being saved — usually `AUTH_COOKIE_DOMAIN` is wrong or
   need either a denylist in auth-server (~30 lines) or that
   per-service.
 - **Token revocation.** Sessions live until they expire. Rotating
-  `AUTH_SESSION_SECRET` is the global big-red-button. There's no
-  per-user "log them out remotely" today.
+  `AUTH_SIGNING_KEY` (and pushing the new public key to every verifier)
+  is the global big-red-button. There's no per-user "log them out
+  remotely" today.
 
 If any of those start mattering, file an issue or extend the
 service — the surface stays small.

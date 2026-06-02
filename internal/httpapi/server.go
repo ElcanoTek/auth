@@ -153,7 +153,7 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tok, err := token.Sign(s.cfg.SessionSecret, token.Magic{
+	tok, err := token.Sign(s.cfg.SigningKey, token.Magic{
 		Email:    email,
 		Nonce:    nonce,
 		ReturnTo: returnTo,
@@ -210,7 +210,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		s.bounceWithErr(w, r, "Missing sign-in token.")
 		return
 	}
-	m, err := token.VerifyMagic(s.cfg.SessionSecret, raw)
+	m, err := token.VerifyMagic(s.cfg.PublicKey, raw)
 	if err != nil {
 		s.bounceWithErr(w, r, "Invalid sign-in link. Request a fresh one.")
 		return
@@ -234,7 +234,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	tenant := emailTenant(m.Email)
 	now := time.Now()
-	sessTok, err := token.Sign(s.cfg.SessionSecret, token.Session{
+	sessTok, err := token.Sign(s.cfg.SigningKey, token.Session{
 		Email:  m.Email,
 		Tenant: tenant,
 		IAT:    now.Unix(),
@@ -343,7 +343,7 @@ func (s *Server) currentSession(r *http.Request) *token.Session {
 	if err != nil {
 		return nil
 	}
-	sess, err := token.VerifySession(s.cfg.SessionSecret, c.Value)
+	sess, err := token.VerifySession(s.cfg.PublicKey, c.Value)
 	if err != nil {
 		return nil
 	}

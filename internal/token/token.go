@@ -1,24 +1,29 @@
-// Package token mints + verifies the compact HMAC-SHA256 tokens this
+// Package token mints + verifies the compact Ed25519-signed tokens this
 // service uses for both magic links and session cookies.
 //
-// Format: base64url(payload_json) + "." + base64url(hmac_sha256(payload)).
+// Format: base64url(payload_json) + "." + base64url(ed25519_signature).
 //
-// This is intentionally identical to chat-web's session token format
-// (chat/src/app/lib/auth.ts) so chat's existing verifier reads our
-// sessions with zero code changes once the secret is shared. Downstream
-// services that want native verification can copy this 50-line file or
-// rely on Caddy's forward_auth to /verify instead.
+// Signing is ASYMMETRIC. auth-server holds the 32-byte private seed and is
+// the only party that can MINT a token. Every verifying service (home,
+// chat, …) holds only the 32-byte PUBLIC key — enough to VERIFY a token,
+// never to forge one. This is the whole point of the scheme: with the old
+// shared HMAC secret, any holder of the verify key could also sign, so a
+// single leaked verifier could impersonate any user. With Ed25519 the
+// public key is safe to distribute as widely as you like.
 //
-// Why not JWT-with-alg-header? The header serves nothing here — we own
-// both ends of the wire, only HS256 is supported, and skipping it saves
+// The signature covers the base64url-encoded body STRING (not the raw
+// JSON bytes), so a verifier reconstructs `body` exactly as received and
+// checks it against the detached signature. home/server.js mirrors this
+// byte-for-byte.
+//
+// Why not a JWT-with-alg-header? The header serves nothing here — we own
+// both ends of the wire, only Ed25519 is supported, and skipping it saves
 // a few bytes per cookie. Keep it simple.
 package token
 
 import (
-	"crypto/hmac"
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -57,38 +62,39 @@ var (
 	ErrInvalid = errors.New("invalid token")
 )
 
-// Sign[T] serializes payload to JSON, base64url-encodes it, and appends
-// a base64url HMAC-SHA256 over that encoded payload.
-func Sign[T any](secret []byte, payload T) (string, error) {
+// Sign[T] serializes payload to JSON, base64url-encodes it, and appends a
+// base64url Ed25519 signature over that encoded body. priv is the 64-byte
+// Go private key (seed+public) produced by ed25519.NewKeyFromSeed.
+func Sign[T any](priv ed25519.PrivateKey, payload T) (string, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshal: %w", err)
 	}
 	body := base64.RawURLEncoding.EncodeToString(raw)
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(body))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return body + "." + sig, nil
+	sig := ed25519.Sign(priv, []byte(body))
+	return body + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
-// Verify checks the HMAC and unmarshals the payload. Out is filled in
-// place on success. Does not check expiry — callers do that against
-// their own clock (so the token type owns its TTL semantics).
-func Verify[T any](secret []byte, token string, out *T) error {
+// Verify checks the Ed25519 signature and unmarshals the payload. Out is
+// filled in place on success. Does not check expiry — callers do that
+// against their own clock (so the token type owns its TTL semantics).
+func Verify[T any](pub ed25519.PublicKey, token string, out *T) error {
+	// ed25519.Verify panics on a wrong-sized key; guard so a misconfigured
+	// public key fails closed as "invalid" rather than crashing the server.
+	if len(pub) != ed25519.PublicKeySize {
+		return ErrInvalid
+	}
 	dot := strings.IndexByte(token, '.')
 	if dot < 1 || dot == len(token)-1 {
 		return ErrInvalid
 	}
 	body, sigStr := token[:dot], token[dot+1:]
 
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(body))
-	want := mac.Sum(nil)
-	got, err := base64.RawURLEncoding.DecodeString(sigStr)
+	sig, err := base64.RawURLEncoding.DecodeString(sigStr)
 	if err != nil {
 		return ErrInvalid
 	}
-	if subtle.ConstantTimeCompare(want, got) != 1 {
+	if !ed25519.Verify(pub, []byte(body), sig) {
 		return ErrInvalid
 	}
 
@@ -104,9 +110,9 @@ func Verify[T any](secret []byte, token string, out *T) error {
 
 // VerifySession is a convenience wrapper that also checks Exp against
 // wall-clock time. Returns the parsed session on success.
-func VerifySession(secret []byte, token string) (*Session, error) {
+func VerifySession(pub ed25519.PublicKey, token string) (*Session, error) {
 	var s Session
-	if err := Verify(secret, token, &s); err != nil {
+	if err := Verify(pub, token, &s); err != nil {
 		return nil, err
 	}
 	if s.Exp <= time.Now().Unix() {
@@ -121,9 +127,9 @@ func VerifySession(secret []byte, token string) (*Session, error) {
 // VerifyMagic is the equivalent for magic-link tokens. Expiry check is
 // the caller's; this only validates encoding + signature. Use it from
 // /callback together with a single-use check against the DB.
-func VerifyMagic(secret []byte, token string) (*Magic, error) {
+func VerifyMagic(pub ed25519.PublicKey, token string) (*Magic, error) {
 	var m Magic
-	if err := Verify(secret, token, &m); err != nil {
+	if err := Verify(pub, token, &m); err != nil {
 		return nil, err
 	}
 	if m.Email == "" || m.Nonce == "" {

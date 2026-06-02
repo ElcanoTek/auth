@@ -37,7 +37,7 @@ by Caddy's `forward_auth`.
   `elcano_auth` cookie → Caddy redirects to
   `auth.elcanotek.com/?return_to=…`.
 - **auth-server** shows a login form. User types email. We email a
-  one-time magic link signed with HMAC-SHA256.
+  one-time magic link signed with Ed25519 (auth holds the private key).
 - **User clicks the link.** auth-server verifies the signature,
   marks the nonce used (single-use), and sets `elcano_auth` on
   `Domain=elcanotek.com` so it rides to every subdomain in the
@@ -81,7 +81,7 @@ make check
 
 # 2. Configure
 cp .env.local.example .env.local
-$EDITOR .env.local        # at minimum: set AUTH_SESSION_SECRET
+$EDITOR .env.local        # at minimum: set AUTH_SIGNING_KEY (auth-admin keygen)
 
 # 3. Boot it
 make run
@@ -95,7 +95,8 @@ SendGrid. POST to `/magic`, copy the link from the log, click it.
 
 See `.env.local.example` for the full catalog. Minimum to start:
 
-- `AUTH_SESSION_SECRET` — HMAC key, ≥32 bytes. `openssl rand -base64 48`.
+- `AUTH_SIGNING_KEY` — base64 Ed25519 private seed. Generate a keypair
+  with `make build && ./bin/auth-admin keygen`; this is the private half.
 
 For anything beyond localhost, also set:
 
@@ -172,9 +173,10 @@ sudo bash /opt/auth-src/scripts/bootstrap.sh
 3. **SendGrid API key + verified sender** — or pick `stdout` for dev.
 
 Plus a yes/no for "set up Caddy + Let's Encrypt for this hostname?".
-The script generates the session secret, builds the binary, drops a
-systemd unit, optionally provisions Caddy, opens 80/443 in firewalld,
-and installs `/usr/local/bin/auth` for ops.
+The script generates the Ed25519 signing keypair (and prints the public
+key to copy to verifying services), builds the binary, drops a systemd
+unit, optionally provisions Caddy, opens 80/443 in firewalld, and
+installs `/usr/local/bin/auth` for ops.
 
 Day-to-day:
 
@@ -197,14 +199,19 @@ into this auth service, plus a generic checklist for new services.
 
 ## Token format
 
-The session cookie value is `base64url(payload_json).base64url(hmac_sha256(payload))`.
-Payload is `{"email":"…","tenant":"…","iat":…,"exp":…}`. Same shape
-chat-web already uses in `src/app/lib/auth.ts`, so chat can verify
-natively without calling `/verify`.
+The session cookie value is `base64url(payload_json).base64url(ed25519_sig)`.
+Payload is `{"email":"…","tenant":"…","iat":…,"exp":…}`. The signature is
+Ed25519 over the base64url body string.
+
+Signing is **asymmetric**: auth-server holds the private key (`AUTH_SIGNING_KEY`)
+and is the only party that can mint a token. Verifying services hold only
+the public key (`AUTH_SIGNING_PUBKEY`) — enough to validate a cookie, never
+to forge one. So the public key is safe to distribute to chat, home, etc.,
+and a leak there can't impersonate anyone.
 
 Services that prefer to verify on their own (instead of `forward_auth`)
-only need ~50 lines — see `internal/token/token.go` for the reference
-implementation.
+only need ~50 lines + the public key — see `internal/token/token.go` for
+the Go reference and `home/server.js` for the Node port.
 
 ## Layout
 
@@ -212,7 +219,7 @@ implementation.
 cmd/auth-server/         long-running HTTP service
 cmd/auth-admin/          CLI behind `auth domain/user` subcommands
 internal/config/         env loading + validation (chat-server shape)
-internal/token/          HMAC-signed magic + session tokens
+internal/token/          Ed25519-signed magic + session tokens
 internal/store/          SQLite (modernc.org/sqlite, no CGO)
 internal/email/          SendGrid / SMTP / stdout drivers
 internal/httpapi/        HTTP routes + login UI templates
@@ -229,4 +236,4 @@ the rest of the stack (one `SENDGRID_API_KEY` covers everything),
 and avoids the per-MAU price ramp once we scale past the free tier.
 If a big client ever requires SAML, a SAML IdP slots in BEHIND
 `/magic` without any downstream service noticing — they all still
-just check the JWT.
+just verify the signed cookie.

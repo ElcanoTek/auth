@@ -133,7 +133,7 @@ This will:
   • install system deps (git, go, openssl, caddy?, sqlite, bind-utils)
   • create an '${APP_USER}' system user + ${APP_DIR}
   • build the auth-server + auth-admin binaries
-  • generate an HMAC session secret
+  • generate an Ed25519 signing keypair
   • seed .env.local with your hostname + cookie domain + email provider
   • install the systemd unit and (optionally) Caddy with automatic TLS
   • drop /usr/local/bin/auth — the operator CLI
@@ -272,8 +272,20 @@ case "$EMAIL_DRIVER_ANSWER" in
   *) die "unknown email driver: $EMAIL_DRIVER_ANSWER" ;;
 esac
 
-# 3e — session secret. Reuse if present (rotation logs everyone out).
-AUTH_SESSION_SECRET="${AUTH_SESSION_SECRET:-$(genbase64 48)}"
+# 3e — Ed25519 signing keypair. auth holds the private seed and is the only
+# party that can mint tokens; the public key is handed to every verifying
+# service (home, chat, …) and can verify but never forge. Reuse an existing
+# seed if present (rotation logs everyone out AND means re-distributing the
+# new pubkey to those services).
+AUTH_SIGNING_KEY="${AUTH_SIGNING_KEY:-$(openssl genpkey -algorithm ed25519 -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n')}"
+# Derive the public key from the seed: rebuild the Ed25519 PKCS#8 DER (fixed
+# 16-byte prefix + 32-byte seed), then ask openssl for the public half.
+_ed25519_pkcs8_prefix='\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x70\x04\x22\x04\x20'
+AUTH_SIGNING_PUBKEY="$(
+  { printf "$_ed25519_pkcs8_prefix"; printf '%s' "$AUTH_SIGNING_KEY" | base64 -d; } \
+    | openssl pkey -inform DER -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n'
+)"
+unset _ed25519_pkcs8_prefix
 
 # 3f — TLS plan (only relevant for real hostnames)
 SETUP_CADDY="n"
@@ -330,7 +342,10 @@ AUTH_HOSTNAME="$HOSTNAME_ANSWER"
 AUTH_DATA_DIR="$APP_DIR/data"
 
 # ── Crypto ───────────────────────────────────────────────────────
-AUTH_SESSION_SECRET="$AUTH_SESSION_SECRET"
+# Private signing seed — auth host only. AUTH_SIGNING_PUBKEY (below, in a
+# comment) is the public half: copy it to each verifying service.
+AUTH_SIGNING_KEY="$AUTH_SIGNING_KEY"
+# AUTH_SIGNING_PUBKEY (give this to home/chat): $AUTH_SIGNING_PUBKEY
 
 # ── Cookie ───────────────────────────────────────────────────────
 AUTH_COOKIE_NAME="elcano_auth"
@@ -371,6 +386,11 @@ EOF
 chown "$APP_USER:$APP_USER" "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
 ok "env seeded"
+
+# Surface the public key so the operator can wire up verifying services.
+# Safe to display/copy — it cannot mint tokens, only verify them.
+info "Public signing key — set AUTH_SIGNING_PUBKEY to this on home/chat/etc:"
+printf '    AUTH_SIGNING_PUBKEY=%s\n' "$AUTH_SIGNING_PUBKEY"
 
 # ── 5. build + install ──────────────────────────────────────────────
 step "5/6  Building auth-server + auth-admin"
