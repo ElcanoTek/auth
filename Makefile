@@ -1,6 +1,8 @@
 # Top-level Makefile. Mirrors chat's shape (build / test / check / clean).
 
-.PHONY: all build deps test check smoke clean tidy run
+.PHONY: all build deps test check lint smoke clean tidy run
+
+GOLANGCI_VERSION := v2.1.6
 
 all: build
 
@@ -22,8 +24,14 @@ tidy:
 test:
 	GOTOOLCHAIN=auto go test ./...
 
-## check: the pre-push gate (vet + build + test)
+## lint: gofmt -s check + golangci-lint (matches the CI lint gate)
+lint:
+	@out="$$(gofmt -s -l .)"; if [ -n "$$out" ]; then echo "gofmt -s needed on:"; echo "$$out"; echo "run: gofmt -s -w ."; exit 1; fi
+	GOTOOLCHAIN=auto go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION) run ./...
+
+## check: the pre-push gate (lint + vet + build + test)
 check:
+	$(MAKE) lint
 	GOTOOLCHAIN=auto go vet ./...
 	$(MAKE) build
 	$(MAKE) test

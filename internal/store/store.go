@@ -9,13 +9,13 @@
 //
 // Schema:
 //
-//   domains       — allowlist of email domains that may request magic
-//                   links. Empty table + empty AUTH_ALLOWED_DOMAINS env
-//                   = open enrollment.
-//   magic_links   — single-use nonces. Issued on POST /magic, marked
-//                   used on /callback. Old rows are GC'd lazily.
-//   users         — audit/usage log. Auto-populated on first successful
-//                   /callback. operators see it via `auth user list`.
+//	domains       — allowlist of email domains that may request magic
+//	                links. Empty table + empty AUTH_ALLOWED_DOMAINS env
+//	                = open enrollment.
+//	magic_links   — single-use nonces. Issued on POST /magic, marked
+//	                used on /callback. Old rows are GC'd lazily.
+//	users         — audit/usage log. Auto-populated on first successful
+//	                /callback. operators see it via `auth user list`.
 package store
 
 import (
@@ -115,7 +115,7 @@ func (s *Store) ListDomains(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []string
 	for rows.Next() {
 		var n string
@@ -191,7 +191,7 @@ func (s *Store) ConsumeMagic(ctx context.Context, nonce string, now int64) (emai
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var expiresAt int64
 	var usedAt sql.NullInt64
@@ -266,7 +266,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]UserRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []UserRow
 	for rows.Next() {
 		var u UserRow

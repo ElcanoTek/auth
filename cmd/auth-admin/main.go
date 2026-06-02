@@ -2,11 +2,12 @@
 // Dispatched from deploy/auth-cli.
 //
 // Subcommands:
-//   auth-admin domain add <example.com>
-//   auth-admin domain del <example.com>
-//   auth-admin domain list
-//   auth-admin user list
-//   auth-admin user del <email>
+//
+//	auth-admin domain add <example.com>
+//	auth-admin domain del <example.com>
+//	auth-admin domain list
+//	auth-admin user list
+//	auth-admin user del <email>
 //
 // Reads AUTH_DATA_DIR from the env (chat-cli source's .env.local
 // before invoking us, same as chat). Talks to the same SQLite file the
@@ -19,7 +20,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -110,7 +110,7 @@ func domainCmd(dataDir string, args []string) {
 		os.Exit(2)
 	}
 	st, ctx := openStore(dataDir)
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	switch args[0] {
 	case "add":
@@ -165,7 +165,7 @@ func userCmd(dataDir string, args []string) {
 		os.Exit(2)
 	}
 	st, ctx := openStore(dataDir)
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	switch args[0] {
 	case "list", "ls":
@@ -179,13 +179,13 @@ func userCmd(dataDir string, args []string) {
 			return
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "EMAIL\tTENANT\tLOGINS\tLAST SEEN\tFIRST SEEN")
+		_, _ = fmt.Fprintln(tw, "EMAIL\tTENANT\tLOGINS\tLAST SEEN\tFIRST SEEN")
 		for _, u := range users {
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n",
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n",
 				u.Email, u.Tenant, u.LoginCount,
 				humanTime(u.LastSeen), u.FirstSeen.Format("2006-01-02"))
 		}
-		tw.Flush()
+		_ = tw.Flush()
 	case "del", "delete", "rm":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: auth-admin user del <email>")
@@ -193,9 +193,6 @@ func userCmd(dataDir string, args []string) {
 		}
 		ok, err := st.DeleteUser(ctx, args[1])
 		if err != nil {
-			if errors.Is(err, store.ErrConsumed) {
-				// Defensive; never expected here.
-			}
 			fmt.Fprintf(os.Stderr, "del: %v\n", err)
 			os.Exit(1)
 		}
