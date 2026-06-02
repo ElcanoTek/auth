@@ -17,6 +17,23 @@ func parseTemplates() *template.Template {
 	return t
 }
 
+// fontFaceCSS self-hosts the flag UI font (Dubai 400/700) from the binary,
+// served by fontHandler at /fonts/. font-display: swap renders the token
+// fallback ("Segoe UI", sans-serif) immediately, then swaps to Dubai once
+// the woff2 loads — no blank-text flash, no CDN dependency.
+const fontFaceCSS = `
+@font-face {
+  font-family: "Dubai";
+  font-style: normal; font-weight: 400; font-display: swap;
+  src: url("/fonts/DubaiW23-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Dubai";
+  font-style: normal; font-weight: 700; font-display: swap;
+  src: url("/fonts/DubaiW23-Bold.woff2") format("woff2");
+}
+`
+
 // tokensCSS is the subset of the Elcano "flag" design system this surface
 // consumes, copied verbatim from flag/design-system/tokens/design-tokens.css
 // (the canonical source of truth). The system is dark-first: :root holds the
@@ -265,7 +282,7 @@ const loginHTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>{{.Brand}} — Sign in</title>
-<style>` + tokensCSS + componentCSS + `</style>
+<style>` + fontFaceCSS + tokensCSS + componentCSS + `</style>
 <script>` + themeScript + `</script>
 </head>
 <body>
@@ -294,7 +311,7 @@ const sentHTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>{{.Brand}} — Check your inbox</title>
-<style>` + tokensCSS + componentCSS + `</style>
+<style>` + fontFaceCSS + tokensCSS + componentCSS + `</style>
 <script>` + themeScript + `</script>
 </head>
 <body>

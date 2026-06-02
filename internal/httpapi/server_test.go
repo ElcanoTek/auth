@@ -155,6 +155,31 @@ func TestVerifyWithoutCookieIs401(t *testing.T) {
 	}
 }
 
+// TestFontsServed confirms the self-hosted Dubai woff2 files are embedded
+// and served at /fonts/ with the right content type — the login UI's
+// @font-face rules point here, so a missing/misnamed file silently drops
+// the brand font back to the system fallback.
+func TestFontsServed(t *testing.T) {
+	ts, _, _, _ := newTestServer(t)
+	for _, name := range []string{"DubaiW23-Regular.woff2", "DubaiW23-Bold.woff2"} {
+		resp, err := http.Get(ts.URL + "/fonts/" + name)
+		if err != nil {
+			t.Fatalf("GET %s: %v", name, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Errorf("%s: status = %d, want 200", name, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "font/woff2" {
+			t.Errorf("%s: Content-Type = %q, want font/woff2", name, ct)
+		}
+		if len(body) < 4 || string(body[:4]) != "wOF2" {
+			t.Errorf("%s: not a woff2 payload (len=%d)", name, len(body))
+		}
+	}
+}
+
 // TestVerifyRejectsForeignKeyCookie is the asymmetric guarantee at the HTTP
 // boundary: a session cookie minted with a DIFFERENT signing key (i.e. an
 // attacker who knows a victim's email but not the private key) must be
