@@ -249,6 +249,17 @@ case "$cmd" in
     # public key to each verifying service. No env/data needed.
     exec "$ADMIN_BIN" keygen "$@"
     ;;
+  pubkey)
+    # `auth pubkey` — print AUTH_SIGNING_PUBKEY for the CURRENT signing key.
+    # Sources .env.local so AUTH_SIGNING_KEY is in the env, then derives the
+    # public half. Use when wiring up a verifying service (home/chat/…) and
+    # the bootstrap output is long gone — no keygen (that mints a NEW key)
+    # and no openssl/python one-liner needed.
+    # shellcheck disable=SC1090
+    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
+    export AUTH_SIGNING_KEY="${AUTH_SIGNING_KEY:-}"
+    exec "$ADMIN_BIN" pubkey "$@"
+    ;;
   update)
     exec sudo bash "$APP_DIR/scripts/update.sh" "$@"
     ;;
@@ -306,6 +317,8 @@ USERS
 
 CRYPTO
   auth keygen                       print a fresh Ed25519 signing keypair
+  auth pubkey                       print AUTH_SIGNING_PUBKEY for the current
+                                    signing key (to hand to home/chat/etc.)
 
 UPDATES
   auth update                       git pull + rebuild + restart

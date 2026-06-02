@@ -189,6 +189,7 @@ Day-to-day:
 auth domain add clientco.com         # onboard a new agency
 auth domain list                     # see allowlist
 auth user list                       # audit log of real logins
+auth pubkey                          # print AUTH_SIGNING_PUBKEY for verifiers
 auth restart                         # pick up new .env.local
 auth logs                            # journalctl -fu auth-server
 auth backup                          # online sqlite snapshot
