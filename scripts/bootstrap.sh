@@ -380,6 +380,8 @@ cat >> "$ENV_FILE" <<EOF
 
 # ── UX ───────────────────────────────────────────────────────────
 AUTH_BRAND_NAME="${AUTH_BRAND_NAME:-Elcano}"
+# Post-login landing. Defaults to https://home.${COOKIE_DOMAIN_ANSWER:-<cookie-domain>}
+# (the stack's home service) when unset; uncomment to override.
 # AUTH_DEFAULT_RETURN_TO=""
 EOF
 
