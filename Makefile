@@ -1,6 +1,6 @@
 # Top-level Makefile. Mirrors chat's shape (build / test / check / clean).
 
-.PHONY: all build deps test check clean tidy run
+.PHONY: all build deps test check smoke clean tidy run
 
 all: build
 
@@ -27,6 +27,11 @@ check:
 	GOTOOLCHAIN=auto go vet ./...
 	$(MAKE) build
 	$(MAKE) test
+
+## smoke: boot the real binary + drive a full magic-link round-trip
+##        (stdout driver, throwaway DB, loopback port). No secrets/network.
+smoke:
+	bash scripts/smoke.sh
 
 ## run: build + start with the local .env.local (creates one if missing).
 ##      Talks to whatever AUTH_EMAIL_DRIVER is set to — default 'stdout'

@@ -1,0 +1,37 @@
+# Dependabot config — https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+# Weekly version + security updates, all bundled into one PR per ecosystem.
+# Tests gate the merge — review the consolidated diff, don't read every changelog.
+#
+# auth has no `dev` branch (unlike chat/cutlass/gig/moc), so updates target
+# the default branch (main) — no target-branch override.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      gomod:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: chore(ci)
+    groups:
+      github-actions:
+        patterns:
+          - "*"
