@@ -523,6 +523,27 @@ func TestLoginPageRendersWithErrorBanner(t *testing.T) {
 	}
 }
 
+// TestSentPageIsAmbiguous guards the "check your inbox" copy: it must NOT
+// claim an email was sent (none is, for a non-allowlisted domain) — that
+// would make the page an account-enumeration oracle. It should read as
+// conditional ("if … has an account").
+func TestSentPageIsAmbiguous(t *testing.T) {
+	ts, _, _, _ := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/sent?email=nobody@hacker.test")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, "has an account") {
+		t.Errorf("sent page should hedge with \"has an account\"; body=%s", s)
+	}
+	if strings.Contains(s, "We sent") {
+		t.Errorf("sent page must not assert an email was sent (enumeration oracle); body=%s", s)
+	}
+}
+
 func TestRuntimeDomainAddGrantsAccess(t *testing.T) {
 	// `auth domain add` (= store.AddDomain) must take effect WITHOUT
 	// a server restart. This is the core "I onboarded a new client at

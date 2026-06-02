@@ -110,8 +110,9 @@ The DB is the source of truth at runtime; `AUTH_ALLOWED_DOMAINS` in
 (to support kickstart/Ansible flows).
 
 > No-leak design: requests from non-allowlisted domains receive the
-> SAME "we sent a link" response as legitimate requests. The allowlist
-> is not an enumeration oracle.
+> SAME "check your inbox" response as legitimate requests — and that page
+> hedges ("if this address has an account…") rather than claiming a link
+> was sent. The allowlist is not an enumeration oracle.
 
 ## User management
 
