@@ -45,8 +45,9 @@ the Ed25519 **public** key (`AUTH_SIGNING_PUBKEY`) and verifies the
 cookie's signature + base64url payload directly (~50 lines of Go / TS /
 Python). **home uses this today** (`home/server.js` is the reference Node
 port). It needs no per-request call to `/verify`, but every Pattern-B
-service must be given the current public key — and re-given it after any
-key rotation. Because the public key can only verify, never sign,
+service must be given the current public key (`auth pubkey` on the auth
+host prints it) — and re-given it after any key rotation. Because the
+public key can only verify, never sign,
 distributing it carries no forgery risk.
 
 **Scoped tier = Pattern B + a local user-list check.** chat and moc
@@ -119,8 +120,8 @@ keeps owning WHO may use chat; auth only proves WHO they are.
       `.elcanotek.com` (no host-only domain). chat stops minting its
       own session cookie — the old `elcano_session` goes away entirely.
 - [ ] **Verify with the Ed25519 public key.** Set `AUTH_SIGNING_PUBKEY`
-      in chat's `.env.local` to auth's public key (printed at bootstrap
-      / `auth keygen`) and replace chat's HMAC verifier with detached
+      in chat's `.env.local` to auth's public key (run `auth pubkey` on
+      the auth host) and replace chat's HMAC verifier with detached
       Ed25519 verification over the base64url body — see `home/server.js`
       for the reference Node port. The payload is `{email, tenant, iat,
       exp}`; read `email` + `exp`.
@@ -249,7 +250,8 @@ runners, which is unaffected.
 - [ ] **Add the cookie verifier alongside `AdminAuthMiddleware`.** Port
       `internal/token/token.go` from this repo into
       `moc/internal/auth/cookie.go` (Pattern B) and set
-      `AUTH_SIGNING_PUBKEY` in moc's env. The Ed25519 verification is
+      `AUTH_SIGNING_PUBKEY` in moc's env (`auth pubkey` on the auth host
+      prints it). The Ed25519 verification is
       tiny and slots into moc's existing middleware chain.
 - [ ] **Gate on moc's local user-list.** Today moc has `username` as the
       PK; add a `UNIQUE` constraint on `email`. After the cookie verifies,

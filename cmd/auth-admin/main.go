@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -47,6 +48,8 @@ func main() {
 		userCmd(dataDir, os.Args[2:])
 	case "keygen":
 		keygenCmd()
+	case "pubkey":
+		pubkeyCmd()
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -70,6 +73,7 @@ USERS
 
 CRYPTO
   auth-admin keygen                       generate a fresh Ed25519 signing keypair
+  auth-admin pubkey                       print AUTH_SIGNING_PUBKEY for the current AUTH_SIGNING_KEY
 
 Reads AUTH_DATA_DIR from the env (default /opt/auth/data).
 The 'auth' shell wrapper sources .env.local before calling us.`)
@@ -91,6 +95,42 @@ func keygenCmd() {
 	fmt.Printf("AUTH_SIGNING_KEY=%s\n", base64.StdEncoding.EncodeToString(priv.Seed()))
 	fmt.Println("# PUBLIC — distribute to every verifying service (home, chat, …). Safe to share.")
 	fmt.Printf("AUTH_SIGNING_PUBKEY=%s\n", base64.StdEncoding.EncodeToString(pub))
+}
+
+// derivePublicKey turns a base64 Ed25519 private seed (the AUTH_SIGNING_KEY
+// value) into the matching base64 public key. It mirrors how config.Load
+// parses the seed and how keygen encodes the pair, so the output is
+// byte-identical to what bootstrap printed and what verifying services
+// (home/chat/…) expect in AUTH_SIGNING_PUBKEY.
+func derivePublicKey(seedB64 string) (string, error) {
+	seed, err := base64.StdEncoding.DecodeString(strings.TrimSpace(seedB64))
+	if err != nil {
+		return "", fmt.Errorf("not valid base64: %w", err)
+	}
+	if len(seed) != ed25519.SeedSize {
+		return "", fmt.Errorf("must decode to %d bytes (got %d) — expected the seed from `auth-admin keygen`", ed25519.SeedSize, len(seed))
+	}
+	pub := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	return base64.StdEncoding.EncodeToString(pub), nil
+}
+
+// pubkeyCmd prints the public half of the CURRENT AUTH_SIGNING_KEY (read
+// from the env) as a ready-to-paste AUTH_SIGNING_PUBKEY line. Unlike keygen,
+// it doesn't mint a new key — it recovers the value you need to (re)hand to a
+// verifying service when the bootstrap output is long gone. No openssl/python
+// one-liner required. The `auth` wrapper sources .env.local before calling us.
+func pubkeyCmd() {
+	keyB64 := strings.TrimSpace(os.Getenv("AUTH_SIGNING_KEY"))
+	if keyB64 == "" {
+		fmt.Fprintln(os.Stderr, "pubkey: AUTH_SIGNING_KEY is not set in the env (run via `auth pubkey`, which sources .env.local)")
+		os.Exit(1)
+	}
+	pub, err := derivePublicKey(keyB64)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pubkey: AUTH_SIGNING_KEY %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("AUTH_SIGNING_PUBKEY=%s\n", pub)
 }
 
 func openStore(dataDir string) (*store.Store, context.Context) {

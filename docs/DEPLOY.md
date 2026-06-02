@@ -263,6 +263,20 @@ paths of the same host. We don't currently support this without a
 small code change to `internal/httpapi/server.go` to mount routes at
 a path prefix; file an issue if you need it.
 
+## Handing the public key to a verifier
+
+When you wire up a verifying service (home, chat, …) you need the current
+`AUTH_SIGNING_PUBKEY`. To print it without rotating anything:
+
+```bash
+auth pubkey                       # AUTH_SIGNING_PUBKEY=... for the live signing key
+```
+
+It derives the public half from the running `AUTH_SIGNING_KEY` (in
+`.env.local`), so it always matches what's in production — handy when the
+bootstrap output is long gone. Safe to display/copy: the public key can
+verify cookies but never mint them.
+
 ## Rotating secrets
 
 ```bash
@@ -349,8 +363,8 @@ check:
    itself (e.g. home) needs `AUTH_SIGNING_PUBKEY` set to the auth host's
    current public key. If it's unset, malformed, or stale after a key
    rotation, that service rejects every cookie and bounces to login.
-   Reprint the public key with `auth keygen`-derived value (or it was
-   printed at bootstrap) and update the verifier.
+   Reprint the current public key with `auth pubkey` and update the
+   verifier (it derives from the live signing key, so it always matches).
 
 ### /verify returns 200 but the upstream app still shows "anonymous"
 
