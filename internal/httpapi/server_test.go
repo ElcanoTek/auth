@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -136,7 +137,7 @@ func TestHealthz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -148,9 +149,34 @@ func TestVerifyWithoutCookieIs401(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 401 {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestFontsServed confirms the self-hosted Dubai woff2 files are embedded
+// and served at /fonts/ with the right content type — the login UI's
+// @font-face rules point here, so a missing/misnamed file silently drops
+// the brand font back to the system fallback.
+func TestFontsServed(t *testing.T) {
+	ts, _, _, _ := newTestServer(t)
+	for _, name := range []string{"DubaiW23-Regular.woff2", "DubaiW23-Bold.woff2"} {
+		resp, err := http.Get(ts.URL + "/fonts/" + name)
+		if err != nil {
+			t.Fatalf("GET %s: %v", name, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Errorf("%s: status = %d, want 200", name, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "font/woff2" {
+			t.Errorf("%s: Content-Type = %q, want font/woff2", name, ct)
+		}
+		if len(body) < 4 || string(body[:4]) != "wOF2" {
+			t.Errorf("%s: not a woff2 payload (len=%d)", name, len(body))
+		}
 	}
 }
 
@@ -181,7 +207,7 @@ func TestVerifyRejectsForeignKeyCookie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 401 {
 		t.Errorf("forged-key cookie: status = %d, want 401", resp.StatusCode)
 	}
@@ -197,7 +223,7 @@ func TestFullMagicLinkFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /magic: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 303 {
 		t.Errorf("POST /magic status = %d, want 303", resp.StatusCode)
 	}
@@ -218,7 +244,7 @@ func TestFullMagicLinkFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /callback: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 303 {
 		t.Errorf("/callback status = %d, want 303", resp.StatusCode)
 	}
@@ -249,7 +275,7 @@ func TestFullMagicLinkFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /verify: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Errorf("/verify status = %d, want 200", resp.StatusCode)
 	}
@@ -265,7 +291,7 @@ func TestFullMagicLinkFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second /callback: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	loc := resp.Header.Get("Location")
 	if !strings.Contains(loc, "err=") {
 		t.Errorf("replay should redirect with error; got Location=%q", loc)
@@ -285,7 +311,7 @@ func TestMagicWithDisallowedDomainDoesntLeak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 303 {
 		t.Errorf("status = %d, want 303 (no leak)", resp.StatusCode)
 	}
@@ -310,7 +336,7 @@ func TestMagicWithMalformedEmailBouncesWithError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	loc := resp.Header.Get("Location")
 	if !strings.HasPrefix(loc, "/?err=") {
 		t.Errorf("malformed email should bounce to /?err=, got %q", loc)
@@ -324,7 +350,7 @@ func TestCallbackWithMissingTokenIs303WithError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 303 {
 		t.Errorf("status = %d, want 303", resp.StatusCode)
 	}
@@ -340,7 +366,7 @@ func TestCallbackWithTamperedTokenIs303(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 303 {
 		t.Errorf("status = %d, want 303", resp.StatusCode)
 	}
@@ -355,7 +381,7 @@ func TestLogoutClearsCookie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /logout: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 204 {
 		t.Errorf("status = %d, want 204", resp.StatusCode)
 	}
@@ -395,7 +421,7 @@ func TestReturnToPreservedThroughFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /callback: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if got := resp.Header.Get("Location"); got != dest {
 		t.Errorf("post-login Location = %q, want %q", got, dest)
 	}
@@ -427,7 +453,7 @@ func TestReturnToForeignHostFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /callback: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	got := resp.Header.Get("Location")
 	if strings.Contains(got, "evil.com") {
 		t.Errorf("foreign host leaked into Location: %q", got)
@@ -449,7 +475,7 @@ func TestMeReturnsJSON(t *testing.T) {
 	link := extractMagicLink(t, sender.sent[0].text)
 	sender.mu.Unlock()
 	resp, _ := c.Get(rewriteToTestHost(link, ts.URL))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	var ck *http.Cookie
 	for _, x := range resp.Cookies() {
 		if x.Name == cfg.CookieName {
@@ -462,7 +488,7 @@ func TestMeReturnsJSON(t *testing.T) {
 	if resp.StatusCode != 401 {
 		t.Errorf("anon /me status = %d, want 401", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Authenticated /me.
 	req, _ := http.NewRequest("GET", ts.URL+"/me", nil)
@@ -471,7 +497,7 @@ func TestMeReturnsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("authed /me: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Errorf("/me status = %d, want 200", resp.StatusCode)
 	}
@@ -486,13 +512,12 @@ func TestLoginPageRendersWithErrorBanner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
-	buf := make([]byte, 4096)
-	n, _ := resp.Body.Read(buf)
-	body := string(buf[:n])
+	raw, _ := io.ReadAll(resp.Body)
+	body := string(raw)
 	if !strings.Contains(body, "Test error message") {
 		t.Errorf("login page missing err message; body=%s", body)
 	}
@@ -511,7 +536,7 @@ func TestRuntimeDomainAddGrantsAccess(t *testing.T) {
 	// Before runtime add: silent no-leak response, no email.
 	resp, _ := c.PostForm(ts.URL+"/magic",
 		url.Values{"email": []string{"alice@runtime.com"}})
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	time.Sleep(50 * time.Millisecond)
 	sender.mu.Lock()
 	before := len(sender.sent)
@@ -528,7 +553,7 @@ func TestRuntimeDomainAddGrantsAccess(t *testing.T) {
 	// Now the same email DOES produce an email — no restart needed.
 	resp, _ = c.PostForm(ts.URL+"/magic",
 		url.Values{"email": []string{"alice@runtime.com"}})
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	sender.wait(t, 1)
 	sender.mu.Lock()
 	defer sender.mu.Unlock()

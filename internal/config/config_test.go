@@ -22,17 +22,6 @@ func testSigningKey() ed25519.PrivateKey {
 	return ed25519.NewKeyFromSeed(seed)
 }
 
-// withEnv sets env vars for the duration of a test and clears them after.
-// We don't use t.Setenv for the bulk path because Load itself calls
-// os.Setenv on file-loaded keys, and we want the post-test environment
-// to be clean regardless.
-func withEnv(t *testing.T, kv map[string]string) {
-	t.Helper()
-	for k, v := range kv {
-		t.Setenv(k, v)
-	}
-}
-
 func clearAllAuthEnv(t *testing.T) {
 	t.Helper()
 	for k := range allowedEnvVars {
@@ -58,6 +47,52 @@ func TestLoadRejectsMalformedSigningKey(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "AUTH_SIGNING_KEY") {
 		t.Errorf("Load with wrong-length seed: want AUTH_SIGNING_KEY error, got %v", err)
 	}
+}
+
+func TestDefaultReturnToLanding(t *testing.T) {
+	// With a cookie domain and no explicit AUTH_DEFAULT_RETURN_TO, freshly
+	// authenticated users should land on home.<cookie-domain>, not /me.
+	t.Run("derives home.<cookie-domain>", func(t *testing.T) {
+		clearAllAuthEnv(t)
+		t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+		t.Setenv("AUTH_COOKIE_DOMAIN", "elcanotek.com")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got, want := cfg.DefaultReturnTo, "https://home.elcanotek.com"; got != want {
+			t.Errorf("DefaultReturnTo = %q, want %q", got, want)
+		}
+	})
+
+	// An explicit AUTH_DEFAULT_RETURN_TO always wins over the derived default.
+	t.Run("explicit value wins", func(t *testing.T) {
+		clearAllAuthEnv(t)
+		t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+		t.Setenv("AUTH_COOKIE_DOMAIN", "elcanotek.com")
+		t.Setenv("AUTH_DEFAULT_RETURN_TO", "https://lens.elcanotek.com/")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got, want := cfg.DefaultReturnTo, "https://lens.elcanotek.com/"; got != want {
+			t.Errorf("DefaultReturnTo = %q, want %q", got, want)
+		}
+	})
+
+	// No cookie domain (localhost/dev) → no derived default; the handler
+	// falls back to /me.
+	t.Run("no cookie domain leaves it empty", func(t *testing.T) {
+		clearAllAuthEnv(t)
+		t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.DefaultReturnTo != "" {
+			t.Errorf("DefaultReturnTo = %q, want empty", cfg.DefaultReturnTo)
+		}
+	})
 }
 
 func TestValidateRejectsMissingKey(t *testing.T) {

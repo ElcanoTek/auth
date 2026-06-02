@@ -45,6 +45,37 @@ func TestResolveReturnTo(t *testing.T) {
 	}
 }
 
+// TestDefaultDest covers the post-login landing fallback: a configured
+// default (home.<cookie-domain>) is used when it passes the allowlist,
+// dev/localhost with no default falls back to /me, and a default that
+// fails the allowlist can never become an open redirect.
+func TestDefaultDest(t *testing.T) {
+	t.Run("configured home default", func(t *testing.T) {
+		s := &Server{cfg: &config.Config{
+			DefaultReturnTo: "https://home.example.com",
+			ReturnToHosts:   []string{".example.com"},
+		}}
+		if got := s.defaultDest(); got != "https://home.example.com" {
+			t.Errorf("defaultDest() = %q, want https://home.example.com", got)
+		}
+	})
+	t.Run("no default falls back to /me", func(t *testing.T) {
+		s := &Server{cfg: &config.Config{}}
+		if got := s.defaultDest(); got != "/me" {
+			t.Errorf("defaultDest() = %q, want /me", got)
+		}
+	})
+	t.Run("off-allowlist default cannot become an open redirect", func(t *testing.T) {
+		s := &Server{cfg: &config.Config{
+			DefaultReturnTo: "https://evil.com",
+			ReturnToHosts:   []string{".example.com"},
+		}}
+		if got := s.defaultDest(); got != "/me" {
+			t.Errorf("defaultDest() = %q, want /me (rejected)", got)
+		}
+	})
+}
+
 func TestHostMatches(t *testing.T) {
 	cases := []struct {
 		host, pattern string

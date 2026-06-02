@@ -13,9 +13,9 @@ import (
 
 func TestSplitAddress(t *testing.T) {
 	cases := []struct {
-		in        string
-		wantAddr  string
-		wantName  string
+		in       string
+		wantAddr string
+		wantName string
 	}{
 		{`Sign in <login@example.com>`, "login@example.com", "Sign in"},
 		{`"Display" <login@example.com>`, "login@example.com", "Display"},
@@ -98,7 +98,7 @@ func TestSendGridPayloadShape(t *testing.T) {
 
 	// Redirect API base by overriding the URL via a custom transport.
 	sg.HTTP = &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout:   5 * time.Second,
 		Transport: redirectTransport{base: srv.URL, real: srv.Client().Transport},
 	}
 

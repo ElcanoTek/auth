@@ -309,13 +309,13 @@ func TestStorePersistsAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	_ = s.AddDomain(ctx, "persist.com")
 	_ = s.RecordLogin(ctx, "alice@persist.com", "persist.com", time.Now().Unix())
-	s.Close()
+	_ = s.Close()
 
 	s2, err := Open(dir)
 	if err != nil {
 		t.Fatalf("re-Open: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	doms, _ := s2.ListDomains(ctx)
 	if len(doms) != 1 || doms[0] != "persist.com" {
 		t.Errorf("domains after reopen = %v, want [persist.com]", doms)

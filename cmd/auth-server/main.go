@@ -47,7 +47,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	// Seed the domain allowlist from env. This is additive — runtime
 	// `auth domain add` entries are kept. Env changes that REMOVE a

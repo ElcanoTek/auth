@@ -2,17 +2,17 @@
 //
 // Routes:
 //
-//   GET  /           — login form (HTML)
-//   POST /magic      — issue + email a magic link (form post or JSON)
-//   GET  /sent       — "check your inbox" confirmation page
-//   GET  /callback   — verify magic token, set session cookie, redirect
-//   POST /logout     — clear cookie, render goodbye
-//   GET  /verify     — Caddy forward_auth target. 200 + X-User-Email
-//                       and X-User-Tenant on success, 401 otherwise.
-//   GET  /me         — JSON view of current session. Convenience for
-//                       downstream services that don't want to parse the
-//                       token themselves.
-//   GET  /healthz    — for orchestration probes.
+//	GET  /           — login form (HTML)
+//	POST /magic      — issue + email a magic link (form post or JSON)
+//	GET  /sent       — "check your inbox" confirmation page
+//	GET  /callback   — verify magic token, set session cookie, redirect
+//	POST /logout     — clear cookie, render goodbye
+//	GET  /verify     — Caddy forward_auth target. 200 + X-User-Email
+//	                    and X-User-Tenant on success, 401 otherwise.
+//	GET  /me         — JSON view of current session. Convenience for
+//	                    downstream services that don't want to parse the
+//	                    token themselves.
+//	GET  /healthz    — for orchestration probes.
 //
 // The HTTP server itself is plain net/http. No middleware library, no
 // router — chi/mux/gorilla are wonderful but overkill for ~8 routes.
@@ -58,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/verify", s.handleVerify)
 	mux.HandleFunc("/me", s.handleMe)
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.Handle("/fonts/", fontHandler()) // self-hosted Dubai woff2 for the login UI
 	return logRequests(mux)
 }
 
@@ -77,7 +78,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if sess := s.currentSession(r); sess != nil {
 		dest := s.resolveReturnTo(r.URL.Query().Get("return_to"))
 		if dest == "" {
-			dest = "/me"
+			dest = s.defaultDest()
 		}
 		http.Redirect(w, r, dest, http.StatusSeeOther)
 		return
@@ -255,10 +256,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	dest := s.resolveReturnTo(m.ReturnTo)
 	if dest == "" {
-		dest = s.resolveReturnTo(s.cfg.DefaultReturnTo)
-	}
-	if dest == "" {
-		dest = "/me"
+		dest = s.defaultDest()
 	}
 	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
@@ -298,16 +296,16 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if sess == nil {
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"authenticated":false}`)
+		_, _ = fmt.Fprint(w, `{"authenticated":false}`)
 		return
 	}
-	fmt.Fprintf(w, `{"authenticated":true,"email":%q,"tenant":%q,"exp":%d}`,
+	_, _ = fmt.Fprintf(w, `{"authenticated":true,"email":%q,"tenant":%q,"exp":%d}`,
 		sess.Email, sess.Tenant, sess.Exp)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte("ok\n"))
+	_, _ = w.Write([]byte("ok\n"))
 }
 
 // ── cookie helpers ───────────────────────────────────────────────────
@@ -351,6 +349,18 @@ func (s *Server) currentSession(r *http.Request) *token.Session {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
+
+// defaultDest is where we send a user when no valid return_to was given:
+// the configured AUTH_DEFAULT_RETURN_TO (which defaults to the stack's
+// home service, home.<cookie-domain>) if it passes the allowlist, else
+// the local /me JSON view. Re-validating through resolveReturnTo means a
+// misconfigured default can never become an open redirect.
+func (s *Server) defaultDest() string {
+	if d := s.resolveReturnTo(s.cfg.DefaultReturnTo); d != "" {
+		return d
+	}
+	return "/me"
+}
 
 // resolveReturnTo validates a candidate post-login URL against the
 // configured allowlist. Returns "" for anything not allowed; the

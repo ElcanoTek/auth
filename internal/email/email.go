@@ -1,16 +1,16 @@
 // Package email delivers magic-link emails. Three drivers:
 //
 //   - stdout:   prints the link to stderr. Dev only; trivially insecure
-//               because anyone with journalctl access can read other
-//               users' login links. Default so a fresh install proves
-//               the click-through flow before the operator picks a
-//               real provider.
+//     because anyone with journalctl access can read other
+//     users' login links. Default so a fresh install proves
+//     the click-through flow before the operator picks a
+//     real provider.
 //   - sendgrid: POST to api.sendgrid.com/v3/mail/send. Same provider
-//               the rest of the Elcano stack uses (chat-server's
-//               SendGrid MCP) — one account, one verified sender,
-//               same per-tenant audit trail.
+//     the rest of the Elcano stack uses (chat-server's
+//     SendGrid MCP) — one account, one verified sender,
+//     same per-tenant audit trail.
 //   - smtp:     STARTTLS to host:port. The escape hatch for shops that
-//               have an existing relay (corporate / regulated envs).
+//     have an existing relay (corporate / regulated envs).
 //
 // All three drivers receive the SAME pre-rendered text and HTML, so the
 // switching cost is just a config change.
@@ -109,7 +109,7 @@ func (s *SendGrid) Send(ctx context.Context, to, subject, textBody, htmlBody str
 	if err != nil {
 		return fmt.Errorf("sendgrid POST: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// SendGrid returns 202 Accepted on success with an empty body;
 	// 4xx/5xx come with a JSON error payload — surface that verbatim
 	// so the operator sees "from address not verified" / "key invalid"
@@ -143,13 +143,13 @@ func (s *SMTP) Send(ctx context.Context, to, subject, textBody, htmlBody string)
 	if err != nil {
 		return fmt.Errorf("smtp dial: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	c, err := smtp.NewClient(conn, s.Host)
 	if err != nil {
 		return fmt.Errorf("smtp client: %w", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if ok, _ := c.Extension("STARTTLS"); !ok {
 		return fmt.Errorf("smtp host %s does not advertise STARTTLS", s.Host)

@@ -26,9 +26,9 @@ import (
 // file so a single-shot override is just `KEY=val auth-server ...`.
 var allowedEnvVars = map[string]bool{
 	// Transport
-	"AUTH_ADDR":      true, // default 127.0.0.1:9000; Caddy talks here.
-	"AUTH_HOSTNAME":  true, // public hostname (e.g. auth.elcanotek.com).
-	"AUTH_DATA_DIR":  true, // where state.db lives. Default /opt/auth/data.
+	"AUTH_ADDR":     true, // default 127.0.0.1:9000; Caddy talks here.
+	"AUTH_HOSTNAME": true, // public hostname (e.g. auth.elcanotek.com).
+	"AUTH_DATA_DIR": true, // where state.db lives. Default /opt/auth/data.
 
 	// Crypto. AUTH_SIGNING_KEY is the base64 Ed25519 private seed that
 	// signs both magic-link tokens and the final session cookie. Only the
@@ -37,9 +37,9 @@ var allowedEnvVars = map[string]bool{
 	// it's allowed here so the same .env can document the pair. Generate a
 	// fresh keypair with `auth-admin keygen`; distribute only the pubkey to
 	// verifying services (home, chat, …).
-	"AUTH_SIGNING_KEY":     true,
-	"AUTH_SIGNING_PUBKEY":  true,
-	"AUTH_SESSION_TTL_DAYS": true, // default 30
+	"AUTH_SIGNING_KEY":       true,
+	"AUTH_SIGNING_PUBKEY":    true,
+	"AUTH_SESSION_TTL_DAYS":  true, // default 30
 	"AUTH_MAGIC_TTL_MINUTES": true, // default 15
 
 	// Cookie. AUTH_COOKIE_DOMAIN controls Set-Cookie's Domain attr; this
@@ -66,13 +66,13 @@ var allowedEnvVars = map[string]bool{
 	//                 AUTH_SMTP_USER / AUTH_SMTP_PASS
 	// Default is "stdout" so a fresh install proves out end-to-end before
 	// the operator has to pick a provider.
-	"AUTH_EMAIL_DRIVER":  true,
-	"AUTH_EMAIL_FROM":    true, // e.g. "Elcano Login <login@elcanotek.com>"
-	"SENDGRID_API_KEY":   true, // same name chat-server uses — one secret across the stack
-	"AUTH_SMTP_HOST":     true,
-	"AUTH_SMTP_PORT":     true,
-	"AUTH_SMTP_USER":     true,
-	"AUTH_SMTP_PASS":     true,
+	"AUTH_EMAIL_DRIVER": true,
+	"AUTH_EMAIL_FROM":   true, // e.g. "Elcano Login <login@elcanotek.com>"
+	"SENDGRID_API_KEY":  true, // same name chat-server uses — one secret across the stack
+	"AUTH_SMTP_HOST":    true,
+	"AUTH_SMTP_PORT":    true,
+	"AUTH_SMTP_USER":    true,
+	"AUTH_SMTP_PASS":    true,
 
 	// UX. AUTH_BRAND_NAME shows up in the login form + email body —
 	// "Elcano" by default. AUTH_DEFAULT_RETURN_TO is where /callback
@@ -202,6 +202,17 @@ func Load(envFile string) (*Config, error) {
 		cfg.ReturnToHosts = []string{"." + strings.TrimPrefix(cfg.CookieDomain, ".")}
 	}
 
+	// Default landing page: send freshly-authenticated users (and anyone
+	// hitting the bare auth host while already signed in) to the stack's
+	// home service on the cookie domain — home.<cookie-domain> — instead
+	// of the raw /me JSON. Only derived when AUTH_DEFAULT_RETURN_TO is
+	// unset AND we have a cookie domain to anchor to; localhost/dev with
+	// no cookie domain keeps the /me fallback. Override explicitly via
+	// AUTH_DEFAULT_RETURN_TO for a different landing service.
+	if cfg.DefaultReturnTo == "" && cfg.CookieDomain != "" {
+		cfg.DefaultReturnTo = "https://home." + strings.TrimPrefix(cfg.CookieDomain, ".")
+	}
+
 	return cfg, nil
 }
 
@@ -258,7 +269,7 @@ func loadEnvFile(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		line := strings.TrimSpace(s.Text())
