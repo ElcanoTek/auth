@@ -319,8 +319,8 @@ const sentHTML = `<!doctype html>
   <main class="card">
     <div class="brand">{{.Brand}}</div>
     <h1>Check your inbox</h1>
-    <p class="muted">We sent a sign-in link to <b>{{.Email}}</b>. Click it to continue.</p>
-    <div class="foot">The link expires in 15 minutes. Didn't get it? Check spam, or
+    <p class="muted">If <b>{{.Email}}</b> has an account, a one-time sign-in link is on its way. Click it to continue.</p>
+    <div class="foot">The link expires in 15 minutes. Didn't get one? Check spam, or
       <a href="/">try again</a>.</div>
   </main>
 </body>
