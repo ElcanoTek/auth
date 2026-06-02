@@ -1,7 +1,7 @@
 // Package config loads and validates the auth-server configuration.
 //
 // The service is intentionally small: one HTTP listener, one SQLite file,
-// one shared HMAC secret. Everything else (Caddy, TLS, systemd) lives
+// one Ed25519 signing key. Everything else (Caddy, TLS, systemd) lives
 // outside the binary. Config is loaded once at startup from the process
 // environment (or an .env file) and passed read-only to handlers.
 //
@@ -12,6 +12,8 @@ package config
 
 import (
 	"bufio"
+	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
@@ -28,11 +30,15 @@ var allowedEnvVars = map[string]bool{
 	"AUTH_HOSTNAME":  true, // public hostname (e.g. auth.elcanotek.com).
 	"AUTH_DATA_DIR":  true, // where state.db lives. Default /opt/auth/data.
 
-	// Crypto. AUTH_SESSION_SECRET signs both magic-link tokens and the
-	// final session cookie — they're both HMAC-SHA256 over a small JSON
-	// payload. One secret rotates everything together; bootstrap.sh
-	// generates a fresh one and writes it into .env.local.
-	"AUTH_SESSION_SECRET":  true,
+	// Crypto. AUTH_SIGNING_KEY is the base64 Ed25519 private seed that
+	// signs both magic-link tokens and the final session cookie. Only the
+	// auth host holds it. AUTH_SIGNING_PUBKEY is the matching public key —
+	// auth derives it from the private key and doesn't read this var, but
+	// it's allowed here so the same .env can document the pair. Generate a
+	// fresh keypair with `auth-admin keygen`; distribute only the pubkey to
+	// verifying services (home, chat, …).
+	"AUTH_SIGNING_KEY":     true,
+	"AUTH_SIGNING_PUBKEY":  true,
 	"AUTH_SESSION_TTL_DAYS": true, // default 30
 	"AUTH_MAGIC_TTL_MINUTES": true, // default 15
 
@@ -89,9 +95,10 @@ type Config struct {
 	Hostname string
 	DataDir  string
 
-	SessionSecret  []byte
-	SessionTTL     time.Duration
-	MagicTTL       time.Duration
+	SigningKey ed25519.PrivateKey // signs tokens (auth host only)
+	PublicKey  ed25519.PublicKey  // verifies tokens; derived from SigningKey
+	SessionTTL time.Duration
+	MagicTTL   time.Duration
 
 	CookieName   string
 	CookieDomain string
@@ -158,11 +165,28 @@ func Load(envFile string) (*Config, error) {
 		DefaultReturnTo: os.Getenv("AUTH_DEFAULT_RETURN_TO"),
 	}
 
-	secret := os.Getenv("AUTH_SESSION_SECRET")
-	if secret == "" {
-		return nil, fmt.Errorf("AUTH_SESSION_SECRET is required (generate with: openssl rand -base64 48)")
+	// PRODUCTION TODO (may or may not be needed, depending on deployment):
+	// before going live we likely want to (1) generate a FRESH keypair —
+	// the current dev seed has been exposed in plaintext (world-readable
+	// .env.local, logs, chat), so it must not become the prod signing key —
+	// and (2) better isolate the private key than a plaintext env var:
+	// tighten file perms (0600/0640, service-owned), keep it out of the repo
+	// tree, and ideally load it via a systemd credential / secrets manager
+	// rather than the process environment. Revisit this when promoting to
+	// prod; it's not required for local/dev to function.
+	keyB64 := strings.TrimSpace(os.Getenv("AUTH_SIGNING_KEY"))
+	if keyB64 == "" {
+		return nil, fmt.Errorf("AUTH_SIGNING_KEY is required (generate a keypair with: auth-admin keygen)")
 	}
-	cfg.SessionSecret = []byte(secret)
+	seed, err := base64.StdEncoding.DecodeString(keyB64)
+	if err != nil {
+		return nil, fmt.Errorf("AUTH_SIGNING_KEY is not valid base64: %w", err)
+	}
+	if len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("AUTH_SIGNING_KEY must decode to %d bytes (got %d) — expected the base64 Ed25519 seed from `auth-admin keygen`", ed25519.SeedSize, len(seed))
+	}
+	cfg.SigningKey = ed25519.NewKeyFromSeed(seed)
+	cfg.PublicKey = cfg.SigningKey.Public().(ed25519.PublicKey)
 
 	cfg.SessionTTL = time.Duration(envInt("AUTH_SESSION_TTL_DAYS", 30)) * 24 * time.Hour
 	cfg.MagicTTL = time.Duration(envInt("AUTH_MAGIC_TTL_MINUTES", 15)) * time.Minute
@@ -185,8 +209,8 @@ func Load(envFile string) (*Config, error) {
 // a single request (vs. surfacing the error on the operator's first
 // magic-link click, which is awful UX).
 func (c *Config) Validate() error {
-	if len(c.SessionSecret) < 32 {
-		return fmt.Errorf("AUTH_SESSION_SECRET must be at least 32 bytes (got %d)", len(c.SessionSecret))
+	if len(c.SigningKey) != ed25519.PrivateKeySize {
+		return fmt.Errorf("AUTH_SIGNING_KEY did not produce a valid Ed25519 private key (run `auth-admin keygen`)")
 	}
 	switch c.EmailDriver {
 	case "stdout":

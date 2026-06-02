@@ -243,6 +243,12 @@ case "$cmd" in
     export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
     exec "$ADMIN_BIN" user "$@"
     ;;
+  keygen)
+    # `auth keygen` — print a fresh Ed25519 signing keypair. Doesn't touch
+    # config; the operator copies the private seed into .env.local and the
+    # public key to each verifying service. No env/data needed.
+    exec "$ADMIN_BIN" keygen "$@"
+    ;;
   update)
     exec sudo bash "$APP_DIR/scripts/update.sh" "$@"
     ;;
@@ -297,6 +303,9 @@ DOMAIN ALLOWLIST
 USERS
   auth user list                    audit log of who has logged in
   auth user del <email>             remove a user from the audit log
+
+CRYPTO
+  auth keygen                       print a fresh Ed25519 signing keypair
 
 UPDATES
   auth update                       git pull + rebuild + restart

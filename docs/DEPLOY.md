@@ -35,7 +35,7 @@ things:
 
 Plus a yes/no for "Set up Caddy with Let's Encrypt for this hostname?".
 
-Everything else — `AUTH_SESSION_SECRET`, the `auth` system user,
+Everything else — the `AUTH_SIGNING_KEY` keypair, the `auth` system user,
 `/opt/auth/data`, systemd unit, firewalld, Caddy — is handled for you.
 
 The script is idempotent. Re-running it preserves your `.env.local`,
@@ -63,9 +63,10 @@ sudo env \
 ```
 
 Missing vars fall back to defaults (localhost, no Caddy, stdout
-delivery). Only `AUTH_SESSION_SECRET` is auto-generated regardless —
-if you want to pin one (e.g. for matched-secret deploys across boxes),
-pre-set it in the environment before invocation.
+delivery). The `AUTH_SIGNING_KEY` keypair is auto-generated regardless —
+if you want to pin one (e.g. to keep the same key across a rebuild),
+pre-set `AUTH_SIGNING_KEY` in the environment before invocation; the
+bootstrap derives and prints the matching public key either way.
 
 ## What you get
 
@@ -171,8 +172,8 @@ auth start
 ```
 
 > Restoring an old DB doesn't invalidate active sessions — those
-> live in HMAC-signed cookies, not in the DB. Sessions only become
-> invalid by rotating `AUTH_SESSION_SECRET` or letting them expire
+> live in Ed25519-signed cookies, not in the DB. Sessions only become
+> invalid by rotating `AUTH_SIGNING_KEY` or letting them expire
 > (default 30 days).
 
 ## Upgrading
@@ -264,20 +265,29 @@ a path prefix; file an issue if you need it.
 ## Rotating secrets
 
 ```bash
-# Rotate the cookie/HMAC key — invalidates EVERY active session
-# across EVERY downstream service that uses this cookie.
-sudo sed -i "s|^AUTH_SESSION_SECRET=.*|AUTH_SESSION_SECRET=\"$(openssl rand -base64 48 | tr -d '=\n' | tr '/+' '_-')\"|" /opt/auth/.env.local
+# Rotate the signing keypair — invalidates EVERY active session across
+# EVERY service that verifies this cookie. Generate a fresh keypair:
+auth keygen                       # prints AUTH_SIGNING_KEY + AUTH_SIGNING_PUBKEY
+# Put the new private seed on the auth host:
+sudo sed -i "s|^AUTH_SIGNING_KEY=.*|AUTH_SIGNING_KEY=\"<new seed>\"|" /opt/auth/.env.local
 auth restart
+# Then update AUTH_SIGNING_PUBKEY on EVERY verifying service (home, chat, …)
+# to the new public key and restart each. Until you do, those services
+# reject all cookies (they verify against the old public key).
 
 # Rotate the SendGrid API key (after issuing a new key in the SendGrid console)
 sudo sed -i "s|^SENDGRID_API_KEY=.*|SENDGRID_API_KEY=\"SG.new_key_here\"|" /opt/auth/.env.local
 auth restart
 ```
 
-Rotating `AUTH_SESSION_SECRET` logs every user out of every service.
-Use it after a suspected compromise; don't use it on a routine
+Rotating `AUTH_SIGNING_KEY` logs every user out of every service. Because
+verification is asymmetric, a rotation is a **two-step** change: new private
+seed on auth, new public key on every verifier. Sequence it so the pubkey
+lands on verifiers right after auth restarts to minimize the rejection
+window. Use it after a suspected compromise; don't run it on a routine
 schedule (the per-user friction outweighs the security gain for an
-internal-tool threat model).
+internal-tool threat model). Note: a leaked **public** key is harmless and
+needs no rotation — only the private seed matters.
 
 ## Troubleshooting
 
@@ -288,9 +298,10 @@ auth status
 auth logs
 ```
 
-Common causes: missing `AUTH_SESSION_SECRET` (must be ≥32 bytes),
-port 9000 already in use (`ss -tlnp | grep 9000`), or a corrupt
-`.env.local` after a hand edit (run `auth env check`).
+Common causes: missing or malformed `AUTH_SIGNING_KEY` (must be a base64
+Ed25519 seed — regenerate with `auth keygen`), port 9000 already in use
+(`ss -tlnp | grep 9000`), or a corrupt `.env.local` after a hand edit
+(run `auth env check`).
 
 ### Login form loads, magic-link button gives "Something went wrong"
 
@@ -313,7 +324,7 @@ You'll see lines like:
 
 - The link is past its 15-minute TTL.
 - It was already used (single-use enforcement).
-- `AUTH_SESSION_SECRET` was rotated between issuance and click.
+- `AUTH_SIGNING_KEY` was rotated between issuance and click.
 
 In every case, the fix is "request a new link".
 
@@ -333,6 +344,12 @@ check:
    is pointing at `https://auth.example.com/verify` and is doing
    `copy_headers X-User-Email X-User-Tenant`. See
    [docs/INTEGRATION.md](INTEGRATION.md) for the exact snippet.
+4. **Native verifiers (Pattern B).** A service that verifies the cookie
+   itself (e.g. home) needs `AUTH_SIGNING_PUBKEY` set to the auth host's
+   current public key. If it's unset, malformed, or stale after a key
+   rotation, that service rejects every cookie and bounces to login.
+   Reprint the public key with `auth keygen`-derived value (or it was
+   printed at bootstrap) and update the verifier.
 
 ### /verify returns 200 but the upstream app still shows "anonymous"
 

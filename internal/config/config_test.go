@@ -1,11 +1,26 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// testSeedB64 is a fixed, valid base64 Ed25519 seed used across config
+// tests (both in struct literals and inside .env file bodies).
+const testSeedB64 = "yjYMLeF987YtUv+SuA1VT9hlIgUS7LfDBx/vB6yu9wE="
+
+// testSigningKey decodes testSeedB64 into a full Ed25519 private key.
+func testSigningKey() ed25519.PrivateKey {
+	seed, err := base64.StdEncoding.DecodeString(testSeedB64)
+	if err != nil {
+		panic(err)
+	}
+	return ed25519.NewKeyFromSeed(seed)
+}
 
 // withEnv sets env vars for the duration of a test and clears them after.
 // We don't use t.Setenv for the bulk path because Load itself calls
@@ -28,18 +43,27 @@ func clearAllAuthEnv(t *testing.T) {
 	}
 }
 
-func TestLoadRequiresSessionSecret(t *testing.T) {
+func TestLoadRequiresSigningKey(t *testing.T) {
 	clearAllAuthEnv(t)
 	_, err := Load("")
-	if err == nil || !strings.Contains(err.Error(), "AUTH_SESSION_SECRET") {
-		t.Errorf("Load without secret: want AUTH_SESSION_SECRET error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "AUTH_SIGNING_KEY") {
+		t.Errorf("Load without signing key: want AUTH_SIGNING_KEY error, got %v", err)
 	}
 }
 
-func TestValidateRejectsShortSecret(t *testing.T) {
-	c := &Config{SessionSecret: []byte("too short")}
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "32 bytes") {
-		t.Errorf("Validate short secret: want length error, got %v", err)
+func TestLoadRejectsMalformedSigningKey(t *testing.T) {
+	clearAllAuthEnv(t)
+	t.Setenv("AUTH_SIGNING_KEY", "bm90LWEtdmFsaWQtMzItYnl0ZS1zZWVk") // valid base64, wrong length
+	_, err := Load("")
+	if err == nil || !strings.Contains(err.Error(), "AUTH_SIGNING_KEY") {
+		t.Errorf("Load with wrong-length seed: want AUTH_SIGNING_KEY error, got %v", err)
+	}
+}
+
+func TestValidateRejectsMissingKey(t *testing.T) {
+	c := &Config{} // no SigningKey
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_SIGNING_KEY") {
+		t.Errorf("Validate missing key: want AUTH_SIGNING_KEY error, got %v", err)
 	}
 }
 
@@ -51,30 +75,30 @@ func TestValidateChecksEmailDriverCreds(t *testing.T) {
 	}{
 		{
 			name:  "sendgrid without key",
-			cfg:   &Config{SessionSecret: longSecret(), EmailDriver: "sendgrid"},
+			cfg:   &Config{SigningKey: testSigningKey(), EmailDriver: "sendgrid"},
 			wantE: "SENDGRID_API_KEY",
 		},
 		{
 			name:  "smtp without host",
-			cfg:   &Config{SessionSecret: longSecret(), EmailDriver: "smtp"},
+			cfg:   &Config{SigningKey: testSigningKey(), EmailDriver: "smtp"},
 			wantE: "AUTH_SMTP_HOST",
 		},
 		{
 			name:  "unknown driver",
-			cfg:   &Config{SessionSecret: longSecret(), EmailDriver: "carrier-pigeon"},
+			cfg:   &Config{SigningKey: testSigningKey(), EmailDriver: "carrier-pigeon"},
 			wantE: "unknown AUTH_EMAIL_DRIVER",
 		},
 		{
 			name: "sendgrid ok",
 			cfg: &Config{
-				SessionSecret: longSecret(), EmailDriver: "sendgrid",
+				SigningKey: testSigningKey(), EmailDriver: "sendgrid",
 				SendGridAPIKey: "SG.x",
 			},
 			wantE: "",
 		},
 		{
 			name:  "stdout always ok",
-			cfg:   &Config{SessionSecret: longSecret(), EmailDriver: "stdout"},
+			cfg:   &Config{SigningKey: testSigningKey(), EmailDriver: "stdout"},
 			wantE: "",
 		},
 	}
@@ -89,10 +113,6 @@ func TestValidateChecksEmailDriverCreds(t *testing.T) {
 			}
 		})
 	}
-}
-
-func longSecret() []byte {
-	return []byte("0123456789abcdef0123456789abcdef0123456789abcdef")
 }
 
 func TestDomainAllowedEmptyMeansOpen(t *testing.T) {
@@ -130,7 +150,7 @@ func TestLoadFromFile(t *testing.T) {
 	envFile := filepath.Join(dir, ".env.local")
 	body := `
 # leading comment
-AUTH_SESSION_SECRET="0123456789abcdef0123456789abcdef0123456789abcdef"
+AUTH_SIGNING_KEY="yjYMLeF987YtUv+SuA1VT9hlIgUS7LfDBx/vB6yu9wE="
 AUTH_HOSTNAME=auth.example.com
 AUTH_COOKIE_DOMAIN="example.com"
 AUTH_ALLOWED_DOMAINS="example.com, clientco.com ,  "
@@ -176,7 +196,7 @@ func TestLoadProcessEnvWinsOverFile(t *testing.T) {
 	clearAllAuthEnv(t)
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, ".env.local")
-	body := `AUTH_SESSION_SECRET="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	body := `AUTH_SIGNING_KEY="yjYMLeF987YtUv+SuA1VT9hlIgUS7LfDBx/vB6yu9wE="
 AUTH_HOSTNAME=file.example.com
 `
 	_ = os.WriteFile(envFile, []byte(body), 0o600)
@@ -197,7 +217,7 @@ func TestLoadDefaultReturnToHostsFromCookieDomain(t *testing.T) {
 	// cookie domain, default to "." + cookie_domain so the operator
 	// gets sane subdomain-wide allowlisting for free.
 	clearAllAuthEnv(t)
-	t.Setenv("AUTH_SESSION_SECRET", "0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
 	t.Setenv("AUTH_COOKIE_DOMAIN", "elcanotek.com")
 	cfg, err := Load("")
 	if err != nil {
@@ -212,7 +232,7 @@ func TestLoadEmptyCookieDomainLeavesReturnToEmpty(t *testing.T) {
 	// localhost / single-host dev: no cookie domain → no default
 	// allowlist either. The operator gets strict-by-default behavior.
 	clearAllAuthEnv(t)
-	t.Setenv("AUTH_SESSION_SECRET", "0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -224,7 +244,7 @@ func TestLoadEmptyCookieDomainLeavesReturnToEmpty(t *testing.T) {
 
 func TestLoadTTLsHaveSensibleDefaults(t *testing.T) {
 	clearAllAuthEnv(t)
-	t.Setenv("AUTH_SESSION_SECRET", "0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
