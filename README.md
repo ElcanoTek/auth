@@ -21,7 +21,7 @@ by Caddy's `forward_auth`.
                 │            Domain=elcanotek.com
                 ▼
    ┌─────────────────────────┐    ┌─────────────────────────┐
-   │  chat.elcanotek.com     │    │  home.elcanotek.com     │
+   │  lens.elcanotek.com     │    │  home.elcanotek.com     │
    │  ───────────────────    │    │  ───────────────────    │
    │  Caddy →                │    │  Caddy →                │
    │   forward_auth /verify  │    │   forward_auth /verify  │
@@ -29,8 +29,11 @@ by Caddy's `forward_auth`.
    │  X-User-Email           │    │  X-User-Email           │
    │  X-User-Tenant          │    │  X-User-Tenant          │
    │     ↓                   │    │     ↓                   │
-   │  reverse_proxy :3000    │    │  reverse_proxy :3000    │
+   │  reverse_proxy :8000    │    │  reverse_proxy :3000    │
    └─────────────────────────┘    └─────────────────────────┘
+
+   (no-username tier shown — cookie present = in. chat + moc add a
+    local user-list check on top of the same cookie; see below.)
 ```
 
 - **Browser** hits a unified service (e.g. `home.elcanotek.com`). No
@@ -53,24 +56,25 @@ by Caddy's `forward_auth`.
 
 ## Which services are in scope
 
-The Elcano stack runs in **three tiers**:
+Every service in the stack rides the **same** `elcano_auth` cookie
+(Domain=`elcanotek.com`). They run in **two tiers**, differing only in
+what they check after the cookie verifies:
 
-| Tier | Services | Auth | Cookie |
-|---|---|---|---|
-| **Unified daily tools** | home, voice, explorer, forwarder | this service (magic link) | `elcano_auth` (Domain=`elcanotek.com`) |
-| **Chat** | chat | its own existing email session — **separate for now** | `elcano_session` (host-only on chat.elcanotek.com) |
-| **Admin** | moc | its own bcrypt + API keys — **always separate** | moc-specific |
+| Tier | Services | Rule once the cookie is valid |
+|---|---|---|
+| **No-username** | home, lens, voice, explorer, forwarder | A valid `elcano_auth` cookie IS the login. No per-service user list. |
+| **Scoped** | chat, moc | Valid cookie **and** the email is in the service's local DB user-list. Otherwise denied. |
 
-Chat is **deliberately not in the unified tier today**. Migrating it
-is a future option (see `docs/INTEGRATION.md`), but for now it
-keeps its own login because (a) it works fine, (b) it's the most
-externally-visible service so the blast radius of a botched migration
-is largest, and (c) the cookies coexist cleanly in the browser
-because the names are distinct (`elcano_auth` vs `elcano_session`).
+The **no-username** tier simply replaces the old shared/default
+password: if the cookie is present and valid, the user is in. This is
+the bulk of the stack.
 
-moc stays separate **forever** as the admin tier — same reasoning
-ops teams everywhere use: a compromise of user-facing auth shouldn't
-grant admin access.
+The **scoped** tier adds a second gate — after the cookie verifies, the
+service looks the email up in its own users table and only admits users
+it knows about. chat and moc use the **identical** mechanism here; moc
+additionally keeps its API-key path for non-browser node runners. There
+is no separate `elcano_session` cookie or per-service password left
+anywhere — one cookie, two gates.
 
 ## Quickstart
 

@@ -11,12 +11,13 @@
 #    auth-server on loopback:9000. The login form, /magic, /callback,
 #    /logout all hit here.
 #
-# 2. forward_auth TARGET — downstream services on chat.example.com,
-#    home.example.com, etc. point their own Caddyfiles at
-#    https://auth.example.com/verify. That endpoint reads the shared
-#    .elcano_session cookie and returns 200 + X-User-Email /
+# 2. forward_auth TARGET — no-username downstream services on
+#    lens.example.com, home.example.com, etc. point their own Caddyfiles
+#    at https://auth.example.com/verify. That endpoint reads the shared
+#    elcano_auth cookie and returns 200 + X-User-Email /
 #    X-User-Tenant headers (or 401). See the snippet at the bottom for
-#    how a downstream Caddyfile uses it.
+#    how a downstream Caddyfile uses it. (Scoped services like chat/moc
+#    verify the cookie in-app instead — see docs/INTEGRATION.md.)
 #
 # Renewals: Caddy auto-renews ~30 days before expiry. No cron needed.
 
@@ -47,7 +48,7 @@ auth.example.com {
 
 # ─── Snippet to drop into a downstream service's Caddyfile ─────────────
 #
-# chat.example.com {
+# lens.example.com {
 #     forward_auth auth.example.com {
 #         uri /verify
 #         copy_headers X-User-Email X-User-Tenant
@@ -58,7 +59,7 @@ auth.example.com {
 #             redir https://auth.example.com/?return_to=https://{host}{uri} 302
 #         }
 #     }
-#     reverse_proxy 127.0.0.1:3000   # the app's local port
+#     reverse_proxy 127.0.0.1:8000   # the app's local port
 # }
 #
 # Note: the cookie set by auth-server has Domain=elcanotek.com (or

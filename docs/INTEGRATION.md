@@ -3,28 +3,30 @@
 This guide is for the engineer doing the wiring — one section per
 Elcano service, plus a generic checklist for new services.
 
-## The three-tier design
+## The two-tier design
 
-The Elcano stack does NOT have one universal login. By design:
+Every service rides the **same** `elcano_auth` cookie minted by this
+service. They differ only in what they check after the cookie verifies:
 
-| Tier | Services | Auth | Cookie |
-|---|---|---|---|
-| **Unified daily tools** | home, voice, explorer, forwarder | this service | `elcano_auth` (Domain=`elcanotek.com`) |
-| **Chat** | chat | its own existing email session | `elcano_session` (host-only on chat.elcanotek.com) |
-| **Admin** | moc | its own bcrypt + API keys | moc-specific |
+| Tier | Services | Rule once the cookie is valid |
+|---|---|---|
+| **No-username** | home, lens, voice, explorer, forwarder | A valid `elcano_auth` cookie IS the login. No per-service user list. |
+| **Scoped** | chat, moc | Valid cookie **and** the email is in the service's local DB user-list. Otherwise denied. |
 
-**Cookies coexist cleanly** because the names are distinct
-(`elcano_auth` vs `elcano_session`). A user logged into both chat
-and a unified tool sends both cookies on every request; each service
-reads only the cookie it cares about and ignores the other.
+The **no-username** tier simply replaces the old shared/default
+password: cookie present and valid → the user is in. This is the bulk
+of the stack.
 
-**moc stays separate forever** as the admin tier — admin tools
-should be in their own trust zone. A compromise of user-facing auth
-shouldn't grant ops access.
+The **scoped** tier adds a second gate. After the cookie verifies, the
+service looks the email up in its own users table and only admits users
+it knows about — an unknown but validly-signed-in user gets an "ask an
+admin for access" 403, not a login. **chat and moc use the identical
+mechanism**: verify the cookie, then check the local user-list. moc
+additionally keeps its API-key path for non-browser node runners (see
+its section below).
 
-**Chat is separate FOR NOW.** Reasoning is in the README. When a
-future decision flips chat into the unified tier, the migration
-checklist for it is preserved below.
+There is no longer a separate `elcano_session` cookie or a per-service
+password anywhere in the stack — one cookie, two gates.
 
 ## The two integration patterns
 
@@ -47,13 +49,21 @@ service must be given the current public key — and re-given it after any
 key rotation. Because the public key can only verify, never sign,
 distributing it carries no forgery risk.
 
+**Scoped tier = Pattern B + a local user-list check.** chat and moc
+don't stop at verifying the cookie. After it verifies (Pattern B), they
+look the email up in their own users table and reject signed-in users
+they don't recognize. The cookie answers "who is this?"; the local
+user-list answers "is this person allowed into THIS service?". Use
+Pattern B (not A) for the scoped tier so the identity check and the
+membership check live together in the app.
+
 ## Pattern A — the Caddy snippet
 
 Drop this into the service's existing Caddyfile, substituting your
 actual hostnames + port:
 
 ```caddy
-chat.elcanotek.com {
+lens.elcanotek.com {
     forward_auth auth.elcanotek.com {
         uri /verify
         copy_headers X-User-Email X-User-Tenant
@@ -97,61 +107,41 @@ Then in the upstream app, read the headers:
 
 ## Per-service checklists
 
-### `chat` — **deliberately NOT migrated; checklist preserved for future**
+### `chat` — Scoped tier (Pattern B + local user-list), same as moc
 
-Chat keeps its own auth for now. The cookie name was specifically
-chosen (`elcano_auth` for this service vs `elcano_session` for chat)
-so that both cookies can coexist in the browser without fighting.
-Nothing for you to do here on the current pass.
+chat verifies the `elcano_auth` cookie natively, then checks the email
+against its own user-list — the **identical** mechanism moc uses. chat
+keeps owning WHO may use chat; auth only proves WHO they are.
 
-When a future decision flips chat into the unified tier — for example,
-"internal users want one sign-in across chat and home" — the
-migration is the half-to-full-day of work below. Two options at that
-point:
-
-**Path 1: Pattern B (chat verifies the cookie natively).**
-
-- [ ] **Rename chat's cookie variable.** In `chat/src/app/lib/auth.ts`,
-      change `const sessionCookieName = "elcano_session"` to
-      `"elcano_auth"`. This is the single change that ties chat's
-      verifier to auth-server's cookie.
-- [ ] **Set chat's cookie domain.** Update the `cookies.set(...)`
-      call in `chat/src/app/lib/auth.ts` to pass
-      `domain: ".elcanotek.com"`. Without this, chat keeps minting
-      host-only cookies and the cookie won't ride to other services.
-- [ ] **Give chat the public key + switch its verifier to Ed25519.**
-      auth signs tokens with Ed25519, so chat must verify with the
-      public key, not a shared HMAC secret. Set `AUTH_SIGNING_PUBKEY`
-      in chat's `.env.local` to auth's public key (from `auth keygen`
-      / printed at bootstrap), and update `chat/src/app/lib/auth.ts` to
-      verify the detached Ed25519 signature over the base64url body
-      (see `home/server.js` for the reference Node implementation).
-      Only chat needs the change; the public key is safe to share.
-- [ ] **Confirm token payload compatibility.** auth-server's payload
-      is `{email, tenant, iat, exp}`; chat's verifier reads only
-      `{email, exp}`. Extra fields are ignored, so this works as-is.
+- [ ] **Switch chat's cookie to `elcano_auth`.** In
+      `chat/src/app/lib/auth.ts`, change `sessionCookieName` from
+      `"elcano_session"` to `"elcano_auth"` and read it on
+      `.elcanotek.com` (no host-only domain). chat stops minting its
+      own session cookie — the old `elcano_session` goes away entirely.
+- [ ] **Verify with the Ed25519 public key.** Set `AUTH_SIGNING_PUBKEY`
+      in chat's `.env.local` to auth's public key (printed at bootstrap
+      / `auth keygen`) and replace chat's HMAC verifier with detached
+      Ed25519 verification over the base64url body — see `home/server.js`
+      for the reference Node port. The payload is `{email, tenant, iat,
+      exp}`; read `email` + `exp`.
+- [ ] **Gate on chat's local user-list.** After the cookie verifies,
+      look the email up in chat's existing `users` table. Known email →
+      let them in. Unknown but validly-signed-in → 403 "ask an admin for
+      access" (NOT a redirect loop back to auth — they're already signed
+      in; they just aren't a chat user).
+- [ ] **Keep `chat user add` as the allowlist tool.** chat still owns
+      WHO may use chat. Drop the bcrypt-password column — credentials now
+      live in auth — but keep the `users` table as the membership list +
+      audit log (`created_at`, etc.).
 - [ ] **Replace chat's `/login` page with a redirect.** chat's
-      `middleware.ts` should redirect unauthenticated browsers to
+      `middleware.ts` redirects browsers with no valid cookie to
       `https://auth.elcanotek.com/?return_to=https://chat.elcanotek.com{path}`
-      instead of `/login`. Delete `src/app/login/` afterwards (or
-      keep it as a fallback if you want graceful degradation when
-      auth-server is down).
-- [ ] **Drop chat's `chat user add` flow.** Once auth-server owns
-      logins, chat no longer needs the `users` table for credentials.
-      Keep the table around for now (it has `created_at` etc. you
-      might want as an audit log), but the bcrypt-password column
-      becomes dead.
-- [ ] **Test the full handoff.** Sign out of chat. Visit
-      `chat.elcanotek.com`. You should land on `auth.elcanotek.com`'s
-      login form. Type your email. Click the link. End up back on
-      `chat.elcanotek.com` with the conversation list visible.
-
-**Path 2: Pattern A (Caddy forward_auth, delete chat's auth entirely).**
-
-A one-day migration: set up `forward_auth` in chat's Caddyfile (same
-snippet as home/forwarder/explorer/voice), delete chat's
-session/login code, read `X-User-Email` from request headers in
-chat's API routes. Cleaner in the long run, more upfront work.
+      instead of `/login`. Delete `src/app/login/` once the cookie path
+      is verified in prod.
+- [ ] **Test the full handoff.** Sign out. Visit `chat.elcanotek.com` →
+      land on auth's login form → type email → click link → back at chat
+      with the conversation list (if your email is in chat's user-list)
+      or a clear "no access" page (if it isn't).
 
 ### `home` — DONE (migrated via Pattern B)
 
@@ -180,6 +170,23 @@ chat's API routes. Cleaner in the long run, more upfront work.
       using `?token=…` autologin (`HOME_BOOKMARK_TOKEN`), those URLs
       are dead. The new pattern is just `https://home.elcanotek.com`
       — Caddy handles auth before the app sees the request.
+
+### `lens` — No-username tier (Pattern A)
+
+lens currently gates on a single shared password (`LENS_WEB_PASSWORD`,
+defaulting to the hardcoded `"magellanisdead"` in `lens/web_service.py`).
+Replace it with the cookie — cookie present and valid = in, no per-user
+list.
+
+- [ ] **Caddyfile.** Same `forward_auth` snippet; reverse-proxy to
+      whatever port lens's FastAPI app listens on.
+- [ ] **Reload caddy.**
+- [ ] **Delete the password gate.** Remove the `LENS_WEB_PASSWORD` read
+      AND the `"magellanisdead"` default, the `/login` route, and the
+      session check. Read identity from
+      `request.headers.get("x-user-email")` if lens needs to know who the
+      user is; otherwise it just needs the request to have cleared
+      forward_auth.
 
 ### `forwarder` — Pattern A
 
@@ -228,34 +235,33 @@ HMAC-signed session cookie.
       it on a separate path that's NOT inside the forward_auth block,
       with its own auth (Twilio request validation).
 
-### `moc` — Pattern B + keep the API key system
+### `moc` — Scoped tier (Pattern B + local user-list), same as chat
 
-moc has the most grown-up auth today (bcrypt users, API keys, scopes).
-We want to integrate WITHOUT losing the API-key auth that node
-runners use programmatically.
+moc uses the **identical** browser-login mechanism as chat: verify the
+`elcano_auth` cookie natively, then check the email against moc's local
+users table. The one addition is moc's API-key path for non-browser node
+runners, which is unaffected.
 
-- [ ] **Decide who logs in by which path.**
-  - Humans hitting moc in a browser → auth-server magic link.
-  - Node runners + integration scripts → existing API keys (`X-API-Key`).
-- [ ] **Add the cookie verifier alongside `AdminAuthMiddleware`.**
-      Either:
-      a. Port `internal/token/token.go` from this repo into
-         `moc/internal/auth/cookie.go` (Pattern B), OR
-      b. Stand up `forward_auth` on moc's Caddyfile for the browser
-         routes only, while exposing the API-key paths bypass-style
-         (Pattern A with a path carve-out). I'd pick (a) — Pattern B —
-         because moc already has middleware chains and the JWT
-         verification is genuinely tiny.
-- [ ] **Make `email` the join key in moc's `users` table.** Today
-      moc has `username` as the PK. Add a `UNIQUE` constraint on
-      `email`; on first cookie-verified login, upsert by email.
-      Existing username-based users keep working for API access.
-- [ ] **Wire scopes.** moc's `scopes` JSONB column should still
-      gate API actions. The cookie identifies who the user IS;
-      moc decides what they can DO based on per-user scopes.
-- [ ] **Drop the `/auth/login` username+password route** (only after
-      the cookie path is verified to work in prod). Keep the API key
-      issuance routes — those are unaffected.
+- [ ] **Two entry paths, by caller.**
+  - Humans in a browser → `elcano_auth` cookie (magic link via auth).
+  - Node runners + integration scripts → existing API keys (`X-API-Key`),
+    unchanged.
+- [ ] **Add the cookie verifier alongside `AdminAuthMiddleware`.** Port
+      `internal/token/token.go` from this repo into
+      `moc/internal/auth/cookie.go` (Pattern B) and set
+      `AUTH_SIGNING_PUBKEY` in moc's env. The Ed25519 verification is
+      tiny and slots into moc's existing middleware chain.
+- [ ] **Gate on moc's local user-list.** Today moc has `username` as the
+      PK; add a `UNIQUE` constraint on `email`. After the cookie verifies,
+      look the email up — known → in, unknown but validly-signed-in →
+      403. Existing username-based rows keep working for API access. This
+      is the allowlist moc continues to own.
+- [ ] **Keep scopes.** moc's `scopes` column still gates what a user can
+      DO. The cookie says who they ARE; the user-list says whether they're
+      allowed into moc; scopes say what they can do once in.
+- [ ] **Drop the `/auth/login` username+password route** (only after the
+      cookie path is verified in prod). Keep the API-key issuance routes —
+      those are unaffected.
 
 ## New microservices — generic checklist
 
