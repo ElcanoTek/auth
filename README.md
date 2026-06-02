@@ -166,6 +166,7 @@ Dead simple on a fresh Fedora box:
 
 ```bash
 sudo dnf install -y git
+sudo git config --global credential.helper store   # cache the clone creds so `auth update` can fetch later without re-prompting
 sudo git clone https://github.com/elcanotek/auth.git /opt/auth-src
 sudo bash /opt/auth-src/scripts/bootstrap.sh
 ```
