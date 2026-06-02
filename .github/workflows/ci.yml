@@ -44,7 +44,10 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.1.6
+          # v2.12+ release binaries are built with Go 1.25; older ones
+          # (e.g. v2.1.x, built with 1.24) refuse to run against a go.mod
+          # that targets 1.25. Keep this >= the go directive in go.mod.
+          version: v2.12.0
 
   test:
     name: Vet & Test

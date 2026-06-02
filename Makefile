@@ -2,7 +2,7 @@
 
 .PHONY: all build deps test check lint smoke clean tidy run
 
-GOLANGCI_VERSION := v2.1.6
+GOLANGCI_VERSION := v2.12.0
 
 all: build
 
