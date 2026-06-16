@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -132,7 +134,7 @@ func TestMagicLinkSingleUse(t *testing.T) {
 	now := time.Now().Unix()
 	exp := now + 600
 
-	if err := s.IssueMagic(ctx, "n1", "alice@example.com", exp); err != nil {
+	if err := s.IssueMagic(ctx, "n1", "alice@example.com", now, exp); err != nil {
 		t.Fatalf("IssueMagic: %v", err)
 	}
 
@@ -155,7 +157,7 @@ func TestMagicLinkExpiry(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().Unix()
 
-	if err := s.IssueMagic(ctx, "n2", "alice@example.com", now-1); err != nil {
+	if err := s.IssueMagic(ctx, "n2", "alice@example.com", now, now-1); err != nil {
 		t.Fatalf("IssueMagic: %v", err)
 	}
 	_, err := s.ConsumeMagic(ctx, "n2", now)
@@ -173,7 +175,7 @@ func TestMagicLinkConcurrentConsumeOnlyOneWins(t *testing.T) {
 	now := time.Now().Unix()
 	exp := now + 600
 
-	if err := s.IssueMagic(ctx, "race", "alice@example.com", exp); err != nil {
+	if err := s.IssueMagic(ctx, "race", "alice@example.com", now, exp); err != nil {
 		t.Fatalf("IssueMagic: %v", err)
 	}
 
@@ -207,12 +209,15 @@ func TestSweepExpiredKeepsUnconsumedFresh(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().Unix()
 
+	// Distinct emails so collapse-to-newest (same-email issuance now
+	// invalidates prior unredeemed links) doesn't interfere — this test is
+	// about sweep-by-expiry, not collapse.
 	// expired long ago — should be swept
-	_ = s.IssueMagic(ctx, "old", "a@x.com", now-7*24*3600)
+	_ = s.IssueMagic(ctx, "old", "a@x.com", now-7*24*3600-600, now-7*24*3600)
 	// expired but within `keep` window — sweep should preserve
-	_ = s.IssueMagic(ctx, "recent-expired", "a@x.com", now-60)
+	_ = s.IssueMagic(ctx, "recent-expired", "b@x.com", now-660, now-60)
 	// still valid
-	_ = s.IssueMagic(ctx, "valid", "a@x.com", now+600)
+	_ = s.IssueMagic(ctx, "valid", "c@x.com", now, now+600)
 
 	deleted, err := s.SweepExpired(ctx, now, 24*time.Hour)
 	if err != nil {
@@ -296,6 +301,179 @@ func TestDeleteUser(t *testing.T) {
 	}
 	if ok {
 		t.Error("DeleteUser missing should return false")
+	}
+}
+
+func TestIssueMagicCollapsesToNewest(t *testing.T) {
+	// Requesting a second link for an email must invalidate the first, so
+	// only one credential is ever live (shrinks the replay surface).
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	exp := now + 600
+
+	if err := s.IssueMagic(ctx, "first", "alice@example.com", now, exp); err != nil {
+		t.Fatalf("IssueMagic first: %v", err)
+	}
+	if err := s.IssueMagic(ctx, "second", "alice@example.com", now+1, exp); err != nil {
+		t.Fatalf("IssueMagic second: %v", err)
+	}
+
+	// The first link is collapsed — consuming it fails as already-used.
+	if _, err := s.ConsumeMagic(ctx, "first", now+2); !errors.Is(err, ErrConsumed) {
+		t.Errorf("collapsed first link: want ErrConsumed, got %v", err)
+	}
+	// The newest link still works.
+	if _, err := s.ConsumeMagic(ctx, "second", now+2); err != nil {
+		t.Errorf("newest link consume: %v", err)
+	}
+	// Collapse must NOT lower the issuance count — both still count toward
+	// the rate limit (it measures sends, not live links).
+	if n, err := s.CountRecentByEmail(ctx, "alice@example.com", now-3600); err != nil || n != 2 {
+		t.Errorf("recent count = %d (err %v), want 2", n, err)
+	}
+	// Collapse is per-email: another address is untouched.
+	if err := s.IssueMagic(ctx, "bob1", "bob@example.com", now, exp); err != nil {
+		t.Fatalf("IssueMagic bob: %v", err)
+	}
+	if _, err := s.ConsumeMagic(ctx, "bob1", now+2); err != nil {
+		t.Errorf("bob's link should be unaffected by alice's collapse: %v", err)
+	}
+}
+
+func TestRateKeyCanonicalizesSubaddresses(t *testing.T) {
+	// +tag and case variants deliver to ONE mailbox, so they must share a
+	// single rate bucket AND collapse each other — otherwise the per-email
+	// cap is trivially bypassed with victim+1@, victim+2@, …
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	exp := now + 600
+
+	_ = s.IssueMagic(ctx, "v1", "victim+1@example.com", now, exp)
+	_ = s.IssueMagic(ctx, "v2", "victim+two@example.com", now+1, exp)
+	_ = s.IssueMagic(ctx, "v3", "VICTIM@example.com", now+2, exp)
+
+	// All three count against the one canonical mailbox, queried by any variant.
+	if n, _ := s.CountRecentByEmail(ctx, "victim@example.com", now-3600); n != 3 {
+		t.Errorf("canonical bucket count = %d, want 3 (sub-address variants must share a bucket)", n)
+	}
+	if n, _ := s.CountRecentByEmail(ctx, "victim+anything@EXAMPLE.com", now-3600); n != 3 {
+		t.Errorf("variant-keyed query count = %d, want 3", n)
+	}
+	// Collapse spans the mailbox: only the newest survives; both earlier
+	// sub-address links are invalidated (also exercises >2 collapse).
+	if _, err := s.ConsumeMagic(ctx, "v1", now+3); !errors.Is(err, ErrConsumed) {
+		t.Errorf("v1 should be collapsed across sub-addresses: got %v", err)
+	}
+	if _, err := s.ConsumeMagic(ctx, "v2", now+3); !errors.Is(err, ErrConsumed) {
+		t.Errorf("v2 should be collapsed across sub-addresses: got %v", err)
+	}
+	if _, err := s.ConsumeMagic(ctx, "v3", now+3); err != nil {
+		t.Errorf("v3 (newest) should consume: %v", err)
+	}
+}
+
+func TestCountRecentByEmailAndTotal(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	exp := now + 600
+
+	since := now - 900 // 15-minute window
+
+	// alice: two strictly inside the window, one exactly AT the boundary
+	// (created_at == since must count — the cutoff is inclusive, >=), one
+	// issued long before it (must not count).
+	_ = s.IssueMagic(ctx, "a1", "alice@example.com", now-10, exp)
+	_ = s.IssueMagic(ctx, "a2", "alice@example.com", now-5, exp)
+	_ = s.IssueMagic(ctx, "a-boundary", "alice@example.com", since, exp)
+	_ = s.IssueMagic(ctx, "a-old", "alice@example.com", now-100000, exp)
+	// bob: one within the window.
+	_ = s.IssueMagic(ctx, "b1", "bob@example.com", now-3, exp)
+
+	if n, _ := s.CountRecentByEmail(ctx, "alice@example.com", since); n != 3 {
+		t.Errorf("alice recent = %d, want 3 (boundary row inclusive, old excluded)", n)
+	}
+	if n, _ := s.CountRecentByEmail(ctx, "ALICE@EXAMPLE.COM", since); n != 3 {
+		t.Errorf("alice recent (uppercase) = %d, want 3 (case-insensitive)", n)
+	}
+	if n, _ := s.CountRecentByEmail(ctx, "bob@example.com", since); n != 1 {
+		t.Errorf("bob recent = %d, want 1", n)
+	}
+	if n, _ := s.CountRecentTotal(ctx, since); n != 4 {
+		t.Errorf("global recent = %d, want 4 (old issuance excluded)", n)
+	}
+}
+
+func TestMigrationAddsCreatedAtToOldSchema(t *testing.T) {
+	// A DB created before the rate-limit work has no created_at column.
+	// Open() must add it (guarded ALTER), preserve existing rows, and keep
+	// the single-use machinery working.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	// The pre-migration magic_links shape (no created_at).
+	if _, err := raw.Exec(`CREATE TABLE magic_links (
+		nonce TEXT PRIMARY KEY, email TEXT NOT NULL,
+		expires_at INTEGER NOT NULL, used_at INTEGER)`); err != nil {
+		t.Fatalf("create old table: %v", err)
+	}
+	now := time.Now().Unix()
+	if _, err := raw.Exec(
+		`INSERT INTO magic_links(nonce, email, expires_at) VALUES('legacy', 'old@example.com', ?)`,
+		now+600); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	_ = raw.Close()
+
+	// Open through the store — migrate() must add created_at idempotently.
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open (runs migrate): %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+
+	if !s.hasColumn(ctx, "magic_links", "created_at") {
+		t.Fatal("created_at column missing after migrate")
+	}
+	// Legacy link still consumable (single-use intact across migration).
+	if _, err := s.ConsumeMagic(ctx, "legacy", now); err != nil {
+		t.Errorf("legacy link consume after migrate: %v", err)
+	}
+	// Legacy row defaulted created_at=0, so it never counts as "recent".
+	if n, _ := s.CountRecentByEmail(ctx, "old@example.com", now-3600); n != 0 {
+		t.Errorf("legacy row counted as recent: %d, want 0", n)
+	}
+	// New issuance works on the migrated DB and counts.
+	if err := s.IssueMagic(ctx, "fresh", "old@example.com", now, now+600); err != nil {
+		t.Fatalf("IssueMagic after migrate: %v", err)
+	}
+	if n, _ := s.CountRecentByEmail(ctx, "old@example.com", now-3600); n != 1 {
+		t.Errorf("recent count after fresh issue = %d, want 1", n)
+	}
+
+	// Re-Open the same dir: migrate must be idempotent (ALTER not re-run)
+	// AND non-destructive — data and schema must survive the second open.
+	_ = s.Close()
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("second Open (idempotent migrate): %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+	if !s2.hasColumn(ctx, "magic_links", "created_at") {
+		t.Error("created_at column missing after second open")
+	}
+	if n, _ := s2.CountRecentByEmail(ctx, "old@example.com", now-3600); n != 1 {
+		t.Errorf("recent count after re-open = %d, want 1 (data must survive idempotent migrate)", n)
+	}
+	if _, err := s2.ConsumeMagic(ctx, "fresh", now); err != nil {
+		t.Errorf("'fresh' link still consumable after re-open: %v", err)
 	}
 }
 

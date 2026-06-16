@@ -582,3 +582,177 @@ func TestRuntimeDomainAddGrantsAccess(t *testing.T) {
 		t.Errorf("post-add: wrong recipient %q", sender.sent[len(sender.sent)-1].to)
 	}
 }
+
+func TestMagicPerEmailRateLimit(t *testing.T) {
+	// After the per-email cap, further requests for that address send NO
+	// additional email and the response is byte-identical to a real send
+	// (the cap must be invisible). The cap is also strictly per-email.
+	ts, sender, _, cfg := newTestServer(t)
+	cfg.MagicRatePerEmail = 3 // newTestServer leaves caps at 0 (disabled); set a small one here
+	c := noFollowClient()
+
+	var firstLoc string
+	for i := 0; i < 3; i++ {
+		resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{"alice@example.com"}})
+		if err != nil {
+			t.Fatalf("POST %d: %v", i, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != 303 {
+			t.Errorf("request %d status = %d, want 303", i, resp.StatusCode)
+		}
+		if i == 0 {
+			firstLoc = resp.Header.Get("Location") // a genuine-send response
+		}
+	}
+	sender.wait(t, 3)
+
+	// 4th request is over the cap. It must be INDISTINGUISHABLE from the
+	// genuine send above — same status, same Location — so the cap leaks
+	// nothing about whether the address exists or a limit was hit.
+	resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{"alice@example.com"}})
+	if err != nil {
+		t.Fatalf("POST 4: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 303 {
+		t.Errorf("throttled status = %d, want 303", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Location"); got != firstLoc {
+		t.Errorf("throttled Location = %q, want byte-identical to a real send %q (cap must be invisible)", got, firstLoc)
+	}
+
+	// The cap is PER EMAIL: a different allowed address still sends.
+	resp, err = c.PostForm(ts.URL+"/magic", url.Values{"email": []string{"dave@example.com"}})
+	if err != nil {
+		t.Fatalf("POST dave: %v", err)
+	}
+	_ = resp.Body.Close()
+	sender.wait(t, 4) // dave's email lands; alice's 4th never did
+
+	time.Sleep(50 * time.Millisecond) // let any erroneous alice-4 send appear
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	var alice, dave int
+	for _, m := range sender.sent {
+		switch m.to {
+		case "alice@example.com":
+			alice++
+		case "dave@example.com":
+			dave++
+		}
+	}
+	if alice != 3 {
+		t.Errorf("alice emails = %d, want 3 (4th over cap, dropped)", alice)
+	}
+	if dave != 1 {
+		t.Errorf("dave emails = %d, want 1 (per-email cap must not block a different address)", dave)
+	}
+}
+
+func TestMagicGlobalRateLimit(t *testing.T) {
+	// The stack-wide cap bounds total sends regardless of address — it fires
+	// even across DIFFERENT emails. Per-email cap left disabled to isolate it.
+	ts, sender, _, cfg := newTestServer(t)
+	cfg.MagicGlobalLimit = 2
+	c := noFollowClient()
+
+	for _, email := range []string{"alice@example.com", "bob@example.com"} {
+		resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{email}})
+		if err != nil {
+			t.Fatalf("POST %s: %v", email, err)
+		}
+		_ = resp.Body.Close()
+	}
+	sender.wait(t, 2)
+
+	// 3rd distinct email is over the global cap: 303 -> /sent, no email.
+	resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{"carol@example.com"}})
+	if err != nil {
+		t.Fatalf("POST carol: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 303 || !strings.Contains(resp.Header.Get("Location"), "/sent") {
+		t.Errorf("globally-throttled request should 303 -> /sent; status=%d loc=%q",
+			resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	if len(sender.sent) != 2 {
+		t.Errorf("with global cap 2, emails sent after 3 requests = %d, want 2", len(sender.sent))
+	}
+}
+
+func TestMagicDisallowedDomainDoesNotConsumeGlobalBudget(t *testing.T) {
+	// The rate gate sits AFTER the domain-allowlist check, so probing
+	// disallowed domains must NOT advance the global counter — otherwise an
+	// attacker could DoS real logins with bogus-domain spam. This pins that
+	// load-bearing ordering.
+	ts, sender, _, cfg := newTestServer(t)
+	cfg.MagicGlobalLimit = 2
+	c := noFollowClient()
+
+	for i := 0; i < 5; i++ {
+		resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{"probe@evil.com"}})
+		if err != nil {
+			t.Fatalf("disallowed POST %d: %v", i, err)
+		}
+		_ = resp.Body.Close()
+	}
+	time.Sleep(50 * time.Millisecond)
+	sender.mu.Lock()
+	if len(sender.sent) != 0 {
+		t.Errorf("disallowed probes sent %d emails, want 0", len(sender.sent))
+	}
+	sender.mu.Unlock()
+
+	// Global budget is untouched: two allowed emails still send.
+	for _, e := range []string{"alice@example.com", "bob@example.com"} {
+		resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{e}})
+		if err != nil {
+			t.Fatalf("allowed POST %s: %v", e, err)
+		}
+		_ = resp.Body.Close()
+	}
+	sender.wait(t, 2)
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	if len(sender.sent) != 2 {
+		t.Errorf("allowed sends after disallowed probes = %d, want 2 (probes must not consume the global budget)", len(sender.sent))
+	}
+}
+
+func TestMagicBothCapsActive(t *testing.T) {
+	// With both caps live (the production shape), the per-email cap fires for
+	// the hammered address while the global cap still has headroom for others.
+	ts, sender, _, cfg := newTestServer(t)
+	cfg.MagicRatePerEmail = 2
+	cfg.MagicGlobalLimit = 10
+	c := noFollowClient()
+
+	for i := 0; i < 3; i++ { // alice hits her per-email cap at 2
+		resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{"alice@example.com"}})
+		if err != nil {
+			t.Fatalf("alice POST %d: %v", i, err)
+		}
+		_ = resp.Body.Close()
+	}
+	sender.wait(t, 2)
+
+	// bob still sends — per-email cap is independent and global has room.
+	resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{"bob@example.com"}})
+	if err != nil {
+		t.Fatalf("bob POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	sender.wait(t, 3)
+
+	time.Sleep(50 * time.Millisecond)
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	if len(sender.sent) != 3 {
+		t.Errorf("emails = %d, want 3 (alice 2 then capped, bob 1)", len(sender.sent))
+	}
+}

@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS domains (
 CREATE TABLE IF NOT EXISTS magic_links (
   nonce       TEXT PRIMARY KEY,
   email       TEXT NOT NULL,
+  created_at  INTEGER NOT NULL DEFAULT 0,
   expires_at  INTEGER NOT NULL,
   used_at     INTEGER
 );
@@ -82,9 +83,57 @@ CREATE TABLE IF NOT EXISTS users (
 );
 `
 
+// createdAtIndexes back the rate-limit count queries. They live separate
+// from `schema` because on a DB created before created_at existed they can
+// only be built AFTER the column is added by migrate().
+const createdAtIndexes = `
+CREATE INDEX IF NOT EXISTS idx_magic_links_email_created ON magic_links(email, created_at);
+CREATE INDEX IF NOT EXISTS idx_magic_links_created ON magic_links(created_at);
+`
+
 func (s *Store) migrate(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, schema)
-	return err
+	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+	// Additive migration: bring pre-existing DBs (created before the
+	// rate-limit work) up to schema by adding created_at. Guarded by a
+	// column-existence check so it's idempotent — re-running ALTER ADD
+	// COLUMN would otherwise fail with "duplicate column name". Existing
+	// rows default to 0 (epoch), so they never count toward a recent
+	// rate-limit window, which is correct — they're old.
+	if !s.hasColumn(ctx, "magic_links", "created_at") {
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE magic_links ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add created_at column: %w", err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, createdAtIndexes); err != nil {
+		return err
+	}
+	return nil
+}
+
+// hasColumn reports whether table has a column named col. table is always a
+// trusted in-package literal, so interpolating it into the PRAGMA (which
+// can't be parameterized) is safe.
+func (s *Store) hasColumn(ctx context.Context, table, col string) bool {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false
+		}
+		if name == col {
+			return true
+		}
+	}
+	return false
 }
 
 // ── domain allowlist ─────────────────────────────────────────────────
@@ -174,11 +223,76 @@ func (s *Store) SeedDomains(ctx context.Context, names []string) error {
 
 // ── magic links ──────────────────────────────────────────────────────
 
-func (s *Store) IssueMagic(ctx context.Context, nonce, email string, expiresAt int64) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO magic_links(nonce, email, expires_at) VALUES(?, ?, ?)`,
-		nonce, strings.ToLower(email), expiresAt)
-	return err
+// canonicalEmail reduces an address to the identity used for rate limiting
+// and collapse-to-newest: lowercased, with any "+tag" suffix stripped from
+// the local part (user+anything@d -> user@d). Sub-address variants deliver to
+// the SAME mailbox, so folding them into one key stops the per-email cap from
+// being sidestepped with victim+1@, victim+2@, … Note: provider-specific dot
+// folding (e.g. Gmail treating a.b@gmail == ab@gmail) is intentionally NOT
+// applied — the corporate domains on the allowlist don't use it, and baking in
+// per-provider rules is brittle. The real address still rides in the signed
+// token, so login identity is unaffected; only the magic_links bucket key is
+// canonical.
+func canonicalEmail(email string) string {
+	email = strings.ToLower(strings.TrimSpace(email))
+	at := strings.LastIndexByte(email, '@')
+	if at <= 0 {
+		return email
+	}
+	local, domain := email[:at], email[at:]
+	if plus := strings.IndexByte(local, '+'); plus >= 0 {
+		local = local[:plus]
+	}
+	return local + domain
+}
+
+// IssueMagic records a new single-use magic link and, atomically,
+// collapses-to-newest: any prior UNREDEEMED link for the same canonical email
+// is marked used so only the most recent link is ever valid. This shrinks the
+// replay surface to one live credential per mailbox — request a second link
+// and the first stops working. createdAt is the issuance time used by the
+// rate-limit counters (see CountRecentByEmail / CountRecentTotal). The stored
+// email is canonicalized (see canonicalEmail) so rate/collapse key per mailbox,
+// not per sub-address; the real recipient travels in the signed token.
+func (s *Store) IssueMagic(ctx context.Context, nonce, email string, createdAt, expiresAt int64) error {
+	email = canonicalEmail(email)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE magic_links SET used_at = ? WHERE email = ? AND used_at IS NULL`,
+		createdAt, email); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO magic_links(nonce, email, created_at, expires_at) VALUES(?, ?, ?, ?)`,
+		nonce, email, createdAt, expiresAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// CountRecentByEmail returns how many magic links were ISSUED for email at or
+// after `since` (a unix second). Counts every issuance — including links
+// later collapsed or consumed — so it measures send volume, not live links.
+func (s *Store) CountRecentByEmail(ctx context.Context, email string, since int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM magic_links WHERE email = ? AND created_at >= ?`,
+		canonicalEmail(email), since).Scan(&n)
+	return n, err
+}
+
+// CountRecentTotal returns how many magic links were issued across ALL emails
+// at or after `since` — the backstop for the global send cap.
+func (s *Store) CountRecentTotal(ctx context.Context, since int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM magic_links WHERE created_at >= ?`, since).Scan(&n)
+	return n, err
 }
 
 // ConsumeMagic atomically marks a nonce used. Returns ErrConsumed if it
