@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/elcanotek/auth/internal/config"
+	"github.com/elcanotek/auth/internal/email"
 	"github.com/elcanotek/auth/internal/store"
 	"github.com/elcanotek/auth/internal/token"
 )
@@ -754,5 +757,213 @@ func TestMagicBothCapsActive(t *testing.T) {
 	defer sender.mu.Unlock()
 	if len(sender.sent) != 3 {
 		t.Errorf("emails = %d, want 3 (alice 2 then capped, bob 1)", len(sender.sent))
+	}
+}
+
+// ── P3: email-send robustness (shutdown drain + PII-safe logging) ─────
+
+// newServerWithSender builds a Server wired to a caller-supplied Sender and
+// returns both the *Server (for WaitSends) and the fronting httptest server.
+func newServerWithSender(t *testing.T, sender email.Sender) (*Server, *httptest.Server) {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, ""))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	cfg := &config.Config{
+		Hostname:       "auth.example.com",
+		SigningKey:     priv,
+		PublicKey:      pub,
+		SessionTTL:     24 * time.Hour,
+		MagicTTL:       10 * time.Minute,
+		CookieName:     "elcano_auth",
+		CookieDomain:   "example.com",
+		AllowedDomains: []string{"example.com"},
+		EmailDriver:    "stdout",
+		BrandName:      "Test",
+		ReturnToHosts:  []string{".example.com"},
+	}
+	if err := st.SeedDomains(context.Background(), cfg.AllowedDomains); err != nil {
+		t.Fatalf("SeedDomains: %v", err)
+	}
+	srv := New(cfg, st, sender)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return srv, ts
+}
+
+// gateSender blocks in Send until release is closed, so a test can hold an
+// email "in flight" and observe shutdown-drain behavior.
+type gateSender struct {
+	mu      sync.Mutex
+	n       int
+	release chan struct{}
+}
+
+func (g *gateSender) Send(context.Context, string, string, string, string) error {
+	<-g.release
+	g.mu.Lock()
+	g.n++
+	g.mu.Unlock()
+	return nil
+}
+
+func (g *gateSender) count() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.n
+}
+
+// errSender always fails, to exercise the failure-logging path.
+type errSender struct{}
+
+func (errSender) Send(context.Context, string, string, string, string) error {
+	return errors.New("smtp boom")
+}
+
+// syncBuf is a mutex-guarded log sink — log.SetOutput is process-global and
+// the send goroutine writes concurrently, so the buffer must be race-safe.
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func TestWaitSendsDrainsInflight(t *testing.T) {
+	// A magic-link email is dispatched in a detached goroutine; WaitSends
+	// (called during graceful shutdown) must block until that send finishes
+	// rather than letting the process exit and drop it.
+	g := &gateSender{release: make(chan struct{})}
+	srv, ts := newServerWithSender(t, g)
+	c := noFollowClient()
+
+	resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{"alice@example.com"}})
+	if err != nil {
+		t.Fatalf("POST /magic: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// The send is now in flight, blocked in Send — WaitSends must not return.
+	done := make(chan struct{})
+	go func() { srv.WaitSends(context.Background()); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("WaitSends returned while a send was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(g.release) // let the send complete
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitSends did not return after the send completed")
+	}
+	if g.count() != 1 {
+		t.Errorf("send count = %d, want 1 (the email must actually have been sent)", g.count())
+	}
+}
+
+func TestWaitSendsRespectsContextDeadline(t *testing.T) {
+	// Even if a send is wedged, WaitSends must return when its ctx expires so
+	// shutdown can't hang forever.
+	g := &gateSender{release: make(chan struct{})}
+	defer close(g.release) // unwedge the send once the test is done
+	srv, ts := newServerWithSender(t, g)
+	c := noFollowClient()
+
+	resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{"alice@example.com"}})
+	if err != nil {
+		t.Fatalf("POST /magic: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	srv.WaitSends(ctx)
+	elapsed := time.Since(start)
+	if elapsed > 2*time.Second {
+		t.Errorf("WaitSends took %v; should return ~150ms when ctx expires", elapsed)
+	}
+	// Lower bound: prove WaitSends actually BLOCKED until ctx fired, rather
+	// than returning early (a no-op WaitSends would pass an upper bound alone).
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("WaitSends returned in %v; it should have waited for ctx (~150ms)", elapsed)
+	}
+	// And the wedged send must NOT have completed — it's still blocked.
+	if g.count() != 0 {
+		t.Errorf("send count = %d, want 0 (the wedged send must not have finished)", g.count())
+	}
+}
+
+func TestWaitSendsNoInflightReturnsImmediately(t *testing.T) {
+	// The common shutdown case: /magic was never hit, so the WaitGroup is at
+	// zero and WaitSends must return promptly rather than block.
+	g := &gateSender{release: make(chan struct{})}
+	defer close(g.release)
+	srv, _ := newServerWithSender(t, g)
+
+	done := make(chan struct{})
+	go func() { srv.WaitSends(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("WaitSends blocked even though no send was in flight")
+	}
+}
+
+func TestSendFailureLogsTenantNotFullAddress(t *testing.T) {
+	// On a send failure we log the tenant (domain) only — never the full
+	// recipient address, which is PII.
+	var buf syncBuf
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	_, ts := newServerWithSender(t, errSender{})
+	c := noFollowClient()
+	// Use an allowed domain so the flow actually reaches the send (and thus
+	// the failure log); the recipient's local part is what must NOT be logged.
+	resp, err := c.PostForm(ts.URL+"/magic", url.Values{"email": []string{"alice@example.com"}})
+	if err != nil {
+		t.Fatalf("POST /magic: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// The send and its failure log happen asynchronously; poll for the line.
+	var logged string
+	for i := 0; i < 200; i++ {
+		logged = buf.String()
+		if strings.Contains(logged, "send magic email failed") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(logged, "send magic email failed") {
+		t.Fatalf("no send-failure log appeared; got: %q", logged)
+	}
+	if !strings.Contains(logged, "tenant=example.com") {
+		t.Errorf("failure log should record the tenant domain; got: %q", logged)
+	}
+	if strings.Contains(logged, "alice@example.com") {
+		t.Errorf("failure log leaked the full recipient address (PII); got: %q", logged)
 	}
 }

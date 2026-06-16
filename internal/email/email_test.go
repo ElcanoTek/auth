@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -198,4 +200,51 @@ func (t redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	r2.URL = parsed
 	r2.Host = parsed.Host
 	return t.real.RoundTrip(r2)
+}
+
+func TestSMTPDeadlineBoundsStalledServer(t *testing.T) {
+	// A relay that accepts the TCP connection but never sends its 220
+	// greeting must not hang the send forever: the per-send deadline,
+	// applied to the conn after dial, has to fire. Without that SetDeadline
+	// the greeting read blocks until the server hangs up (the stall below),
+	// which trips the elapsed-time assertion.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		// Stay silent (never send the greeting). Bound the stall so a
+		// regression that drops the deadline fails fast rather than hanging
+		// the whole suite until the test timeout.
+		select {
+		case <-stop:
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	s := &SMTP{Host: host, Port: port, From: "auth@example.com"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err = s.Send(ctx, "to@example.com", "subj", "text", "<p>html</p>")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error from the stalled relay, got nil")
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("Send took %v; the conn deadline should have fired ~300ms (SMTP exchange not bounded?)", elapsed)
+	}
 }

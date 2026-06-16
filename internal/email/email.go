@@ -145,6 +145,21 @@ func (s *SMTP) Send(ctx context.Context, to, subject, textBody, htmlBody string)
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Bound the WHOLE SMTP conversation, not just the dial. net/smtp does all
+	// its reads/writes on this conn and takes no context, so without a
+	// deadline a relay that connects and then goes silent would block this
+	// goroutine (and hold the socket) forever — the 30s ctx the caller sets
+	// only covers DialContext above. Derive the bound from that ctx so it
+	// matches the request's budget; every subsequent SMTP step inherits it.
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	} else {
+		// Defensive: a caller that passes a deadline-less context must not be
+		// able to revert this to the old block-forever behavior. Bound the
+		// conversation regardless.
+		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	}
+
 	c, err := smtp.NewClient(conn, s.Host)
 	if err != nil {
 		return fmt.Errorf("smtp client: %w", err)
