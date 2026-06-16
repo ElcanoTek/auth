@@ -42,6 +42,12 @@ var allowedEnvVars = map[string]bool{
 	"AUTH_SESSION_TTL_DAYS":  true, // default 30
 	"AUTH_MAGIC_TTL_MINUTES": true, // default 15
 
+	// Abuse limits on POST /magic (email-sending endpoint). Counts issued
+	// magic links over a rolling window; at the cap, the same "check your
+	// inbox" page is returned with no further send. Set to 0 to disable.
+	"AUTH_MAGIC_RATE_PER_EMAIL": true, // default 10  (per email / 15 min)
+	"AUTH_MAGIC_GLOBAL_LIMIT":   true, // default 500 (all emails / 60 min)
+
 	// Cookie. AUTH_COOKIE_DOMAIN controls Set-Cookie's Domain attr; this
 	// is what makes the cookie ride along to chat.elcanotek.com,
 	// home.elcanotek.com, etc. Empty = host-only cookie (only works for
@@ -99,6 +105,13 @@ type Config struct {
 	PublicKey  ed25519.PublicKey  // verifies tokens; derived from SigningKey
 	SessionTTL time.Duration
 	MagicTTL   time.Duration
+
+	// Abuse limits on POST /magic. Both count issued magic links over a
+	// fixed rolling window (15 min per-email, 60 min global) and, once the
+	// cap is reached, return the same "check your inbox" response without
+	// sending another email. <= 0 disables that limit.
+	MagicRatePerEmail int // max links per email per 15 min (default 10)
+	MagicGlobalLimit  int // max links total per 60 min (default 500)
 
 	CookieName   string
 	CookieDomain string
@@ -190,6 +203,8 @@ func Load(envFile string) (*Config, error) {
 
 	cfg.SessionTTL = time.Duration(envInt("AUTH_SESSION_TTL_DAYS", 30)) * 24 * time.Hour
 	cfg.MagicTTL = time.Duration(envInt("AUTH_MAGIC_TTL_MINUTES", 15)) * time.Minute
+	cfg.MagicRatePerEmail = envInt("AUTH_MAGIC_RATE_PER_EMAIL", 10)
+	cfg.MagicGlobalLimit = envInt("AUTH_MAGIC_GLOBAL_LIMIT", 500)
 
 	cfg.AllowedDomains = splitCSV(os.Getenv("AUTH_ALLOWED_DOMAINS"))
 	cfg.ReturnToHosts = splitCSV(os.Getenv("AUTH_RETURN_TO_HOSTS"))

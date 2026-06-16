@@ -104,6 +104,14 @@ func (s *Server) handleSent(w http.ResponseWriter, r *http.Request) {
 
 // ── /magic — issue + email ───────────────────────────────────────────
 
+// Rolling windows for the POST /magic abuse limits. The per-window caps
+// live in config (cfg.MagicRatePerEmail / cfg.MagicGlobalLimit; 0 disables
+// a limit); these fix the window each cap is measured over.
+const (
+	magicRateWindow   = 15 * time.Minute // per-email issuance window
+	magicGlobalWindow = 60 * time.Minute // stack-wide issuance window
+)
+
 func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -138,6 +146,47 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Abuse limits on this email-sending endpoint. We count links already
+	// issued (a) to this address in the last magicRateWindow and (b)
+	// stack-wide in the last magicGlobalWindow. On a hit we return the same
+	// "check your inbox" page as a disallowed domain — never revealing the
+	// limit or whether the address exists — and log a domain-only warning so
+	// an operator can see an attack in progress. A cap of 0 disables it.
+	//
+	// Two deliberate limits of this approach: (1) the count and the issuance
+	// aren't a single transaction, so a concurrent burst can overshoot a cap
+	// by roughly the in-flight request count — acceptable for a spam throttle
+	// (the single-use + collapse-to-newest guarantees stay transactional).
+	// (2) one client can still spend the whole global budget; a per-IP limit
+	// / CAPTCHA in front of /magic is the intended next layer.
+	now := time.Now()
+	if s.cfg.MagicRatePerEmail > 0 {
+		n, err := s.store.CountRecentByEmail(r.Context(), email, now.Add(-magicRateWindow).Unix())
+		if err != nil {
+			log.Printf("rate count (per-email): %v", err)
+			s.bounceWithErr(w, r, "Something went wrong. Try again.")
+			return
+		}
+		if n >= s.cfg.MagicRatePerEmail {
+			log.Printf("magic rate limit hit (per-email): tenant=%s", emailTenant(email))
+			s.fakeSentResponse(w, r, email)
+			return
+		}
+	}
+	if s.cfg.MagicGlobalLimit > 0 {
+		n, err := s.store.CountRecentTotal(r.Context(), now.Add(-magicGlobalWindow).Unix())
+		if err != nil {
+			log.Printf("rate count (global): %v", err)
+			s.bounceWithErr(w, r, "Something went wrong. Try again.")
+			return
+		}
+		if n >= s.cfg.MagicGlobalLimit {
+			log.Printf("magic rate limit hit (global)")
+			s.fakeSentResponse(w, r, email)
+			return
+		}
+	}
+
 	returnTo := s.resolveReturnTo(r.FormValue("return_to"))
 
 	nonce, err := token.NewNonce()
@@ -146,9 +195,8 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		s.bounceWithErr(w, r, "Something went wrong. Try again.")
 		return
 	}
-	now := time.Now()
 	exp := now.Add(s.cfg.MagicTTL)
-	if err := s.store.IssueMagic(r.Context(), nonce, email, exp.Unix()); err != nil {
+	if err := s.store.IssueMagic(r.Context(), nonce, email, now.Unix(), exp.Unix()); err != nil {
 		log.Printf("issue magic: %v", err)
 		s.bounceWithErr(w, r, "Something went wrong. Try again.")
 		return
