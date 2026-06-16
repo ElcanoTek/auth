@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/elcanotek/auth/internal/config"
@@ -40,10 +41,33 @@ type Server struct {
 	store  *store.Store
 	sender email.Sender
 	tmpl   *template.Template
+
+	// sends tracks in-flight magic-link email goroutines so graceful
+	// shutdown can drain them instead of dropping mid-flight emails.
+	sends sync.WaitGroup
 }
 
 func New(cfg *config.Config, st *store.Store, sender email.Sender) *Server {
 	return &Server{cfg: cfg, store: st, sender: sender, tmpl: parseTemplates()}
+}
+
+// WaitSends blocks until every in-flight magic-link email send has finished,
+// or ctx is done — whichever comes first. /magic dispatches email in a
+// detached goroutine so a slow provider can't stall the response; this lets
+// graceful shutdown wait for those sends to land instead of dropping them.
+// It's bounded by ctx so a stuck send (despite the per-send deadline) can't
+// hang shutdown forever. Call it only after the HTTP server has stopped
+// accepting requests, so no new send can begin while we wait.
+func (s *Server) WaitSends(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		s.sends.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // Handler wires the routes and returns an http.Handler. Mounted by
@@ -223,12 +247,19 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 	// Send happens asynchronously so a slow provider can't slow the
 	// user's "check your inbox" page. We log the error if it fails —
 	// the user will just see their inbox stay empty, which matches
-	// real email behavior anyway.
+	// real email behavior anyway. Tracked in s.sends so graceful shutdown
+	// can drain it (WaitSends). NOTE: this goroutine may outlive shutdown
+	// (drained best-effort), so it must NOT touch s.store — the DB may
+	// already be closed by then. It only calls s.sender.Send.
+	s.sends.Add(1)
 	go func(to, subj, t, h string) {
+		defer s.sends.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := s.sender.Send(ctx, to, subj, t, h); err != nil {
-			log.Printf("send magic email to %s: %v", to, err)
+			// Log the tenant (domain) only — the full recipient address is
+			// PII we don't want persisted in the journal.
+			log.Printf("send magic email failed (tenant=%s): %v", emailTenant(to), err)
 		}
 	}(email, subject, text, html)
 

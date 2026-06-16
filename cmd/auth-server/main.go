@@ -110,6 +110,14 @@ func main() {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutCtx)
+	// Shutdown returns once in-flight HTTP handlers finish, but each /magic
+	// handler dispatches its email in a detached goroutine that outlives the
+	// response. Drain those so a SIGTERM mid-send doesn't silently drop a
+	// user's magic link. Bounded by the SAME shutCtx — HTTP drain + send
+	// drain share one 15s total budget (the SIGTERM→SIGKILL window), not 15s
+	// each; in practice the /magic handler returns instantly so the sends get
+	// almost all of it.
+	srv.WaitSends(shutCtx)
 	log.Printf("shutdown: done")
 }
 
