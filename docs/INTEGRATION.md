@@ -367,6 +367,12 @@ isn't being saved — usually `AUTH_COOKIE_DOMAIN` is wrong or
   `AUTH_SIGNING_KEY` (and pushing the new public key to every verifier)
   is the global big-red-button. There's no per-user "log them out
   remotely" today.
+- **Per-IP rate limiting / CAPTCHA on `/magic`.** `/magic` already has
+  built-in **per-email and global** send caps (`AUTH_MAGIC_RATE_PER_EMAIL`
+  / `AUTH_MAGIC_GLOBAL_LIMIT` — see DEPLOY.md), so it can't be used to flood
+  one inbox or burn the quota. What it does *not* yet have is a per-IP limit
+  or CAPTCHA, so one client can still spend the global budget. That's the
+  intended next layer if `/magic` abuse becomes a real problem.
 
 If any of those start mattering, file an issue or extend the
 service — the surface stays small.

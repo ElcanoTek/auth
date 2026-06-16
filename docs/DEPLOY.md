@@ -223,14 +223,58 @@ pointing at the exact pre-update SHA.
 
 ### Database migrations
 
-Schema is applied at startup via `CREATE TABLE IF NOT EXISTS` (see
-`internal/store/store.go`). Adding columns later? Add an `ALTER
-TABLE IF NOT EXISTS …` line to the `schema` constant — the migration
-runs on the next `auth restart`. If you need anything beyond
-additive changes (rename column, drop column, complex backfill),
-do it as a versioned migration in a new file and bump the schema
-version pragma; this service is too small to need that today but
-the room is there.
+The base schema is applied at startup via `CREATE TABLE IF NOT EXISTS`
+(the `schema` constant in `internal/store/store.go`). That constant is
+re-executed on **every** boot, so it must stay idempotent — keep it to
+`CREATE TABLE/INDEX IF NOT EXISTS` and **never** put an `ALTER` in it (a
+re-run `ALTER` would fail and crash startup).
+
+Add a column later via a **guarded** migration in `migrate()` that runs at
+most once. `created_at` on `magic_links` is the worked example:
+
+```go
+if !s.hasColumn(ctx, "magic_links", "created_at") {
+    s.db.ExecContext(ctx,
+        `ALTER TABLE magic_links ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`)
+}
+```
+
+Two things to get right:
+
+- **SQLite has no `ALTER TABLE … IF NOT EXISTS`** (in any position — it's a
+  syntax error). The `hasColumn` check (a `PRAGMA table_info` lookup) is what
+  makes the `ALTER` idempotent.
+- **An index on the new column must live OUTSIDE the `schema` constant** and
+  run *after* the `ALTER` (see `createdAtIndexes`) — otherwise it references a
+  column that doesn't exist yet on an un-migrated DB and fails.
+
+For anything beyond additive columns (rename, drop, backfill), gate it behind
+a `PRAGMA user_version` check and bump the version. This service is too small
+to need that today, but the room is there.
+
+### Abuse limits on POST /magic
+
+`/magic` is rate-limited so it can't be used to flood an inbox or burn the
+SendGrid quota. Two caps, each counting magic links *issued* over a fixed
+rolling window; on a hit the user gets the same "check your inbox" page (no
+enumeration leak) and the journal logs `magic rate limit hit (...)`:
+
+- `AUTH_MAGIC_RATE_PER_EMAIL` — max links per email per **15 min** (default `10`).
+- `AUTH_MAGIC_GLOBAL_LIMIT` — max links across all emails per **60 min** (default `500`).
+
+The windows are fixed; only the caps are configurable. Set either to `0` to
+disable that limit; leave them unset to get the defaults. There is no per-IP
+limit yet — a single client can still consume the global budget — so treat the
+global cap as a spend backstop, not a DoS defense.
+
+### Graceful shutdown
+
+On `auth restart`/stop (SIGTERM), the server drains in-flight magic-link email
+sends before exiting, so a `/magic` request caught mid-send isn't dropped. This
+is **bounded**: a stuck SMTP relay can delay shutdown by up to ~15s (the send
+drain shares one 15s budget with HTTP-request draining), after which any
+still-pending send is abandoned. So `auth restart` is normally instant but can
+pause briefly under a slow mail provider.
 
 ## TLS / reverse proxy
 
@@ -319,21 +363,37 @@ Ed25519 seed — regenerate with `auth keygen`), port 9000 already in use
 (`ss -tlnp | grep 9000`), or a corrupt `.env.local` after a hand edit
 (run `auth env check`).
 
-### Login form loads, magic-link button gives "Something went wrong"
+### Magic-link button gives "Something went wrong"
 
-Almost always SendGrid. Check the journal:
+This is a **synchronous** failure that happens *before* the email is queued —
+a malformed email, a domain-allowlist DB error, or a token-signing failure.
+It is **not** a SendGrid problem: the email is sent asynchronously, after the
+user already sees the "check your inbox" page, so a delivery failure can never
+produce this banner. Check the journal for the failing step:
 
 ```bash
 auth logs -n 50
 ```
 
-You'll see lines like:
+Look for `domain check:`, `issue magic:`, or `sign magic:` lines.
 
-- `send magic email to alice@…: sendgrid 401: invalid auth` —
-  rotate the API key or check that the verified sender matches
+### "Check your inbox" appears, but no email arrives
+
+*This* is the SendGrid / SMTP symptom — the async send failed after the page
+rendered. Check the journal:
+
+```bash
+auth logs -n 50
+```
+
+You'll see lines like (the recipient is logged by domain only, not the full
+address):
+
+- `send magic email failed (tenant=example.com): sendgrid 401: invalid auth`
+  — rotate the API key or check that the verified sender matches
   `AUTH_EMAIL_FROM`.
-- `send magic email to alice@…: sendgrid 403: forbidden` — verified
-  sender mismatch; the address in `AUTH_EMAIL_FROM` must match a
+- `send magic email failed (tenant=example.com): sendgrid 403: forbidden`
+  — verified-sender mismatch; the address in `AUTH_EMAIL_FROM` must match a
   Single Sender or Domain Authentication entry in your SendGrid account.
 
 ### User clicks the link → "Invalid sign-in link"
