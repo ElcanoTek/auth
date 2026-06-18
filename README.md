@@ -112,6 +112,12 @@ For anything beyond localhost, also set:
 - `AUTH_EMAIL_DRIVER` + `SENDGRID_API_KEY` + `AUTH_EMAIL_FROM` for
   real magic-link delivery.
 
+Optional abuse caps on `/magic` (sensible defaults apply if unset):
+
+- `AUTH_MAGIC_RATE_PER_EMAIL` — links per email per 15 min (default `10`).
+- `AUTH_MAGIC_GLOBAL_LIMIT` — links across all emails per 60 min (default `500`).
+  Set either to `0` to disable. See [docs/DEPLOY.md](docs/DEPLOY.md) for details.
+
 ## Tests
 
 ```bash
