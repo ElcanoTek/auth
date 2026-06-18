@@ -41,7 +41,9 @@ fail() {
 }
 
 cleanup() {
-  [[ -n "$SRV_PID" ]] && kill "$SRV_PID" 2>/dev/null || true
+  if [[ -n "$SRV_PID" ]]; then
+    kill "$SRV_PID" 2>/dev/null || true
+  fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT

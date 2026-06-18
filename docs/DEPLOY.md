@@ -186,16 +186,32 @@ sudo auth update
 
 That runs `scripts/update.sh`, which:
 
-1. `git fetch`-es in `/opt/auth-src`, shows the incoming commits, and
+1. Takes an exclusive lock so two updates can't run at once, then
+   `git fetch`-es in `/opt/auth-src`, shows the incoming commits, and
    asks for confirmation.
 2. Builds the new Go binary in a staging dir — if the build fails,
    the running install is untouched.
-3. Stops the service briefly, swaps the binary in place, restarts.
-4. Health-checks `/healthz` and aborts with a journalctl pointer if
-   the new build can't boot.
+3. Snapshots the live binaries, systemd units, and CLI, then stops the
+   service briefly, swaps the new build in place, and restarts.
+4. Health-checks `/healthz`. **If the new build fails to start or come up
+   healthy, it automatically rolls back** — restoring the previous
+   binaries + units + CLI and leaving the service healthy on the old
+   version. The journalctl pointer it prints is for *investigating* the
+   bad build, not manual recovery. (Only if the rollback _itself_ also
+   fails `/healthz` does it stop and ask for manual recovery.)
 
 Your `.env.local`, the SQLite file, and the domain allowlist all
 live outside the paths `update.sh` replaces.
+
+> **First update after adopting the auto-rollback release:** `auth update`
+> runs the `update.sh` already installed under `/opt/auth`, and the new
+> script only lands there *after* a successful swap. So the first
+> `auth update` that pulls this release still runs the old, no-rollback
+> script; auto-rollback applies from the next update onward. To get
+> rollback on that first upgrade too, pull first and then force a rebuild
+> with the freshly-pulled script (a plain `update.sh` would see HEAD as
+> already current and no-op):
+> `cd /opt/auth-src && sudo git pull --ff-only && sudo env AUTH_UPDATE_NO_PULL=1 bash scripts/update.sh`.
 
 ### Non-interactive update
 

@@ -25,7 +25,7 @@ fi
 # Source the env helpers if present; otherwise fall back to a minimal
 # redacted-show for `auth env show` so the CLI keeps working before
 # the next `sudo auth update` lands the helper file.
-# shellcheck source=../scripts/lib/envfile.sh
+# shellcheck source=/dev/null
 if [[ -f "$APP_DIR/scripts/lib/envfile.sh" ]]; then
   . "$APP_DIR/scripts/lib/envfile.sh"
 else
@@ -75,7 +75,7 @@ _env_show() {
     printf '%s# %s%s\n' "$c_bold" "$ENV_LOCAL" "$c_reset"
     env_show_redacted "$ENV_LOCAL"
   else
-    printf '%s# %s (not present — create one with `sudo auth env edit`)%s\n' "$c_dim" "$ENV_LOCAL" "$c_reset"
+    printf '%s# %s (not present — create one with: sudo auth env edit)%s\n' "$c_dim" "$ENV_LOCAL" "$c_reset"
   fi
 }
 

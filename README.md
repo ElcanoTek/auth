@@ -193,7 +193,7 @@ auth pubkey                          # print AUTH_SIGNING_PUBKEY for verifiers
 auth restart                         # pick up new .env.local
 auth logs                            # journalctl -fu auth-server
 auth backup                          # online sqlite snapshot
-auth update                          # git pull + rebuild + restart
+auth update                          # git pull + rebuild + restart (auto-rolls-back a bad build)
 ```
 
 See **[docs/DEPLOY.md](docs/DEPLOY.md)** for the full walkthrough,

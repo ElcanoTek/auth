@@ -18,6 +18,9 @@ set -euo pipefail
 SRC_DIR="${SRC_DIR:-/opt/auth-src}"
 APP_DIR="${APP_DIR:-/opt/auth}"
 APP_USER="${APP_USER:-auth}"
+SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}" # overridable for tests
+CLI_BIN="${CLI_BIN:-/usr/local/bin/auth}"         # overridable for tests
+LOCK_FILE="${LOCK_FILE:-/run/auth-update.lock}"   # overridable for tests
 
 if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
   c_reset=$'\033[0m' c_dim=$'\033[2m' c_red=$'\033[0;31m'
@@ -32,7 +35,26 @@ ok()   { printf '%s✓ %s%s\n' "$c_green" "$*" "$c_reset"; }
 warn() { printf '%s! %s%s\n' "$c_yellow" "$*" "$c_reset" >&2; }
 die()  { printf '%s✗ %s%s\n' "$c_red" "$*" "$c_reset" >&2; exit 1; }
 
+# wait_healthy polls /healthz for ~10s. 0 = the server answered, 1 = never did.
+wait_healthy() {
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS http://127.0.0.1:9000/healthz >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 [[ $EUID -eq 0 ]] || die "run as root: sudo auth update"
+
+# Serialize against another in-flight update/rebuild. Two concurrent runs race
+# the same APP_DIR/units: run 2 would snapshot the half-applied state of run 1,
+# so a later rollback would restore the WRONG (new) binary while reporting a
+# clean rollback. Non-blocking — fail fast rather than queue behind a long run.
+# The fd stays open for the script's lifetime; the lock auto-releases on exit.
+exec 9>"$LOCK_FILE" || die "cannot open lock file $LOCK_FILE"
+flock -n 9 || die "another 'auth update' or 'auth rebuild' is already running — refusing to run concurrently"
 
 [[ -d "$SRC_DIR/.git" ]] || die "no git checkout at $SRC_DIR"
 [[ -d "$APP_DIR" ]]      || die "no existing install at $APP_DIR (did you skip bootstrap?)"
@@ -58,17 +80,26 @@ else
   elif [[ "$current_branch" != "HEAD" ]]; then
     target_branch="$current_branch"
   else
-    mapfile -t matching < <(git branch --points-at HEAD --format='%(refname:short)')
+    # for-each-ref over refs/heads/ (not `git branch`, which prepends a bogus
+    # "(HEAD detached at ...)" pseudo-entry that would poison matching[0]).
+    # Default sort is alphabetical by refname, so with 2+ branches at HEAD this
+    # picks the alphabetically-first; the warn() surfaces which, so it's visible.
+    mapfile -t matching < <(git for-each-ref --points-at HEAD --format='%(refname:short)' refs/heads/)
     if [[ ${#matching[@]} -ge 1 ]]; then
       target_branch="${matching[0]}"
       warn "HEAD is detached — recovering branch '$target_branch'"
-    else
-      target_branch="$(git rev-parse --abbrev-ref origin/HEAD | sed 's|^origin/||')"
+    elif origin_head="$(git symbolic-ref -q --short refs/remotes/origin/HEAD)"; then
+      # symbolic-ref (not `rev-parse ... | sed`, whose pipe masked the failure):
+      # quietly fails when origin/HEAD is unset so we die with a clear message.
+      target_branch="${origin_head#origin/}"
       warn "HEAD is detached — defaulting to '$target_branch'"
+    else
+      die "HEAD is detached, no local branch points at it, and origin/HEAD is unset — re-run with AUTH_UPDATE_BRANCH=<branch>, or set it once via: git -C $SRC_DIR remote set-head origin -a"
     fi
   fi
   target_ref="origin/$target_branch"
-  after_sha="$(git rev-parse "$target_ref")"
+  after_sha="$(git rev-parse --verify --quiet "$target_ref^{commit}")" \
+    || die "no remote-tracking ref $target_ref — push '$target_branch', or re-run with AUTH_UPDATE_BRANCH=<branch>"
 
   if [[ "$before_sha" == "$after_sha" ]]; then
     ok "already on ${after_sha:0:12} — nothing to update"
@@ -86,7 +117,7 @@ else
       "$c_cyan" "$c_reset" "$c_bold" "$count" "$c_reset" \
       "${before_sha:0:12}" "${after_sha:0:12}" \
       "$c_dim" "$c_reset"
-    read -r answer
+    read -r answer || answer=""   # EOF (non-interactive stdin) reads as a cancel
     if [[ "${answer,,}" != "y" && "${answer,,}" != "yes" ]]; then
       warn "cancelled"
       exit 1
@@ -105,7 +136,8 @@ fi
 step "2/4  Building new artifacts (staging)"
 
 STAGING="$(mktemp -d)"
-trap 'rm -rf "$STAGING"' EXIT
+BACKUP=""
+trap 'rm -rf "$STAGING"; [[ -z "$BACKUP" ]] || rm -rf "$BACKUP"' EXIT
 
 rsync -a --delete \
   --exclude='/.git' \
@@ -128,38 +160,79 @@ ok "staging build complete"
 # ── 3. atomic swap + restart ─────────────────────────────────────────
 step "3/4  Swapping in and restarting"
 
+# Snapshot the live binaries AND the installed unit/CLI files first, so step 4
+# can roll the WHOLE deploy back (not just the binary) if the new build doesn't
+# come up healthy — otherwise a new unit file could be left paired with a
+# rolled-back old binary. Refuse to proceed unless EVERY piece we'd need to
+# restore is present: a partial snapshot would silently roll back to a mismatch.
+BACKUP="$(mktemp -d)"
+[[ -x "$APP_DIR/bin/auth-server" && -x "$APP_DIR/bin/auth-admin" \
+   && -f "$SYSTEMD_DIR/auth-server.service" && -f "$SYSTEMD_DIR/auth.target" && -f "$CLI_BIN" ]] \
+  || die "current install is missing a binary/unit/CLI under $APP_DIR or $SYSTEMD_DIR — refusing to update a partial install (rollback snapshot would be incomplete)"
+# These copies are deliberately NOT `|| true`: the guard above guarantees every
+# source exists, so a copy failure here is a real fault and must abort BEFORE any
+# swap (service still up), never leave the rollback snapshot silently incomplete.
+cp -p "$APP_DIR/bin/auth-server"         "$BACKUP/auth-server"
+cp -p "$APP_DIR/bin/auth-admin"          "$BACKUP/auth-admin"
+cp -p "$SYSTEMD_DIR/auth-server.service" "$BACKUP/auth-server.service"
+cp -p "$SYSTEMD_DIR/auth.target"         "$BACKUP/auth.target"
+cp -p "$CLI_BIN"                         "$BACKUP/auth-cli"
+
+# rollback_and_die restores the snapshotted binaries + unit/CLI files, restarts,
+# and exits non-zero. Used for BOTH a failed mid-swap and a started-but-unhealthy
+# build. It runs when things are already broken, so every step is set -e-tolerant:
+# a failure here must still reach one of the recovery die()s below, never abort
+# silently with the service left stopped.
+rollback_and_die() {
+  warn "$1 — rolling back to ${before_sha:0:12}"
+  systemctl stop auth-server.service || true
+  install -o "$APP_USER" -g "$APP_USER" -m 0755 "$BACKUP/auth-server" "$APP_DIR/bin/auth-server" || true
+  install -o "$APP_USER" -g "$APP_USER" -m 0755 "$BACKUP/auth-admin"  "$APP_DIR/bin/auth-admin"  || true
+  cp -p "$BACKUP/auth-server.service" "$SYSTEMD_DIR/auth-server.service" 2>/dev/null || true
+  cp -p "$BACKUP/auth.target"         "$SYSTEMD_DIR/auth.target"         2>/dev/null || true
+  cp -p "$BACKUP/auth-cli"            "$CLI_BIN"                         2>/dev/null || true
+  systemctl daemon-reload || true
+  systemctl start auth-server.service || true
+  if wait_healthy; then
+    die "update aborted — the new build didn't come up; rolled back to the previous binary + units (${before_sha:0:12}) and the service is healthy on them. Investigate: journalctl -u auth-server -n 50"
+  fi
+  die "update FAILED and the rollback ALSO failed /healthz — manual recovery needed: journalctl -u auth-server -n 50"
+}
+
 systemctl stop auth-server.service || true
 
-rsync -a --delete \
-  --exclude='/.git' \
-  --exclude='/data' \
-  --exclude='/.env.local' \
-  --exclude='/bin' \
-  "$STAGING/" "$APP_DIR/"
+# Swap staging into place. Any step here can fail (disk full, unit dir not
+# writable, daemon-reload error); with the service already stopped, a bare
+# set -e abort would leave it down with the new binary half-installed and no
+# recovery. Run the whole swap as one guarded unit and roll back on any failure.
+if ! {
+  rsync -a --delete \
+    --exclude='/.git' \
+    --exclude='/data' \
+    --exclude='/.env.local' \
+    --exclude='/bin' \
+    "$STAGING/" "$APP_DIR/" &&
+  install -o "$APP_USER" -g "$APP_USER" -m 0755 "$STAGING/bin/auth-server" "$APP_DIR/bin/auth-server" &&
+  install -o "$APP_USER" -g "$APP_USER" -m 0755 "$STAGING/bin/auth-admin"  "$APP_DIR/bin/auth-admin"  &&
+  install -m 0644 "$APP_DIR/deploy/auth-server.service" "$SYSTEMD_DIR/" &&
+  install -m 0644 "$APP_DIR/deploy/auth.target"         "$SYSTEMD_DIR/" &&
+  install -m 0755 "$APP_DIR/deploy/auth-cli"            "$CLI_BIN" &&
+  systemctl daemon-reload
+}; then
+  rollback_and_die "swap failed mid-install (${after_sha:0:12})"
+fi
 
-install -o "$APP_USER" -g "$APP_USER" -m 0755 "$STAGING/bin/auth-server" "$APP_DIR/bin/auth-server"
-install -o "$APP_USER" -g "$APP_USER" -m 0755 "$STAGING/bin/auth-admin"  "$APP_DIR/bin/auth-admin"
-
-install -m 0644 "$APP_DIR/deploy/auth-server.service" /etc/systemd/system/
-install -m 0644 "$APP_DIR/deploy/auth.target"         /etc/systemd/system/
-install -m 0755 "$APP_DIR/deploy/auth-cli"            /usr/local/bin/auth
-systemctl daemon-reload
-
-systemctl start auth-server.service
-ok "service restarted"
+# A failed start is NOT fatal here — the health check below catches a down
+# service and triggers the rollback, exactly like a started-but-unhealthy one.
+systemctl start auth-server.service || true
 
 # ── 4. health check ──────────────────────────────────────────────────
 step "4/4  Health check"
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  if curl -fsS http://127.0.0.1:9000/healthz >/dev/null 2>&1; then
-    ok "auth-server healthy"
-    break
-  fi
-  sleep 1
-  if [[ "$i" == "10" ]]; then
-    die "auth-server didn't come back up — check: journalctl -u auth-server -n 50"
-  fi
-done
+if wait_healthy; then
+  ok "auth-server healthy"
+else
+  rollback_and_die "new build (${after_sha:0:12}) didn't come up healthy"
+fi
 
 say
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
@@ -167,4 +240,5 @@ printf '%s ✓ Updated %s → %s%s\n' "$c_bold" "${before_sha:0:12}" "${after_sh
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
 say
 say "  Logs:  ${c_dim}auth logs${c_reset}"
-say "  Roll back: cd $SRC_DIR && sudo git checkout $before_sha && sudo auth update"
+say "  Roll back: cd $SRC_DIR && sudo git checkout $before_sha && sudo auth rebuild"
+say "             ${c_dim}(rebuild, not update — 'update' would re-pull this commit)${c_reset}"
