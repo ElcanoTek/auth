@@ -175,8 +175,10 @@ step "3/6  Configuring the instance"
 ENV_FILE="$APP_DIR/.env.local"
 if [[ -f "$ENV_FILE" ]]; then
   info "found existing ${ENV_FILE} — re-using values, only asking for what's missing"
-  # shellcheck disable=SC1090
-  set -a; . "$ENV_FILE"; set +a
+  set -a
+  # shellcheck source=/dev/null
+  . "$ENV_FILE"
+  set +a
 fi
 
 # 3a — hostname
@@ -282,7 +284,7 @@ AUTH_SIGNING_KEY="${AUTH_SIGNING_KEY:-$(openssl genpkey -algorithm ed25519 -outf
 # 16-byte prefix + 32-byte seed), then ask openssl for the public half.
 _ed25519_pkcs8_prefix='\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x70\x04\x22\x04\x20'
 AUTH_SIGNING_PUBKEY="$(
-  { printf "$_ed25519_pkcs8_prefix"; printf '%s' "$AUTH_SIGNING_KEY" | base64 -d; } \
+  { printf '%b' "$_ed25519_pkcs8_prefix"; printf '%s' "$AUTH_SIGNING_KEY" | base64 -d; } \
     | openssl pkey -inform DER -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n'
 )"
 unset _ed25519_pkcs8_prefix
