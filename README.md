@@ -241,6 +241,32 @@ docs/DEPLOY.md           production walkthrough
 docs/INTEGRATION.md      per-service integration checklists
 ```
 
+## Login UI fonts
+
+The login page self-hosts its typeface from the binary — `//go:embed` in
+`internal/httpapi/fonts.go`, served at `/fonts/` with
+`Cache-Control: immutable`. No Google Fonts, no CDN: an external font
+dependency on the front door of the whole stack is both a privacy leak and
+a third party in the login path, and a self-contained binary is the deploy
+model here anyway.
+
+The face is **Nebula Sans** (SIL OFL 1.1), the single Elcano brand face from
+the `flag` design system. Only the two weights these pages render are
+embedded — 400 for body copy, 700 for headings, labels and the button —
+which keeps the payload at ~144 KB. Flag's 500/600 weights, its italics, and
+its second face (Hack, for code/monospace) are deliberately absent: nothing
+on either page renders them. `internal/httpapi/fonts/OFL.txt` ships and is
+served alongside the woff2 files because the licence requires the licence
+text to travel with the binaries.
+
+This replaced Dubai, which was proprietary (© 2017 Dubai Executive Council,
+distributed by Monotype) and could not legally ship in the repo. To change
+the face, update `flag/design-system/fonts/` first — it is the canonical
+source — then copy the woff2 + licence here and adjust the `@font-face`
+rules in `internal/httpapi/templates.go` and the embed patterns in
+`fonts.go` together. `TestFontsServed` and `TestFontLicenceShipped` fail if
+either drifts.
+
 **Why not a hosted provider (Clerk / Stytch / WorkOS)?** Magic links
 are 700 lines of Go; the surface is tiny. Owning it keeps client
 sessions out of a third party's hot path, lets us share secrets with

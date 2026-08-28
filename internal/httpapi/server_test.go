@@ -158,13 +158,13 @@ func TestVerifyWithoutCookieIs401(t *testing.T) {
 	}
 }
 
-// TestFontsServed confirms the self-hosted Dubai woff2 files are embedded
-// and served at /fonts/ with the right content type — the login UI's
+// TestFontsServed confirms the self-hosted Nebula Sans woff2 files are
+// embedded and served at /fonts/ with the right content type — the login UI's
 // @font-face rules point here, so a missing/misnamed file silently drops
 // the brand font back to the system fallback.
 func TestFontsServed(t *testing.T) {
 	ts, _, _, _ := newTestServer(t)
-	for _, name := range []string{"DubaiW23-Regular.woff2", "DubaiW23-Bold.woff2"} {
+	for _, name := range []string{"NebulaSans-400.woff2", "NebulaSans-700.woff2"} {
 		resp, err := http.Get(ts.URL + "/fonts/" + name)
 		if err != nil {
 			t.Fatalf("GET %s: %v", name, err)
@@ -180,6 +180,26 @@ func TestFontsServed(t *testing.T) {
 		if len(body) < 4 || string(body[:4]) != "wOF2" {
 			t.Errorf("%s: not a woff2 payload (len=%d)", name, len(body))
 		}
+	}
+}
+
+// TestFontLicenceShipped guards the licence obligation, not the pixels: the
+// SIL OFL 1.1 requires its text to travel with the font binaries, so OFL.txt
+// is embedded alongside them and reachable at /fonts/OFL.txt. Deleting it to
+// shave 4 KB off the binary would make the build non-redistributable.
+func TestFontLicenceShipped(t *testing.T) {
+	ts, _, _, _ := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/fonts/OFL.txt")
+	if err != nil {
+		t.Fatalf("GET OFL.txt: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "SIL OPEN FONT LICENSE") {
+		t.Errorf("OFL.txt served but doesn't look like the OFL (len=%d)", len(body))
 	}
 }
 
