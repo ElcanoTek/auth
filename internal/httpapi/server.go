@@ -82,7 +82,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/verify", s.handleVerify)
 	mux.HandleFunc("/me", s.handleMe)
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.Handle("/fonts/", fontHandler()) // self-hosted Dubai woff2 for the login UI
+	mux.Handle("/fonts/", fontHandler()) // self-hosted Nebula Sans woff2 for the login UI
 	return logRequests(mux)
 }
 

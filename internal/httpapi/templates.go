@@ -17,20 +17,22 @@ func parseTemplates() *template.Template {
 	return t
 }
 
-// fontFaceCSS self-hosts the flag UI font (Dubai 400/700) from the binary,
-// served by fontHandler at /fonts/. font-display: swap renders the token
-// fallback ("Segoe UI", sans-serif) immediately, then swaps to Dubai once
-// the woff2 loads — no blank-text flash, no CDN dependency.
+// fontFaceCSS self-hosts the flag brand face (Nebula Sans 400/700) from the
+// binary, served by fontHandler at /fonts/. font-display: swap renders the
+// token fallback ("Segoe UI", system-ui, sans-serif) immediately, then swaps
+// to Nebula Sans once the woff2 loads — no blank-text flash, no CDN
+// dependency. Only the two weights these pages render are embedded; see
+// fonts.go for why 500/600, the italics and Hack are deliberately absent.
 const fontFaceCSS = `
 @font-face {
-  font-family: "Dubai";
+  font-family: "Nebula Sans";
   font-style: normal; font-weight: 400; font-display: swap;
-  src: url("/fonts/DubaiW23-Regular.woff2") format("woff2");
+  src: url("/fonts/NebulaSans-400.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Dubai";
+  font-family: "Nebula Sans";
   font-style: normal; font-weight: 700; font-display: swap;
-  src: url("/fonts/DubaiW23-Bold.woff2") format("woff2");
+  src: url("/fonts/NebulaSans-700.woff2") format("woff2");
 }
 `
 
@@ -44,8 +46,8 @@ const fontFaceCSS = `
 const tokensCSS = `
 :root {
   color-scheme: dark;
-  --font-heading: "Dubai", "Segoe UI", sans-serif;
-  --font-body: "Dubai", "Segoe UI", sans-serif;
+  --font-heading: "Nebula Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-body: "Nebula Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-weight-regular: 400;
   --font-weight-bold: 700;
   --font-size-title: 1.75rem;
