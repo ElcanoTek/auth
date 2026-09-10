@@ -338,3 +338,56 @@ func TestPasswordModeSecurityConfiguration(t *testing.T) {
 		t.Fatalf("negative rate limit was accepted: %v", err)
 	}
 }
+
+func TestAuditRetentionConfiguration(t *testing.T) {
+	clearAllAuthEnv(t)
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+	t.Setenv("AUTH_LOGIN_MODE", "password")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load default: %v", err)
+	}
+	if cfg.AuditRetention != 90*24*time.Hour {
+		t.Errorf("default AuditRetention = %v, want 90 days", cfg.AuditRetention)
+	}
+
+	t.Setenv("AUTH_AUDIT_RETENTION_DAYS", "0")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load zero: %v", err)
+	}
+	if cfg.AuditRetention != 0 {
+		t.Errorf("explicit 0 should disable the audit sweep, got %v", cfg.AuditRetention)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("zero retention must validate (keep forever): %v", err)
+	}
+
+	// Load only parses; Validate (which main runs before serving) rejects.
+	t.Setenv("AUTH_AUDIT_RETENTION_DAYS", "-1")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load negative: %v", err)
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_AUDIT_RETENTION_DAYS") {
+		t.Errorf("negative retention accepted by Validate: %v", err)
+	}
+}
+
+func TestAuditRetentionLoadsFromEnvFile(t *testing.T) {
+	clearAllAuthEnv(t)
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env.local")
+	body := "AUTH_SIGNING_KEY=" + testSeedB64 + "\nAUTH_LOGIN_MODE=password\nAUTH_AUDIT_RETENTION_DAYS=\"30\"\n"
+	if err := os.WriteFile(envFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(envFile)
+	if err != nil {
+		t.Fatalf("Load(file): %v", err)
+	}
+	if cfg.AuditRetention != 30*24*time.Hour {
+		t.Errorf("AuditRetention from file = %v, want 30 days", cfg.AuditRetention)
+	}
+}

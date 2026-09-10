@@ -75,8 +75,9 @@ func New(cfg *config.Config, st *store.Store, sender email.Sender) *Server {
 	// Rate-limit and audit rows store hashes of emails and client IPs. A
 	// plain SHA-256 of an IPv4 address falls to a 4-billion-entry dictionary
 	// after a database leak, so key the hash with a secret derived from the
-	// deployment's signing seed. HKDF with a fixed label keeps this key
-	// independent of the Ed25519 signing use of the same seed.
+	// deployment's Ed25519 private key (itself derived from the
+	// AUTH_SIGNING_KEY seed). HKDF with a fixed label keeps this key
+	// independent of the signing use of the same material.
 	mac, err := hkdf.Key(sha256.New, []byte(cfg.SigningKey), nil, "elcano-auth/rate-key/v1", 32)
 	if err != nil {
 		panic(fmt.Sprintf("derive rate-key MAC: %v", err))
@@ -419,7 +420,7 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	ipRateKey := s.rateKey("ip", clientIP(r))
 	account, valid, err := s.authenticatePassword(r.Context(), email, plain, ipRateKey, now, "login")
 	if err != nil {
-		log.Printf("password authentication: %v", err)
+		logUnlessCancelled("password authentication", err)
 		s.passwordLoginFailure(w, r)
 		return
 	}
@@ -427,12 +428,17 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		s.passwordLoginFailure(w, r)
 		return
 	}
-	_ = s.store.RecordAudit(r.Context(), "login.succeeded", account.ID, ipRateKey, now.Unix())
 	if err := s.issuePasswordSession(w, r, account, now); err != nil {
-		log.Printf("issue password session: %v", err)
+		// Includes the credential having been replaced between verify and
+		// issue: the password was right a moment ago, but no session exists,
+		// so this is not a successful login.
+		logUnlessCancelled("issue password session", err)
+		_ = s.store.RecordAudit(r.Context(), "login.session_refused", account.ID, ipRateKey, now.Unix())
 		s.passwordLoginFailure(w, r)
 		return
 	}
+	// Recorded only once a session actually exists.
+	_ = s.store.RecordAudit(r.Context(), "login.succeeded", account.ID, ipRateKey, now.Unix())
 	if account.MustChangePassword {
 		http.Redirect(w, r, "/change-password", http.StatusSeeOther)
 		return
@@ -586,7 +592,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	account, valid, authErr := s.authenticatePassword(r.Context(), identity.Account.NormalizedEmail, current, ipRateKey, now, "password_change")
 	if authErr != nil || !valid || account.ID != identity.Account.ID {
 		if authErr != nil {
-			log.Printf("password change authentication: %v", authErr)
+			logUnlessCancelled("password change authentication", authErr)
 		}
 		s.renderChangePassword(w, "Current password is incorrect.", csrf)
 		return
@@ -691,6 +697,16 @@ func (s *Server) hashPassword(ctx context.Context, plain string) (string, error)
 	}
 	defer release(s.passwordSlots)
 	return passwordauth.Hash(plain)
+}
+
+// logUnlessCancelled keeps client disconnects out of the error log: a
+// request abandoned while waiting on a gate is not a server fault, and under
+// a flood those lines would bury the ones that matter.
+func logUnlessCancelled(what string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	log.Printf("%s: %v", what, err)
 }
 
 func acquire(ctx context.Context, slots chan struct{}) error {

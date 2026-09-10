@@ -943,6 +943,53 @@ func TestRecordAuditIfAbsentCoalescesPerSourceAndWindow(t *testing.T) {
 	if len(events) != 3 {
 		t.Fatalf("audit rows = %d, want 3", len(events))
 	}
+	if _, err := s.RecordAuditIfAbsent(ctx, "login.rate_limited", "", "", 3000, 2900); err == nil {
+		t.Fatal("coalesced audit without a source hash must be refused")
+	}
+}
+
+func TestAuditCoalescingProbeUsesIndex(t *testing.T) {
+	// The existence probe runs on every rate-limited request; it must be an
+	// index lookup, not a scan of up to 90 days of history.
+	s := openTestStore(t)
+	ctx := context.Background()
+	rows, err := s.db.QueryContext(ctx, `EXPLAIN QUERY PLAN
+		SELECT 1 FROM audit_events WHERE event_type = ? AND source_ip_hash = ? AND occurred_at >= ?`,
+		"login.rate_limited", "abc", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var plan []string
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	joined := strings.Join(plan, " | ")
+	if !strings.Contains(joined, "idx_audit_events_type_source_time") || strings.Contains(joined, "SCAN") {
+		t.Fatalf("coalescing probe plan = %q, want a SEARCH on idx_audit_events_type_source_time", joined)
+	}
+}
+
+func TestValidateAuthSessionDoesNotReturnCredential(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	a, _ := s.CreatePasswordAccount(ctx, "alice@example.com", "secret-hash", false, now)
+	if err := s.CreateAuthSession(ctx, "sess", a.ID, a.PasswordHash, now, now+3600, now+7200); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := s.ValidateAuthSession(ctx, "sess", now+1, time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PasswordHash != "" {
+		t.Fatalf("session validation leaked the credential hash into the request path: %q", got.PasswordHash)
+	}
 }
 
 func TestSweepDeletesOldAuditEventsOnlyWhenRetentionSet(t *testing.T) {

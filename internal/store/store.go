@@ -133,6 +133,10 @@ CREATE TABLE IF NOT EXISTS audit_events (
   metadata       TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_audit_events_user_time ON audit_events(user_id, occurred_at);
+-- Backs RecordAuditIfAbsent's per-source coalescing lookup and the retention
+-- sweep; without them every rate-limited request would scan the audit table.
+CREATE INDEX IF NOT EXISTS idx_audit_events_type_source_time ON audit_events(event_type, source_ip_hash, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_audit_events_time ON audit_events(occurred_at);
 
 -- Reserved authentication-factor plumbing. These tables deliberately carry
 -- no enabled v1 behavior, but keep future factors out of the accounts table.
@@ -778,7 +782,10 @@ func (s *Store) CreateAuthSession(ctx context.Context, tokenHash, userID, verifi
 }
 
 // ValidateAuthSession checks all server-side state and extends the idle expiry
-// without ever moving it beyond the absolute limit.
+// without ever moving it beyond the absolute limit. The returned Account
+// deliberately carries no PasswordHash: session validation runs on every
+// request and nothing on that path needs credential material. Flows that do
+// (password change) re-verify against a fresh PasswordAccountByEmail load.
 func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now int64, idleTTL, touchInterval time.Duration) (Account, AuthSession, error) {
 	var sess AuthSession
 	var a Account
@@ -786,7 +793,7 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 	var mustChange int
 	var created, updated, sessionCreated, lastSeen, idleExpires, absoluteExpires int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
+		SELECT a.id, a.email, a.normalized_email, a.disabled_at,
 		       a.must_change_password, a.created_at, a.updated_at,
 		       s.token_hash, s.created_at, s.last_seen_at, s.idle_expires_at,
 		       s.absolute_expires_at, s.revoked_at, COALESCE(s.revocation_reason, '')
@@ -794,7 +801,7 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 		JOIN accounts a ON a.id = s.user_id
 		JOIN password_credentials p ON p.user_id = a.id
 		WHERE s.token_hash = ?`, tokenHash).Scan(
-		&a.ID, &a.Email, &a.NormalizedEmail, &a.PasswordHash, &disabled,
+		&a.ID, &a.Email, &a.NormalizedEmail, &disabled,
 		&mustChange, &created, &updated, &sess.TokenHash, &sessionCreated,
 		&lastSeen, &idleExpires, &absoluteExpires, &revoked, &sess.RevocationReason)
 	if err != nil {
@@ -1039,22 +1046,24 @@ func (s *Store) RecordAudit(ctx context.Context, event, userID, sourceIPHash str
 // RecordAuditIfAbsent writes the event only when no identical event
 // (same type and source) has been recorded since `since`. Rate-limited
 // requests use it so an attacker who has already tripped a limit cannot
-// grow the audit table one row per cheap, Argon2-free request.
+// grow the audit table one row per cheap, Argon2-free request. A source
+// hash is required: the existence probe is an exact index lookup on
+// (event_type, source_ip_hash, occurred_at), never a scan.
 func (s *Store) RecordAuditIfAbsent(ctx context.Context, event, userID, sourceIPHash string, now, since int64) (bool, error) {
-	var nullableUser, nullableIP any
+	if sourceIPHash == "" {
+		return false, errors.New("source hash is required for coalesced audit events")
+	}
+	var nullableUser any
 	if userID != "" {
 		nullableUser = userID
-	}
-	if sourceIPHash != "" {
-		nullableIP = sourceIPHash
 	}
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO audit_events(event_type, user_id, source_ip_hash, occurred_at, metadata)
 		SELECT ?, ?, ?, ?, '{}'
 		WHERE NOT EXISTS (
 			SELECT 1 FROM audit_events
-			WHERE event_type = ? AND COALESCE(source_ip_hash, '') = ? AND occurred_at >= ?
-		)`, event, nullableUser, nullableIP, now, event, sourceIPHash, since)
+			WHERE event_type = ? AND source_ip_hash = ? AND occurred_at >= ?
+		)`, event, nullableUser, sourceIPHash, now, event, sourceIPHash, since)
 	if err != nil {
 		return false, err
 	}

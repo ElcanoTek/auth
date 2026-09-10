@@ -395,9 +395,11 @@ func auditCmd(dataDir string, args []string) {
 		}
 		source := "-"
 		if e.SourceIPHash != "" {
-			// Source is an HMAC of the client IP; the prefix is enough to
+			// Source is an HMAC of the client IP; a prefix is enough to
 			// correlate events from one address without storing the address.
-			source = e.SourceIPHash[:12]
+			// Bound it by the actual length so an imported or edited row
+			// cannot make the listing panic.
+			source = e.SourceIPHash[:min(12, len(e.SourceIPHash))]
 		}
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.OccurredAt.UTC().Format("2006-01-02 15:04:05"), e.EventType, who, source)
 	}
