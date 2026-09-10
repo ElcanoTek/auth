@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -361,7 +363,7 @@ func TestProductionPasswordCookieUsesHostPrefixAndSecurityFlags(t *testing.T) {
 	if session == nil || !session.Secure || !session.HttpOnly || session.Domain != "" || session.Path != "/" || session.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("production session cookie = %+v", session)
 	}
-	if csrf == nil || !csrf.Secure || csrf.HttpOnly || csrf.Domain != "" || csrf.Path != "/" || csrf.SameSite != http.SameSiteLaxMode {
+	if csrf == nil || !csrf.Secure || !csrf.HttpOnly || csrf.Domain != "" || csrf.Path != "/" || csrf.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("production CSRF cookie = %+v", csrf)
 	}
 }
@@ -1553,5 +1555,106 @@ func TestLogoutKeepsCookieWhenRevocationFails(t *testing.T) {
 		if c.Name == cfg.PasswordCookieName {
 			t.Fatalf("session cookie was cleared despite failed revocation: %+v", c)
 		}
+	}
+}
+
+func TestPagesCarryNonceCSPAndNoUnnoncedInlineCode(t *testing.T) {
+	ts, _, _, _ := newPasswordTestServer(t, false)
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	csp := resp.Header.Get("Content-Security-Policy")
+	m := regexp.MustCompile(`script-src 'nonce-([A-Za-z0-9_-]+)'`).FindStringSubmatch(csp)
+	if m == nil {
+		t.Fatalf("no script nonce in CSP %q", csp)
+	}
+	nonce := m[1]
+	for _, want := range []string{"default-src 'none'", "style-src 'nonce-" + nonce + "'", "font-src 'self'", "frame-ancestors 'none'", "base-uri 'none'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP %q missing %q", csp, want)
+		}
+	}
+	if strings.Contains(csp, "form-action") {
+		t.Error("form-action would block the post-login redirect to client hosts")
+	}
+	page := string(body)
+	if strings.Contains(page, "<script>") || strings.Contains(page, "<style>") {
+		t.Fatal("page contains inline script or style without a nonce; CSP would block it")
+	}
+	if !strings.Contains(page, `<script nonce="`+nonce+`">`) || !strings.Contains(page, `<style nonce="`+nonce+`">`) {
+		t.Fatalf("inline code does not carry the CSP nonce %q", nonce)
+	}
+	if strings.Contains(page, `onclick=`) || strings.Contains(page, ` style="`) {
+		t.Fatal("inline event handler or style attribute would be blocked by CSP")
+	}
+	second, _ := http.Get(ts.URL + "/")
+	_ = second.Body.Close()
+	if second.Header.Get("Content-Security-Policy") == csp {
+		t.Fatal("nonce must differ per response")
+	}
+}
+
+func TestNonPageResponsesKeepClosedCSP(t *testing.T) {
+	ts, _, _, _ := newPasswordTestServer(t, false)
+	resp, err := http.Get(ts.URL + "/me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got := resp.Header.Get("Content-Security-Policy"); got != "default-src 'none'; base-uri 'none'; frame-ancestors 'none'" {
+		t.Fatalf("/me CSP = %q", got)
+	}
+}
+
+func TestMeReturnsValidJSON(t *testing.T) {
+	ts, _, cfg, plain := newPasswordTestServer(t, false)
+	_, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/me", nil)
+	req.AddCookie(session)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("/me is not valid JSON: %v", err)
+	}
+	if out["authenticated"] != true || out["email"] != "Alice@Example.com" || out["must_change_password"] != false {
+		t.Fatalf("/me body = %v", out)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type = %q", ct)
+	}
+}
+
+func TestWriteJSONEscapesByJSONRules(t *testing.T) {
+	// %q would emit \a and \x1b here, which JSON parsers reject.
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, map[string]any{"email": "bell\a esc\x1b quote\" slash\\"})
+	var out map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("writeJSON produced invalid JSON %q: %v", rec.Body.String(), err)
+	}
+	if out["email"] != "bell\a esc\x1b quote\" slash\\" {
+		t.Fatalf("round trip changed the value: %q", out["email"])
+	}
+}
+
+func TestFontsAreCacheableDespiteNoStoreDefault(t *testing.T) {
+	ts, _, _, _ := newPasswordTestServer(t, false)
+	resp, err := http.Get(ts.URL + "/fonts/OFL.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if cc := resp.Header.Get("Cache-Control"); !strings.Contains(cc, "public") || strings.Contains(cc, "no-store") {
+		t.Fatalf("font Cache-Control = %q", cc)
+	}
+	if p := resp.Header.Get("Pragma"); p != "" {
+		t.Fatalf("font response still carries Pragma %q", p)
 	}
 }

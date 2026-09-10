@@ -286,8 +286,8 @@ const loginHTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>{{.Brand}} — Sign in</title>
-<style>` + fontFaceCSS + tokensCSS + componentCSS + `</style>
-<script>` + themeScript + `</script>
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `</style>
+<script nonce="{{.Nonce}}">` + themeScript + `</script>
 </head>
 <body>
   ` + themeToggle + `
@@ -320,8 +320,8 @@ const changePasswordHTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>{{.Brand}} — Change password</title>
-<style>` + fontFaceCSS + tokensCSS + componentCSS + `</style>
-<script>` + themeScript + `</script>
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `</style>
+<script nonce="{{.Nonce}}">` + themeScript + `</script>
 </head>
 <body>
   ` + themeToggle + `
@@ -351,8 +351,8 @@ const accountHTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>{{.Brand}} — Signed in</title>
-<style>` + fontFaceCSS + tokensCSS + componentCSS + `</style>
-<script>` + themeScript + `</script>
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `</style>
+<script nonce="{{.Nonce}}">` + themeScript + `</script>
 </head>
 <body>
   ` + themeToggle + `
@@ -378,8 +378,8 @@ const sentHTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>{{.Brand}} — Check your inbox</title>
-<style>` + fontFaceCSS + tokensCSS + componentCSS + `</style>
-<script>` + themeScript + `</script>
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `</style>
+<script nonce="{{.Nonce}}">` + themeScript + `</script>
 </head>
 <body>
   ` + themeToggle + `

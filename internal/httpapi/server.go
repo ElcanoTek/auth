@@ -30,6 +30,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -151,7 +152,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.tmpl.ExecuteTemplate(w, "login.html", map[string]any{
+	if err := s.render(w, "login.html", map[string]any{
 		"Brand":    s.cfg.BrandName,
 		"ReturnTo": r.URL.Query().Get("return_to"),
 		"Error":    errorMessage(r.URL.Query().Get("err")),
@@ -178,7 +179,7 @@ func (s *Server) handlePasswordRoot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "something went wrong", http.StatusInternalServerError)
 		return
 	}
-	if err := s.tmpl.ExecuteTemplate(w, "login.html", map[string]any{
+	if err := s.render(w, "login.html", map[string]any{
 		"Brand":        s.cfg.BrandName,
 		"PasswordMode": true,
 		"ReturnTo":     r.URL.Query().Get("return_to"),
@@ -194,7 +195,7 @@ func (s *Server) handleSent(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := s.tmpl.ExecuteTemplate(w, "sent.html", map[string]any{
+	if err := s.render(w, "sent.html", map[string]any{
 		"Brand": s.cfg.BrandName,
 		"Email": r.URL.Query().Get("email"),
 	}); err != nil {
@@ -639,7 +640,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderChangePassword(w http.ResponseWriter, errText, csrf string) {
-	if err := s.tmpl.ExecuteTemplate(w, "change-password.html", map[string]any{
+	if err := s.render(w, "change-password.html", map[string]any{
 		"Brand": s.cfg.BrandName, "Error": errText, "CSRF": csrf,
 	}); err != nil {
 		log.Printf("render change password: %v", err)
@@ -672,7 +673,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "something went wrong", http.StatusInternalServerError)
 		return
 	}
-	if err := s.tmpl.ExecuteTemplate(w, "account.html", map[string]any{
+	if err := s.render(w, "account.html", map[string]any{
 		"Brand": s.cfg.BrandName, "Email": identity.Account.Email, "CSRF": csrf,
 	}); err != nil {
 		log.Printf("render account: %v", err)
@@ -871,25 +872,30 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	if s.passwordMode() {
 		identity := s.currentPasswordSession(r)
-		w.Header().Set("Content-Type", "application/json")
 		if identity == nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false})
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"authenticated":true,"sub":%q,"email":%q,"must_change_password":%t,"exp":%d}`,
-			identity.Account.ID, identity.Account.Email, identity.Account.MustChangePassword, identity.Session.AbsoluteExpiresAt.Unix())
+		writeJSON(w, http.StatusOK, map[string]any{
+			"authenticated":        true,
+			"sub":                  identity.Account.ID,
+			"email":                identity.Account.Email,
+			"must_change_password": identity.Account.MustChangePassword,
+			"exp":                  identity.Session.AbsoluteExpiresAt.Unix(),
+		})
 		return
 	}
 	sess := s.currentSession(r)
-	w.Header().Set("Content-Type", "application/json")
 	if sess == nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false})
 		return
 	}
-	_, _ = fmt.Fprintf(w, `{"authenticated":true,"email":%q,"tenant":%q,"exp":%d}`,
-		sess.Email, sess.Tenant, sess.Exp)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"email":         sess.Email,
+		"tenant":        sess.Tenant,
+		"exp":           sess.Exp,
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1013,7 +1019,10 @@ func (s *Server) setCSRFCookie(w http.ResponseWriter, raw string) {
 	http.SetCookie(w, &http.Cookie{
 		Name: s.effectiveCSRFCookieName(), Value: raw, Path: "/",
 		MaxAge: int(s.cfg.PasswordAbsoluteTTL.Seconds()), Secure: s.cfg.CookieSecure,
-		HttpOnly: false, SameSite: http.SameSiteLaxMode,
+		// The token reaches the browser inside the rendered form, so script
+		// never needs to read this cookie. HttpOnly keeps it out of reach
+		// of any script that does run on the page.
+		HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
 }
 
@@ -1029,7 +1038,7 @@ func (s *Server) validCSRF(r *http.Request) bool {
 func (s *Server) clearPasswordCookies(w http.ResponseWriter) {
 	for _, cookie := range []http.Cookie{
 		{Name: s.cfg.PasswordCookieName, HttpOnly: true},
-		{Name: s.effectiveCSRFCookieName(), HttpOnly: false},
+		{Name: s.effectiveCSRFCookieName(), HttpOnly: true},
 	} {
 		cookie.Value = ""
 		cookie.Path = "/"
@@ -1187,10 +1196,41 @@ func logRequests(h http.Handler) http.Handler {
 	})
 }
 
+// render executes an HTML page with a per-response CSP nonce. The pages carry
+// one inline <style> and one inline <script> (the theme toggle); the nonce
+// lets exactly those run while the policy refuses every other script,
+// style, or resource origin. No form-action directive: browsers apply it to
+// the redirect that follows a form post, which would break the post-login
+// bounce to a client application host.
+func (s *Server) render(w http.ResponseWriter, name string, data map[string]any) error {
+	nonce, err := randomSecret(16)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
+			"font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	data["Nonce"] = nonce
+	return s.tmpl.ExecuteTemplate(w, name, data)
+}
+
+// writeJSON encodes v with encoding/json so every string is escaped by JSON
+// rules. fmt's %q is Go-syntax quoting and can emit \a or \xNN, which a
+// JSON parser rejects.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
 func securityHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Pragma", "no-cache")
+		// Pages replace this with a nonce policy in render(); JSON,
+		// redirects, and errors keep the closed default.
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")

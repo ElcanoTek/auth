@@ -50,7 +50,10 @@ func fontHandler() http.Handler {
 		if strings.HasSuffix(r.URL.Path, ".woff2") {
 			w.Header().Set("Content-Type", "font/woff2")
 		}
+		// Override the middleware's no-store: the font files are immutable
+		// public assets and re-downloading them on every page is waste.
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Del("Pragma")
 		fileServer.ServeHTTP(w, r)
 	}))
 }
