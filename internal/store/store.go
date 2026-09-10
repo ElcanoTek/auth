@@ -855,6 +855,101 @@ func (s *Store) CountFailedLoginAttempts(ctx context.Context, rateKeyHash string
 	return n, err
 }
 
+// ReserveLoginAttempts inserts one provisional FAILED attempt per rate key in
+// a single transaction and returns the new row ids in argument order. The
+// caller reserves before the expensive credential check so concurrent
+// requests see each other's in-flight attempts, then settles on success.
+func (s *Store) ReserveLoginAttempts(ctx context.Context, now int64, rateKeyHashes ...string) ([]int64, error) {
+	if len(rateKeyHashes) == 0 {
+		return nil, errors.New("at least one rate key is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	ids := make([]int64, 0, len(rateKeyHashes))
+	for _, key := range rateKeyHashes {
+		if key == "" {
+			return nil, errors.New("empty rate key")
+		}
+		res, err := tx.ExecContext(ctx, `INSERT INTO login_attempts(rate_key_hash, succeeded, attempted_at) VALUES(?, 0, ?)`, key, now)
+		if err != nil {
+			return nil, err
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, tx.Commit()
+}
+
+// SettleLoginAttemptSuccess converts a reserved attempt into the success
+// marker that resets its key's failure count and deletes the other reserved
+// rows (the per-IP reservation) so a good sign-in never counts against a
+// shared address. All in one transaction.
+func (s *Store) SettleLoginAttemptSuccess(ctx context.Context, succeededID int64, discardIDs ...int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE login_attempts SET succeeded = 1 WHERE id = ?`, succeededID); err != nil {
+		return err
+	}
+	for _, id := range discardIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM login_attempts WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// AuditEvent is one row of the security audit log. It never carries
+// credential material; SourceIPHash is a keyed hash, not an address.
+type AuditEvent struct {
+	ID           int64
+	EventType    string
+	UserID       string
+	SourceIPHash string
+	OccurredAt   time.Time
+}
+
+// RecentAuditEvents returns the newest events first. An empty userID returns
+// events for every account, including anonymous ones (unknown email).
+func (s *Store) RecentAuditEvents(ctx context.Context, userID string, limit int) ([]AuditEvent, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	query := `SELECT id, event_type, COALESCE(user_id, ''), COALESCE(source_ip_hash, ''), occurred_at
+		FROM audit_events`
+	args := []any{}
+	if userID != "" {
+		query += ` WHERE user_id = ?`
+		args = append(args, userID)
+	}
+	query += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []AuditEvent
+	for rows.Next() {
+		var e AuditEvent
+		var at int64
+		if err := rows.Scan(&e.ID, &e.EventType, &e.UserID, &e.SourceIPHash, &at); err != nil {
+			return nil, err
+		}
+		e.OccurredAt = time.Unix(at, 0)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 func insertAudit(ctx context.Context, e execer, event, userID string, now int64, metadata string) error {
 	var nullableUser any
 	if userID != "" {

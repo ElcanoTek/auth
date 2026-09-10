@@ -123,6 +123,11 @@ passwords, inspect account state, and revoke sessions; run
 
 This commit deliberately covers authentication on the Auth host only. It does
 not yet issue service-specific authorization codes or Explorer/Lens sessions.
+In particular, password mode has **no downstream consumers yet**: the
+`__Host-auth_session` cookie never leaves the auth hostname, so a Caddy
+`forward_auth` block on another host receives no session and `/verify`
+always answers 401 there. Do not deploy password mode for a client expecting
+single sign-on until the authorization-code handoff (PR 2) has landed.
 That browser handoff and each app's local email allowlist are the next delivery
 stage described in [`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md).
 

@@ -5,6 +5,7 @@
 //	GET  /           — login form (HTML)
 //	POST /login      — password-mode login
 //	GET|POST /change-password — password-mode forced replacement
+//	GET  /account    — password-mode signed-in page with the logout form
 //	POST /magic      — issue + email a magic link (form post or JSON)
 //	GET  /sent       — "check your inbox" confirmation page
 //	GET  /callback   — verify magic token, set session cookie, redirect
@@ -51,8 +52,8 @@ type Server struct {
 	sender            email.Sender
 	tmpl              *template.Template
 	dummyPasswordHash string
-	passwordSlots     chan struct{}
-	passwordAttemptMu sync.Mutex
+	passwordSlots     chan struct{} // bounds concurrent Argon2 computations
+	attemptGate       chan struct{} // 1-slot gate around limit-check + attempt-reserve
 
 	// sends tracks in-flight magic-link email goroutines so graceful
 	// shutdown can drain them instead of dropping mid-flight emails.
@@ -60,7 +61,11 @@ type Server struct {
 }
 
 func New(cfg *config.Config, st *store.Store, sender email.Sender) *Server {
-	s := &Server{cfg: cfg, store: st, sender: sender, tmpl: parseTemplates(), passwordSlots: make(chan struct{}, 2)}
+	s := &Server{
+		cfg: cfg, store: st, sender: sender, tmpl: parseTemplates(),
+		passwordSlots: make(chan struct{}, 2),
+		attemptGate:   make(chan struct{}, 1),
+	}
 	if cfg.LoginMode == "password" {
 		s.dummyPasswordHash = passwordauth.DummyHash()
 	}
@@ -94,6 +99,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/magic", s.handleMagic)
 	mux.HandleFunc("/login", s.handlePasswordLogin)
 	mux.HandleFunc("/change-password", s.handleChangePassword)
+	mux.HandleFunc("/account", s.handleAccount)
 	mux.HandleFunc("/sent", s.handleSent)
 	mux.HandleFunc("/callback", s.handleCallback)
 	mux.HandleFunc("/logout", s.handleLogout)
@@ -134,7 +140,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if err := s.tmpl.ExecuteTemplate(w, "login.html", map[string]any{
 		"Brand":    s.cfg.BrandName,
 		"ReturnTo": r.URL.Query().Get("return_to"),
-		"Error":    r.URL.Query().Get("err"),
+		"Error":    errorMessage(r.URL.Query().Get("err")),
 	}); err != nil {
 		log.Printf("render login: %v", err)
 	}
@@ -162,7 +168,7 @@ func (s *Server) handlePasswordRoot(w http.ResponseWriter, r *http.Request) {
 		"Brand":        s.cfg.BrandName,
 		"PasswordMode": true,
 		"ReturnTo":     r.URL.Query().Get("return_to"),
-		"Error":        r.URL.Query().Get("err"),
+		"Error":        errorMessage(r.URL.Query().Get("err")),
 		"CSRF":         csrf,
 	}); err != nil {
 		log.Printf("render password login: %v", err)
@@ -208,7 +214,7 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 	rawEmail := strings.TrimSpace(r.FormValue("email"))
 	email := strings.ToLower(rawEmail)
 	if !looksLikeEmail(email) {
-		s.bounceWithErr(w, r, "Please enter a valid email address.")
+		s.bounceWithErr(w, r, errInvalidEmail)
 		return
 	}
 	// DB is the source of truth at runtime — env AUTH_ALLOWED_DOMAINS
@@ -223,7 +229,7 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 	// response regardless.
 	if ok, err := s.store.DomainAllowed(r.Context(), email); err != nil {
 		log.Printf("domain check: %v", err)
-		s.bounceWithErr(w, r, "Something went wrong. Try again.")
+		s.bounceWithErr(w, r, errInternal)
 		return
 	} else if !ok {
 		s.fakeSentResponse(w, r, email)
@@ -248,7 +254,7 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		n, err := s.store.CountRecentByEmail(r.Context(), email, now.Add(-magicRateWindow).Unix())
 		if err != nil {
 			log.Printf("rate count (per-email): %v", err)
-			s.bounceWithErr(w, r, "Something went wrong. Try again.")
+			s.bounceWithErr(w, r, errInternal)
 			return
 		}
 		if n >= s.cfg.MagicRatePerEmail {
@@ -261,7 +267,7 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		n, err := s.store.CountRecentTotal(r.Context(), now.Add(-magicGlobalWindow).Unix())
 		if err != nil {
 			log.Printf("rate count (global): %v", err)
-			s.bounceWithErr(w, r, "Something went wrong. Try again.")
+			s.bounceWithErr(w, r, errInternal)
 			return
 		}
 		if n >= s.cfg.MagicGlobalLimit {
@@ -276,13 +282,13 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 	nonce, err := token.NewNonce()
 	if err != nil {
 		log.Printf("nonce: %v", err)
-		s.bounceWithErr(w, r, "Something went wrong. Try again.")
+		s.bounceWithErr(w, r, errInternal)
 		return
 	}
 	exp := now.Add(s.cfg.MagicTTL)
 	if err := s.store.IssueMagic(r.Context(), nonce, email, now.Unix(), exp.Unix()); err != nil {
 		log.Printf("issue magic: %v", err)
-		s.bounceWithErr(w, r, "Something went wrong. Try again.")
+		s.bounceWithErr(w, r, errInternal)
 		return
 	}
 
@@ -295,7 +301,7 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("sign magic: %v", err)
-		s.bounceWithErr(w, r, "Something went wrong. Try again.")
+		s.bounceWithErr(w, r, errInternal)
 		return
 	}
 
@@ -334,8 +340,38 @@ func (s *Server) fakeSentResponse(w http.ResponseWriter, r *http.Request, email 
 	http.Redirect(w, r, "/sent?email="+url.QueryEscape(email), http.StatusSeeOther)
 }
 
-func (s *Server) bounceWithErr(w http.ResponseWriter, r *http.Request, msg string) {
-	q := url.Values{"err": []string{msg}}
+// Login-page error codes. The page only ever renders one of these fixed
+// strings; the ?err= query value is a code, never free text, so nobody can
+// craft a link that puts their own words on the sign-in page.
+const (
+	errInvalidEmail       = "invalid_email"
+	errInternal           = "internal"
+	errMissingToken       = "missing_token"
+	errInvalidLink        = "invalid_link"
+	errExpiredLink        = "expired_link"
+	errUsedLink           = "used_link"
+	errInvalidCredentials = "invalid_credentials"
+)
+
+var errorMessages = map[string]string{
+	errInvalidEmail:       "Please enter a valid email address.",
+	errInternal:           "Something went wrong. Try again.",
+	errMissingToken:       "Missing sign-in token.",
+	errInvalidLink:        "Invalid sign-in link. Request a fresh one.",
+	errExpiredLink:        "That link expired. Request a fresh one.",
+	errUsedLink:           "That link has already been used. Request a fresh one.",
+	errInvalidCredentials: "Invalid email or password.",
+}
+
+// errorMessage maps an ?err= code to its display text; unknown codes render
+// nothing rather than echoing the input.
+func errorMessage(code string) string {
+	return errorMessages[code]
+}
+
+// bounceWithErr redirects to the login page carrying an error code.
+func (s *Server) bounceWithErr(w http.ResponseWriter, r *http.Request, code string) {
+	q := url.Values{"err": []string{code}}
 	if rt := r.FormValue("return_to"); rt != "" {
 		q.Set("return_to", rt)
 	}
@@ -368,7 +404,7 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	plain := r.FormValue("password")
 	now := time.Now()
 	ipRateKey := rateKey("ip", clientIP(r))
-	account, valid, err := s.authenticatePassword(r.Context(), email, plain, ipRateKey, now)
+	account, valid, err := s.authenticatePassword(r.Context(), email, plain, ipRateKey, now, "login")
 	if err != nil {
 		log.Printf("password authentication: %v", err)
 		s.passwordLoginFailure(w, r)
@@ -395,39 +431,74 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
-// authenticatePassword keeps the persistent limit check, expensive verify,
-// and attempt record in one in-process critical section. A client deployment
-// deliberately runs one Auth process; serializing this boundary prevents a
-// burst of parallel requests from all observing the same pre-failure count.
-func (s *Server) authenticatePassword(ctx context.Context, email, plain, ipRateKey string, now time.Time) (store.Account, bool, error) {
-	s.passwordAttemptMu.Lock()
-	defer s.passwordAttemptMu.Unlock()
-
+// authenticatePassword checks the persistent failure limits, verifies the
+// credential, and records the attempt. The limit check and the attempt
+// record happen together under attemptGate so a burst of parallel requests
+// cannot all observe the same pre-failure count; the attempt is reserved as
+// a failure BEFORE the expensive Argon2 work and settled to a success only
+// after the credential verifies. That keeps the gate cheap (two SQLite
+// statements) while Argon2 runs in parallel under passwordSlots. A request
+// that is cancelled mid-verify keeps its reserved failure: fail closed.
+//
+// auditPrefix names the flow ("login" or "password_change") so audit events
+// distinguish a sign-in from a current-password check.
+func (s *Server) authenticatePassword(ctx context.Context, email, plain, ipRateKey string, now time.Time, auditPrefix string) (store.Account, bool, error) {
 	emailRateKey := rateKey("email", email)
-	limited, err := s.passwordRateLimited(ctx, emailRateKey, ipRateKey, now)
-	if err != nil || limited {
+	account, lookupErr := s.store.PasswordAccountByEmail(ctx, email)
+	auditUser := ""
+	if lookupErr == nil {
+		auditUser = account.ID
+	}
+
+	attempts, limited, err := s.reserveLoginAttempt(ctx, emailRateKey, ipRateKey, now)
+	if err != nil {
 		return store.Account{}, false, err
 	}
-	account, lookupErr := s.store.PasswordAccountByEmail(ctx, email)
+	if limited {
+		_ = s.store.RecordAudit(ctx, auditPrefix+".rate_limited", auditUser, ipRateKey, now.Unix())
+		return store.Account{}, false, nil
+	}
+
 	encoded := s.dummyPasswordHash
 	if lookupErr == nil {
 		encoded = account.PasswordHash
 	}
-	ok, _, verifyErr := s.verifyPassword(encoded, plain)
+	ok, _, verifyErr := s.verifyPassword(ctx, encoded, plain)
 	valid := lookupErr == nil && verifyErr == nil && ok && account.DisabledAt == nil
 	if !valid {
-		if err := s.store.RecordLoginAttempt(ctx, emailRateKey, false, now.Unix()); err != nil {
-			return store.Account{}, false, err
-		}
-		if err := s.store.RecordLoginAttempt(ctx, ipRateKey, false, now.Unix()); err != nil {
-			return store.Account{}, false, err
+		_ = s.store.RecordAudit(ctx, auditPrefix+".failed", auditUser, ipRateKey, now.Unix())
+		if lookupErr == nil && verifyErr != nil {
+			// A stored hash that no longer parses is an operator problem,
+			// not a bad password; surface it in the log.
+			return store.Account{}, false, fmt.Errorf("verify stored credential: %w", verifyErr)
 		}
 		return store.Account{}, false, nil
 	}
-	if err := s.store.RecordLoginAttempt(ctx, emailRateKey, true, now.Unix()); err != nil {
+	// The email reservation becomes the success marker that resets that
+	// account's failure count; the IP reservation is discarded so successful
+	// sign-ins never count against a shared address.
+	if err := s.store.SettleLoginAttemptSuccess(ctx, attempts[0], attempts[1]); err != nil {
 		return store.Account{}, false, err
 	}
 	return account, true, nil
+}
+
+// reserveLoginAttempt is the short critical section: check both limits and,
+// if neither is exhausted, insert one provisional failure per key.
+func (s *Server) reserveLoginAttempt(ctx context.Context, emailKey, ipKey string, now time.Time) ([]int64, bool, error) {
+	if err := acquire(ctx, s.attemptGate); err != nil {
+		return nil, false, err
+	}
+	defer release(s.attemptGate)
+	limited, err := s.passwordRateLimited(ctx, emailKey, ipKey, now)
+	if err != nil || limited {
+		return nil, limited, err
+	}
+	ids, err := s.store.ReserveLoginAttempts(ctx, now.Unix(), emailKey, ipKey)
+	if err != nil {
+		return nil, false, err
+	}
+	return ids, false, nil
 }
 
 func (s *Server) passwordRateLimited(ctx context.Context, emailKey, ipKey string, now time.Time) (bool, error) {
@@ -448,7 +519,7 @@ func (s *Server) passwordRateLimited(ctx context.Context, emailKey, ipKey string
 }
 
 func (s *Server) passwordLoginFailure(w http.ResponseWriter, r *http.Request) {
-	q := url.Values{"err": []string{"Invalid email or password."}}
+	q := url.Values{"err": []string{errInvalidCredentials}}
 	if rt := r.FormValue("return_to"); rt != "" {
 		q.Set("return_to", rt)
 	}
@@ -490,7 +561,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	current, next, confirm := r.FormValue("current_password"), r.FormValue("new_password"), r.FormValue("confirm_password")
 	now := time.Now()
 	ipRateKey := rateKey("ip", clientIP(r))
-	account, valid, authErr := s.authenticatePassword(r.Context(), identity.Account.NormalizedEmail, current, ipRateKey, now)
+	account, valid, authErr := s.authenticatePassword(r.Context(), identity.Account.NormalizedEmail, current, ipRateKey, now, "password_change")
 	if authErr != nil || !valid || account.ID != identity.Account.ID {
 		if authErr != nil {
 			log.Printf("password change authentication: %v", authErr)
@@ -502,7 +573,15 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.renderChangePassword(w, "New passwords do not match.", csrf)
 		return
 	}
-	encoded, err := s.hashPassword(next)
+	// The current password just verified, so a byte-equal replacement is the
+	// same credential. Rejecting it is what makes a forced change a change:
+	// the administrator who issued the temporary password must not keep
+	// knowing the live one.
+	if subtle.ConstantTimeCompare([]byte(next), []byte(current)) == 1 {
+		s.renderChangePassword(w, "New password must be different from the current password.", csrf)
+		return
+	}
+	encoded, err := s.hashPassword(r.Context(), next)
 	if err != nil {
 		s.renderChangePassword(w, err.Error(), csrf)
 		return
@@ -529,17 +608,69 @@ func (s *Server) renderChangePassword(w http.ResponseWriter, errText, csrf strin
 	}
 }
 
-func (s *Server) verifyPassword(encoded, plain string) (bool, bool, error) {
-	s.passwordSlots <- struct{}{}
-	defer func() { <-s.passwordSlots }()
+// handleAccount is the signed-in landing page on the auth host: it shows who
+// is signed in and carries the only same-origin logout form, which is the
+// one place a password-mode user can end their central session on demand.
+func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
+	if !s.passwordMode() {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	identity := s.currentPasswordSession(r)
+	if identity == nil {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	if identity.Account.MustChangePassword {
+		http.Redirect(w, r, "/change-password", http.StatusSeeOther)
+		return
+	}
+	csrf, err := s.ensureCSRFCookie(w, r)
+	if err != nil {
+		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		return
+	}
+	if err := s.tmpl.ExecuteTemplate(w, "account.html", map[string]any{
+		"Brand": s.cfg.BrandName, "Email": identity.Account.Email, "CSRF": csrf,
+	}); err != nil {
+		log.Printf("render account: %v", err)
+	}
+}
+
+// verifyPassword and hashPassword bound concurrent Argon2 work to
+// passwordSlots (each computation pins 64 MiB). The wait honours the request
+// context so a flood queues briefly and then sheds load instead of piling
+// up goroutines behind an uncancellable lock.
+func (s *Server) verifyPassword(ctx context.Context, encoded, plain string) (bool, bool, error) {
+	if err := acquire(ctx, s.passwordSlots); err != nil {
+		return false, false, err
+	}
+	defer release(s.passwordSlots)
 	return passwordauth.Verify(encoded, plain)
 }
 
-func (s *Server) hashPassword(plain string) (string, error) {
-	s.passwordSlots <- struct{}{}
-	defer func() { <-s.passwordSlots }()
+func (s *Server) hashPassword(ctx context.Context, plain string) (string, error) {
+	if err := acquire(ctx, s.passwordSlots); err != nil {
+		return "", err
+	}
+	defer release(s.passwordSlots)
 	return passwordauth.Hash(plain)
 }
+
+func acquire(ctx context.Context, slots chan struct{}) error {
+	select {
+	case slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func release(slots chan struct{}) { <-slots }
 
 // ── /callback — verify magic, set cookie ─────────────────────────────
 
@@ -550,16 +681,16 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := r.URL.Query().Get("token")
 	if raw == "" {
-		s.bounceWithErr(w, r, "Missing sign-in token.")
+		s.bounceWithErr(w, r, errMissingToken)
 		return
 	}
 	m, err := token.VerifyMagic(s.cfg.PublicKey, raw)
 	if err != nil {
-		s.bounceWithErr(w, r, "Invalid sign-in link. Request a fresh one.")
+		s.bounceWithErr(w, r, errInvalidLink)
 		return
 	}
 	if m.Exp <= time.Now().Unix() {
-		s.bounceWithErr(w, r, "That link expired. Request a fresh one.")
+		s.bounceWithErr(w, r, errExpiredLink)
 		return
 	}
 
@@ -568,10 +699,10 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	// — keeping the failure modes indistinguishable from the outside.
 	if _, err := s.store.ConsumeMagic(r.Context(), m.Nonce, time.Now().Unix()); err != nil {
 		if errors.Is(err, store.ErrConsumed) {
-			s.bounceWithErr(w, r, "That link has already been used. Request a fresh one.")
+			s.bounceWithErr(w, r, errUsedLink)
 			return
 		}
-		s.bounceWithErr(w, r, "Invalid sign-in link. Request a fresh one.")
+		s.bounceWithErr(w, r, errInvalidLink)
 		return
 	}
 
@@ -585,7 +716,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("sign session: %v", err)
-		s.bounceWithErr(w, r, "Something went wrong. Try again.")
+		s.bounceWithErr(w, r, errInternal)
 		return
 	}
 
@@ -625,6 +756,16 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.store.RecordAudit(r.Context(), "session.logged_out", userID, rateKey("ip", clientIP(r)), time.Now().Unix())
 		s.clearPasswordCookies(w)
+		// A browser form (the /account page) asks for a redirect; API-style
+		// callers omit redirect_to and get the bare 204.
+		if rt := r.FormValue("redirect_to"); rt != "" {
+			dest := s.resolveReturnTo(rt)
+			if dest == "" {
+				dest = "/"
+			}
+			http.Redirect(w, r, dest, http.StatusSeeOther)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -865,9 +1006,17 @@ func clientIP(r *http.Request) string {
 	// The production listener is loopback-only behind Caddy. Trust its
 	// forwarded client address only when the immediate peer is loopback;
 	// a mistakenly public listener must not permit rate-limit spoofing.
+	//
+	// Use the LAST hop, not the first: a reverse proxy appends the address
+	// it actually saw, while any earlier entries arrived from the client and
+	// are attacker-controlled. Caddy strips untrusted X-Forwarded-For by
+	// default, but the limiter must not depend on that setting staying put.
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-			return strings.TrimSpace(strings.Split(forwarded, ",")[0])
+			hops := strings.Split(forwarded, ",")
+			if last := strings.TrimSpace(hops[len(hops)-1]); last != "" {
+				return last
+			}
 		}
 	}
 	return host
@@ -883,6 +1032,9 @@ func clientIP(r *http.Request) string {
 func (s *Server) defaultDest() string {
 	if d := s.resolveReturnTo(s.cfg.DefaultReturnTo); d != "" {
 		return d
+	}
+	if s.passwordMode() {
+		return "/account"
 	}
 	return "/me"
 }

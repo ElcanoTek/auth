@@ -778,3 +778,69 @@ func TestPasswordAccountsAndRevocationsSurviveReopen(t *testing.T) {
 		t.Fatalf("revocation lost after reopen: %v", err)
 	}
 }
+
+func TestReserveAndSettleLoginAttempts(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	const emailKey, ipKey = "email-key", "ip-key"
+
+	// A reservation counts as a failure immediately, for both keys.
+	ids, err := st.ReserveLoginAttempts(ctx, 1000, emailKey, ipKey)
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("reserve: ids=%v err=%v", ids, err)
+	}
+	for _, key := range []string{emailKey, ipKey} {
+		if n, _ := st.CountFailedLoginAttempts(ctx, key, 0); n != 1 {
+			t.Fatalf("reserved attempt for %s not counted as failure: %d", key, n)
+		}
+	}
+
+	// Settling turns the email row into the success marker (resetting that
+	// key) and removes the IP row so shared addresses are not penalised.
+	if err := st.SettleLoginAttemptSuccess(ctx, ids[0], ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{emailKey, ipKey} {
+		if n, _ := st.CountFailedLoginAttempts(ctx, key, 0); n != 0 {
+			t.Fatalf("after settle, %s failures = %d, want 0", key, n)
+		}
+	}
+
+	// Failures before the success marker stay reset; new ones count again.
+	if _, err := st.ReserveLoginAttempts(ctx, 1001, emailKey); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := st.CountFailedLoginAttempts(ctx, emailKey, 0); n != 1 {
+		t.Fatalf("post-success failure count = %d, want 1", n)
+	}
+	if _, err := st.ReserveLoginAttempts(ctx, 1002); err == nil {
+		t.Fatal("reserve with no keys should fail")
+	}
+}
+
+func TestRecentAuditEventsFilterAndOrder(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	a, err := st.CreatePasswordAccount(ctx, "alice@example.com", "$argon2id$placeholder", true, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.RecordAudit(ctx, "login.failed", "", "iphash", 1001)
+	_ = st.RecordAudit(ctx, "login.failed", a.ID, "iphash", 1002)
+	all, err := st.RecentAuditEvents(ctx, "", 10)
+	if err != nil || len(all) != 3 || all[0].EventType != "login.failed" || all[0].UserID != a.ID || all[2].EventType != "account.created" {
+		t.Fatalf("all events = %+v err=%v", all, err)
+	}
+	mine, err := st.RecentAuditEvents(ctx, a.ID, 10)
+	if err != nil || len(mine) != 2 {
+		t.Fatalf("user events = %+v err=%v", mine, err)
+	}
+}

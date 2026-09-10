@@ -15,6 +15,7 @@ func parseTemplates() *template.Template {
 	t := template.Must(template.New("login.html").Parse(loginHTML))
 	template.Must(t.New("sent.html").Parse(sentHTML))
 	template.Must(t.New("change-password.html").Parse(changePasswordHTML))
+	template.Must(t.New("account.html").Parse(accountHTML))
 	return t
 }
 
@@ -339,6 +340,33 @@ const changePasswordHTML = `<!doctype html>
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <button class="btn" type="submit">Replace password</button>
     </form>
+  </main>
+</body>
+</html>`
+
+const accountHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Brand}} — Signed in</title>
+<style>` + fontFaceCSS + tokensCSS + componentCSS + `</style>
+<script>` + themeScript + `</script>
+</head>
+<body>
+  ` + themeToggle + `
+  <main class="card">
+    <div class="brand">{{.Brand}}</div>
+    <h1>Signed in</h1>
+    <p class="muted">You are signed in as <strong>{{.Email}}</strong>.</p>
+    <p><a href="/change-password">Change password</a></p>
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="redirect_to" value="/">
+      <button class="btn" type="submit">Sign out</button>
+    </form>
+    <div class="foot">Signing out ends this browser's session only. An administrator can revoke every session for your account.</div>
   </main>
 </body>
 </html>`
