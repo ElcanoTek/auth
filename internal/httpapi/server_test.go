@@ -220,7 +220,7 @@ func TestConcurrentPasswordFailuresCannotRacePastRateLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	n, err := st.CountFailedLoginAttempts(context.Background(), rateKey("email", "alice@example.com"), time.Now().Add(-passwordRateWindow).Unix())
+	n, err := st.CountFailedLoginAttempts(context.Background(), New(cfg, st, &captureSender{}).rateKey("email", "alice@example.com"), time.Now().Add(-passwordRateWindow).Unix())
 	if err != nil || n != 1 {
 		t.Fatalf("persisted failures after concurrent burst = %d err=%v, want exactly 1", n, err)
 	}
@@ -1416,8 +1416,12 @@ func TestPasswordLoginFailuresAndLimitsAreAudited(t *testing.T) {
 		t.Fatalf("audit events = %v, want %v", got, want)
 	}
 	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
-	if events[2].UserID != a.ID || events[0].UserID != "" || events[0].SourceIPHash == "" {
-		t.Fatalf("audit attribution wrong: known-account failure user=%q anonymous user=%q ip=%q", events[2].UserID, events[0].UserID, events[0].SourceIPHash)
+	if events[2].UserID != a.ID || events[0].UserID != "" || events[0].SourceIPHash == "" || events[1].UserID != "" {
+		t.Fatalf("audit attribution wrong: known-account failure user=%q anonymous user=%q ip=%q rate-limited user=%q",
+			events[2].UserID, events[0].UserID, events[0].SourceIPHash, events[1].UserID)
+	}
+	if len(events[0].SourceIPHash) != 64 || events[0].SourceIPHash == hashSecret("ip\x00127.0.0.1") {
+		t.Fatalf("source hash is not keyed: %q", events[0].SourceIPHash)
 	}
 }
 
@@ -1468,5 +1472,86 @@ func TestPasswordVerifyWaitHonoursContext(t *testing.T) {
 	defer cancel()
 	if _, _, err := s.verifyPassword(ctx, "irrelevant", "irrelevant"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("verifyPassword with saturated slots = %v, want context deadline", err)
+	}
+}
+
+func TestRateKeyIsKeyedPerDeployment(t *testing.T) {
+	_, st, cfg, _ := newPasswordTestServer(t, false)
+	same := New(cfg, st, &captureSender{})
+	other := *cfg
+	_, other.SigningKey, _ = ed25519.GenerateKey(rand.Reader)
+	different := New(&other, st, &captureSender{})
+	a, b := same.rateKey("ip", "203.0.113.7"), New(cfg, st, &captureSender{}).rateKey("ip", "203.0.113.7")
+	if a != b {
+		t.Fatal("same deployment key must produce the same rate key")
+	}
+	if a == different.rateKey("ip", "203.0.113.7") {
+		t.Fatal("different deployment keys must produce different rate keys")
+	}
+	if a == hashSecret("ip\x00203.0.113.7") {
+		t.Fatal("rate key must not be an unkeyed SHA-256 of the input")
+	}
+}
+
+func TestRateLimitedRequestsWriteOneAuditRowPerWindow(t *testing.T) {
+	ts, st, cfg, _ := newPasswordTestServer(t, false)
+	cfg.PasswordRatePerEmail = 1
+	for i := 0; i < 6; i++ {
+		csrf := getCSRFCookie(t, ts.URL+"/", "auth_csrf")
+		resp := postPasswordForm(t, ts.URL+"/login", url.Values{
+			"email": {"alice@example.com"}, "password": {"not the right password"}, "csrf_token": {csrf.Value},
+		}, csrf)
+		_ = resp.Body.Close()
+	}
+	events, err := st.RecentAuditEvents(context.Background(), "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limited := 0
+	for _, e := range events {
+		if e.EventType == "login.rate_limited" {
+			limited++
+		}
+	}
+	if limited != 1 {
+		t.Fatalf("rate-limited audit rows = %d after 5 limited requests, want 1", limited)
+	}
+}
+
+func TestLogoutWithoutSessionWritesNoAudit(t *testing.T) {
+	ts, st, _, _ := newPasswordTestServer(t, false)
+	csrf := getCSRFCookie(t, ts.URL+"/", "auth_csrf")
+	before, _ := st.RecentAuditEvents(context.Background(), "", 50)
+	resp := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf.Value}}, csrf)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("anonymous logout = %d", resp.StatusCode)
+	}
+	after, _ := st.RecentAuditEvents(context.Background(), "", 50)
+	if len(after) != len(before) {
+		t.Fatalf("anonymous logout wrote %d audit rows", len(after)-len(before))
+	}
+}
+
+func TestLogoutKeepsCookieWhenRevocationFails(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	_, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	if session == nil || csrf == nil {
+		t.Fatal("login did not issue a session and CSRF cookie")
+	}
+	// Make the database unavailable underneath the running server so the
+	// revoke cannot be recorded.
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resp := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf.Value}}, session, csrf)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("logout with failed revoke = %d, want 500", resp.StatusCode)
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == cfg.PasswordCookieName {
+			t.Fatalf("session cookie was cleared despite failed revocation: %+v", c)
+		}
 	}
 }

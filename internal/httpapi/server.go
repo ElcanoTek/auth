@@ -23,6 +23,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -54,6 +56,7 @@ type Server struct {
 	dummyPasswordHash string
 	passwordSlots     chan struct{} // bounds concurrent Argon2 computations
 	attemptGate       chan struct{} // 1-slot gate around limit-check + attempt-reserve
+	rateKeyMAC        []byte        // per-deployment HMAC key for rate-limit and audit hashes
 
 	// sends tracks in-flight magic-link email goroutines so graceful
 	// shutdown can drain them instead of dropping mid-flight emails.
@@ -69,6 +72,16 @@ func New(cfg *config.Config, st *store.Store, sender email.Sender) *Server {
 	if cfg.LoginMode == "password" {
 		s.dummyPasswordHash = passwordauth.DummyHash()
 	}
+	// Rate-limit and audit rows store hashes of emails and client IPs. A
+	// plain SHA-256 of an IPv4 address falls to a 4-billion-entry dictionary
+	// after a database leak, so key the hash with a secret derived from the
+	// deployment's signing seed. HKDF with a fixed label keeps this key
+	// independent of the Ed25519 signing use of the same seed.
+	mac, err := hkdf.Key(sha256.New, []byte(cfg.SigningKey), nil, "elcano-auth/rate-key/v1", 32)
+	if err != nil {
+		panic(fmt.Sprintf("derive rate-key MAC: %v", err))
+	}
+	s.rateKeyMAC = mac
 	return s
 }
 
@@ -403,7 +416,7 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
 	plain := r.FormValue("password")
 	now := time.Now()
-	ipRateKey := rateKey("ip", clientIP(r))
+	ipRateKey := s.rateKey("ip", clientIP(r))
 	account, valid, err := s.authenticatePassword(r.Context(), email, plain, ipRateKey, now, "login")
 	if err != nil {
 		log.Printf("password authentication: %v", err)
@@ -440,27 +453,36 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 // statements) while Argon2 runs in parallel under passwordSlots. A request
 // that is cancelled mid-verify keeps its reserved failure: fail closed.
 //
+// The account lookup happens only after the attempt is permitted, so a
+// rate-limited request costs the same regardless of whether the email
+// exists and its audit row is anonymous. Rate-limited audit rows are
+// coalesced per source per window; the attacker already tripped the limit,
+// and one row per window records that without letting them grow the table.
+//
+// On success the returned Account carries the exact hash that verified;
+// callers pass it to CreateAuthSession so the session is bound to that
+// credential and cannot be issued after a concurrent replacement.
+//
 // auditPrefix names the flow ("login" or "password_change") so audit events
 // distinguish a sign-in from a current-password check.
 func (s *Server) authenticatePassword(ctx context.Context, email, plain, ipRateKey string, now time.Time, auditPrefix string) (store.Account, bool, error) {
-	emailRateKey := rateKey("email", email)
-	account, lookupErr := s.store.PasswordAccountByEmail(ctx, email)
-	auditUser := ""
-	if lookupErr == nil {
-		auditUser = account.ID
-	}
+	emailRateKey := s.rateKey("email", email)
 
 	attempts, limited, err := s.reserveLoginAttempt(ctx, emailRateKey, ipRateKey, now)
 	if err != nil {
 		return store.Account{}, false, err
 	}
 	if limited {
-		_ = s.store.RecordAudit(ctx, auditPrefix+".rate_limited", auditUser, ipRateKey, now.Unix())
+		_, _ = s.store.RecordAuditIfAbsent(ctx, auditPrefix+".rate_limited", "", ipRateKey,
+			now.Unix(), now.Add(-passwordRateWindow).Unix())
 		return store.Account{}, false, nil
 	}
 
+	account, lookupErr := s.store.PasswordAccountByEmail(ctx, email)
+	auditUser := ""
 	encoded := s.dummyPasswordHash
 	if lookupErr == nil {
+		auditUser = account.ID
 		encoded = account.PasswordHash
 	}
 	ok, _, verifyErr := s.verifyPassword(ctx, encoded, plain)
@@ -560,7 +582,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	current, next, confirm := r.FormValue("current_password"), r.FormValue("new_password"), r.FormValue("confirm_password")
 	now := time.Now()
-	ipRateKey := rateKey("ip", clientIP(r))
+	ipRateKey := s.rateKey("ip", clientIP(r))
 	account, valid, authErr := s.authenticatePassword(r.Context(), identity.Account.NormalizedEmail, current, ipRateKey, now, "password_change")
 	if authErr != nil || !valid || account.ID != identity.Account.ID {
 		if authErr != nil {
@@ -586,7 +608,17 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.renderChangePassword(w, err.Error(), csrf)
 		return
 	}
-	if err := s.store.SetPassword(r.Context(), identity.Account.Email, encoded, false, now.Unix()); err != nil {
+	// Compare-and-swap against the hash that just verified: if an
+	// administrator replaced the password (or disabled the account) in the
+	// meantime, this must not overwrite their change. Their replacement
+	// already revoked this session, so send the user back to sign in.
+	err = s.store.ReplacePasswordIfCurrent(r.Context(), account.ID, account.PasswordHash, encoded, now.Unix())
+	if errors.Is(err, store.ErrCredentialChanged) {
+		s.clearPasswordCookies(w)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
 		log.Printf("replace password: %v", err)
 		s.renderChangePassword(w, "Something went wrong. Try again.", csrf)
 		return
@@ -747,14 +779,26 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		userID := ""
-		if identity := s.currentPasswordSession(r); identity != nil {
-			userID = identity.Account.ID
+		now := time.Now().Unix()
+		if c, err := r.Cookie(s.cfg.PasswordCookieName); err == nil && c.Value != "" {
+			userID := ""
+			if identity := s.currentPasswordSession(r); identity != nil {
+				userID = identity.Account.ID
+			}
+			revoked, err := s.store.RevokeAuthSession(r.Context(), hashSecret(c.Value), now, "logout")
+			if err != nil {
+				// Fail closed: keep the cookie so the user can retry, and do
+				// not claim a sign-out the database did not record. A stolen
+				// copy of this session would otherwise stay valid while the
+				// user believes it is gone.
+				log.Printf("logout revoke: %v", err)
+				http.Error(w, "sign-out failed, please try again", http.StatusInternalServerError)
+				return
+			}
+			if revoked {
+				_ = s.store.RecordAudit(r.Context(), "session.logged_out", userID, s.rateKey("ip", clientIP(r)), now)
+			}
 		}
-		if c, err := r.Cookie(s.cfg.PasswordCookieName); err == nil {
-			_, _ = s.store.RevokeAuthSession(r.Context(), hashSecret(c.Value), time.Now().Unix(), "logout")
-		}
-		_ = s.store.RecordAudit(r.Context(), "session.logged_out", userID, rateKey("ip", clientIP(r)), time.Now().Unix())
 		s.clearPasswordCookies(w)
 		// A browser form (the /account page) asks for a redirect; API-style
 		// callers omit redirect_to and get the bare 204.
@@ -898,7 +942,7 @@ func (s *Server) issuePasswordSession(w http.ResponseWriter, r *http.Request, ac
 	if idle.After(absolute) {
 		idle = absolute
 	}
-	if err := s.store.CreateAuthSession(r.Context(), hashSecret(raw), account.ID,
+	if err := s.store.CreateAuthSession(r.Context(), hashSecret(raw), account.ID, account.PasswordHash,
 		now.Unix(), idle.Unix(), absolute.Unix()); err != nil {
 		return err
 	}
@@ -994,8 +1038,17 @@ func hashSecret(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func rateKey(kind, value string) string {
-	return hashSecret(kind + "\x00" + strings.ToLower(strings.TrimSpace(value)))
+// rateKey derives the stored key for a rate-limit bucket or audit source.
+// It is an HMAC under a per-deployment secret, so a leaked database does not
+// let anyone recover client IPs (or confirm email guesses) by hashing a
+// dictionary. Session tokens use plain hashSecret instead: they are already
+// 256 random bits and gain nothing from a key.
+func (s *Server) rateKey(kind, value string) string {
+	m := hmac.New(sha256.New, s.rateKeyMAC)
+	m.Write([]byte(kind))
+	m.Write([]byte{0})
+	m.Write([]byte(strings.ToLower(strings.TrimSpace(value))))
+	return hex.EncodeToString(m.Sum(nil))
 }
 
 func clientIP(r *http.Request) string {

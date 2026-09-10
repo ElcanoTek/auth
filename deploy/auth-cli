@@ -241,6 +241,14 @@ case "$cmd" in
     export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
     exec "$ADMIN_BIN" user "$@"
     ;;
+  audit)
+    # `auth audit list [email] [limit]` — newest password-mode security
+    # events (logins, failures, rate limits, password/account changes).
+    # shellcheck disable=SC1090
+    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
+    export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    exec "$ADMIN_BIN" audit "$@"
+    ;;
   keygen)
     # `auth keygen` — print a fresh Ed25519 signing keypair. Doesn't touch
     # config; the operator copies the private seed into .env.local and the
@@ -318,6 +326,9 @@ USERS
   auth user revoke-sessions <email> revoke all sessions for one account
   auth user list                    password accounts + magic-link audit
   auth user del <email>             remove a user from magic-link audit
+
+AUDIT
+  auth audit list [email] [limit]   newest security events (password mode)
 
 CRYPTO
   auth keygen                       print a fresh Ed25519 signing keypair

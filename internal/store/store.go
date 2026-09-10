@@ -514,6 +514,9 @@ var (
 	ErrAccountExists   = errors.New("account already exists")
 	ErrAccountNotFound = errors.New("account not found")
 	ErrInvalidSession  = errors.New("invalid session")
+	// ErrCredentialChanged means the password verified by the caller is no
+	// longer the account's current credential (replaced concurrently).
+	ErrCredentialChanged = errors.New("credential changed")
 )
 
 type Account struct {
@@ -616,28 +619,66 @@ func scanAccount(row rowScanner) (Account, error) {
 	return a, nil
 }
 
+// SetPassword is the administrator path: unconditional replacement that
+// revokes every session. mustChange forces the user to pick their own
+// password at next login.
 func (s *Store) SetPassword(ctx context.Context, email, passwordHash string, mustChange bool, now int64) error {
 	a, err := s.PasswordAccountByEmail(ctx, email)
 	if err != nil {
 		return err
+	}
+	return s.replacePassword(ctx, a.ID, "", passwordHash, mustChange, now)
+}
+
+// ReplacePasswordIfCurrent is the user path: a compare-and-swap that only
+// succeeds while expectedHash is still the live credential and the account
+// is enabled. It returns ErrCredentialChanged otherwise, so a user-driven
+// change can never overwrite an administrator's concurrent replacement or
+// re-enable a credential on an account that was just disabled.
+func (s *Store) ReplacePasswordIfCurrent(ctx context.Context, userID, expectedHash, passwordHash string, now int64) error {
+	if expectedHash == "" {
+		return errors.New("expected hash is required")
+	}
+	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, now)
+}
+
+func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passwordHash string, mustChange bool, now int64) error {
+	if userID == "" || passwordHash == "" {
+		return errors.New("user id and password hash are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `UPDATE password_credentials SET password_hash = ?, changed_at = ? WHERE user_id = ?`,
-		passwordHash, now, a.ID); err != nil {
+	var res sql.Result
+	if expectedHash == "" {
+		res, err = tx.ExecContext(ctx, `UPDATE password_credentials SET password_hash = ?, changed_at = ? WHERE user_id = ?`,
+			passwordHash, now, userID)
+	} else {
+		res, err = tx.ExecContext(ctx, `
+			UPDATE password_credentials SET password_hash = ?, changed_at = ?
+			WHERE user_id = ? AND password_hash = ?
+			  AND EXISTS (SELECT 1 FROM accounts WHERE id = ? AND disabled_at IS NULL)`,
+			passwordHash, now, userID, expectedHash, userID)
+	}
+	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		if expectedHash != "" {
+			return ErrCredentialChanged
+		}
+		return ErrAccountNotFound
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET must_change_password = ?, updated_at = ? WHERE id = ?`,
-		boolInt(mustChange), now, a.ID); err != nil {
+		boolInt(mustChange), now, userID); err != nil {
 		return err
 	}
-	if _, err := revokeSessionsTx(ctx, tx, a.ID, now, "password_replaced"); err != nil {
+	if _, err := revokeSessionsTx(ctx, tx, userID, now, "password_replaced"); err != nil {
 		return err
 	}
-	if err := insertAudit(ctx, tx, "password.replaced", a.ID, now, `{}`); err != nil {
+	if err := insertAudit(ctx, tx, "password.replaced", userID, now, `{}`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -711,24 +752,29 @@ type AuthSession struct {
 	RevocationReason  string
 }
 
-func (s *Store) CreateAuthSession(ctx context.Context, tokenHash, userID string, createdAt, idleExpiresAt, absoluteExpiresAt int64) error {
-	if tokenHash == "" || userID == "" || idleExpiresAt <= createdAt || absoluteExpiresAt <= createdAt {
+// CreateAuthSession inserts a session only if verifiedHash is STILL the
+// account's live credential and the account is enabled, in one statement.
+// The caller passes the hash it just verified the password against; if an
+// administrator replaced the password (and revoked sessions) between that
+// verification and this insert, the insert matches nothing and the login
+// fails instead of minting a session from a stale credential.
+func (s *Store) CreateAuthSession(ctx context.Context, tokenHash, userID, verifiedHash string, createdAt, idleExpiresAt, absoluteExpiresAt int64) error {
+	if tokenHash == "" || userID == "" || verifiedHash == "" || idleExpiresAt <= createdAt || absoluteExpiresAt <= createdAt {
 		return errors.New("invalid session parameters")
 	}
-	var disabled sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `SELECT disabled_at FROM accounts WHERE id = ?`, userID).Scan(&disabled); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrAccountNotFound
-		}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at)
+		SELECT ?, a.id, ?, ?, ?, ?
+		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
+		WHERE a.id = ? AND a.disabled_at IS NULL AND p.password_hash = ?`,
+		tokenHash, createdAt, createdAt, idleExpiresAt, absoluteExpiresAt, userID, verifiedHash)
+	if err != nil {
 		return err
 	}
-	if disabled.Valid {
+	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrInvalidSession
 	}
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at)
-		VALUES(?, ?, ?, ?, ?, ?)`, tokenHash, userID, createdAt, createdAt, idleExpiresAt, absoluteExpiresAt)
-	return err
+	return nil
 }
 
 // ValidateAuthSession checks all server-side state and extends the idle expiry
@@ -818,7 +864,9 @@ func (s *Store) CountActiveAuthSessions(ctx context.Context, userID string, now 
 	return n, err
 }
 
-func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetention time.Duration) (int64, error) {
+// SweepPasswordState deletes expired sessions, stale login attempts, and
+// audit events older than auditRetention (0 keeps audit events forever).
+func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetention, auditRetention time.Duration) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -834,7 +882,15 @@ func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetent
 		return 0, err
 	}
 	attempts, _ := res.RowsAffected()
-	return sessions + attempts, tx.Commit()
+	var audits int64
+	if auditRetention > 0 {
+		res, err = tx.ExecContext(ctx, `DELETE FROM audit_events WHERE occurred_at < ?`, now-int64(auditRetention.Seconds()))
+		if err != nil {
+			return 0, err
+		}
+		audits, _ = res.RowsAffected()
+	}
+	return sessions + attempts + audits, tx.Commit()
 }
 
 // ── persistent password-login rate state ────────────────────────────
@@ -908,29 +964,34 @@ func (s *Store) SettleLoginAttemptSuccess(ctx context.Context, succeededID int64
 }
 
 // AuditEvent is one row of the security audit log. It never carries
-// credential material; SourceIPHash is a keyed hash, not an address.
+// credential material; SourceIPHash is an HMAC of the address under a
+// per-deployment key (see httpapi.Server.rateKey), not the address itself.
 type AuditEvent struct {
 	ID           int64
 	EventType    string
 	UserID       string
 	SourceIPHash string
 	OccurredAt   time.Time
+	Email        string // display email when the account still exists
 }
 
 // RecentAuditEvents returns the newest events first. An empty userID returns
 // events for every account, including anonymous ones (unknown email).
 func (s *Store) RecentAuditEvents(ctx context.Context, userID string, limit int) ([]AuditEvent, error) {
-	if limit <= 0 || limit > 1000 {
+	if limit <= 0 {
 		limit = 100
 	}
-	query := `SELECT id, event_type, COALESCE(user_id, ''), COALESCE(source_ip_hash, ''), occurred_at
-		FROM audit_events`
+	if limit > 1000 {
+		limit = 1000
+	}
+	query := `SELECT e.id, e.event_type, COALESCE(e.user_id, ''), COALESCE(e.source_ip_hash, ''), e.occurred_at, COALESCE(a.email, '')
+		FROM audit_events e LEFT JOIN accounts a ON a.id = e.user_id`
 	args := []any{}
 	if userID != "" {
-		query += ` WHERE user_id = ?`
+		query += ` WHERE e.user_id = ?`
 		args = append(args, userID)
 	}
-	query += ` ORDER BY id DESC LIMIT ?`
+	query += ` ORDER BY e.id DESC LIMIT ?`
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -941,7 +1002,7 @@ func (s *Store) RecentAuditEvents(ctx context.Context, userID string, limit int)
 	for rows.Next() {
 		var e AuditEvent
 		var at int64
-		if err := rows.Scan(&e.ID, &e.EventType, &e.UserID, &e.SourceIPHash, &at); err != nil {
+		if err := rows.Scan(&e.ID, &e.EventType, &e.UserID, &e.SourceIPHash, &at, &e.Email); err != nil {
 			return nil, err
 		}
 		e.OccurredAt = time.Unix(at, 0)
@@ -973,6 +1034,32 @@ func (s *Store) RecordAudit(ctx context.Context, event, userID, sourceIPHash str
 		INSERT INTO audit_events(event_type, user_id, source_ip_hash, occurred_at, metadata)
 		VALUES(?, ?, ?, ?, '{}')`, event, nullableUser, nullableIP, now)
 	return err
+}
+
+// RecordAuditIfAbsent writes the event only when no identical event
+// (same type and source) has been recorded since `since`. Rate-limited
+// requests use it so an attacker who has already tripped a limit cannot
+// grow the audit table one row per cheap, Argon2-free request.
+func (s *Store) RecordAuditIfAbsent(ctx context.Context, event, userID, sourceIPHash string, now, since int64) (bool, error) {
+	var nullableUser, nullableIP any
+	if userID != "" {
+		nullableUser = userID
+	}
+	if sourceIPHash != "" {
+		nullableIP = sourceIPHash
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO audit_events(event_type, user_id, source_ip_hash, occurred_at, metadata)
+		SELECT ?, ?, ?, ?, '{}'
+		WHERE NOT EXISTS (
+			SELECT 1 FROM audit_events
+			WHERE event_type = ? AND COALESCE(source_ip_hash, '') = ? AND occurred_at >= ?
+		)`, event, nullableUser, nullableIP, now, event, sourceIPHash, since)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 func boolInt(v bool) int {

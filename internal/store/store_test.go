@@ -536,7 +536,7 @@ func TestAuthSessionIdleAndAbsoluteExpiry(t *testing.T) {
 	now := time.Now().Unix()
 	a, _ := s.CreatePasswordAccount(ctx, "alice@example.com", "hash", false, now)
 
-	if err := s.CreateAuthSession(ctx, "session-hash", a.ID, now, now+60, now+100); err != nil {
+	if err := s.CreateAuthSession(ctx, "session-hash", a.ID, a.PasswordHash, now, now+60, now+100); err != nil {
 		t.Fatalf("CreateAuthSession: %v", err)
 	}
 	_, sess, err := s.ValidateAuthSession(ctx, "session-hash", now+30, 60*time.Second, 10*time.Second)
@@ -558,7 +558,7 @@ func TestAuthSessionIdleAndAbsoluteExpiry(t *testing.T) {
 		t.Fatalf("absolute expiry: got %v", err)
 	}
 
-	if err := s.CreateAuthSession(ctx, "idle-hash", a.ID, now, now+10, now+1000); err != nil {
+	if err := s.CreateAuthSession(ctx, "idle-hash", a.ID, a.PasswordHash, now, now+10, now+1000); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.ValidateAuthSession(ctx, "idle-hash", now+10, time.Hour, 0); !errors.Is(err, ErrInvalidSession) {
@@ -572,7 +572,7 @@ func TestPasswordReplacementAndDisableRevokeSessions(t *testing.T) {
 	now := time.Now().Unix()
 	a, _ := s.CreatePasswordAccount(ctx, "alice@example.com", "old-hash", false, now)
 	for _, tokenHash := range []string{"one", "two"} {
-		if err := s.CreateAuthSession(ctx, tokenHash, a.ID, now, now+3600, now+7200); err != nil {
+		if err := s.CreateAuthSession(ctx, tokenHash, a.ID, a.PasswordHash, now, now+3600, now+7200); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -589,7 +589,7 @@ func TestPasswordReplacementAndDisableRevokeSessions(t *testing.T) {
 		t.Fatalf("replacement account = %+v", got)
 	}
 
-	if err := s.CreateAuthSession(ctx, "three", a.ID, now+3, now+3600, now+7200); err != nil {
+	if err := s.CreateAuthSession(ctx, "three", a.ID, "new-hash", now+3, now+3600, now+7200); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetAccountDisabled(ctx, a.Email, true, now+4); err != nil {
@@ -598,13 +598,13 @@ func TestPasswordReplacementAndDisableRevokeSessions(t *testing.T) {
 	if _, _, err := s.ValidateAuthSession(ctx, "three", now+5, time.Hour, 0); !errors.Is(err, ErrInvalidSession) {
 		t.Fatalf("session survived disable: %v", err)
 	}
-	if err := s.CreateAuthSession(ctx, "four", a.ID, now+5, now+3600, now+7200); !errors.Is(err, ErrInvalidSession) {
+	if err := s.CreateAuthSession(ctx, "four", a.ID, "new-hash", now+5, now+3600, now+7200); !errors.Is(err, ErrInvalidSession) {
 		t.Fatalf("disabled account created session: %v", err)
 	}
 	if err := s.SetAccountDisabled(ctx, a.Email, false, now+6); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
-	if err := s.CreateAuthSession(ctx, "five", a.ID, now+7, now+3600, now+7200); err != nil {
+	if err := s.CreateAuthSession(ctx, "five", a.ID, "new-hash", now+7, now+3600, now+7200); err != nil {
 		t.Fatalf("enabled account could not create session: %v", err)
 	}
 }
@@ -615,7 +615,7 @@ func TestRevokeOnlyPresentedSession(t *testing.T) {
 	now := time.Now().Unix()
 	a, _ := s.CreatePasswordAccount(ctx, "alice@example.com", "hash", false, now)
 	for _, tokenHash := range []string{"current", "other"} {
-		_ = s.CreateAuthSession(ctx, tokenHash, a.ID, now, now+3600, now+7200)
+		_ = s.CreateAuthSession(ctx, tokenHash, a.ID, a.PasswordHash, now, now+3600, now+7200)
 	}
 	ok, err := s.RevokeAuthSession(ctx, "current", now+1, "logout")
 	if err != nil || !ok {
@@ -634,7 +634,7 @@ func TestConcurrentValidationRejectsSessionAfterRevocationCommits(t *testing.T) 
 	ctx := context.Background()
 	now := time.Now().Unix()
 	a, _ := s.CreatePasswordAccount(ctx, "alice@example.com", "hash", false, now)
-	if err := s.CreateAuthSession(ctx, "concurrent", a.ID, now, now+3600, now+7200); err != nil {
+	if err := s.CreateAuthSession(ctx, "concurrent", a.ID, a.PasswordHash, now, now+3600, now+7200); err != nil {
 		t.Fatal(err)
 	}
 
@@ -705,7 +705,7 @@ func TestDatabaseNeverStoresRawSessionToken(t *testing.T) {
 	a, _ := s.CreatePasswordAccount(ctx, "alice@example.com", "encoded-password-hash", false, now)
 	const raw = "this-is-the-browser-only-session-secret"
 	const hashed = "sha256-of-browser-secret"
-	_ = s.CreateAuthSession(ctx, hashed, a.ID, now, now+60, now+120)
+	_ = s.CreateAuthSession(ctx, hashed, a.ID, a.PasswordHash, now, now+60, now+120)
 
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_sessions WHERE token_hash = ?`, raw).Scan(&count); err != nil {
@@ -756,7 +756,7 @@ func TestPasswordAccountsAndRevocationsSurviveReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateAuthSession(ctx, "revoked-session", a.ID, now, now+3600, now+7200); err != nil {
+	if err := s.CreateAuthSession(ctx, "revoked-session", a.ID, a.PasswordHash, now, now+3600, now+7200); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RevokeAuthSession(ctx, "revoked-session", now+1, "test"); err != nil {
@@ -840,7 +840,128 @@ func TestRecentAuditEventsFilterAndOrder(t *testing.T) {
 		t.Fatalf("all events = %+v err=%v", all, err)
 	}
 	mine, err := st.RecentAuditEvents(ctx, a.ID, 10)
-	if err != nil || len(mine) != 2 {
+	if err != nil || len(mine) != 2 || mine[0].Email != "alice@example.com" || all[1].Email != "" {
 		t.Fatalf("user events = %+v err=%v", mine, err)
+	}
+}
+
+func TestCreateAuthSessionRequiresCurrentCredential(t *testing.T) {
+	// The race: a login verifies the OLD hash, an administrator replaces the
+	// password (revoking sessions), and only then does the login try to mint
+	// its session. Binding the insert to the verified hash closes it.
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	a, _ := s.CreatePasswordAccount(ctx, "alice@example.com", "old-hash", false, now)
+	verified := a.PasswordHash // what the in-flight login checked against
+
+	if err := s.SetPassword(ctx, a.Email, "new-hash", true, now+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAuthSession(ctx, "stale", a.ID, verified, now+2, now+3600, now+7200); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("session issued from a replaced credential: %v", err)
+	}
+	if n, _ := s.CountActiveAuthSessions(ctx, a.ID, now+2); n != 0 {
+		t.Fatalf("active sessions after stale issue attempt = %d", n)
+	}
+	if err := s.CreateAuthSession(ctx, "fresh", a.ID, "new-hash", now+2, now+3600, now+7200); err != nil {
+		t.Fatalf("current credential rejected: %v", err)
+	}
+	if err := s.CreateAuthSession(ctx, "missing", "no-such-user", "new-hash", now+2, now+3600, now+7200); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("unknown account: %v", err)
+	}
+}
+
+func TestReplacePasswordIfCurrentIsCompareAndSwap(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	a, _ := s.CreatePasswordAccount(ctx, "alice@example.com", "old-hash", true, now)
+	_ = s.CreateAuthSession(ctx, "sess", a.ID, "old-hash", now, now+3600, now+7200)
+
+	// User change against the live hash wins, clears must-change, revokes.
+	if err := s.ReplacePasswordIfCurrent(ctx, a.ID, "old-hash", "user-hash", now+1); err != nil {
+		t.Fatalf("first CAS: %v", err)
+	}
+	got, _ := s.PasswordAccountByID(ctx, a.ID)
+	if got.PasswordHash != "user-hash" || got.MustChangePassword {
+		t.Fatalf("after user change: %+v", got)
+	}
+	if _, _, err := s.ValidateAuthSession(ctx, "sess", now+2, time.Hour, 0); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("session survived user replacement: %v", err)
+	}
+
+	// A second change that verified the now-stale hash must lose.
+	if err := s.ReplacePasswordIfCurrent(ctx, a.ID, "old-hash", "attacker-hash", now+3); !errors.Is(err, ErrCredentialChanged) {
+		t.Fatalf("stale CAS: got %v, want ErrCredentialChanged", err)
+	}
+	got, _ = s.PasswordAccountByID(ctx, a.ID)
+	if got.PasswordHash != "user-hash" {
+		t.Fatalf("stale CAS overwrote credential: %q", got.PasswordHash)
+	}
+
+	// Admin replacement then user CAS against the pre-admin hash: admin wins.
+	if err := s.SetPassword(ctx, a.Email, "admin-hash", true, now+4); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReplacePasswordIfCurrent(ctx, a.ID, "user-hash", "late-user-hash", now+5); !errors.Is(err, ErrCredentialChanged) {
+		t.Fatalf("user CAS after admin replacement: got %v", err)
+	}
+	got, _ = s.PasswordAccountByID(ctx, a.ID)
+	if got.PasswordHash != "admin-hash" || !got.MustChangePassword {
+		t.Fatalf("admin replacement lost: %+v", got)
+	}
+
+	// Disabled accounts cannot rotate their own credential.
+	if err := s.SetAccountDisabled(ctx, a.Email, true, now+6); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReplacePasswordIfCurrent(ctx, a.ID, "admin-hash", "x-hash", now+7); !errors.Is(err, ErrCredentialChanged) {
+		t.Fatalf("disabled account CAS: got %v", err)
+	}
+}
+
+func TestRecordAuditIfAbsentCoalescesPerSourceAndWindow(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	for i := int64(0); i < 5; i++ {
+		wrote, err := s.RecordAuditIfAbsent(ctx, "login.rate_limited", "", "ip-a", 1000+i, 1000-900)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wrote != (i == 0) {
+			t.Fatalf("attempt %d wrote=%v", i, wrote)
+		}
+	}
+	if wrote, _ := s.RecordAuditIfAbsent(ctx, "login.rate_limited", "", "ip-b", 1005, 100); !wrote {
+		t.Fatal("different source should get its own row")
+	}
+	if wrote, _ := s.RecordAuditIfAbsent(ctx, "login.rate_limited", "", "ip-a", 2000, 1900); !wrote {
+		t.Fatal("new window should get a fresh row")
+	}
+	events, _ := s.RecentAuditEvents(ctx, "", 10)
+	if len(events) != 3 {
+		t.Fatalf("audit rows = %d, want 3", len(events))
+	}
+}
+
+func TestSweepDeletesOldAuditEventsOnlyWhenRetentionSet(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	_ = s.RecordAudit(ctx, "login.failed", "", "ip", 1000)
+	_ = s.RecordAudit(ctx, "login.failed", "", "ip", 5000)
+	if _, err := s.SweepPasswordState(ctx, 6000, time.Hour, 0); err != nil {
+		t.Fatal(err)
+	}
+	if events, _ := s.RecentAuditEvents(ctx, "", 10); len(events) != 2 {
+		t.Fatalf("retention 0 deleted audit rows: %d left", len(events))
+	}
+	n, err := s.SweepPasswordState(ctx, 6000, time.Hour, 2000*time.Second)
+	if err != nil || n != 1 {
+		t.Fatalf("sweep deleted %d err=%v, want 1", n, err)
+	}
+	events, _ := s.RecentAuditEvents(ctx, "", 10)
+	if len(events) != 1 || events[0].OccurredAt.Unix() != 5000 {
+		t.Fatalf("wrong row survived: %+v", events)
 	}
 }

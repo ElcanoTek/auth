@@ -8,6 +8,7 @@
 //	auth-admin domain list
 //	auth-admin user create|set-password|disable|enable|show|revoke-sessions <email>
 //	auth-admin user list|del
+//	auth-admin audit list [email] [limit]
 //
 // Reads AUTH_DATA_DIR from the env (chat-cli source's .env.local
 // before invoking us, same as chat). Talks to the same SQLite file the
@@ -26,6 +27,7 @@ import (
 	"io"
 	"net/mail"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -51,6 +53,8 @@ func main() {
 		domainCmd(dataDir, os.Args[2:])
 	case "user":
 		userCmd(dataDir, os.Args[2:])
+	case "audit":
+		auditCmd(dataDir, os.Args[2:])
 	case "keygen":
 		keygenCmd()
 	case "pubkey":
@@ -81,6 +85,9 @@ USERS
   auth-admin user revoke-sessions <email> revoke every central session
   auth-admin user list                    show password accounts + legacy login audit
   auth-admin user del <email>             remove a user from the audit log
+
+AUDIT
+  auth-admin audit list [email] [limit]   newest security events (default 50, max 1000)
 
 CRYPTO
   auth-admin keygen                       generate a fresh Ed25519 signing keypair
@@ -343,6 +350,58 @@ func userCmd(dataDir string, args []string) {
 		fmt.Fprintf(os.Stderr, "unknown user subcommand: %s\n", args[0])
 		os.Exit(2)
 	}
+}
+
+func auditCmd(dataDir string, args []string) {
+	if len(args) < 1 || args[0] != "list" || len(args) > 3 {
+		fatalf("usage: auth-admin audit list [email] [limit]")
+	}
+	st, ctx := openStore(dataDir)
+	defer func() { _ = st.Close() }()
+
+	userID := ""
+	limit := 50
+	for _, arg := range args[1:] {
+		if n, err := strconv.Atoi(arg); err == nil {
+			if n <= 0 || n > 1000 {
+				fatalf("limit must be between 1 and 1000")
+			}
+			limit = n
+			continue
+		}
+		a, err := st.PasswordAccountByEmail(ctx, arg)
+		if err != nil {
+			fatalf("audit list: %v", err)
+		}
+		userID = a.ID
+	}
+	events, err := st.RecentAuditEvents(ctx, userID, limit)
+	if err != nil {
+		fatalf("audit list: %v", err)
+	}
+	if len(events) == 0 {
+		fmt.Println("(no audit events)")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "TIME (UTC)\tEVENT\tACCOUNT\tSOURCE")
+	for _, e := range events {
+		who := e.Email
+		if who == "" {
+			who = e.UserID
+		}
+		if who == "" {
+			who = "-"
+		}
+		source := "-"
+		if e.SourceIPHash != "" {
+			// Source is an HMAC of the client IP; the prefix is enough to
+			// correlate events from one address without storing the address.
+			source = e.SourceIPHash[:12]
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.OccurredAt.UTC().Format("2006-01-02 15:04:05"), e.EventType, who, source)
+	}
+	_ = tw.Flush()
 }
 
 func requireUserEmailArg(args []string, subcommand string) {

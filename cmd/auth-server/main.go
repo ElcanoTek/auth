@@ -91,7 +91,7 @@ func main() {
 					log.Printf("sweep: %v", err)
 					continue
 				}
-				passwordN, err := st.SweepPasswordState(ctx, now, 24*time.Hour)
+				passwordN, err := st.SweepPasswordState(ctx, now, 24*time.Hour, cfg.AuditRetention)
 				if err != nil {
 					log.Printf("password state sweep: %v", err)
 					continue

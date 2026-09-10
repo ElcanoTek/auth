@@ -61,6 +61,7 @@ var allowedEnvVars = map[string]bool{
 	"AUTH_PASSWORD_IDLE_MINUTES":   true,
 	"AUTH_PASSWORD_RATE_PER_EMAIL": true,
 	"AUTH_PASSWORD_RATE_PER_IP":    true,
+	"AUTH_AUDIT_RETENTION_DAYS":    true, // password-mode audit_events retention; 0 = keep forever
 
 	// Tenancy. AUTH_ALLOWED_DOMAINS is a comma-separated list of email
 	// domains that may request a magic link. Empty list = "allow any
@@ -128,6 +129,7 @@ type Config struct {
 	PasswordIdleTTL      time.Duration
 	PasswordRatePerEmail int
 	PasswordRatePerIP    int
+	AuditRetention       time.Duration // 0 = never sweep audit_events
 
 	AllowedDomains []string
 
@@ -221,6 +223,7 @@ func Load(envFile string) (*Config, error) {
 	cfg.PasswordIdleTTL = time.Duration(envInt("AUTH_PASSWORD_IDLE_MINUTES", 60)) * time.Minute
 	cfg.PasswordRatePerEmail = envInt("AUTH_PASSWORD_RATE_PER_EMAIL", 10)
 	cfg.PasswordRatePerIP = envInt("AUTH_PASSWORD_RATE_PER_IP", 50)
+	cfg.AuditRetention = time.Duration(envInt("AUTH_AUDIT_RETENTION_DAYS", 90)) * 24 * time.Hour
 	cfg.MagicRatePerEmail = envInt("AUTH_MAGIC_RATE_PER_EMAIL", 10)
 	cfg.MagicGlobalLimit = envInt("AUTH_MAGIC_GLOBAL_LIMIT", 500)
 
@@ -269,6 +272,9 @@ func (c *Config) Validate() error {
 		}
 		if c.PasswordRatePerEmail < 0 || c.PasswordRatePerIP < 0 {
 			return fmt.Errorf("password login rate limits must not be negative")
+		}
+		if c.AuditRetention < 0 {
+			return fmt.Errorf("AUTH_AUDIT_RETENTION_DAYS must not be negative (0 keeps audit events forever)")
 		}
 		if c.CookieSecure && !strings.HasPrefix(c.PasswordCookieName, "__Host-") {
 			return fmt.Errorf("AUTH_PASSWORD_COOKIE_NAME must start with __Host- when secure cookies are enabled")
