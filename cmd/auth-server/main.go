@@ -1,11 +1,11 @@
-// auth-server is the long-running HTTP service: magic-link issuance,
-// session-cookie minting, and Caddy forward_auth verification.
+// auth-server is the long-running HTTP service: magic-link or password
+// authentication, session-cookie minting, and identity verification.
 //
 // Lifecycle:
 //   - Load + validate config (fails early on misconfiguration).
 //   - Open SQLite store, run migrations, seed the domain allowlist
 //     from AUTH_ALLOWED_DOMAINS.
-//   - Start a background sweeper that GCs expired magic_links.
+//   - Start a background sweeper that GCs expired login/session state.
 //   - Listen on AUTH_ADDR (default 127.0.0.1:9000). Caddy sits in
 //     front and terminates TLS.
 //   - On SIGINT/SIGTERM, drain in-flight requests and close the DB.
@@ -85,21 +85,30 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				n, err := st.SweepExpired(ctx, time.Now().Unix(), 24*time.Hour)
+				now := time.Now().Unix()
+				n, err := st.SweepExpired(ctx, now, 24*time.Hour)
 				if err != nil {
 					log.Printf("sweep: %v", err)
 					continue
 				}
+				passwordN, err := st.SweepPasswordState(ctx, now, 24*time.Hour, cfg.AuditRetention)
+				if err != nil {
+					log.Printf("password state sweep: %v", err)
+					continue
+				}
 				if n > 0 {
 					log.Printf("sweep: deleted %d expired magic_links", n)
+				}
+				if passwordN > 0 {
+					log.Printf("sweep: deleted %d expired password-state rows", passwordN)
 				}
 			}
 		}
 	}()
 
 	go func() {
-		log.Printf("auth-server listening on %s (hostname=%s, cookie_domain=%q)",
-			cfg.Addr, cfg.Hostname, cfg.CookieDomain)
+		log.Printf("auth-server listening on %s (hostname=%s, login_mode=%s, cookie_domain=%q)",
+			cfg.Addr, cfg.Hostname, cfg.LoginMode, cfg.CookieDomain)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}

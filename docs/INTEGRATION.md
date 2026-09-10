@@ -3,6 +3,14 @@
 This guide is for the engineer doing the wiring — one section per
 Elcano service, plus a generic checklist for new services.
 
+> **Password mode (Auth v2) is not covered by this guide yet.** Everything
+> below describes the legacy magic-link deployment and its shared
+> `elcano_auth` cookie. In `AUTH_LOGIN_MODE=password` the session cookie is
+> host-only (`__Host-auth_session`) and never reaches another hostname, so
+> `forward_auth` against `/verify` cannot admit anyone from Explorer, Lens,
+> Pages, or Fleet. Application integration for password mode arrives with the
+> authorization-code handoff described in `AUTH_V2_IMPLEMENTATION.md` (PR 2).
+
 ## The two-tier design
 
 Every service rides the **same** `elcano_auth` cookie minted by this

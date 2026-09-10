@@ -26,9 +26,10 @@ import (
 // file so a single-shot override is just `KEY=val auth-server ...`.
 var allowedEnvVars = map[string]bool{
 	// Transport
-	"AUTH_ADDR":     true, // default 127.0.0.1:9000; Caddy talks here.
-	"AUTH_HOSTNAME": true, // public hostname (e.g. auth.elcanotek.com).
-	"AUTH_DATA_DIR": true, // where state.db lives. Default /opt/auth/data.
+	"AUTH_ADDR":       true, // default 127.0.0.1:9000; Caddy talks here.
+	"AUTH_HOSTNAME":   true, // public hostname (e.g. auth.elcanotek.com).
+	"AUTH_DATA_DIR":   true, // where state.db lives. Default /opt/auth/data.
+	"AUTH_LOGIN_MODE": true, // magic (legacy default) | password.
 
 	// Crypto. AUTH_SIGNING_KEY is the base64 Ed25519 private seed that
 	// signs both magic-link tokens and the final session cookie. Only the
@@ -52,9 +53,15 @@ var allowedEnvVars = map[string]bool{
 	// is what makes the cookie ride along to chat.elcanotek.com,
 	// home.elcanotek.com, etc. Empty = host-only cookie (only works for
 	// localhost / single-host dev).
-	"AUTH_COOKIE_NAME":   true, // default "elcano_auth" (deliberately distinct from chat's "elcano_session" — see docs/INTEGRATION.md)
-	"AUTH_COOKIE_DOMAIN": true,
-	"AUTH_COOKIE_SECURE": true, // default "true" — set "false" for plain-HTTP local dev only.
+	"AUTH_COOKIE_NAME":             true, // default "elcano_auth" (deliberately distinct from chat's "elcano_session" — see docs/INTEGRATION.md)
+	"AUTH_COOKIE_DOMAIN":           true,
+	"AUTH_COOKIE_SECURE":           true, // default "true" — set "false" for plain-HTTP local dev only.
+	"AUTH_PASSWORD_COOKIE_NAME":    true,
+	"AUTH_PASSWORD_ABSOLUTE_HOURS": true,
+	"AUTH_PASSWORD_IDLE_MINUTES":   true,
+	"AUTH_PASSWORD_RATE_PER_EMAIL": true,
+	"AUTH_PASSWORD_RATE_PER_IP":    true,
+	"AUTH_AUDIT_RETENTION_DAYS":    true, // password-mode audit_events retention; 0 = keep forever
 
 	// Tenancy. AUTH_ALLOWED_DOMAINS is a comma-separated list of email
 	// domains that may request a magic link. Empty list = "allow any
@@ -97,9 +104,10 @@ var allowedEnvVars = map[string]bool{
 
 // Config holds the full runtime configuration.
 type Config struct {
-	Addr     string
-	Hostname string
-	DataDir  string
+	Addr      string
+	Hostname  string
+	DataDir   string
+	LoginMode string
 
 	SigningKey ed25519.PrivateKey // signs tokens (auth host only)
 	PublicKey  ed25519.PublicKey  // verifies tokens; derived from SigningKey
@@ -113,9 +121,15 @@ type Config struct {
 	MagicRatePerEmail int // max links per email per 15 min (default 10)
 	MagicGlobalLimit  int // max links total per 60 min (default 500)
 
-	CookieName   string
-	CookieDomain string
-	CookieSecure bool
+	CookieName           string
+	CookieDomain         string
+	CookieSecure         bool
+	PasswordCookieName   string
+	PasswordAbsoluteTTL  time.Duration
+	PasswordIdleTTL      time.Duration
+	PasswordRatePerEmail int
+	PasswordRatePerIP    int
+	AuditRetention       time.Duration // 0 = never sweep audit_events
 
 	AllowedDomains []string
 
@@ -161,21 +175,23 @@ func Load(envFile string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Addr:            envOr("AUTH_ADDR", "127.0.0.1:9000"),
-		Hostname:        envOr("AUTH_HOSTNAME", "localhost"),
-		DataDir:         envOr("AUTH_DATA_DIR", "/opt/auth/data"),
-		CookieName:      envOr("AUTH_COOKIE_NAME", "elcano_auth"),
-		CookieDomain:    os.Getenv("AUTH_COOKIE_DOMAIN"),
-		CookieSecure:    envBool("AUTH_COOKIE_SECURE", true),
-		EmailDriver:     strings.ToLower(envOr("AUTH_EMAIL_DRIVER", "stdout")),
-		EmailFrom:       envOr("AUTH_EMAIL_FROM", "Sign in <login@example.com>"),
-		SendGridAPIKey:  os.Getenv("SENDGRID_API_KEY"),
-		SMTPHost:        os.Getenv("AUTH_SMTP_HOST"),
-		SMTPPort:        envInt("AUTH_SMTP_PORT", 587),
-		SMTPUser:        os.Getenv("AUTH_SMTP_USER"),
-		SMTPPass:        os.Getenv("AUTH_SMTP_PASS"),
-		BrandName:       envOr("AUTH_BRAND_NAME", "Elcano"),
-		DefaultReturnTo: os.Getenv("AUTH_DEFAULT_RETURN_TO"),
+		Addr:               envOr("AUTH_ADDR", "127.0.0.1:9000"),
+		Hostname:           envOr("AUTH_HOSTNAME", "localhost"),
+		DataDir:            envOr("AUTH_DATA_DIR", "/opt/auth/data"),
+		LoginMode:          strings.ToLower(envOr("AUTH_LOGIN_MODE", "magic")),
+		CookieName:         envOr("AUTH_COOKIE_NAME", "elcano_auth"),
+		CookieDomain:       os.Getenv("AUTH_COOKIE_DOMAIN"),
+		CookieSecure:       envBool("AUTH_COOKIE_SECURE", true),
+		PasswordCookieName: envOr("AUTH_PASSWORD_COOKIE_NAME", "__Host-auth_session"),
+		EmailDriver:        strings.ToLower(envOr("AUTH_EMAIL_DRIVER", "stdout")),
+		EmailFrom:          envOr("AUTH_EMAIL_FROM", "Sign in <login@example.com>"),
+		SendGridAPIKey:     os.Getenv("SENDGRID_API_KEY"),
+		SMTPHost:           os.Getenv("AUTH_SMTP_HOST"),
+		SMTPPort:           envInt("AUTH_SMTP_PORT", 587),
+		SMTPUser:           os.Getenv("AUTH_SMTP_USER"),
+		SMTPPass:           os.Getenv("AUTH_SMTP_PASS"),
+		BrandName:          envOr("AUTH_BRAND_NAME", "Elcano"),
+		DefaultReturnTo:    os.Getenv("AUTH_DEFAULT_RETURN_TO"),
 	}
 
 	// PRODUCTION TODO (may or may not be needed, depending on deployment):
@@ -203,6 +219,11 @@ func Load(envFile string) (*Config, error) {
 
 	cfg.SessionTTL = time.Duration(envInt("AUTH_SESSION_TTL_DAYS", 30)) * 24 * time.Hour
 	cfg.MagicTTL = time.Duration(envInt("AUTH_MAGIC_TTL_MINUTES", 15)) * time.Minute
+	cfg.PasswordAbsoluteTTL = time.Duration(envInt("AUTH_PASSWORD_ABSOLUTE_HOURS", 12)) * time.Hour
+	cfg.PasswordIdleTTL = time.Duration(envInt("AUTH_PASSWORD_IDLE_MINUTES", 60)) * time.Minute
+	cfg.PasswordRatePerEmail = envInt("AUTH_PASSWORD_RATE_PER_EMAIL", 10)
+	cfg.PasswordRatePerIP = envInt("AUTH_PASSWORD_RATE_PER_IP", 50)
+	cfg.AuditRetention = time.Duration(envInt("AUTH_AUDIT_RETENTION_DAYS", 90)) * 24 * time.Hour
 	cfg.MagicRatePerEmail = envInt("AUTH_MAGIC_RATE_PER_EMAIL", 10)
 	cfg.MagicGlobalLimit = envInt("AUTH_MAGIC_GLOBAL_LIMIT", 500)
 
@@ -237,6 +258,31 @@ func Load(envFile string) (*Config, error) {
 func (c *Config) Validate() error {
 	if len(c.SigningKey) != ed25519.PrivateKeySize {
 		return fmt.Errorf("AUTH_SIGNING_KEY did not produce a valid Ed25519 private key (run `auth-admin keygen`)")
+	}
+	mode := c.LoginMode
+	if mode == "" {
+		mode = "magic" // backwards-compatible for programmatic Config literals
+	}
+	if mode != "magic" && mode != "password" {
+		return fmt.Errorf("unknown AUTH_LOGIN_MODE %q (want magic|password)", c.LoginMode)
+	}
+	if mode == "password" {
+		if c.PasswordAbsoluteTTL <= 0 || c.PasswordIdleTTL <= 0 || c.PasswordIdleTTL > c.PasswordAbsoluteTTL {
+			return fmt.Errorf("password session TTLs must be positive and idle must not exceed absolute")
+		}
+		if c.PasswordRatePerEmail < 0 || c.PasswordRatePerIP < 0 {
+			return fmt.Errorf("password login rate limits must not be negative")
+		}
+		if c.AuditRetention < 0 {
+			return fmt.Errorf("AUTH_AUDIT_RETENTION_DAYS must not be negative (0 keeps audit events forever)")
+		}
+		if c.CookieSecure && !strings.HasPrefix(c.PasswordCookieName, "__Host-") {
+			return fmt.Errorf("AUTH_PASSWORD_COOKIE_NAME must start with __Host- when secure cookies are enabled")
+		}
+		if !c.CookieSecure && strings.HasPrefix(c.PasswordCookieName, "__Host-") {
+			return fmt.Errorf("AUTH_PASSWORD_COOKIE_NAME must not use __Host- when Secure is disabled (use auth_session for local HTTP)")
+		}
+		return nil
 	}
 	switch c.EmailDriver {
 	case "stdout":

@@ -173,10 +173,33 @@ sudo chown auth:auth /opt/auth/data/state.db
 auth start
 ```
 
-> Restoring an old DB doesn't invalidate active sessions — those
-> live in Ed25519-signed cookies, not in the DB. Sessions only become
-> invalid by rotating `AUTH_SIGNING_KEY` or letting them expire
-> (default 30 days).
+> In legacy magic-link mode, restoring an old DB does not invalidate the
+> Ed25519-signed cookies already in browsers. In password mode, the database
+> owns credential and revocation state: restoring a snapshot can resurrect a
+> session that was revoked after that snapshot. After a password-mode restore,
+> revoke the affected accounts' sessions with
+> `auth user revoke-sessions <email>` (or invalidate every row in
+> `auth_sessions`) before reopening access.
+
+### Password mode: client IP and audit retention
+
+The login rate limiter and the audit log key on the client IP as seen by
+auth-server, which takes the **last** `X-Forwarded-For` hop when the peer is
+loopback (Caddy). That is correct for the documented layout: Caddy on the
+same box, terminating TLS, one hop. If a client fronts the auth hostname
+with a proxying CDN (Cloudflare "orange cloud"), the last hop becomes the
+CDN edge and every visitor shares one rate bucket. Before enabling that,
+configure Caddy's `trusted_proxies` with the CDN's ranges and forward the
+real client address (`CF-Connecting-IP`), then verify with `auth audit list`
+that failed logins from two different networks show different sources.
+DNS-only Cloudflare needs no change.
+
+Password-mode audit events (`auth audit list`) are kept for
+`AUTH_AUDIT_RETENTION_DAYS` (default 90; `0` keeps them forever). The sweeper
+deletes older rows alongside expired sessions and login attempts. Rows store
+an HMAC of the client IP under a key derived from `AUTH_SIGNING_KEY`, so
+rotating the signing key also changes every stored source and rate-limit
+key; in-flight lockouts reset at rotation.
 
 ## Upgrading
 

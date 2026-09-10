@@ -6,8 +6,9 @@
 //	auth-admin domain add <example.com>
 //	auth-admin domain del <example.com>
 //	auth-admin domain list
-//	auth-admin user list
-//	auth-admin user del <email>
+//	auth-admin user create|set-password|disable|enable|show|revoke-sessions <email>
+//	auth-admin user list|del
+//	auth-admin audit list [email] [limit]
 //
 // Reads AUTH_DATA_DIR from the env (chat-cli source's .env.local
 // before invoking us, same as chat). Talks to the same SQLite file the
@@ -16,18 +17,24 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"flag"
 	"fmt"
+	"io"
+	"net/mail"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	passwordauth "github.com/elcanotek/auth/internal/password"
 	"github.com/elcanotek/auth/internal/store"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -46,6 +53,8 @@ func main() {
 		domainCmd(dataDir, os.Args[2:])
 	case "user":
 		userCmd(dataDir, os.Args[2:])
+	case "audit":
+		auditCmd(dataDir, os.Args[2:])
 	case "keygen":
 		keygenCmd()
 	case "pubkey":
@@ -68,8 +77,17 @@ DOMAIN ALLOWLIST
   auth-admin domain list                  show current allowlist
 
 USERS
-  auth-admin user list                    show everyone who has ever logged in
+  auth-admin user create <email>          create a password account (prompts securely)
+  auth-admin user set-password <email>    replace password + revoke sessions
+  auth-admin user disable <email>         disable account + revoke sessions
+  auth-admin user enable <email>          re-enable account
+  auth-admin user show <email>            show account state
+  auth-admin user revoke-sessions <email> revoke every central session
+  auth-admin user list                    show password accounts + legacy login audit
   auth-admin user del <email>             remove a user from the audit log
+
+AUDIT
+  auth-admin audit list [email] [limit]   newest security events (default 50, max 1000)
 
 CRYPTO
   auth-admin keygen                       generate a fresh Ed25519 signing keypair
@@ -208,15 +226,102 @@ func userCmd(dataDir string, args []string) {
 	defer func() { _ = st.Close() }()
 
 	switch args[0] {
+	case "create":
+		requireUserEmailArg(args, "create")
+		email := validateAccountEmail(args[1])
+		plain := promptNewPassword()
+		encoded, err := passwordauth.Hash(plain)
+		if err != nil {
+			fatalf("password: %v", err)
+		}
+		a, err := st.CreatePasswordAccount(ctx, email, encoded, true, time.Now().Unix())
+		if err != nil {
+			fatalf("create: %v", err)
+		}
+		fmt.Printf("✓ created %s (%s); password change required on first login\n", a.Email, a.ID)
+	case "set-password":
+		requireUserEmailArg(args, "set-password")
+		email := validateAccountEmail(args[1])
+		plain := promptNewPassword()
+		encoded, err := passwordauth.Hash(plain)
+		if err != nil {
+			fatalf("password: %v", err)
+		}
+		if err := st.SetPassword(ctx, email, encoded, true, time.Now().Unix()); err != nil {
+			fatalf("set-password: %v", err)
+		}
+		fmt.Printf("✓ replaced password and revoked all sessions for %s\n", email)
+	case "disable", "enable":
+		requireUserEmailArg(args, args[0])
+		email := validateAccountEmail(args[1])
+		disabled := args[0] == "disable"
+		if err := st.SetAccountDisabled(ctx, email, disabled, time.Now().Unix()); err != nil {
+			fatalf("%s: %v", args[0], err)
+		}
+		if disabled {
+			fmt.Printf("✓ disabled %s and revoked all sessions\n", email)
+		} else {
+			fmt.Printf("✓ enabled %s\n", email)
+		}
+	case "show":
+		requireUserEmailArg(args, "show")
+		a, err := st.PasswordAccountByEmail(ctx, args[1])
+		if err != nil {
+			fatalf("show: %v", err)
+		}
+		active, err := st.CountActiveAuthSessions(ctx, a.ID, time.Now().Unix())
+		if err != nil {
+			fatalf("show sessions: %v", err)
+		}
+		status := "enabled"
+		if a.DisabledAt != nil {
+			status = "disabled"
+		}
+		fmt.Printf("email: %s\nid: %s\nstatus: %s\nmust change password: %t\nactive sessions: %d\n",
+			a.Email, a.ID, status, a.MustChangePassword, active)
+	case "revoke-sessions":
+		requireUserEmailArg(args, "revoke-sessions")
+		a, err := st.PasswordAccountByEmail(ctx, args[1])
+		if err != nil {
+			fatalf("revoke-sessions: %v", err)
+		}
+		n, err := st.RevokeAllAuthSessions(ctx, a.ID, time.Now().Unix(), "admin_revoked")
+		if err != nil {
+			fatalf("revoke-sessions: %v", err)
+		}
+		fmt.Printf("✓ revoked %d session(s) for %s\n", n, a.Email)
 	case "list", "ls":
+		accounts, err := st.ListPasswordAccounts(ctx)
+		if err != nil {
+			fatalf("list password accounts: %v", err)
+		}
+		if len(accounts) > 0 {
+			fmt.Println("PASSWORD ACCOUNTS")
+			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			_, _ = fmt.Fprintln(tw, "EMAIL\tSTATUS\tMUST CHANGE\tCREATED")
+			for _, a := range accounts {
+				status := "enabled"
+				if a.DisabledAt != nil {
+					status = "disabled"
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%t\t%s\n", a.Email, status, a.MustChangePassword, a.CreatedAt.Format("2006-01-02"))
+			}
+			_ = tw.Flush()
+		}
 		users, err := st.ListUsers(ctx)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "list: %v\n", err)
 			os.Exit(1)
 		}
-		if len(users) == 0 {
+		if len(users) == 0 && len(accounts) == 0 {
 			fmt.Println("(no logins recorded yet)")
 			return
+		}
+		if len(users) == 0 {
+			return
+		}
+		if len(accounts) > 0 {
+			fmt.Println("\nLEGACY MAGIC-LINK LOGIN AUDIT")
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "EMAIL\tTENANT\tLOGINS\tLAST SEEN\tFIRST SEEN")
@@ -245,6 +350,123 @@ func userCmd(dataDir string, args []string) {
 		fmt.Fprintf(os.Stderr, "unknown user subcommand: %s\n", args[0])
 		os.Exit(2)
 	}
+}
+
+func auditCmd(dataDir string, args []string) {
+	if len(args) < 1 || args[0] != "list" || len(args) > 3 {
+		fatalf("usage: auth-admin audit list [email] [limit]")
+	}
+	st, ctx := openStore(dataDir)
+	defer func() { _ = st.Close() }()
+
+	userID := ""
+	limit := 50
+	for _, arg := range args[1:] {
+		if n, err := strconv.Atoi(arg); err == nil {
+			if n <= 0 || n > 1000 {
+				fatalf("limit must be between 1 and 1000")
+			}
+			limit = n
+			continue
+		}
+		a, err := st.PasswordAccountByEmail(ctx, arg)
+		if err != nil {
+			fatalf("audit list: %v", err)
+		}
+		userID = a.ID
+	}
+	events, err := st.RecentAuditEvents(ctx, userID, limit)
+	if err != nil {
+		fatalf("audit list: %v", err)
+	}
+	if len(events) == 0 {
+		fmt.Println("(no audit events)")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "TIME (UTC)\tEVENT\tACCOUNT\tSOURCE")
+	for _, e := range events {
+		who := e.Email
+		if who == "" {
+			who = e.UserID
+		}
+		if who == "" {
+			who = "-"
+		}
+		source := "-"
+		if e.SourceIPHash != "" {
+			// Source is an HMAC of the client IP; a prefix is enough to
+			// correlate events from one address without storing the address.
+			// Bound it by the actual length so an imported or edited row
+			// cannot make the listing panic.
+			source = e.SourceIPHash[:min(12, len(e.SourceIPHash))]
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.OccurredAt.UTC().Format("2006-01-02 15:04:05"), e.EventType, who, source)
+	}
+	_ = tw.Flush()
+}
+
+func requireUserEmailArg(args []string, subcommand string) {
+	if len(args) != 2 {
+		fatalf("usage: auth-admin user %s <email>", subcommand)
+	}
+}
+
+func validateAccountEmail(raw string) string {
+	email := strings.TrimSpace(raw)
+	parsed, err := mail.ParseAddress(email)
+	if err != nil || !strings.EqualFold(parsed.Address, email) || !strings.Contains(email, "@") {
+		fatalf("invalid email address %q", raw)
+	}
+	return email
+}
+
+func promptNewPassword() string {
+	var reader *bufio.Reader
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		// Reuse one buffered reader for both lines. Constructing a new reader
+		// can consume the confirmation into the first reader's buffer and then
+		// lose it, which breaks safe automation through stdin.
+		reader = bufio.NewReader(os.Stdin)
+	}
+	first, err := readSecret("Password: ", reader)
+	if err != nil {
+		fatalf("read password: %v", err)
+	}
+	second, err := readSecret("Confirm password: ", reader)
+	if err != nil {
+		fatalf("read confirmation: %v", err)
+	}
+	if first != second {
+		fatalf("passwords do not match")
+	}
+	return first
+}
+
+func readSecret(prompt string, reader *bufio.Reader) (string, error) {
+	_, _ = fmt.Fprint(os.Stderr, prompt)
+	if reader == nil {
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		_, _ = fmt.Fprintln(os.Stderr)
+		return string(b), err
+	}
+	return readSecretLine(reader)
+}
+
+func readSecretLine(r *bufio.Reader) (string, error) {
+	line, err := r.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	if err == io.EOF && line == "" {
+		return "", io.EOF
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), nil
+}
+
+func fatalf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	os.Exit(1)
 }
 
 // humanTime renders an age relative to now. Older than a day shows the

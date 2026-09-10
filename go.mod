@@ -2,7 +2,11 @@ module github.com/elcanotek/auth
 
 go 1.25.0
 
-require modernc.org/sqlite v1.57.0
+require (
+	golang.org/x/crypto v0.47.0
+	golang.org/x/term v0.39.0
+	modernc.org/sqlite v1.57.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
