@@ -7,7 +7,7 @@
 // dependency is cheap on a box that already has one. This service has
 // neither — a single small file is the right primitive.
 //
-// Schema:
+// Legacy schema:
 //
 //	domains       — allowlist of email domains that may request magic
 //	                links. Empty table + empty AUTH_ALLOWED_DOMAINS env
@@ -16,11 +16,16 @@
 //	                used on /callback. Old rows are GC'd lazily.
 //	users         — audit/usage log. Auto-populated on first successful
 //	                /callback. operators see it via `auth user list`.
+//
+// Password mode adds accounts, Argon2id credential records, opaque server-side
+// sessions, persistent rate-limit/audit state, and reserved factor tables.
 package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -81,6 +86,99 @@ CREATE TABLE IF NOT EXISTS users (
   last_seen    INTEGER NOT NULL,
   login_count  INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version     INTEGER PRIMARY KEY,
+  applied_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS accounts (
+  id                   TEXT PRIMARY KEY,
+  email                TEXT NOT NULL,
+  normalized_email     TEXT NOT NULL UNIQUE,
+  disabled_at          INTEGER,
+  must_change_password INTEGER NOT NULL DEFAULT 1 CHECK (must_change_password IN (0, 1)),
+  created_at           INTEGER NOT NULL,
+  updated_at           INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS password_credentials (
+  user_id       TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  password_hash TEXT NOT NULL,
+  changed_at    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  token_hash          TEXT PRIMARY KEY,
+  user_id             TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  created_at          INTEGER NOT NULL,
+  last_seen_at        INTEGER NOT NULL,
+  idle_expires_at     INTEGER NOT NULL,
+  absolute_expires_at INTEGER NOT NULL,
+  revoked_at          INTEGER,
+  revocation_reason   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(absolute_expires_at, idle_expires_at);
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  rate_key_hash TEXT NOT NULL,
+  succeeded    INTEGER NOT NULL CHECK (succeeded IN (0, 1)),
+  attempted_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_key_time ON login_attempts(rate_key_hash, attempted_at);
+CREATE TABLE IF NOT EXISTS audit_events (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_type     TEXT NOT NULL,
+  user_id        TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+  application_id TEXT,
+  source_ip_hash TEXT,
+  occurred_at    INTEGER NOT NULL,
+  metadata       TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_user_time ON audit_events(user_id, occurred_at);
+
+-- Reserved authentication-factor plumbing. These tables deliberately carry
+-- no enabled v1 behavior, but keep future factors out of the accounts table.
+CREATE TABLE IF NOT EXISTS authenticators (
+  id                TEXT PRIMARY KEY,
+  user_id           TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  kind              TEXT NOT NULL,
+  label             TEXT,
+  secret_ciphertext BLOB,
+  public_data       TEXT,
+  created_at        INTEGER NOT NULL,
+  verified_at       INTEGER,
+  disabled_at       INTEGER
+);
+CREATE TABLE IF NOT EXISTS external_identities (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  issuer       TEXT NOT NULL,
+  subject      TEXT NOT NULL,
+  email        TEXT,
+  created_at   INTEGER NOT NULL,
+  UNIQUE(issuer, subject)
+);
+CREATE TABLE IF NOT EXISTS authentication_transactions (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+  purpose      TEXT NOT NULL,
+  state_hash   TEXT NOT NULL UNIQUE,
+  metadata     TEXT NOT NULL DEFAULT '{}',
+  created_at   INTEGER NOT NULL,
+  expires_at   INTEGER NOT NULL,
+  consumed_at  INTEGER
+);
+CREATE TABLE IF NOT EXISTS authentication_policies (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL UNIQUE,
+  definition  TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS recovery_codes (
+  code_hash   TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  created_at  INTEGER NOT NULL,
+  used_at     INTEGER
+);
 `
 
 // createdAtIndexes back the rate-limit count queries. They live separate
@@ -109,6 +207,11 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if _, err := s.db.ExecContext(ctx, createdAtIndexes); err != nil {
 		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, ?)`,
+		time.Now().Unix()); err != nil {
+		return fmt.Errorf("record schema version: %w", err)
 	}
 	return nil
 }
@@ -403,4 +506,383 @@ func (s *Store) DeleteUser(ctx context.Context, email string) (bool, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// ── password accounts ───────────────────────────────────────────────
+
+var (
+	ErrAccountExists   = errors.New("account already exists")
+	ErrAccountNotFound = errors.New("account not found")
+	ErrInvalidSession  = errors.New("invalid session")
+)
+
+type Account struct {
+	ID                 string
+	Email              string
+	NormalizedEmail    string
+	PasswordHash       string
+	DisabledAt         *time.Time
+	MustChangePassword bool
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+func normalizeAccountEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func randomID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func (s *Store) CreatePasswordAccount(ctx context.Context, email, passwordHash string, mustChange bool, now int64) (Account, error) {
+	normalized := normalizeAccountEmail(email)
+	if normalized == "" || passwordHash == "" {
+		return Account{}, errors.New("email and password hash are required")
+	}
+	id, err := randomID()
+	if err != nil {
+		return Account{}, fmt.Errorf("generate account id: %w", err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Account{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO accounts(id, email, normalized_email, must_change_password, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?)`, id, strings.TrimSpace(email), normalized, boolInt(mustChange), now, now)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return Account{}, ErrAccountExists
+		}
+		return Account{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO password_credentials(user_id, password_hash, changed_at) VALUES(?, ?, ?)`,
+		id, passwordHash, now); err != nil {
+		return Account{}, err
+	}
+	if err := insertAudit(ctx, tx, "account.created", id, now, `{}`); err != nil {
+		return Account{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Account{}, err
+	}
+	return s.PasswordAccountByID(ctx, id)
+}
+
+func (s *Store) PasswordAccountByEmail(ctx context.Context, email string) (Account, error) {
+	return scanAccount(s.db.QueryRowContext(ctx, `
+		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
+		       a.must_change_password, a.created_at, a.updated_at
+		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
+		WHERE a.normalized_email = ?`, normalizeAccountEmail(email)))
+}
+
+func (s *Store) PasswordAccountByID(ctx context.Context, id string) (Account, error) {
+	return scanAccount(s.db.QueryRowContext(ctx, `
+		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
+		       a.must_change_password, a.created_at, a.updated_at
+		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
+		WHERE a.id = ?`, id))
+}
+
+type rowScanner interface{ Scan(...any) error }
+
+func scanAccount(row rowScanner) (Account, error) {
+	var a Account
+	var disabled sql.NullInt64
+	var mustChange int
+	var created, updated int64
+	if err := row.Scan(&a.ID, &a.Email, &a.NormalizedEmail, &a.PasswordHash, &disabled,
+		&mustChange, &created, &updated); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Account{}, ErrAccountNotFound
+		}
+		return Account{}, err
+	}
+	a.MustChangePassword = mustChange != 0
+	a.CreatedAt = time.Unix(created, 0)
+	a.UpdatedAt = time.Unix(updated, 0)
+	if disabled.Valid {
+		t := time.Unix(disabled.Int64, 0)
+		a.DisabledAt = &t
+	}
+	return a, nil
+}
+
+func (s *Store) SetPassword(ctx context.Context, email, passwordHash string, mustChange bool, now int64) error {
+	a, err := s.PasswordAccountByEmail(ctx, email)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE password_credentials SET password_hash = ?, changed_at = ? WHERE user_id = ?`,
+		passwordHash, now, a.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET must_change_password = ?, updated_at = ? WHERE id = ?`,
+		boolInt(mustChange), now, a.ID); err != nil {
+		return err
+	}
+	if _, err := revokeSessionsTx(ctx, tx, a.ID, now, "password_replaced"); err != nil {
+		return err
+	}
+	if err := insertAudit(ctx, tx, "password.replaced", a.ID, now, `{}`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled bool, now int64) error {
+	a, err := s.PasswordAccountByEmail(ctx, email)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var disabledAt any
+	event := "account.enabled"
+	if disabled {
+		disabledAt = now
+		event = "account.disabled"
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET disabled_at = ?, updated_at = ? WHERE id = ?`,
+		disabledAt, now, a.ID); err != nil {
+		return err
+	}
+	if disabled {
+		if _, err := revokeSessionsTx(ctx, tx, a.ID, now, "account_disabled"); err != nil {
+			return err
+		}
+	}
+	if err := insertAudit(ctx, tx, event, a.ID, now, `{}`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
+		       a.must_change_password, a.created_at, a.updated_at
+		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
+		ORDER BY a.normalized_email`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Account
+	for rows.Next() {
+		a, err := scanAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		// Listing is an administrative metadata operation. Do not retain
+		// credential material in the returned slice when no caller needs it.
+		a.PasswordHash = ""
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ── opaque central sessions ─────────────────────────────────────────
+
+type AuthSession struct {
+	TokenHash         string
+	UserID            string
+	CreatedAt         time.Time
+	LastSeenAt        time.Time
+	IdleExpiresAt     time.Time
+	AbsoluteExpiresAt time.Time
+	RevokedAt         *time.Time
+	RevocationReason  string
+}
+
+func (s *Store) CreateAuthSession(ctx context.Context, tokenHash, userID string, createdAt, idleExpiresAt, absoluteExpiresAt int64) error {
+	if tokenHash == "" || userID == "" || idleExpiresAt <= createdAt || absoluteExpiresAt <= createdAt {
+		return errors.New("invalid session parameters")
+	}
+	var disabled sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT disabled_at FROM accounts WHERE id = ?`, userID).Scan(&disabled); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrAccountNotFound
+		}
+		return err
+	}
+	if disabled.Valid {
+		return ErrInvalidSession
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at)
+		VALUES(?, ?, ?, ?, ?, ?)`, tokenHash, userID, createdAt, createdAt, idleExpiresAt, absoluteExpiresAt)
+	return err
+}
+
+// ValidateAuthSession checks all server-side state and extends the idle expiry
+// without ever moving it beyond the absolute limit.
+func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now int64, idleTTL, touchInterval time.Duration) (Account, AuthSession, error) {
+	var sess AuthSession
+	var a Account
+	var disabled, revoked sql.NullInt64
+	var mustChange int
+	var created, updated, sessionCreated, lastSeen, idleExpires, absoluteExpires int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
+		       a.must_change_password, a.created_at, a.updated_at,
+		       s.token_hash, s.created_at, s.last_seen_at, s.idle_expires_at,
+		       s.absolute_expires_at, s.revoked_at, COALESCE(s.revocation_reason, '')
+		FROM auth_sessions s
+		JOIN accounts a ON a.id = s.user_id
+		JOIN password_credentials p ON p.user_id = a.id
+		WHERE s.token_hash = ?`, tokenHash).Scan(
+		&a.ID, &a.Email, &a.NormalizedEmail, &a.PasswordHash, &disabled,
+		&mustChange, &created, &updated, &sess.TokenHash, &sessionCreated,
+		&lastSeen, &idleExpires, &absoluteExpires, &revoked, &sess.RevocationReason)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Account{}, AuthSession{}, ErrInvalidSession
+		}
+		return Account{}, AuthSession{}, err
+	}
+	if disabled.Valid || revoked.Valid || now >= idleExpires || now >= absoluteExpires {
+		return Account{}, AuthSession{}, ErrInvalidSession
+	}
+	a.MustChangePassword = mustChange != 0
+	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
+	sess.UserID = a.ID
+	sess.CreatedAt, sess.LastSeenAt = time.Unix(sessionCreated, 0), time.Unix(lastSeen, 0)
+	sess.IdleExpiresAt, sess.AbsoluteExpiresAt = time.Unix(idleExpires, 0), time.Unix(absoluteExpires, 0)
+	if now-lastSeen >= int64(touchInterval.Seconds()) {
+		newIdle := now + int64(idleTTL.Seconds())
+		if newIdle > absoluteExpires {
+			newIdle = absoluteExpires
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE auth_sessions SET last_seen_at = ?, idle_expires_at = ?
+			WHERE token_hash = ? AND revoked_at IS NULL`, now, newIdle, tokenHash); err != nil {
+			return Account{}, AuthSession{}, err
+		}
+		sess.LastSeenAt, sess.IdleExpiresAt = time.Unix(now, 0), time.Unix(newIdle, 0)
+	}
+	return a, sess, nil
+}
+
+func (s *Store) RevokeAuthSession(ctx context.Context, tokenHash string, now int64, reason string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE auth_sessions SET revoked_at = ?, revocation_reason = ?
+		WHERE token_hash = ? AND revoked_at IS NULL`, now, reason, tokenHash)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+func (s *Store) RevokeAllAuthSessions(ctx context.Context, userID string, now int64, reason string) (int64, error) {
+	return revokeSessionsTx(ctx, s.db, userID, now, reason)
+}
+
+type execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func revokeSessionsTx(ctx context.Context, e execer, userID string, now int64, reason string) (int64, error) {
+	res, err := e.ExecContext(ctx, `
+		UPDATE auth_sessions SET revoked_at = ?, revocation_reason = ?
+		WHERE user_id = ? AND revoked_at IS NULL`, now, reason, userID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (s *Store) CountActiveAuthSessions(ctx context.Context, userID string, now int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM auth_sessions
+		WHERE user_id = ? AND revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?`,
+		userID, now, now).Scan(&n)
+	return n, err
+}
+
+func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetention time.Duration) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `DELETE FROM auth_sessions WHERE absolute_expires_at <= ? OR idle_expires_at <= ?`, now, now)
+	if err != nil {
+		return 0, err
+	}
+	sessions, _ := res.RowsAffected()
+	res, err = tx.ExecContext(ctx, `DELETE FROM login_attempts WHERE attempted_at < ?`, now-int64(attemptRetention.Seconds()))
+	if err != nil {
+		return 0, err
+	}
+	attempts, _ := res.RowsAffected()
+	return sessions + attempts, tx.Commit()
+}
+
+// ── persistent password-login rate state ────────────────────────────
+
+func (s *Store) RecordLoginAttempt(ctx context.Context, rateKeyHash string, succeeded bool, now int64) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO login_attempts(rate_key_hash, succeeded, attempted_at) VALUES(?, ?, ?)`,
+		rateKeyHash, boolInt(succeeded), now)
+	return err
+}
+
+func (s *Store) CountFailedLoginAttempts(ctx context.Context, rateKeyHash string, since int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM login_attempts
+		WHERE rate_key_hash = ? AND succeeded = 0 AND attempted_at >= ?
+		  AND id > COALESCE((SELECT MAX(id) FROM login_attempts WHERE rate_key_hash = ? AND succeeded = 1), 0)`,
+		rateKeyHash, since, rateKeyHash).Scan(&n)
+	return n, err
+}
+
+func insertAudit(ctx context.Context, e execer, event, userID string, now int64, metadata string) error {
+	var nullableUser any
+	if userID != "" {
+		nullableUser = userID
+	}
+	_, err := e.ExecContext(ctx, `
+		INSERT INTO audit_events(event_type, user_id, occurred_at, metadata) VALUES(?, ?, ?, ?)`,
+		event, nullableUser, now, metadata)
+	return err
+}
+
+func (s *Store) RecordAudit(ctx context.Context, event, userID, sourceIPHash string, now int64) error {
+	var nullableUser, nullableIP any
+	if userID != "" {
+		nullableUser = userID
+	}
+	if sourceIPHash != "" {
+		nullableIP = sourceIPHash
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO audit_events(event_type, user_id, source_ip_hash, occurred_at, metadata)
+		VALUES(?, ?, ?, ?, '{}')`, event, nullableUser, nullableIP, now)
+	return err
+}
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

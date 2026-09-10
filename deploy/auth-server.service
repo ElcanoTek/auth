@@ -1,8 +1,8 @@
 [Unit]
-# auth-server — the magic-link login service. Loopback-only; Caddy
+# auth-server — the central login service. Loopback-only; Caddy
 # terminates TLS in front. One SQLite file under /opt/auth/data is the
 # only state.
-Description=Elcano auth-server (magic-link login)
+Description=Elcano auth-server
 After=network-online.target
 Wants=network-online.target
 PartOf=auth.target
@@ -18,9 +18,11 @@ Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
 
-# Conservative limits — this service does almost nothing.
-MemoryMax=256M
-CPUQuota=50%
+# Two concurrent 64 MiB Argon2id calculations plus the Go runtime and
+# SQLite need headroom in password mode. This remains conservative on the
+# agreed 2 GiB deployment class.
+MemoryMax=512M
+CPUQuota=100%
 
 # Writable paths:
 #   /opt/auth/data — the SQLite file + WAL/SHM. PrivateTmp gives us

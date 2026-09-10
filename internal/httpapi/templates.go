@@ -14,6 +14,7 @@ import (
 func parseTemplates() *template.Template {
 	t := template.Must(template.New("login.html").Parse(loginHTML))
 	template.Must(t.New("sent.html").Parse(sentHTML))
+	template.Must(t.New("change-password.html").Parse(changePasswordHTML))
 	return t
 }
 
@@ -292,16 +293,52 @@ const loginHTML = `<!doctype html>
   <main class="card">
     <div class="brand">{{.Brand}}</div>
     <h1>Sign in</h1>
-    <p class="muted">Enter your work email. We'll send you a one-time link.</p>
+    {{if .PasswordMode}}<p class="muted">Enter your work email and password.</p>{{else}}<p class="muted">Enter your work email. We'll send you a one-time link.</p>{{end}}
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
-    <form method="post" action="/magic">
+    <form method="post" action="{{if .PasswordMode}}/login{{else}}/magic{{end}}">
       <label for="email">Email</label>
       <input id="email" name="email" type="email" required autofocus autocomplete="email"
              placeholder="you@example.com">
+      {{if .PasswordMode}}
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required autocomplete="current-password">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      {{end}}
       {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
-      <button class="btn" type="submit">Send link</button>
+      <button class="btn" type="submit">{{if .PasswordMode}}Sign in{{else}}Send link{{end}}</button>
     </form>
-    <div class="foot">No passwords. Links expire after 15 minutes.</div>
+    {{if .PasswordMode}}<div class="foot">Accounts are created by an administrator.</div>{{else}}<div class="foot">No passwords. Links expire after 15 minutes.</div>{{end}}
+  </main>
+</body>
+</html>`
+
+const changePasswordHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Brand}} — Change password</title>
+<style>` + fontFaceCSS + tokensCSS + componentCSS + `</style>
+<script>` + themeScript + `</script>
+</head>
+<body>
+  ` + themeToggle + `
+  <main class="card">
+    <div class="brand">{{.Brand}}</div>
+    <h1>Change password</h1>
+    <p class="muted">Use at least 15 characters. Spaces and Unicode are allowed.</p>
+    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    <form method="post" action="/change-password">
+      <label for="current_password">Current password</label>
+      <input id="current_password" name="current_password" type="password" required autocomplete="current-password">
+      <label for="new_password">New password</label>
+      <input id="new_password" name="new_password" type="password" required minlength="15" maxlength="128" autocomplete="new-password">
+      <label for="confirm_password">Confirm new password</label>
+      <input id="confirm_password" name="confirm_password" type="password" required minlength="15" maxlength="128" autocomplete="new-password">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="btn" type="submit">Replace password</button>
+    </form>
   </main>
 </body>
 </html>`

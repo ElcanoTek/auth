@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/email"
+	passwordauth "github.com/elcanotek/auth/internal/password"
 	"github.com/elcanotek/auth/internal/store"
 	"github.com/elcanotek/auth/internal/token"
 )
@@ -27,6 +29,356 @@ import (
 type captureSender struct {
 	mu   sync.Mutex
 	sent []struct{ to, text string }
+}
+
+func newPasswordTestServer(t *testing.T, mustChange bool) (*httptest.Server, *store.Store, *config.Config, string) {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	cfg := &config.Config{
+		Hostname: "auth.example.com", LoginMode: "password",
+		SigningKey: priv, PublicKey: pub, CookieSecure: false,
+		PasswordCookieName: "auth_session", PasswordAbsoluteTTL: 12 * time.Hour,
+		PasswordIdleTTL: time.Hour, PasswordRatePerEmail: 10, PasswordRatePerIP: 50,
+		BrandName: "Test", ReturnToHosts: []string{".example.com"},
+	}
+	const plain = "correct horse battery staple"
+	encoded, err := passwordauth.HashWithParams(plain, passwordauth.Params{
+		Memory: 8, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreatePasswordAccount(context.Background(), "Alice@Example.com", encoded, mustChange, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(New(cfg, st, &captureSender{}).Handler())
+	t.Cleanup(ts.Close)
+	return ts, st, cfg, plain
+}
+
+func getCSRFCookie(t *testing.T, endpoint, name string) *http.Cookie {
+	t.Helper()
+	resp, err := http.Get(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	for _, c := range resp.Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("%s did not set %s", endpoint, name)
+	return nil
+}
+
+func postPasswordForm(t *testing.T, endpoint string, form url.Values, cookies ...*http.Cookie) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func passwordLogin(t *testing.T, ts *httptest.Server, cfg *config.Config, email, plain string) (*http.Response, *http.Cookie, *http.Cookie) {
+	t.Helper()
+	csrf := getCSRFCookie(t, ts.URL+"/", "auth_csrf")
+	resp := postPasswordForm(t, ts.URL+"/login", url.Values{
+		"email": {email}, "password": {plain}, "csrf_token": {csrf.Value},
+	}, csrf)
+	var session, rotatedCSRF *http.Cookie
+	for _, c := range resp.Cookies() {
+		switch c.Name {
+		case cfg.PasswordCookieName:
+			session = c
+		case "auth_csrf":
+			rotatedCSRF = c
+		}
+	}
+	return resp, session, rotatedCSRF
+}
+
+func TestPasswordLoginCreatesIsolatedServerSession(t *testing.T) {
+	ts, _, cfg, plain := newPasswordTestServer(t, false)
+	resp, session, _ := passwordLogin(t, ts, cfg, "ALICE@example.com", plain)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/me" {
+		t.Fatalf("login status/location = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if session == nil {
+		t.Fatal("successful login did not set a session")
+	}
+	if session.Domain != "" || !session.HttpOnly || session.Path != "/" || session.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("unsafe password cookie: %+v", session)
+	}
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
+	req.AddCookie(session)
+	verified, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = verified.Body.Close() }()
+	if verified.StatusCode != http.StatusOK || verified.Header.Get("X-User-ID") == "" || verified.Header.Get("X-User-Email") != "Alice@Example.com" {
+		t.Fatalf("verify = %d id=%q email=%q", verified.StatusCode, verified.Header.Get("X-User-ID"), verified.Header.Get("X-User-Email"))
+	}
+}
+
+func TestPasswordLoginRequiresCSRF(t *testing.T) {
+	ts, _, _, plain := newPasswordTestServer(t, false)
+	resp := postPasswordForm(t, ts.URL+"/login", url.Values{
+		"email": {"alice@example.com"}, "password": {plain},
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing CSRF status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestPasswordLoginFailuresAreGeneric(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	wrong, _, _ := passwordLogin(t, ts, cfg, "alice@example.com", "wrong password long enough")
+	wrongLocation := wrong.Header.Get("Location")
+	_ = wrong.Body.Close()
+	unknown, _, _ := passwordLogin(t, ts, cfg, "nobody@example.com", "wrong password long enough")
+	unknownLocation := unknown.Header.Get("Location")
+	_ = unknown.Body.Close()
+	if err := st.SetAccountDisabled(context.Background(), "alice@example.com", true, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	disabled, _, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	disabledLocation := disabled.Header.Get("Location")
+	_ = disabled.Body.Close()
+	if wrongLocation != unknownLocation || wrongLocation != disabledLocation || !strings.Contains(wrongLocation, "Invalid+email+or+password") {
+		t.Fatalf("failure locations differ: wrong=%q unknown=%q disabled=%q", wrongLocation, unknownLocation, disabledLocation)
+	}
+}
+
+func TestPasswordLoginRateLimitUsesPersistentFailures(t *testing.T) {
+	ts, _, cfg, plain := newPasswordTestServer(t, false)
+	cfg.PasswordRatePerEmail = 1
+	first, _, _ := passwordLogin(t, ts, cfg, "alice@example.com", "wrong password long enough")
+	_ = first.Body.Close()
+	second, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	defer func() { _ = second.Body.Close() }()
+	if second.StatusCode != http.StatusSeeOther || session != nil || !strings.Contains(second.Header.Get("Location"), "Invalid+email+or+password") {
+		t.Fatalf("rate-limited response leaked/succeeded: status=%d location=%q session=%v", second.StatusCode, second.Header.Get("Location"), session)
+	}
+}
+
+func TestConcurrentPasswordFailuresCannotRacePastRateLimit(t *testing.T) {
+	ts, st, cfg, _ := newPasswordTestServer(t, false)
+	cfg.PasswordRatePerEmail = 1
+	csrf := getCSRFCookie(t, ts.URL+"/", "auth_csrf")
+
+	const requests = 8
+	start := make(chan struct{})
+	errCh := make(chan error, requests)
+	var wg sync.WaitGroup
+	for i := 0; i < requests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req, err := http.NewRequest(http.MethodPost, ts.URL+"/login", strings.NewReader(url.Values{
+				"email": {"alice@example.com"}, "password": {"incorrect password value"}, "csrf_token": {csrf.Value},
+			}.Encode()))
+			if err != nil {
+				errCh <- err
+				return
+			}
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.AddCookie(csrf)
+			resp, err := noFollowClient().Do(req)
+			if err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusSeeOther {
+					err = fmt.Errorf("status %d", resp.StatusCode)
+				}
+			}
+			errCh <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := st.CountFailedLoginAttempts(context.Background(), rateKey("email", "alice@example.com"), time.Now().Add(-passwordRateWindow).Unix())
+	if err != nil || n != 1 {
+		t.Fatalf("persisted failures after concurrent burst = %d err=%v, want exactly 1", n, err)
+	}
+}
+
+func TestPasswordChangeRevokesOldSessionAndClearsMustChange(t *testing.T) {
+	ts, st, cfg, current := newPasswordTestServer(t, true)
+	login, oldSession, csrf := passwordLogin(t, ts, cfg, "alice@example.com", current)
+	if login.Header.Get("Location") != "/change-password" || oldSession == nil || csrf == nil {
+		t.Fatalf("initial login = location %q session=%v csrf=%v", login.Header.Get("Location"), oldSession, csrf)
+	}
+	_ = login.Body.Close()
+	const next = "this is the replacement password"
+	changed := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+		"current_password": {current}, "new_password": {next},
+		"confirm_password": {next}, "csrf_token": {csrf.Value},
+	}, oldSession, csrf)
+	defer func() { _ = changed.Body.Close() }()
+	var newSession *http.Cookie
+	for _, c := range changed.Cookies() {
+		if c.Name == cfg.PasswordCookieName && c.Value != "" {
+			newSession = c
+		}
+	}
+	if changed.StatusCode != http.StatusSeeOther || newSession == nil {
+		t.Fatalf("change response = %d location=%q session=%v", changed.StatusCode, changed.Header.Get("Location"), newSession)
+	}
+	oldReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
+	oldReq.AddCookie(oldSession)
+	oldResp, _ := http.DefaultClient.Do(oldReq)
+	_ = oldResp.Body.Close()
+	if oldResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old session survived password replacement: %d", oldResp.StatusCode)
+	}
+	newReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
+	newReq.AddCookie(newSession)
+	newResp, _ := http.DefaultClient.Do(newReq)
+	_ = newResp.Body.Close()
+	if newResp.StatusCode != http.StatusOK {
+		t.Fatalf("replacement session invalid: %d", newResp.StatusCode)
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	ok, _, err := passwordauth.Verify(a.PasswordHash, next)
+	if err != nil || !ok || a.MustChangePassword {
+		t.Fatalf("replacement credential: ok=%v mustChange=%v err=%v", ok, a.MustChangePassword, err)
+	}
+}
+
+func TestPasswordChangeCurrentPasswordAttemptsAreRateLimited(t *testing.T) {
+	ts, st, cfg, current := newPasswordTestServer(t, false)
+	login, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", current)
+	_ = login.Body.Close()
+	cfg.PasswordRatePerEmail = 1
+
+	wrong := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+		"current_password": {"incorrect password value"},
+		"new_password":     {"a valid replacement password"},
+		"confirm_password": {"a valid replacement password"},
+		"csrf_token":       {csrf.Value},
+	}, session, csrf)
+	wrongBody, _ := io.ReadAll(wrong.Body)
+	_ = wrong.Body.Close()
+	limited := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+		"current_password": {current},
+		"new_password":     {"a valid replacement password"},
+		"confirm_password": {"a valid replacement password"},
+		"csrf_token":       {csrf.Value},
+	}, session, csrf)
+	limitedBody, _ := io.ReadAll(limited.Body)
+	_ = limited.Body.Close()
+	if !strings.Contains(string(wrongBody), "Current password is incorrect.") ||
+		!strings.Contains(string(limitedBody), "Current password is incorrect.") {
+		t.Fatalf("wrong and limited responses did not remain generic")
+	}
+	a, err := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := passwordauth.Verify(a.PasswordHash, current); err != nil || !ok {
+		t.Fatalf("rate-limited change replaced credential: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPasswordLogoutRequiresCSRFAndRevokesSession(t *testing.T) {
+	ts, _, cfg, plain := newPasswordTestServer(t, false)
+	login, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	_ = login.Body.Close()
+	missing := postPasswordForm(t, ts.URL+"/logout", url.Values{}, session)
+	_ = missing.Body.Close()
+	if missing.StatusCode != http.StatusForbidden {
+		t.Fatalf("logout without CSRF = %d", missing.StatusCode)
+	}
+	logout := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf.Value}}, session, csrf)
+	_ = logout.Body.Close()
+	if logout.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout = %d", logout.StatusCode)
+	}
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
+	req.AddCookie(session)
+	resp, _ := http.DefaultClient.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("logged-out session still valid: %d", resp.StatusCode)
+	}
+}
+
+func TestProductionPasswordCookieUsesHostPrefixAndSecurityFlags(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	cfg := &config.Config{
+		LoginMode: "password", SigningKey: priv, PublicKey: pub,
+		CookieSecure: true, PasswordCookieName: "__Host-auth_session",
+		PasswordAbsoluteTTL: 12 * time.Hour, PasswordIdleTTL: time.Hour,
+	}
+	a, err := st.CreatePasswordAccount(context.Background(), "alice@example.com", "hash", false, time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(cfg, st, &captureSender{})
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "https://auth.example.com/login", nil)
+	if err := srv.issuePasswordSession(recorder, req, a, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var session, csrf *http.Cookie
+	for _, c := range recorder.Result().Cookies() {
+		if c.Name == cfg.PasswordCookieName {
+			session = c
+		}
+		if c.Name == csrfCookieName {
+			csrf = c
+		}
+	}
+	if session == nil || !session.Secure || !session.HttpOnly || session.Domain != "" || session.Path != "/" || session.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("production session cookie = %+v", session)
+	}
+	if csrf == nil || !csrf.Secure || csrf.HttpOnly || csrf.Domain != "" || csrf.Path != "/" || csrf.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("production CSRF cookie = %+v", csrf)
+	}
+}
+
+func TestPasswordModeDoesNotExposeMagicLinkRoutes(t *testing.T) {
+	ts, _, _, _ := newPasswordTestServer(t, false)
+	for _, path := range []string{"/magic", "/sent", "/callback"} {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s status = %d, want 404", path, resp.StatusCode)
+		}
+	}
 }
 
 func (c *captureSender) Send(_ context.Context, to, _, textBody, _ string) error {

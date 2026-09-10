@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"crypto/ed25519"
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -43,5 +45,36 @@ func TestDerivePublicKey(t *testing.T) {
 	}
 	if _, err := derivePublicKey(base64.StdEncoding.EncodeToString([]byte("too-short"))); err == nil {
 		t.Error("derivePublicKey(wrong length): want error, got nil")
+	}
+}
+
+func TestReadSecretLinePreservesPasswordCharacters(t *testing.T) {
+	got, err := readSecretLine(bufio.NewReader(strings.NewReader("  pass phrase 世界  \n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "  pass phrase 世界  " {
+		t.Fatalf("password was trimmed or changed: %q", got)
+	}
+}
+
+func TestReadSecretLineRequiresInput(t *testing.T) {
+	if _, err := readSecretLine(bufio.NewReader(strings.NewReader(""))); err == nil {
+		t.Fatal("empty stdin should fail instead of creating an empty password")
+	}
+}
+
+func TestReadSecretLineReusesReaderForPasswordAndConfirmation(t *testing.T) {
+	r := bufio.NewReader(strings.NewReader("first passphrase value\nsecond passphrase value\n"))
+	first, err := readSecretLine(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := readSecretLine(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != "first passphrase value" || second != "second passphrase value" {
+		t.Fatalf("buffered lines = %q, %q", first, second)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // testSeedB64 is a fixed, valid base64 Ed25519 seed used across config
@@ -289,5 +290,51 @@ func TestLoadTTLsHaveSensibleDefaults(t *testing.T) {
 	}
 	if cfg.MagicTTL.Minutes() != 15 {
 		t.Errorf("MagicTTL = %v, want 15 minutes", cfg.MagicTTL)
+	}
+	if cfg.LoginMode != "magic" {
+		t.Errorf("LoginMode = %q, want legacy-safe magic default", cfg.LoginMode)
+	}
+	if cfg.PasswordAbsoluteTTL != 12*time.Hour || cfg.PasswordIdleTTL != time.Hour {
+		t.Errorf("password TTLs = absolute %v idle %v, want 12h/1h", cfg.PasswordAbsoluteTTL, cfg.PasswordIdleTTL)
+	}
+}
+
+func TestPasswordModeSecurityConfiguration(t *testing.T) {
+	clearAllAuthEnv(t)
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+	t.Setenv("AUTH_LOGIN_MODE", "password")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PasswordCookieName != "__Host-auth_session" {
+		t.Fatalf("PasswordCookieName = %q", cfg.PasswordCookieName)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid password mode: %v", err)
+	}
+
+	cfg.CookieSecure = false
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "local HTTP") {
+		t.Fatalf("insecure __Host- cookie was accepted: %v", err)
+	}
+	cfg.PasswordCookieName = "auth_session"
+	cfg.CookieSecure = true
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "__Host-") {
+		t.Fatalf("insecure production cookie name: %v", err)
+	}
+	cfg.CookieSecure = false
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("plain local-dev cookie should be allowed: %v", err)
+	}
+	cfg.PasswordIdleTTL = 13 * time.Hour
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("idle TTL longer than absolute TTL was accepted")
+	}
+
+	cfg.PasswordIdleTTL = time.Hour
+	cfg.PasswordRatePerEmail = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "rate limits") {
+		t.Fatalf("negative rate limit was accepted: %v", err)
 	}
 }

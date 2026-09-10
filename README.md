@@ -4,6 +4,13 @@ Unified magic-link login for the Elcano microservice stack. One small
 Go service, one shared session cookie, every downstream service gated
 by Caddy's `forward_auth`.
 
+Password-mode foundations are now available for new, isolated client
+deployments: Argon2id credentials, revocable opaque sessions, admin-only
+account provisioning, and future MFA/external-identity schema. Existing
+installations remain on magic-link mode by default. See
+[`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md) for the
+staged Auth v2 plan and release criteria.
+
 ## Architecture
 
 ```
@@ -94,6 +101,30 @@ make run
 The default email driver is `stdout` — every magic link prints to
 the terminal, so you can develop end-to-end without configuring
 SendGrid. POST to `/magic`, copy the link from the log, click it.
+
+### Password-mode foundation
+
+Set `AUTH_LOGIN_MODE=password` to use admin-provisioned email/password
+accounts instead of magic links. For plain-HTTP local development, also set
+`AUTH_COOKIE_SECURE=false` and `AUTH_PASSWORD_COOKIE_NAME=auth_session`;
+production keeps the secure `__Host-auth_session` default. Create an account
+without placing its password in shell history:
+
+```bash
+make build
+mkdir -p .localdata
+AUTH_DATA_DIR=.localdata ./bin/auth-admin user create alice@example.com
+```
+
+The CLI prompts for a 15–128 character passphrase and requires the user to
+replace it after the first login. It can also disable accounts, replace
+passwords, inspect account state, and revoke sessions; run
+`./bin/auth-admin help` for the complete list.
+
+This commit deliberately covers authentication on the Auth host only. It does
+not yet issue service-specific authorization codes or Explorer/Lens sessions.
+That browser handoff and each app's local email allowlist are the next delivery
+stage described in [`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md).
 
 ## Environment
 

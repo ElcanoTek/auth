@@ -3,6 +3,8 @@
 // Routes:
 //
 //	GET  /           — login form (HTML)
+//	POST /login      — password-mode login
+//	GET|POST /change-password — password-mode forced replacement
 //	POST /magic      — issue + email a magic link (form post or JSON)
 //	GET  /sent       — "check your inbox" confirmation page
 //	GET  /callback   — verify magic token, set session cookie, redirect
@@ -15,15 +17,21 @@
 //	GET  /healthz    — for orchestration probes.
 //
 // The HTTP server itself is plain net/http. No middleware library, no
-// router — chi/mux/gorilla are wonderful but overkill for ~8 routes.
+// router — chi/mux/gorilla are wonderful but overkill for this small surface.
 package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,15 +40,19 @@ import (
 
 	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/email"
+	passwordauth "github.com/elcanotek/auth/internal/password"
 	"github.com/elcanotek/auth/internal/store"
 	"github.com/elcanotek/auth/internal/token"
 )
 
 type Server struct {
-	cfg    *config.Config
-	store  *store.Store
-	sender email.Sender
-	tmpl   *template.Template
+	cfg               *config.Config
+	store             *store.Store
+	sender            email.Sender
+	tmpl              *template.Template
+	dummyPasswordHash string
+	passwordSlots     chan struct{}
+	passwordAttemptMu sync.Mutex
 
 	// sends tracks in-flight magic-link email goroutines so graceful
 	// shutdown can drain them instead of dropping mid-flight emails.
@@ -48,7 +60,11 @@ type Server struct {
 }
 
 func New(cfg *config.Config, st *store.Store, sender email.Sender) *Server {
-	return &Server{cfg: cfg, store: st, sender: sender, tmpl: parseTemplates()}
+	s := &Server{cfg: cfg, store: st, sender: sender, tmpl: parseTemplates(), passwordSlots: make(chan struct{}, 2)}
+	if cfg.LoginMode == "password" {
+		s.dummyPasswordHash = passwordauth.DummyHash()
+	}
+	return s
 }
 
 // WaitSends blocks until every in-flight magic-link email send has finished,
@@ -76,6 +92,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/magic", s.handleMagic)
+	mux.HandleFunc("/login", s.handlePasswordLogin)
+	mux.HandleFunc("/change-password", s.handleChangePassword)
 	mux.HandleFunc("/sent", s.handleSent)
 	mux.HandleFunc("/callback", s.handleCallback)
 	mux.HandleFunc("/logout", s.handleLogout)
@@ -83,7 +101,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/me", s.handleMe)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.Handle("/fonts/", fontHandler()) // self-hosted Nebula Sans woff2 for the login UI
-	return logRequests(mux)
+	return logRequests(securityHeaders(mux))
 }
 
 // ── login UI ─────────────────────────────────────────────────────────
@@ -91,6 +109,11 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
+		return
+	}
+
+	if s.passwordMode() {
+		s.handlePasswordRoot(w, r)
 		return
 	}
 
@@ -117,7 +140,40 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handlePasswordRoot(w http.ResponseWriter, r *http.Request) {
+	if identity := s.currentPasswordSession(r); identity != nil {
+		if identity.Account.MustChangePassword {
+			http.Redirect(w, r, "/change-password", http.StatusSeeOther)
+			return
+		}
+		dest := s.resolveReturnTo(r.URL.Query().Get("return_to"))
+		if dest == "" {
+			dest = s.defaultDest()
+		}
+		http.Redirect(w, r, dest, http.StatusSeeOther)
+		return
+	}
+	csrf, err := s.ensureCSRFCookie(w, r)
+	if err != nil {
+		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		return
+	}
+	if err := s.tmpl.ExecuteTemplate(w, "login.html", map[string]any{
+		"Brand":        s.cfg.BrandName,
+		"PasswordMode": true,
+		"ReturnTo":     r.URL.Query().Get("return_to"),
+		"Error":        r.URL.Query().Get("err"),
+		"CSRF":         csrf,
+	}); err != nil {
+		log.Printf("render password login: %v", err)
+	}
+}
+
 func (s *Server) handleSent(w http.ResponseWriter, r *http.Request) {
+	if s.passwordMode() {
+		http.NotFound(w, r)
+		return
+	}
 	if err := s.tmpl.ExecuteTemplate(w, "sent.html", map[string]any{
 		"Brand": s.cfg.BrandName,
 		"Email": r.URL.Query().Get("email"),
@@ -137,6 +193,10 @@ const (
 )
 
 func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
+	if s.passwordMode() {
+		http.NotFound(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -282,9 +342,212 @@ func (s *Server) bounceWithErr(w http.ResponseWriter, r *http.Request, msg strin
 	http.Redirect(w, r, "/?"+q.Encode(), http.StatusSeeOther)
 }
 
+// ── password login ──────────────────────────────────────────────────
+
+const passwordRateWindow = 15 * time.Minute
+
+func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.passwordMode() {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.validCSRF(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
+	plain := r.FormValue("password")
+	now := time.Now()
+	ipRateKey := rateKey("ip", clientIP(r))
+	account, valid, err := s.authenticatePassword(r.Context(), email, plain, ipRateKey, now)
+	if err != nil {
+		log.Printf("password authentication: %v", err)
+		s.passwordLoginFailure(w, r)
+		return
+	}
+	if !valid {
+		s.passwordLoginFailure(w, r)
+		return
+	}
+	_ = s.store.RecordAudit(r.Context(), "login.succeeded", account.ID, ipRateKey, now.Unix())
+	if err := s.issuePasswordSession(w, r, account, now); err != nil {
+		log.Printf("issue password session: %v", err)
+		s.passwordLoginFailure(w, r)
+		return
+	}
+	if account.MustChangePassword {
+		http.Redirect(w, r, "/change-password", http.StatusSeeOther)
+		return
+	}
+	dest := s.resolveReturnTo(r.FormValue("return_to"))
+	if dest == "" {
+		dest = s.defaultDest()
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
+}
+
+// authenticatePassword keeps the persistent limit check, expensive verify,
+// and attempt record in one in-process critical section. A client deployment
+// deliberately runs one Auth process; serializing this boundary prevents a
+// burst of parallel requests from all observing the same pre-failure count.
+func (s *Server) authenticatePassword(ctx context.Context, email, plain, ipRateKey string, now time.Time) (store.Account, bool, error) {
+	s.passwordAttemptMu.Lock()
+	defer s.passwordAttemptMu.Unlock()
+
+	emailRateKey := rateKey("email", email)
+	limited, err := s.passwordRateLimited(ctx, emailRateKey, ipRateKey, now)
+	if err != nil || limited {
+		return store.Account{}, false, err
+	}
+	account, lookupErr := s.store.PasswordAccountByEmail(ctx, email)
+	encoded := s.dummyPasswordHash
+	if lookupErr == nil {
+		encoded = account.PasswordHash
+	}
+	ok, _, verifyErr := s.verifyPassword(encoded, plain)
+	valid := lookupErr == nil && verifyErr == nil && ok && account.DisabledAt == nil
+	if !valid {
+		if err := s.store.RecordLoginAttempt(ctx, emailRateKey, false, now.Unix()); err != nil {
+			return store.Account{}, false, err
+		}
+		if err := s.store.RecordLoginAttempt(ctx, ipRateKey, false, now.Unix()); err != nil {
+			return store.Account{}, false, err
+		}
+		return store.Account{}, false, nil
+	}
+	if err := s.store.RecordLoginAttempt(ctx, emailRateKey, true, now.Unix()); err != nil {
+		return store.Account{}, false, err
+	}
+	return account, true, nil
+}
+
+func (s *Server) passwordRateLimited(ctx context.Context, emailKey, ipKey string, now time.Time) (bool, error) {
+	since := now.Add(-passwordRateWindow).Unix()
+	if s.cfg.PasswordRatePerEmail > 0 {
+		n, err := s.store.CountFailedLoginAttempts(ctx, emailKey, since)
+		if err != nil || n >= s.cfg.PasswordRatePerEmail {
+			return n >= s.cfg.PasswordRatePerEmail, err
+		}
+	}
+	if s.cfg.PasswordRatePerIP > 0 {
+		n, err := s.store.CountFailedLoginAttempts(ctx, ipKey, since)
+		if err != nil || n >= s.cfg.PasswordRatePerIP {
+			return n >= s.cfg.PasswordRatePerIP, err
+		}
+	}
+	return false, nil
+}
+
+func (s *Server) passwordLoginFailure(w http.ResponseWriter, r *http.Request) {
+	q := url.Values{"err": []string{"Invalid email or password."}}
+	if rt := r.FormValue("return_to"); rt != "" {
+		q.Set("return_to", rt)
+	}
+	http.Redirect(w, r, "/?"+q.Encode(), http.StatusSeeOther)
+}
+
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	if !s.passwordMode() {
+		http.NotFound(w, r)
+		return
+	}
+	identity := s.currentPasswordSession(r)
+	if identity == nil {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	csrf, err := s.ensureCSRFCookie(w, r)
+	if err != nil {
+		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		return
+	}
+	if r.Method == http.MethodGet {
+		s.renderChangePassword(w, "", csrf)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.validCSRF(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	current, next, confirm := r.FormValue("current_password"), r.FormValue("new_password"), r.FormValue("confirm_password")
+	now := time.Now()
+	ipRateKey := rateKey("ip", clientIP(r))
+	account, valid, authErr := s.authenticatePassword(r.Context(), identity.Account.NormalizedEmail, current, ipRateKey, now)
+	if authErr != nil || !valid || account.ID != identity.Account.ID {
+		if authErr != nil {
+			log.Printf("password change authentication: %v", authErr)
+		}
+		s.renderChangePassword(w, "Current password is incorrect.", csrf)
+		return
+	}
+	if next != confirm {
+		s.renderChangePassword(w, "New passwords do not match.", csrf)
+		return
+	}
+	encoded, err := s.hashPassword(next)
+	if err != nil {
+		s.renderChangePassword(w, err.Error(), csrf)
+		return
+	}
+	if err := s.store.SetPassword(r.Context(), identity.Account.Email, encoded, false, now.Unix()); err != nil {
+		log.Printf("replace password: %v", err)
+		s.renderChangePassword(w, "Something went wrong. Try again.", csrf)
+		return
+	}
+	updated, err := s.store.PasswordAccountByID(r.Context(), identity.Account.ID)
+	if err != nil || s.issuePasswordSession(w, r, updated, now) != nil {
+		s.clearPasswordCookies(w)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, s.defaultDest(), http.StatusSeeOther)
+}
+
+func (s *Server) renderChangePassword(w http.ResponseWriter, errText, csrf string) {
+	if err := s.tmpl.ExecuteTemplate(w, "change-password.html", map[string]any{
+		"Brand": s.cfg.BrandName, "Error": errText, "CSRF": csrf,
+	}); err != nil {
+		log.Printf("render change password: %v", err)
+	}
+}
+
+func (s *Server) verifyPassword(encoded, plain string) (bool, bool, error) {
+	s.passwordSlots <- struct{}{}
+	defer func() { <-s.passwordSlots }()
+	return passwordauth.Verify(encoded, plain)
+}
+
+func (s *Server) hashPassword(plain string) (string, error) {
+	s.passwordSlots <- struct{}{}
+	defer func() { <-s.passwordSlots }()
+	return passwordauth.Hash(plain)
+}
+
 // ── /callback — verify magic, set cookie ─────────────────────────────
 
 func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
+	if s.passwordMode() {
+		http.NotFound(w, r)
+		return
+	}
 	raw := r.URL.Query().Get("token")
 	if raw == "" {
 		s.bounceWithErr(w, r, "Missing sign-in token.")
@@ -343,6 +606,28 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 // ── /logout ──────────────────────────────────────────────────────────
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if s.passwordMode() {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		if err := r.ParseForm(); err != nil || !s.validCSRF(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		userID := ""
+		if identity := s.currentPasswordSession(r); identity != nil {
+			userID = identity.Account.ID
+		}
+		if c, err := r.Cookie(s.cfg.PasswordCookieName); err == nil {
+			_, _ = s.store.RevokeAuthSession(r.Context(), hashSecret(c.Value), time.Now().Unix(), "logout")
+		}
+		_ = s.store.RecordAudit(r.Context(), "session.logged_out", userID, rateKey("ip", clientIP(r)), time.Now().Unix())
+		s.clearPasswordCookies(w)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	s.clearSessionCookie(w)
 	if r.Method == http.MethodPost {
 		// XHR-style logout from a downstream service.
@@ -355,6 +640,18 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // ── /verify — Caddy forward_auth target ──────────────────────────────
 
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
+	if s.passwordMode() {
+		identity := s.currentPasswordSession(r)
+		if identity == nil || identity.Account.MustChangePassword {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("X-User-ID", identity.Account.ID)
+		w.Header().Set("X-User-Email", identity.Account.Email)
+		w.Header().Set("X-User-Tenant", emailTenant(identity.Account.Email))
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	sess := s.currentSession(r)
 	if sess == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -371,6 +668,18 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 // ── /me — JSON view of current session ───────────────────────────────
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	if s.passwordMode() {
+		identity := s.currentPasswordSession(r)
+		w.Header().Set("Content-Type", "application/json")
+		if identity == nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = fmt.Fprint(w, `{"authenticated":false}`)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"authenticated":true,"sub":%q,"email":%q,"must_change_password":%t,"exp":%d}`,
+			identity.Account.ID, identity.Account.Email, identity.Account.MustChangePassword, identity.Session.AbsoluteExpiresAt.Unix())
+		return
+	}
 	sess := s.currentSession(r)
 	w.Header().Set("Content-Type", "application/json")
 	if sess == nil {
@@ -425,6 +734,143 @@ func (s *Server) currentSession(r *http.Request) *token.Session {
 		return nil
 	}
 	return sess
+}
+
+type passwordIdentity struct {
+	Account store.Account
+	Session store.AuthSession
+}
+
+func (s *Server) passwordMode() bool { return s.cfg.LoginMode == "password" }
+
+func (s *Server) issuePasswordSession(w http.ResponseWriter, r *http.Request, account store.Account, now time.Time) error {
+	raw, err := randomSecret(32)
+	if err != nil {
+		return err
+	}
+	csrf, err := randomSecret(32)
+	if err != nil {
+		return err
+	}
+	idle := now.Add(s.cfg.PasswordIdleTTL)
+	absolute := now.Add(s.cfg.PasswordAbsoluteTTL)
+	if idle.After(absolute) {
+		idle = absolute
+	}
+	if err := s.store.CreateAuthSession(r.Context(), hashSecret(raw), account.ID,
+		now.Unix(), idle.Unix(), absolute.Unix()); err != nil {
+		return err
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: s.cfg.PasswordCookieName, Value: raw, Path: "/",
+		MaxAge: int(s.cfg.PasswordAbsoluteTTL.Seconds()), Expires: absolute,
+		Secure: s.cfg.CookieSecure, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+	})
+	s.setCSRFCookie(w, csrf)
+	return nil
+}
+
+func (s *Server) currentPasswordSession(r *http.Request) *passwordIdentity {
+	c, err := r.Cookie(s.cfg.PasswordCookieName)
+	if err != nil || c.Value == "" {
+		return nil
+	}
+	a, sess, err := s.store.ValidateAuthSession(r.Context(), hashSecret(c.Value), time.Now().Unix(),
+		s.cfg.PasswordIdleTTL, 5*time.Minute)
+	if err != nil {
+		return nil
+	}
+	return &passwordIdentity{Account: a, Session: sess}
+}
+
+const csrfCookieName = "__Host-auth_csrf"
+
+func (s *Server) effectiveCSRFCookieName() string {
+	if s.cfg.CookieSecure {
+		return csrfCookieName
+	}
+	return "auth_csrf"
+}
+
+func (s *Server) ensureCSRFCookie(w http.ResponseWriter, r *http.Request) (string, error) {
+	if c, err := r.Cookie(s.effectiveCSRFCookieName()); err == nil && len(c.Value) >= 32 {
+		return c.Value, nil
+	}
+	return s.rotateCSRFCookie(w)
+}
+
+func (s *Server) rotateCSRFCookie(w http.ResponseWriter) (string, error) {
+	raw, err := randomSecret(32)
+	if err != nil {
+		return "", err
+	}
+	s.setCSRFCookie(w, raw)
+	return raw, nil
+}
+
+func (s *Server) setCSRFCookie(w http.ResponseWriter, raw string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: s.effectiveCSRFCookieName(), Value: raw, Path: "/",
+		MaxAge: int(s.cfg.PasswordAbsoluteTTL.Seconds()), Secure: s.cfg.CookieSecure,
+		HttpOnly: false, SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *Server) validCSRF(r *http.Request) bool {
+	c, err := r.Cookie(s.effectiveCSRFCookieName())
+	if err != nil || c.Value == "" {
+		return false
+	}
+	submitted := r.FormValue("csrf_token")
+	return len(submitted) == len(c.Value) && subtle.ConstantTimeCompare([]byte(submitted), []byte(c.Value)) == 1
+}
+
+func (s *Server) clearPasswordCookies(w http.ResponseWriter) {
+	for _, cookie := range []http.Cookie{
+		{Name: s.cfg.PasswordCookieName, HttpOnly: true},
+		{Name: s.effectiveCSRFCookieName(), HttpOnly: false},
+	} {
+		cookie.Value = ""
+		cookie.Path = "/"
+		cookie.MaxAge = -1
+		cookie.Expires = time.Unix(1, 0)
+		cookie.Secure = s.cfg.CookieSecure
+		cookie.SameSite = http.SameSiteLaxMode
+		http.SetCookie(w, &cookie)
+	}
+}
+
+func randomSecret(bytes int) (string, error) {
+	b := make([]byte, bytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func hashSecret(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func rateKey(kind, value string) string {
+	return hashSecret(kind + "\x00" + strings.ToLower(strings.TrimSpace(value)))
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	// The production listener is loopback-only behind Caddy. Trust its
+	// forwarded client address only when the immediate peer is loopback;
+	// a mistakenly public listener must not permit rate-limit spoofing.
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+			return strings.TrimSpace(strings.Split(forwarded, ",")[0])
+		}
+	}
+	return host
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -517,6 +963,17 @@ func logRequests(h http.Handler) http.Handler {
 		h.ServeHTTP(rw, r)
 		log.Printf("%s %s %s %d %s",
 			r.RemoteAddr, r.Method, r.URL.Path, rw.status, time.Since(start))
+	})
+}
+
+func securityHeaders(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		h.ServeHTTP(w, r)
 	})
 }
 

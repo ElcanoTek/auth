@@ -235,9 +235,7 @@ case "$cmd" in
     exec "$ADMIN_BIN" domain "$@"
     ;;
   user)
-    # `auth user <list|del>` — the audit log of who has actually logged
-    # in. Anyone with an allowed email can log in; this just shows who
-    # has done so.
+    # Password-account administration plus the legacy magic-link audit.
     # shellcheck disable=SC1090
     [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
     export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
@@ -312,8 +310,14 @@ DOMAIN ALLOWLIST
                                     (empty allowlist = open enrollment)
 
 USERS
-  auth user list                    audit log of who has logged in
-  auth user del <email>             remove a user from the audit log
+  auth user create <email>          create password account (secure prompt)
+  auth user set-password <email>    replace password and revoke sessions
+  auth user disable <email>         disable account and revoke sessions
+  auth user enable <email>          re-enable account
+  auth user show <email>            show account state and active sessions
+  auth user revoke-sessions <email> revoke all sessions for one account
+  auth user list                    password accounts + magic-link audit
+  auth user del <email>             remove a user from magic-link audit
 
 CRYPTO
   auth keygen                       print a fresh Ed25519 signing keypair

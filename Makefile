@@ -36,10 +36,11 @@ check:
 	$(MAKE) build
 	$(MAKE) test
 
-## smoke: boot the real binary + drive a full magic-link round-trip
-##        (stdout driver, throwaway DB, loopback port). No secrets/network.
+## smoke: boot the real binary and drive both legacy magic-link and password
+##        round-trips with throwaway databases on loopback ports.
 smoke:
 	bash scripts/smoke.sh
+	bash scripts/smoke-password.sh
 
 ## run: build + start with the local .env.local (creates one if missing).
 ##      Talks to whatever AUTH_EMAIL_DRIVER is set to — default 'stdout'

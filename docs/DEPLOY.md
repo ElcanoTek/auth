@@ -173,10 +173,13 @@ sudo chown auth:auth /opt/auth/data/state.db
 auth start
 ```
 
-> Restoring an old DB doesn't invalidate active sessions — those
-> live in Ed25519-signed cookies, not in the DB. Sessions only become
-> invalid by rotating `AUTH_SIGNING_KEY` or letting them expire
-> (default 30 days).
+> In legacy magic-link mode, restoring an old DB does not invalidate the
+> Ed25519-signed cookies already in browsers. In password mode, the database
+> owns credential and revocation state: restoring a snapshot can resurrect a
+> session that was revoked after that snapshot. After a password-mode restore,
+> revoke the affected accounts' sessions with
+> `auth user revoke-sessions <email>` (or invalidate every row in
+> `auth_sessions`) before reopening access.
 
 ## Upgrading
 
