@@ -203,6 +203,17 @@ key; in-flight lockouts reset at rotation.
 
 ## Upgrading
 
+### Go toolchain
+
+`go.mod` carries a `toolchain go1.25.x` line. Every build path (`auth
+update`, `auth rebuild`, bootstrap, CI) runs with `GOTOOLCHAIN=auto`, so a
+box whose distro Go is older downloads exactly that version on first build
+(needs outbound HTTPS, which the box already has for `git pull`) and uses it
+from then on. That line is where standard-library security fixes land: when
+govulncheck reports advisories fixed in a newer Go patch, bump the toolchain
+line, run the checks, merge, and the next `auth update` rebuilds with it.
+
+
 ```bash
 sudo auth update
 ```
