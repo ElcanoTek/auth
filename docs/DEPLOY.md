@@ -213,8 +213,7 @@ box whose distro Go is older downloads exactly that version on first build
 from then on; CI's setup-go reads the same line. That line is where
 standard-library security fixes land: when govulncheck reports advisories
 fixed in a newer Go patch, bump it, run the checks, merge, and the next
-`auth update` rebuilds with it. (A separate `toolchain` directive is not
-enough: setup-go and `GOTOOLCHAIN=local` builds honour only the `go` line.)
+`auth update` rebuilds with it.
 
 
 ```bash
