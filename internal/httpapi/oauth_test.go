@@ -301,3 +301,81 @@ func exchangeOAuthCode(t *testing.T, base, code, verifier, secret string) *http.
 	}
 	return resp
 }
+
+func TestAuthorizeResponseNamesTheIssuer(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Explorer", testOAuthRedirect, "",
+		hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	_, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	if session == nil {
+		t.Fatal("no central session")
+	}
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/authorize?"+url.Values{
+		"response_type": {"code"}, "client_id": {testOAuthClientID}, "redirect_uri": {testOAuthRedirect},
+		"scope": {"email"}, "state": {"s"}, "nonce": {"n"},
+		"code_challenge":        {pkceChallenge("a-valid-pkce-verifier-that-is-longer-than-forty-three-characters")},
+		"code_challenge_method": {"S256"},
+	}.Encode(), nil)
+	req.AddCookie(session)
+	resp, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	callback, _ := url.Parse(resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || callback.Query().Get("iss") != New(cfg, st, &captureSender{}).issuerURL() {
+		t.Fatalf("authorize response = %d %q, want iss=%q", resp.StatusCode, resp.Header.Get("Location"), New(cfg, st, &captureSender{}).issuerURL())
+	}
+}
+
+func TestDiscoveryAndJWKSAreAbsentInMagicMode(t *testing.T) {
+	ts, _, _, _ := newTestServer(t)
+	for _, path := range []string{"/.well-known/openid-configuration", "/jwks.json"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s in magic mode = %d, want 404", path, resp.StatusCode)
+		}
+	}
+}
+
+func TestTokenRefusalsAreAuditedOncePerSourcePerWindow(t *testing.T) {
+	ts, st, _, _ := newPasswordTestServer(t, false)
+	for i := 0; i < 4; i++ {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/token", strings.NewReader(url.Values{
+			"grant_type": {"authorization_code"}, "client_id": {"nobody"}, "code": {"x"},
+			"redirect_uri": {testOAuthRedirect}, "code_verifier": {strings.Repeat("v", 43)},
+		}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth("nobody", "wrong-secret")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("unknown client = %d, want 401", resp.StatusCode)
+		}
+	}
+	events, err := st.RecentAuditEvents(t.Context(), "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusals := 0
+	for _, e := range events {
+		if e.EventType == "token.invalid_client" {
+			refusals++
+			if e.SourceIPHash == "" {
+				t.Fatal("token refusal audit lacks a source hash")
+			}
+		}
+	}
+	if refusals != 1 {
+		t.Fatalf("token.invalid_client rows = %d after 4 refusals, want 1 (coalesced)", refusals)
+	}
+}

@@ -98,6 +98,11 @@ Legacy `domains`, `magic_links`, and `users` tables remain intact.
    interchangeable.
 
 The Auth-side protocol and operator tooling in steps 1-5 are implemented here.
+The authorization response carries `iss` alongside `code` and `state`
+(RFC 9207) so a client that ever trusts more than one issuer can detect a
+mix-up; discovery and JWKS answer only in password mode. Token-endpoint
+refusals are audited as `token.invalid_client` and `token.invalid_grant`,
+coalesced per source per window.
 The wire response includes the standard identity claims directly for the
 initial Explorer client and as an EdDSA-signed `id_token`; Explorer integration
 is maintained in its own repository. Lens integration remains later work. The

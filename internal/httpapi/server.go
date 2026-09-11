@@ -727,6 +727,11 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	callbackQuery := dest.Query()
 	callbackQuery.Set("code", rawCode)
 	callbackQuery.Set("state", state)
+	// RFC 9207: name the issuer on the response so a client that ever talks
+	// to more than one authorization server can detect a mix-up. Explorer
+	// ignores it today; it costs nothing and the callback signature is
+	// forward-compatible.
+	callbackQuery.Set("iss", s.issuerURL())
 	dest.RawQuery = callbackQuery.Encode()
 	http.Redirect(w, r, dest.String(), http.StatusSeeOther)
 }
@@ -751,8 +756,17 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
+	now := time.Now()
+	ipRateKey := s.rateKey("ip", clientIP(r))
+	// Token-endpoint refusals are the signal for a stolen or brute-forced
+	// client secret and for code replay. Coalesced per source per window, the
+	// same way rate-limit events are, so a flood cannot grow the audit table.
+	auditRefusal := func(event string) {
+		_, _ = s.store.RecordAuditIfAbsent(r.Context(), event, "", ipRateKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
+	}
 	clientID, clientSecret, ok := r.BasicAuth()
 	if !ok || clientID == "" || clientID != r.FormValue("client_id") {
+		auditRefusal("token.invalid_client")
 		writeInvalidClient(w)
 		return
 	}
@@ -760,24 +774,26 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	providedSecretHash := hashSecret(clientSecret)
 	if err != nil || app.DisabledAt != nil || len(app.ClientSecretHash) != len(providedSecretHash) ||
 		subtle.ConstantTimeCompare([]byte(app.ClientSecretHash), []byte(providedSecretHash)) != 1 {
+		auditRefusal("token.invalid_client")
 		writeInvalidClient(w)
 		return
 	}
 	code, redirectURI, verifier := r.FormValue("code"), r.FormValue("redirect_uri"), r.FormValue("code_verifier")
 	if r.FormValue("grant_type") != "authorization_code" || code == "" || redirectURI != app.RedirectURI || !validCodeVerifier(verifier) {
+		auditRefusal("token.invalid_grant")
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
 	challenge := pkceChallenge(verifier)
-	grant, err := s.store.ConsumeAuthorizationCode(r.Context(), hashSecret(code), clientID, redirectURI, challenge, time.Now().Unix())
+	grant, err := s.store.ConsumeAuthorizationCode(r.Context(), hashSecret(code), clientID, redirectURI, challenge, now.Unix())
 	if err != nil {
 		if !errors.Is(err, store.ErrInvalidGrant) {
 			log.Printf("consume authorization code: %v", err)
 		}
+		auditRefusal("token.invalid_grant")
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
-	now := time.Now()
 	assertionTTL := s.cfg.AssertionTTL
 	if assertionTTL <= 0 {
 		assertionTTL = 5 * time.Minute
@@ -813,6 +829,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
+	if !s.passwordMode() {
+		http.NotFound(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -828,6 +848,10 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
+	if !s.passwordMode() {
+		http.NotFound(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
