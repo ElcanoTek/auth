@@ -1,6 +1,6 @@
 module github.com/elcanotek/auth
 
-go 1.25.0
+go 1.25.14
 
 require (
 	golang.org/x/crypto v0.47.0
