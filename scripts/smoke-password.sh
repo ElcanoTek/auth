@@ -14,6 +14,7 @@ JAR="$WORK/cookies.txt"
 SRV_PID=""
 INITIAL='initial client passphrase'
 REPLACEMENT='replacement client passphrase'
+CALLBACK='https://explorer.example.com/auth/callback'
 
 c_g=$'\033[0;32m'; c_r=$'\033[0;31m'; c_d=$'\033[2m'; c_0=$'\033[0m'
 pass() { printf '%s✓%s %s\n' "$c_g" "$c_0" "$*"; }
@@ -41,6 +42,9 @@ mkdir -p "$WORK/data"
 SIGNING_KEY="$("$WORK/auth-admin" keygen | sed -n 's/^AUTH_SIGNING_KEY=//p')"
 printf '%s\n%s\n' "$INITIAL" "$INITIAL" | AUTH_DATA_DIR="$WORK/data" \
   "$WORK/auth-admin" user create alice@example.com >/dev/null
+app_output="$(AUTH_DATA_DIR="$WORK/data" "$WORK/auth-admin" app create explorer "$CALLBACK")"
+CLIENT_SECRET="$(printf '%s\n' "$app_output" | sed -n 's/^AUTH_CLIENT_SECRET=//p')"
+[[ -n "$CLIENT_SECRET" ]] || fail "application registration did not return a client secret"
 
 info "starting password mode on ${BASE}"
 AUTH_ADDR="127.0.0.1:${PORT}" \
@@ -91,13 +95,47 @@ old_code="$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: auth_session=$old
 [[ "$old_code" == "401" ]] || fail "old session survived password replacement (got $old_code)"
 pass "3. replacement revokes the old session and admits the new session"
 
+verifier='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~'
+challenge="$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
+headers="$(curl -sS -D - -o /dev/null -b "$JAR" -G \
+  --data-urlencode 'response_type=code' \
+  --data-urlencode 'client_id=explorer' \
+  --data-urlencode "redirect_uri=$CALLBACK" \
+  --data-urlencode 'scope=email' \
+  --data-urlencode 'state=smoke-state' \
+  --data-urlencode 'nonce=smoke-nonce' \
+  --data-urlencode "code_challenge=$challenge" \
+  --data-urlencode 'code_challenge_method=S256' "$BASE/authorize")"
+location="$(printf '%s\n' "$headers" | sed -n 's/^[Ll]ocation: //p' | tr -d '\r')"
+auth_code="$(printf '%s' "$location" | sed -E 's/.*[?&]code=([^&]+).*/\1/')"
+[[ "$location" == "$CALLBACK"* ]] || fail "authorize did not use the exact registered callback"
+[[ "$location" == *'state=smoke-state'* && -n "$auth_code" && "$auth_code" != "$location" ]] || fail "authorize did not return code + state"
+
+token_json="$(curl -fsS -u "explorer:$CLIENT_SECRET" \
+  --data-urlencode 'grant_type=authorization_code' \
+  --data-urlencode "code=$auth_code" \
+  --data-urlencode 'client_id=explorer' \
+  --data-urlencode "redirect_uri=$CALLBACK" \
+  --data-urlencode "code_verifier=$verifier" "$BASE/token")"
+printf '%s' "$token_json" | grep -q '"email":"alice@example.com"' || fail "token response omitted identity"
+printf '%s' "$token_json" | grep -q '"nonce":"smoke-nonce"' || fail "token response omitted nonce"
+printf '%s' "$token_json" | grep -q '"id_token":"' || fail "token response omitted signed identity token"
+replay_status="$(curl -sS -o /dev/null -w '%{http_code}' -u "explorer:$CLIENT_SECRET" \
+  --data-urlencode 'grant_type=authorization_code' \
+  --data-urlencode "code=$auth_code" \
+  --data-urlencode 'client_id=explorer' \
+  --data-urlencode "redirect_uri=$CALLBACK" \
+  --data-urlencode "code_verifier=$verifier" "$BASE/token")"
+[[ "$replay_status" == "400" ]] || fail "authorization code replay returned $replay_status"
+pass "4. registered Explorer client completes a one-use PKCE handoff"
+
 csrf="$(cookie_value auth_csrf)"
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -c "$JAR" \
   --data-urlencode "csrf_token=$csrf" "$BASE/logout")"
 [[ "$code" == "204" ]] || fail "logout did not return 204 (got $code)"
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/verify")"
 [[ "$code" == "401" ]] || fail "logged-out session remained valid (got $code)"
-pass "4. CSRF-protected logout revokes the replacement session"
+pass "5. CSRF-protected logout revokes the replacement session"
 
 echo
 pass "password-mode smoke test passed"

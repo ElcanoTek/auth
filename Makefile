@@ -36,8 +36,8 @@ check:
 	$(MAKE) build
 	$(MAKE) test
 
-## smoke: boot the real binary and drive both legacy magic-link and password
-##        round-trips with throwaway databases on loopback ports.
+## smoke: boot the real binary and drive legacy magic-link, password, and
+##        confidential-application PKCE handoffs with throwaway databases.
 smoke:
 	bash scripts/smoke.sh
 	bash scripts/smoke-password.sh

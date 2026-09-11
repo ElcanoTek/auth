@@ -116,6 +116,30 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(absolute_expires_at, idle_expires_at);
+CREATE TABLE IF NOT EXISTS applications (
+  id                 TEXT PRIMARY KEY,
+  name               TEXT NOT NULL,
+  redirect_uri       TEXT NOT NULL,
+  logout_uri         TEXT,
+  client_secret_hash TEXT NOT NULL,
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL,
+  disabled_at        INTEGER
+);
+CREATE TABLE IF NOT EXISTS authorization_codes (
+  code_hash          TEXT PRIMARY KEY,
+  client_id          TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  user_id            TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  session_token_hash TEXT NOT NULL REFERENCES auth_sessions(token_hash) ON DELETE CASCADE,
+  redirect_uri       TEXT NOT NULL,
+  nonce              TEXT NOT NULL,
+  code_challenge     TEXT NOT NULL,
+  auth_time          INTEGER NOT NULL,
+  created_at         INTEGER NOT NULL,
+  expires_at         INTEGER NOT NULL,
+  consumed_at        INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_authorization_codes_expiry ON authorization_codes(expires_at);
 CREATE TABLE IF NOT EXISTS login_attempts (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   rate_key_hash TEXT NOT NULL,
@@ -216,6 +240,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, ?)`,
 		time.Now().Unix()); err != nil {
 		return fmt.Errorf("record schema version: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(3, ?)`,
+		time.Now().Unix()); err != nil {
+		return fmt.Errorf("record application handoff schema version: %w", err)
 	}
 	return nil
 }
@@ -515,9 +544,12 @@ func (s *Store) DeleteUser(ctx context.Context, email string) (bool, error) {
 // ── password accounts ───────────────────────────────────────────────
 
 var (
-	ErrAccountExists   = errors.New("account already exists")
-	ErrAccountNotFound = errors.New("account not found")
-	ErrInvalidSession  = errors.New("invalid session")
+	ErrAccountExists       = errors.New("account already exists")
+	ErrAccountNotFound     = errors.New("account not found")
+	ErrInvalidSession      = errors.New("invalid session")
+	ErrApplicationExists   = errors.New("application already exists")
+	ErrApplicationNotFound = errors.New("application not found")
+	ErrInvalidGrant        = errors.New("invalid authorization grant")
 	// ErrCredentialChanged means the password verified by the caller is no
 	// longer the account's current credential (replaced concurrently).
 	ErrCredentialChanged = errors.New("credential changed")
@@ -871,15 +903,274 @@ func (s *Store) CountActiveAuthSessions(ctx context.Context, userID string, now 
 	return n, err
 }
 
-// SweepPasswordState deletes expired sessions, stale login attempts, and
-// audit events older than auditRetention (0 keeps audit events forever).
+// ── confidential applications and authorization codes ──────────────
+
+type Application struct {
+	ID               string
+	Name             string
+	RedirectURI      string
+	LogoutURI        string
+	ClientSecretHash string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	DisabledAt       *time.Time
+}
+
+func (s *Store) CreateApplication(ctx context.Context, id, name, redirectURI, logoutURI, secretHash string, now int64) (Application, error) {
+	id, name = strings.TrimSpace(id), strings.TrimSpace(name)
+	redirectURI, logoutURI = strings.TrimSpace(redirectURI), strings.TrimSpace(logoutURI)
+	if id == "" || name == "" || redirectURI == "" || secretHash == "" {
+		return Application{}, errors.New("application id, name, redirect URI, and secret hash are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Application{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO applications(id, name, redirect_uri, logout_uri, client_secret_hash, created_at, updated_at)
+		VALUES(?, ?, ?, NULLIF(?, ''), ?, ?, ?)`, id, name, redirectURI, logoutURI, secretHash, now, now)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return Application{}, ErrApplicationExists
+		}
+		return Application{}, err
+	}
+	if err := insertApplicationAudit(ctx, tx, "application.created", id, "", now); err != nil {
+		return Application{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Application{}, err
+	}
+	app, err := s.ApplicationByID(ctx, id)
+	if err != nil {
+		return Application{}, err
+	}
+	app.ClientSecretHash = ""
+	return app, nil
+}
+
+func (s *Store) ApplicationByID(ctx context.Context, id string) (Application, error) {
+	var app Application
+	var logout sql.NullString
+	var disabled sql.NullInt64
+	var created, updated int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, name, redirect_uri, logout_uri, client_secret_hash, created_at, updated_at, disabled_at
+		FROM applications WHERE id = ?`, strings.TrimSpace(id)).Scan(
+		&app.ID, &app.Name, &app.RedirectURI, &logout, &app.ClientSecretHash, &created, &updated, &disabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Application{}, ErrApplicationNotFound
+	}
+	if err != nil {
+		return Application{}, err
+	}
+	app.LogoutURI = logout.String
+	app.CreatedAt, app.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
+	if disabled.Valid {
+		t := time.Unix(disabled.Int64, 0)
+		app.DisabledAt = &t
+	}
+	return app, nil
+}
+
+func (s *Store) ListApplications(ctx context.Context) ([]Application, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, redirect_uri, logout_uri, client_secret_hash, created_at, updated_at, disabled_at
+		FROM applications ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Application
+	for rows.Next() {
+		var app Application
+		var logout sql.NullString
+		var disabled sql.NullInt64
+		var created, updated int64
+		if err := rows.Scan(&app.ID, &app.Name, &app.RedirectURI, &logout, &app.ClientSecretHash, &created, &updated, &disabled); err != nil {
+			return nil, err
+		}
+		app.ClientSecretHash = ""
+		app.LogoutURI = logout.String
+		app.CreatedAt, app.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
+		if disabled.Valid {
+			t := time.Unix(disabled.Int64, 0)
+			app.DisabledAt = &t
+		}
+		out = append(out, app)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RotateApplicationSecret(ctx context.Context, id, secretHash string, now int64) error {
+	id = strings.TrimSpace(id)
+	if id == "" || secretHash == "" {
+		return errors.New("application id and secret hash are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `UPDATE applications SET client_secret_hash = ?, updated_at = ? WHERE id = ?`, secretHash, now, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrApplicationNotFound
+	}
+	if err := insertApplicationAudit(ctx, tx, "application.secret_rotated", id, "", now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) SetApplicationDisabled(ctx context.Context, id string, disabled bool, now int64) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("application id is required")
+	}
+	var disabledAt any
+	if disabled {
+		disabledAt = now
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `UPDATE applications SET disabled_at = ?, updated_at = ? WHERE id = ?`, disabledAt, now, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrApplicationNotFound
+	}
+	if disabled {
+		if _, err := tx.ExecContext(ctx, `UPDATE authorization_codes SET consumed_at = ? WHERE client_id = ? AND consumed_at IS NULL`, now, id); err != nil {
+			return err
+		}
+	}
+	event := "application.enabled"
+	if disabled {
+		event = "application.disabled"
+	}
+	if err := insertApplicationAudit(ctx, tx, event, id, "", now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type AuthorizationGrant struct {
+	ClientID         string
+	UserID           string
+	Email            string
+	SessionTokenHash string
+	RedirectURI      string
+	Nonce            string
+	CodeChallenge    string
+	AuthTime         int64
+}
+
+// IssueAuthorizationCode binds the one-time code to an enabled application,
+// exact callback, enabled account, and currently live central session.
+func (s *Store) IssueAuthorizationCode(ctx context.Context, codeHash string, grant AuthorizationGrant, createdAt, expiresAt int64) error {
+	if codeHash == "" || grant.ClientID == "" || grant.UserID == "" || grant.SessionTokenHash == "" ||
+		grant.RedirectURI == "" || grant.Nonce == "" || grant.CodeChallenge == "" || grant.AuthTime <= 0 || expiresAt <= createdAt {
+		return ErrInvalidGrant
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Keep at most one live code for one app/browser session. A refreshed or
+	// repeated /authorize request invalidates the older code.
+	if _, err := tx.ExecContext(ctx, `UPDATE authorization_codes SET consumed_at = ?
+		WHERE client_id = ? AND session_token_hash = ? AND consumed_at IS NULL`,
+		createdAt, grant.ClientID, grant.SessionTokenHash); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO authorization_codes(code_hash, client_id, user_id, session_token_hash, redirect_uri,
+			nonce, code_challenge, auth_time, created_at, expires_at)
+		SELECT ?, app.id, a.id, sess.token_hash, ?, ?, ?, ?, ?, ?
+		FROM applications app
+		JOIN accounts a ON a.id = ?
+		JOIN auth_sessions sess ON sess.token_hash = ? AND sess.user_id = a.id
+		WHERE app.id = ? AND app.redirect_uri = ? AND app.disabled_at IS NULL
+		  AND a.disabled_at IS NULL AND a.must_change_password = 0
+		  AND sess.revoked_at IS NULL AND sess.idle_expires_at > ? AND sess.absolute_expires_at > ?`,
+		codeHash, grant.RedirectURI, grant.Nonce, grant.CodeChallenge, grant.AuthTime, createdAt, expiresAt,
+		grant.UserID, grant.SessionTokenHash, grant.ClientID, grant.RedirectURI, createdAt, createdAt)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrInvalidGrant
+	}
+	if err := insertApplicationAudit(ctx, tx, "authorization.code_issued", grant.ClientID, grant.UserID, createdAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ConsumeAuthorizationCode performs the single-use transition and all binding
+// checks in one SQLite statement. No failure reveals which binding was wrong.
+func (s *Store) ConsumeAuthorizationCode(ctx context.Context, codeHash, clientID, redirectURI, codeChallenge string, now int64) (AuthorizationGrant, error) {
+	var grant AuthorizationGrant
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return grant, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	err = tx.QueryRowContext(ctx, `
+		UPDATE authorization_codes AS code SET consumed_at = ?
+		WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ?
+		  AND client_id = ? AND redirect_uri = ? AND code_challenge = ?
+		  AND EXISTS (SELECT 1 FROM applications app WHERE app.id = code.client_id AND app.disabled_at IS NULL)
+		  AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = code.user_id AND a.disabled_at IS NULL AND a.must_change_password = 0)
+		  AND EXISTS (SELECT 1 FROM auth_sessions sess
+		              WHERE sess.token_hash = code.session_token_hash AND sess.user_id = code.user_id
+		                AND sess.revoked_at IS NULL AND sess.idle_expires_at > ? AND sess.absolute_expires_at > ?)
+		RETURNING client_id, user_id, session_token_hash, redirect_uri, nonce, code_challenge, auth_time`,
+		now, codeHash, now, clientID, redirectURI, codeChallenge, now, now).Scan(
+		&grant.ClientID, &grant.UserID, &grant.SessionTokenHash, &grant.RedirectURI,
+		&grant.Nonce, &grant.CodeChallenge, &grant.AuthTime)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AuthorizationGrant{}, ErrInvalidGrant
+	}
+	if err != nil {
+		return AuthorizationGrant{}, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT email FROM accounts WHERE id = ?`, grant.UserID).Scan(&grant.Email); err != nil {
+		return AuthorizationGrant{}, err
+	}
+	if err := insertApplicationAudit(ctx, tx, "authorization.code_exchanged", grant.ClientID, grant.UserID, now); err != nil {
+		return AuthorizationGrant{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AuthorizationGrant{}, err
+	}
+	return grant, nil
+}
+
+// SweepPasswordState deletes expired/consumed authorization codes, expired
+// sessions, stale login attempts, and audit events older than auditRetention
+// (0 keeps audit events forever).
 func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetention, auditRetention time.Duration) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `DELETE FROM auth_sessions WHERE absolute_expires_at <= ? OR idle_expires_at <= ?`, now, now)
+	res, err := tx.ExecContext(ctx, `DELETE FROM authorization_codes WHERE expires_at <= ? OR consumed_at IS NOT NULL`, now)
+	if err != nil {
+		return 0, err
+	}
+	codes, _ := res.RowsAffected()
+	res, err = tx.ExecContext(ctx, `DELETE FROM auth_sessions WHERE absolute_expires_at <= ? OR idle_expires_at <= ?`, now, now)
 	if err != nil {
 		return 0, err
 	}
@@ -897,7 +1188,7 @@ func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetent
 		}
 		audits, _ = res.RowsAffected()
 	}
-	return sessions + attempts + audits, tx.Commit()
+	return codes + sessions + attempts + audits, tx.Commit()
 }
 
 // ── persistent password-login rate state ────────────────────────────
@@ -974,12 +1265,13 @@ func (s *Store) SettleLoginAttemptSuccess(ctx context.Context, succeededID int64
 // credential material; SourceIPHash is an HMAC of the address under a
 // per-deployment key (see httpapi.Server.rateKey), not the address itself.
 type AuditEvent struct {
-	ID           int64
-	EventType    string
-	UserID       string
-	SourceIPHash string
-	OccurredAt   time.Time
-	Email        string // display email when the account still exists
+	ID            int64
+	EventType     string
+	UserID        string
+	ApplicationID string
+	SourceIPHash  string
+	OccurredAt    time.Time
+	Email         string // display email when the account still exists
 }
 
 // RecentAuditEvents returns the newest events first. An empty userID returns
@@ -991,7 +1283,7 @@ func (s *Store) RecentAuditEvents(ctx context.Context, userID string, limit int)
 	if limit > 1000 {
 		limit = 1000
 	}
-	query := `SELECT e.id, e.event_type, COALESCE(e.user_id, ''), COALESCE(e.source_ip_hash, ''), e.occurred_at, COALESCE(a.email, '')
+	query := `SELECT e.id, e.event_type, COALESCE(e.user_id, ''), COALESCE(e.application_id, ''), COALESCE(e.source_ip_hash, ''), e.occurred_at, COALESCE(a.email, '')
 		FROM audit_events e LEFT JOIN accounts a ON a.id = e.user_id`
 	args := []any{}
 	if userID != "" {
@@ -1009,7 +1301,7 @@ func (s *Store) RecentAuditEvents(ctx context.Context, userID string, limit int)
 	for rows.Next() {
 		var e AuditEvent
 		var at int64
-		if err := rows.Scan(&e.ID, &e.EventType, &e.UserID, &e.SourceIPHash, &at, &e.Email); err != nil {
+		if err := rows.Scan(&e.ID, &e.EventType, &e.UserID, &e.ApplicationID, &e.SourceIPHash, &at, &e.Email); err != nil {
 			return nil, err
 		}
 		e.OccurredAt = time.Unix(at, 0)
@@ -1026,6 +1318,17 @@ func insertAudit(ctx context.Context, e execer, event, userID string, now int64,
 	_, err := e.ExecContext(ctx, `
 		INSERT INTO audit_events(event_type, user_id, occurred_at, metadata) VALUES(?, ?, ?, ?)`,
 		event, nullableUser, now, metadata)
+	return err
+}
+
+func insertApplicationAudit(ctx context.Context, e execer, event, applicationID, userID string, now int64) error {
+	var nullableUser any
+	if userID != "" {
+		nullableUser = userID
+	}
+	_, err := e.ExecContext(ctx, `
+		INSERT INTO audit_events(event_type, user_id, application_id, occurred_at, metadata)
+		VALUES(?, ?, ?, ?, '{}')`, event, nullableUser, applicationID, now)
 	return err
 }
 

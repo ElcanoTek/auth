@@ -248,6 +248,42 @@ AUTH_HOSTNAME=file.example.com
 	}
 }
 
+func TestPasswordHandoffConfigDerivesIssuerAndLoadsRotationKeys(t *testing.T) {
+	clearAllAuthEnv(t)
+	previous := testSigningKey().Public().(ed25519.PublicKey)
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+	t.Setenv("AUTH_LOGIN_MODE", "password")
+	t.Setenv("AUTH_HOSTNAME", "auth.omnicom.example")
+	t.Setenv("AUTH_SIGNING_PREVIOUS_PUBKEYS", base64.StdEncoding.EncodeToString(previous))
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.IssuerURL != "https://auth.omnicom.example" || cfg.CodeTTL != 60*time.Second || cfg.AssertionTTL != 5*time.Minute {
+		t.Fatalf("handoff defaults: issuer=%q code=%v assertion=%v", cfg.IssuerURL, cfg.CodeTTL, cfg.AssertionTTL)
+	}
+	if len(cfg.PreviousPublicKeys) != 1 || !cfg.PreviousPublicKeys[0].Equal(previous) {
+		t.Fatalf("previous keys = %v", cfg.PreviousPublicKeys)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPasswordHandoffConfigRejectsInsecureProductionIssuer(t *testing.T) {
+	clearAllAuthEnv(t)
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+	t.Setenv("AUTH_LOGIN_MODE", "password")
+	t.Setenv("AUTH_ISSUER_URL", "http://auth.example.com")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("insecure issuer validation = %v", err)
+	}
+}
+
 func TestLoadDefaultReturnToHostsFromCookieDomain(t *testing.T) {
 	// Promised: when AUTH_RETURN_TO_HOSTS is empty AND we have a
 	// cookie domain, default to "." + cookie_domain so the operator

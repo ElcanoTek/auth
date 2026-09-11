@@ -6,6 +6,10 @@
 //	POST /login      — password-mode login
 //	GET|POST /change-password — password-mode forced replacement
 //	GET  /account    — password-mode signed-in page with the logout form
+//	GET  /authorize  — password-mode application authorization request
+//	POST /token      — confidential-client authorization-code exchange
+//	GET  /.well-known/openid-configuration — application handoff discovery
+//	GET  /jwks.json  — current and overlapping identity signing keys
 //	POST /magic      — issue + email a magic link (form post or JSON)
 //	GET  /sent       — "check your inbox" confirmation page
 //	GET  /callback   — verify magic token, set session cookie, redirect
@@ -23,6 +27,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/rand"
@@ -115,6 +120,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/login", s.handlePasswordLogin)
 	mux.HandleFunc("/change-password", s.handleChangePassword)
 	mux.HandleFunc("/account", s.handleAccount)
+	mux.HandleFunc("/authorize", s.handleAuthorize)
+	mux.HandleFunc("/token", s.handleToken)
+	mux.HandleFunc("/.well-known/openid-configuration", s.handleDiscovery)
+	mux.HandleFunc("/jwks.json", s.handleJWKS)
 	mux.HandleFunc("/sent", s.handleSent)
 	mux.HandleFunc("/callback", s.handleCallback)
 	mux.HandleFunc("/logout", s.handleLogout)
@@ -164,7 +173,12 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePasswordRoot(w http.ResponseWriter, r *http.Request) {
 	if identity := s.currentPasswordSession(r); identity != nil {
 		if identity.Account.MustChangePassword {
-			http.Redirect(w, r, "/change-password", http.StatusSeeOther)
+			dest := s.resolveReturnTo(r.URL.Query().Get("return_to"))
+			location := "/change-password"
+			if dest != "" {
+				location += "?return_to=" + url.QueryEscape(dest)
+			}
+			http.Redirect(w, r, location, http.StatusSeeOther)
 			return
 		}
 		dest := s.resolveReturnTo(r.URL.Query().Get("return_to"))
@@ -441,7 +455,11 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	// Recorded only once a session actually exists.
 	_ = s.store.RecordAudit(r.Context(), "login.succeeded", account.ID, ipRateKey, now.Unix())
 	if account.MustChangePassword {
-		http.Redirect(w, r, "/change-password", http.StatusSeeOther)
+		location := "/change-password"
+		if dest := s.resolveReturnTo(r.FormValue("return_to")); dest != "" {
+			location += "?return_to=" + url.QueryEscape(dest)
+		}
+		http.Redirect(w, r, location, http.StatusSeeOther)
 		return
 	}
 	dest := s.resolveReturnTo(r.FormValue("return_to"))
@@ -571,7 +589,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		s.renderChangePassword(w, "", csrf)
+		s.renderChangePassword(w, "", csrf, s.resolveReturnTo(r.URL.Query().Get("return_to")))
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -595,11 +613,11 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		if authErr != nil {
 			logUnlessCancelled("password change authentication", authErr)
 		}
-		s.renderChangePassword(w, "Current password is incorrect.", csrf)
+		s.renderChangePassword(w, "Current password is incorrect.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	if next != confirm {
-		s.renderChangePassword(w, "New passwords do not match.", csrf)
+		s.renderChangePassword(w, "New passwords do not match.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	// The current password just verified, so a byte-equal replacement is the
@@ -607,12 +625,12 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// the administrator who issued the temporary password must not keep
 	// knowing the live one.
 	if subtle.ConstantTimeCompare([]byte(next), []byte(current)) == 1 {
-		s.renderChangePassword(w, "New password must be different from the current password.", csrf)
+		s.renderChangePassword(w, "New password must be different from the current password.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	encoded, err := s.hashPassword(r.Context(), next)
 	if err != nil {
-		s.renderChangePassword(w, err.Error(), csrf)
+		s.renderChangePassword(w, err.Error(), csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	// Compare-and-swap against the hash that just verified: if an
@@ -627,7 +645,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		log.Printf("replace password: %v", err)
-		s.renderChangePassword(w, "Something went wrong. Try again.", csrf)
+		s.renderChangePassword(w, "Something went wrong. Try again.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	updated, err := s.store.PasswordAccountByID(r.Context(), identity.Account.ID)
@@ -636,15 +654,265 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, s.defaultDest(), http.StatusSeeOther)
+	dest := s.resolveReturnTo(r.FormValue("return_to"))
+	if dest == "" {
+		dest = s.defaultDest()
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
-func (s *Server) renderChangePassword(w http.ResponseWriter, errText, csrf string) {
+func (s *Server) renderChangePassword(w http.ResponseWriter, errText, csrf, returnTo string) {
 	if err := s.render(w, "change-password.html", map[string]any{
-		"Brand": s.cfg.BrandName, "Error": errText, "CSRF": csrf,
+		"Brand": s.cfg.BrandName, "Error": errText, "CSRF": csrf, "ReturnTo": returnTo,
 	}); err != nil {
 		log.Printf("render change password: %v", err)
 	}
+}
+
+// ── application authorization-code handoff ──────────────────────────
+
+func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	if !s.passwordMode() {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	q := r.URL.Query()
+	clientID, redirectURI := q.Get("client_id"), q.Get("redirect_uri")
+	state, nonce := q.Get("state"), q.Get("nonce")
+	challenge := q.Get("code_challenge")
+	app, err := s.store.ApplicationByID(r.Context(), clientID)
+	if err != nil || app.DisabledAt != nil || redirectURI != app.RedirectURI || !validApplicationRedirect(app.RedirectURI) ||
+		q.Get("response_type") != "code" || !validAuthorizationScope(q.Get("scope")) ||
+		q.Get("code_challenge_method") != "S256" || !validCodeChallenge(challenge) ||
+		!validProtocolValue(state, 512) || !validProtocolValue(nonce, 512) {
+		http.Error(w, "invalid authorization request", http.StatusBadRequest)
+		return
+	}
+	identity := s.currentPasswordSession(r)
+	if identity == nil {
+		http.Redirect(w, r, "/?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+		return
+	}
+	if identity.Account.MustChangePassword {
+		http.Redirect(w, r, "/change-password?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+		return
+	}
+	rawCode, err := randomSecret(32)
+	if err != nil {
+		http.Error(w, "authorization failed", http.StatusInternalServerError)
+		return
+	}
+	now := time.Now()
+	codeTTL := s.cfg.CodeTTL
+	if codeTTL <= 0 {
+		codeTTL = 60 * time.Second
+	}
+	grant := store.AuthorizationGrant{
+		ClientID: clientID, UserID: identity.Account.ID, SessionTokenHash: identity.Session.TokenHash,
+		RedirectURI: redirectURI, Nonce: nonce, CodeChallenge: challenge,
+		AuthTime: identity.Session.CreatedAt.Unix(),
+	}
+	if err := s.store.IssueAuthorizationCode(r.Context(), hashSecret(rawCode), grant, now.Unix(), now.Add(codeTTL).Unix()); err != nil {
+		log.Printf("issue authorization code: %v", err)
+		http.Error(w, "authorization failed", http.StatusInternalServerError)
+		return
+	}
+	dest, _ := url.Parse(redirectURI)
+	callbackQuery := dest.Query()
+	callbackQuery.Set("code", rawCode)
+	callbackQuery.Set("state", state)
+	dest.RawQuery = callbackQuery.Encode()
+	http.Redirect(w, r, dest.String(), http.StatusSeeOther)
+}
+
+func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
+	if !s.passwordMode() {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	if r.Method != http.MethodPost {
+		writeOAuthError(w, http.StatusMethodNotAllowed, "invalid_request")
+		return
+	}
+	if mediaType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0])); mediaType != "application/x-www-form-urlencoded" {
+		writeOAuthError(w, http.StatusUnsupportedMediaType, "invalid_request")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	if err := r.ParseForm(); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	clientID, clientSecret, ok := r.BasicAuth()
+	if !ok || clientID == "" || clientID != r.FormValue("client_id") {
+		writeInvalidClient(w)
+		return
+	}
+	app, err := s.store.ApplicationByID(r.Context(), clientID)
+	providedSecretHash := hashSecret(clientSecret)
+	if err != nil || app.DisabledAt != nil || len(app.ClientSecretHash) != len(providedSecretHash) ||
+		subtle.ConstantTimeCompare([]byte(app.ClientSecretHash), []byte(providedSecretHash)) != 1 {
+		writeInvalidClient(w)
+		return
+	}
+	code, redirectURI, verifier := r.FormValue("code"), r.FormValue("redirect_uri"), r.FormValue("code_verifier")
+	if r.FormValue("grant_type") != "authorization_code" || code == "" || redirectURI != app.RedirectURI || !validCodeVerifier(verifier) {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+	challenge := pkceChallenge(verifier)
+	grant, err := s.store.ConsumeAuthorizationCode(r.Context(), hashSecret(code), clientID, redirectURI, challenge, time.Now().Unix())
+	if err != nil {
+		if !errors.Is(err, store.ErrInvalidGrant) {
+			log.Printf("consume authorization code: %v", err)
+		}
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+	now := time.Now()
+	assertionTTL := s.cfg.AssertionTTL
+	if assertionTTL <= 0 {
+		assertionTTL = 5 * time.Minute
+	}
+	claims := token.IdentityClaims{
+		Issuer: s.issuerURL(), Subject: grant.UserID, Audience: grant.ClientID, Email: grant.Email,
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(assertionTTL).Unix(), Nonce: grant.Nonce,
+		AuthTime: grant.AuthTime, AMR: []string{"pwd"}, ACR: "urn:elcanotek:loa:1",
+	}
+	idToken, err := token.SignIdentity(s.cfg.SigningKey, claims)
+	if err != nil {
+		log.Printf("sign identity assertion: %v", err)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error")
+		return
+	}
+	// Keep the bearer credential distinct from the ID token. Explorer only
+	// consumes the authenticated identity response today, but returning the
+	// ID token itself as an access token would invite token-type confusion in
+	// future resource APIs. There is deliberately no user-info/resource
+	// endpoint yet, so this short-lived opaque value is not persisted.
+	accessToken, err := randomSecret(32)
+	if err != nil {
+		log.Printf("generate access token: %v", err)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iss": claims.Issuer, "sub": claims.Subject, "aud": claims.Audience, "email": claims.Email,
+		"iat": claims.IssuedAt, "exp": claims.ExpiresAt, "nonce": claims.Nonce, "auth_time": claims.AuthTime,
+		"amr": claims.AMR, "acr": claims.ACR, "id_token": idToken,
+		"access_token": accessToken, "token_type": "Bearer", "expires_in": int64(assertionTTL.Seconds()),
+	})
+}
+
+func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	issuer := s.issuerURL()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token",
+		"jwks_uri": issuer + "/jwks.json", "response_types_supported": []string{"code"},
+		"grant_types_supported": []string{"authorization_code"}, "subject_types_supported": []string{"public"},
+		"id_token_signing_alg_values_supported": []string{"EdDSA"}, "token_endpoint_auth_methods_supported": []string{"client_secret_basic"},
+		"code_challenge_methods_supported": []string{"S256"}, "scopes_supported": []string{"openid", "email"},
+	})
+}
+
+func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	publicKeys := append([]ed25519.PublicKey{s.cfg.PublicKey}, s.cfg.PreviousPublicKeys...)
+	keys := make([]map[string]string, 0, len(publicKeys))
+	seen := map[string]bool{}
+	for _, publicKey := range publicKeys {
+		if len(publicKey) != ed25519.PublicKeySize {
+			continue
+		}
+		kid := token.KeyID(publicKey)
+		if seen[kid] {
+			continue
+		}
+		seen[kid] = true
+		keys = append(keys, map[string]string{
+			"kty": "OKP", "crv": "Ed25519", "use": "sig", "alg": "EdDSA", "kid": kid,
+			"x": base64.RawURLEncoding.EncodeToString(publicKey),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
+}
+
+func (s *Server) issuerURL() string {
+	if issuer := strings.TrimRight(s.cfg.IssuerURL, "/"); issuer != "" {
+		return issuer
+	}
+	scheme := "https"
+	if !s.cfg.CookieSecure {
+		scheme = "http"
+	}
+	return scheme + "://" + s.cfg.Hostname
+}
+
+func validAuthorizationScope(scope string) bool {
+	return scope == "email" || scope == "openid email" || scope == "email openid"
+}
+
+func validApplicationRedirect(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || u.Path == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return u.Scheme == "https" || (u.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1"))
+}
+
+func validProtocolValue(raw string, max int) bool {
+	return raw != "" && len(raw) <= max && !strings.ContainsAny(raw, "\x00\r\n")
+}
+
+func validCodeChallenge(raw string) bool {
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(raw)
+	return err == nil && len(raw) == 43 && len(decoded) == sha256.Size
+}
+
+func validCodeVerifier(raw string) bool {
+	if len(raw) < 43 || len(raw) > 128 {
+		return false
+	}
+	for _, c := range []byte(raw) {
+		if !isASCIIAlphaNumeric(c) && !strings.ContainsRune("-._~", rune(c)) {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlphaNumeric(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+}
+
+func pkceChallenge(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func writeOAuthError(w http.ResponseWriter, status int, code string) {
+	writeJSON(w, status, map[string]string{"error": code})
+}
+
+func writeInvalidClient(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="token"`)
+	writeOAuthError(w, http.StatusUnauthorized, "invalid_client")
 }
 
 // handleAccount is the signed-in landing page on the auth host: it shows who

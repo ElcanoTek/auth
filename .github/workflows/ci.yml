@@ -84,7 +84,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   smoke:
-    name: Smoke (magic-link e2e)
+    name: Smoke (magic + password + app handoff)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -99,14 +99,13 @@ jobs:
       - name: Build binaries
         run: make build
 
-      - name: Boot auth-server + drive a full magic-link round-trip
-        # scripts/smoke.sh starts the real binary on loopback with the
-        # stdout email driver and a throwaway SQLite dir, then asserts the
-        # security-critical flow: anon /verify is 401, an allowed-domain
-        # magic link logs in and sets the cookie, /verify then returns the
-        # identity headers, the link is single-use, and a disallowed domain
-        # emits no email (no enumeration oracle). No secrets, no network.
-        run: bash scripts/smoke.sh
+      - name: Boot auth-server + drive both authentication modes and app handoff
+        # make smoke starts real binaries with throwaway SQLite databases. It
+        # covers legacy magic links plus password login, forced replacement,
+        # confidential-client registration, the Explorer S256-PKCE exchange,
+        # one-use code replay rejection, and CSRF logout. No real secrets or
+        # external network calls.
+        run: make smoke
 
   govulncheck:
     name: govulncheck (advisory)
