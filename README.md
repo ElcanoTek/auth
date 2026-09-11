@@ -102,7 +102,7 @@ The default email driver is `stdout` — every magic link prints to
 the terminal, so you can develop end-to-end without configuring
 SendGrid. POST to `/magic`, copy the link from the log, click it.
 
-### Password-mode foundation
+### Password mode and application handoff
 
 Set `AUTH_LOGIN_MODE=password` to use admin-provisioned email/password
 accounts instead of magic links. For plain-HTTP local development, also set
@@ -117,19 +117,23 @@ AUTH_DATA_DIR=.localdata ./bin/auth-admin user create alice@example.com
 ```
 
 The CLI prompts for a 15–128 character passphrase and requires the user to
-replace it after the first login. It can also disable accounts, replace
-passwords, inspect account state, and revoke sessions; run
-`./bin/auth-admin help` for the complete list.
+replace it after the first login. Register each application with its exact
+callback and optional logout URL; the generated secret is displayed once and
+only its SHA-256 hash is stored:
 
-This commit deliberately covers authentication on the Auth host only. It does
-not yet issue service-specific authorization codes or Explorer/Lens sessions.
-In particular, password mode has **no downstream consumers yet**: the
-`__Host-auth_session` cookie never leaves the auth hostname, so a Caddy
-`forward_auth` block on another host receives no session and `/verify`
-always answers 401 there. Do not deploy password mode for a client expecting
-single sign-on until the authorization-code handoff (PR 2) has landed.
-That browser handoff and each app's local email allowlist are the next delivery
-stage described in [`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md).
+```bash
+AUTH_DATA_DIR=.localdata ./bin/auth-admin app create explorer \
+  https://explorer.example.com/auth/callback \
+  https://explorer.example.com/signed-out
+```
+
+The Auth cookie remains host-only. Applications redirect through `/authorize`,
+exchange a 60-second one-use code at `/token` with client authentication and
+S256 PKCE, then create their own host-only session after applying their local
+membership rules. Discovery lives at `/.well-known/openid-configuration` and
+the current plus overlapping rotation keys are published at `/jwks.json`.
+Explorer's exact integration contract is documented in
+[`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md).
 
 ## Environment
 
@@ -213,11 +217,12 @@ sudo git clone https://github.com/elcanotek/auth.git /opt/auth-src
 sudo bash /opt/auth-src/scripts/bootstrap.sh
 ```
 
-`bootstrap.sh` is interactive. It asks three things:
+`bootstrap.sh` is interactive. It asks for the hostname and login mode; legacy
+magic mode additionally asks for its cookie domain and email provider:
 
 1. **Hostname** (e.g. `auth.elcanotek.com`)
-2. **Cookie domain** — auto-derived from the hostname; just confirm.
-3. **SendGrid API key + verified sender** — or pick `stdout` for dev.
+2. **Login mode** — `password` for a client or `magic` for legacy Elcano.
+3. In magic mode, **cookie domain** and **email provider**.
 
 Plus a yes/no for "set up Caddy + Let's Encrypt for this hostname?".
 The script generates the Ed25519 signing keypair (and prints the public

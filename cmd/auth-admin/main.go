@@ -21,11 +21,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
 	"net/mail"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -55,6 +58,8 @@ func main() {
 		userCmd(dataDir, os.Args[2:])
 	case "audit":
 		auditCmd(dataDir, os.Args[2:])
+	case "app":
+		applicationCmd(dataDir, os.Args[2:])
 	case "keygen":
 		keygenCmd()
 	case "pubkey":
@@ -88,6 +93,13 @@ USERS
 
 AUDIT
   auth-admin audit list [email] [limit]   newest security events (default 50, max 1000)
+
+APPLICATIONS
+  auth-admin app create <id> <callback> [logout]  register client; prints secret once
+  auth-admin app list                            list registered clients
+  auth-admin app show <id>                       show exact registered URLs
+  auth-admin app rotate-secret <id>              replace and print client secret
+  auth-admin app disable|enable <id>              block or allow new handoffs
 
 CRYPTO
   auth-admin keygen                       generate a fresh Ed25519 signing keypair
@@ -384,7 +396,7 @@ func auditCmd(dataDir string, args []string) {
 		return
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "TIME (UTC)\tEVENT\tACCOUNT\tSOURCE")
+	_, _ = fmt.Fprintln(tw, "TIME (UTC)\tEVENT\tACCOUNT\tAPPLICATION\tSOURCE")
 	for _, e := range events {
 		who := e.Email
 		if who == "" {
@@ -401,9 +413,149 @@ func auditCmd(dataDir string, args []string) {
 			// cannot make the listing panic.
 			source = e.SourceIPHash[:min(12, len(e.SourceIPHash))]
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.OccurredAt.UTC().Format("2006-01-02 15:04:05"), e.EventType, who, source)
+		application := e.ApplicationID
+		if application == "" {
+			application = "-"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.OccurredAt.UTC().Format("2006-01-02 15:04:05"), e.EventType, who, application, source)
 	}
 	_ = tw.Flush()
+}
+
+func applicationCmd(dataDir string, args []string) {
+	if len(args) < 1 {
+		fatalf("usage: auth-admin app <create|list|show|rotate-secret|disable|enable> ...")
+	}
+	st, ctx := openStore(dataDir)
+	defer func() { _ = st.Close() }()
+	now := time.Now().Unix()
+	switch args[0] {
+	case "create":
+		if len(args) < 3 || len(args) > 4 {
+			fatalf("usage: auth-admin app create <id> <callback-url> [logout-url]")
+		}
+		id := validateApplicationID(args[1])
+		callback := validateApplicationURL(args[2], false)
+		logout := ""
+		if len(args) == 4 {
+			logout = validateApplicationURL(args[3], true)
+		}
+		secret := newApplicationSecret()
+		if _, err := st.CreateApplication(ctx, id, id, callback, logout, hashApplicationSecret(secret), now); err != nil {
+			fatalf("app create: %v", err)
+		}
+		printApplicationSecret(id, secret)
+	case "rotate-secret":
+		if len(args) != 2 {
+			fatalf("usage: auth-admin app rotate-secret <id>")
+		}
+		id := validateApplicationID(args[1])
+		secret := newApplicationSecret()
+		if err := st.RotateApplicationSecret(ctx, id, hashApplicationSecret(secret), now); err != nil {
+			fatalf("app rotate-secret: %v", err)
+		}
+		printApplicationSecret(id, secret)
+	case "disable", "enable":
+		if len(args) != 2 {
+			fatalf("usage: auth-admin app %s <id>", args[0])
+		}
+		id := validateApplicationID(args[1])
+		if err := st.SetApplicationDisabled(ctx, id, args[0] == "disable", now); err != nil {
+			fatalf("app %s: %v", args[0], err)
+		}
+		fmt.Printf("✓ %sd %s\n", args[0], id)
+	case "show":
+		if len(args) != 2 {
+			fatalf("usage: auth-admin app show <id>")
+		}
+		app, err := st.ApplicationByID(ctx, validateApplicationID(args[1]))
+		if err != nil {
+			fatalf("app show: %v", err)
+		}
+		printApplication(app)
+	case "list", "ls":
+		if len(args) != 1 {
+			fatalf("usage: auth-admin app list")
+		}
+		apps, err := st.ListApplications(ctx)
+		if err != nil {
+			fatalf("app list: %v", err)
+		}
+		if len(apps) == 0 {
+			fmt.Println("(no applications registered)")
+			return
+		}
+		for _, app := range apps {
+			printApplication(app)
+		}
+	default:
+		fatalf("unknown app subcommand: %s", args[0])
+	}
+}
+
+func validateApplicationID(raw string) string {
+	id := strings.TrimSpace(raw)
+	if len(id) == 0 || len(id) > 128 || strings.Contains(id, ":") {
+		fatalf("application id must be 1-128 characters without ':'")
+	}
+	for _, c := range []byte(id) {
+		if !isASCIILetterOrDigit(c) && !strings.ContainsRune("-._~", rune(c)) {
+			fatalf("application id contains unsupported characters")
+		}
+	}
+	return id
+}
+
+func isASCIILetterOrDigit(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+}
+
+func validateApplicationURL(raw string, optional bool) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" && optional {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || u.Path == "" {
+		fatalf("application URL must be an absolute HTTPS URL with a path and no credentials, query, or fragment")
+	}
+	host := strings.ToLower(u.Hostname())
+	localHTTP := u.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1")
+	if u.Scheme != "https" && !localHTTP {
+		fatalf("application URL must use HTTPS (HTTP is allowed only on loopback)")
+	}
+	return u.String()
+}
+
+func newApplicationSecret() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		fatalf("generate application secret: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func hashApplicationSecret(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func printApplicationSecret(id, secret string) {
+	fmt.Printf("✓ application %s ready\n", id)
+	fmt.Println("Copy this secret now; only its SHA-256 hash is stored:")
+	fmt.Printf("AUTH_CLIENT_ID=%s\nAUTH_CLIENT_SECRET=%s\n", id, secret)
+}
+
+func printApplication(app store.Application) {
+	status := "enabled"
+	if app.DisabledAt != nil {
+		status = "disabled"
+	}
+	fmt.Printf("%s\t%s\t%s", app.ID, status, app.RedirectURI)
+	if app.LogoutURI != "" {
+		fmt.Printf("\t%s", app.LogoutURI)
+	}
+	fmt.Println()
 }
 
 func requireUserEmailArg(args []string, subcommand string) {

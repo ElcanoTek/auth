@@ -97,6 +97,13 @@ Legacy `domains`, `magic_links`, and `users` tables remain intact.
 6. Integrate Explorer first; prove Auth, Explorer, and Lens cookies are not
    interchangeable.
 
+The Auth-side protocol and operator tooling in steps 1-5 are implemented here.
+The wire response includes the standard identity claims directly for the
+initial Explorer client and as an EdDSA-signed `id_token`; Explorer integration
+is maintained in its own repository. Lens integration remains later work. The
+Auth session, authorization code, and application session remain three
+separate credentials with distinct host and cookie boundaries.
+
 ### PR 3: cross-service revocation and remaining applications
 
 1. Add durable, signed, idempotent back-channel logout events.

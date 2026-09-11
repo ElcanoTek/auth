@@ -249,6 +249,14 @@ case "$cmd" in
     export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
     exec "$ADMIN_BIN" audit "$@"
     ;;
+  app)
+    # Confidential-client registration and rotation. The generated secret is
+    # printed once; only its hash is retained in SQLite.
+    # shellcheck disable=SC1090
+    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
+    export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    exec "$ADMIN_BIN" app "$@"
+    ;;
   keygen)
     # `auth keygen` — print a fresh Ed25519 signing keypair. Doesn't touch
     # config; the operator copies the private seed into .env.local and the
@@ -294,6 +302,7 @@ case "$cmd" in
     ;;
   backup)
     dest="${1:-$APP_DIR/data/backups}"
+    umask 077
     mkdir -p "$dest"
     stamp="$(date +%F-%H%M%S)"
     # SQLite's online backup via `.backup` produces a consistent
@@ -301,6 +310,7 @@ case "$cmd" in
     # bootstrap installs it.
     out="$dest/auth-$stamp.db"
     sqlite3 "$APP_DIR/data/state.db" ".backup '$out'"
+    chmod 0600 "$out"
     echo "✓ backup written to $out"
     echo "  restore with: cp $out $APP_DIR/data/state.db && sudo auth restart"
     ;;
@@ -329,6 +339,12 @@ USERS
 
 AUDIT
   auth audit list [email] [limit]   newest security events (password mode)
+
+APPLICATIONS
+  auth app create <id> <callback> [logout]  register a confidential client
+  auth app list | show <id>                 inspect registered clients
+  auth app rotate-secret <id>               replace + print the secret once
+  auth app disable|enable <id>              control new login handoffs
 
 CRYPTO
   auth keygen                       print a fresh Ed25519 signing keypair

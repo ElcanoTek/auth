@@ -188,7 +188,27 @@ say "    • ${c_dim}localhost${c_reset}             — dev laptop, no TLS"
 say "    • ${c_dim}auth.example.com${c_reset}      — real DNS, we'll offer auto-TLS via Caddy"
 HOSTNAME_ANSWER="$(prompt AUTH_BOOTSTRAP_HOSTNAME "Hostname" "${AUTH_HOSTNAME:-localhost}")"
 
-# 3b — cookie domain (auto-guess; let operator override)
+# 3b — login mode. Existing installs keep magic unless explicitly changed;
+# new client installations choose password and register each application.
+say
+say "  Login mode:"
+say "    • ${c_dim}password${c_reset} — admin-created email/password accounts + app handoff"
+say "    • ${c_dim}magic${c_reset}    — legacy shared-domain magic links"
+LOGIN_MODE_ANSWER="$(prompt AUTH_BOOTSTRAP_LOGIN_MODE "Login mode" "${AUTH_LOGIN_MODE:-magic}")"
+case "$LOGIN_MODE_ANSWER" in
+  password|magic) ;;
+  *) die "unknown login mode: $LOGIN_MODE_ANSWER (want password or magic)" ;;
+esac
+
+COOKIE_DOMAIN_ANSWER=""
+ALLOWED_DOMAINS_ANSWER=""
+EMAIL_DRIVER_ANSWER="stdout"
+EMAIL_FROM_ANSWER="Sign in <login@example.com>"
+SENDGRID_KEY_ANSWER=""
+SMTP_HOST=""; SMTP_PORT=""; SMTP_USER=""; SMTP_PASS=""
+
+if [[ "$LOGIN_MODE_ANSWER" == "magic" ]]; then
+# 3c — cookie domain (auto-guess; let operator override)
 GUESSED_COOKIE_DOMAIN="$(guess_cookie_domain "$HOSTNAME_ANSWER")"
 say
 if [[ -n "$GUESSED_COOKIE_DOMAIN" ]]; then
@@ -201,14 +221,14 @@ else
   COOKIE_DOMAIN_ANSWER="$(prompt AUTH_BOOTSTRAP_COOKIE_DOMAIN "Cookie domain" "${AUTH_COOKIE_DOMAIN:-}")"
 fi
 
-# 3c — allowlist
+# 3d — allowlist
 say
 say "  Which email domains may request a sign-in link?"
 say "    Comma-separated. Empty = open enrollment (don't do this in prod)."
 DEFAULT_ALLOWED="${AUTH_ALLOWED_DOMAINS:-${COOKIE_DOMAIN_ANSWER}}"
 ALLOWED_DOMAINS_ANSWER="$(prompt AUTH_BOOTSTRAP_ALLOWED_DOMAINS "Allowed domains" "${DEFAULT_ALLOWED}")"
 
-# 3d — email provider
+# 3e — email provider
 say
 say "  How should magic links be delivered?"
 say "    • ${c_dim}sendgrid${c_reset}  — POST to api.sendgrid.com (RECOMMENDED — same"
@@ -216,10 +236,6 @@ say "                  provider chat-server uses, one key across the stack)"
 say "    • ${c_dim}stdout${c_reset}    — print to the journal (DEV ONLY)"
 say "    • ${c_dim}smtp${c_reset}      — STARTTLS to your own relay"
 EMAIL_DRIVER_ANSWER="$(prompt AUTH_BOOTSTRAP_EMAIL_DRIVER "Email driver" "${AUTH_EMAIL_DRIVER:-sendgrid}")"
-
-EMAIL_FROM_ANSWER=""
-SENDGRID_KEY_ANSWER=""
-SMTP_HOST=""; SMTP_PORT=""; SMTP_USER=""; SMTP_PASS=""
 
 case "$EMAIL_DRIVER_ANSWER" in
   sendgrid)
@@ -273,8 +289,12 @@ case "$EMAIL_DRIVER_ANSWER" in
     ;;
   *) die "unknown email driver: $EMAIL_DRIVER_ANSWER" ;;
 esac
+else
+  say
+  info "password mode uses a host-only central session; no email provider or shared cookie domain is needed"
+fi
 
-# 3e — Ed25519 signing keypair. auth holds the private seed and is the only
+# 3f — Ed25519 signing keypair. auth holds the private seed and is the only
 # party that can mint tokens; the public key is handed to every verifying
 # service (home, chat, …) and can verify but never forge. Reuse an existing
 # seed if present (rotation logs everyone out AND means re-distributing the
@@ -289,7 +309,7 @@ AUTH_SIGNING_PUBKEY="$(
 )"
 unset _ed25519_pkcs8_prefix
 
-# 3f — TLS plan (only relevant for real hostnames)
+# 3g — TLS plan (only relevant for real hostnames)
 SETUP_CADDY="n"
 USE_LETSENCRYPT="n"
 LE_EMAIL=""
@@ -330,6 +350,18 @@ else
   fi
 fi
 
+ISSUER_SCHEME="https"
+PASSWORD_COOKIE_NAME="__Host-auth_session"
+ISSUER_AUTHORITY="$HOSTNAME_ANSWER"
+if [[ "$COOKIE_SECURE" != "true" ]]; then
+  ISSUER_SCHEME="http"
+  PASSWORD_COOKIE_NAME="auth_session"
+  # The development listener is reached directly instead of through Caddy,
+  # so discovery must include its actual port. Without this, clients are sent
+  # to http://localhost/token while auth-server is listening on :9000.
+  ISSUER_AUTHORITY="$HOSTNAME_ANSWER:9000"
+fi
+
 # ── 4. .env.local ───────────────────────────────────────────────────
 step "4/6  Writing ${ENV_FILE}"
 
@@ -342,6 +374,8 @@ cat > "$ENV_FILE" <<EOF
 AUTH_ADDR="127.0.0.1:9000"
 AUTH_HOSTNAME="$HOSTNAME_ANSWER"
 AUTH_DATA_DIR="$APP_DIR/data"
+AUTH_LOGIN_MODE="$LOGIN_MODE_ANSWER"
+AUTH_ISSUER_URL="$ISSUER_SCHEME://$ISSUER_AUTHORITY"
 
 # ── Crypto ───────────────────────────────────────────────────────
 # Private signing seed — auth host only. AUTH_SIGNING_PUBKEY (below, in a
@@ -353,6 +387,11 @@ AUTH_SIGNING_KEY="$AUTH_SIGNING_KEY"
 AUTH_COOKIE_NAME="elcano_auth"
 AUTH_COOKIE_DOMAIN="$COOKIE_DOMAIN_ANSWER"
 AUTH_COOKIE_SECURE="$COOKIE_SECURE"
+
+# ── Password application handoff ────────────────────────────────
+AUTH_PASSWORD_COOKIE_NAME="$PASSWORD_COOKIE_NAME"
+AUTH_CODE_TTL_SECONDS="60"
+AUTH_ASSERTION_TTL_MINUTES="5"
 
 # ── Tenancy / allowlist ──────────────────────────────────────────
 AUTH_ALLOWED_DOMAINS="$ALLOWED_DOMAINS_ANSWER"
@@ -388,7 +427,7 @@ AUTH_BRAND_NAME="${AUTH_BRAND_NAME:-Elcano}"
 EOF
 
 chown "$APP_USER:$APP_USER" "$ENV_FILE"
-chmod 0640 "$ENV_FILE"
+chmod 0600 "$ENV_FILE"
 ok "env seeded"
 
 # Surface the public key so the operator can wire up verifying services.
@@ -438,7 +477,7 @@ done
 # Seed the DB-side domain allowlist from .env.local (auth-server does
 # this at startup too, but doing it here means `auth domain list`
 # right after bootstrap shows the expected entries).
-if [[ -n "$ALLOWED_DOMAINS_ANSWER" ]]; then
+if [[ "$LOGIN_MODE_ANSWER" == "magic" && -n "$ALLOWED_DOMAINS_ANSWER" ]]; then
   IFS=',' read -ra _DOMAINS <<< "$ALLOWED_DOMAINS_ANSWER"
   for d in "${_DOMAINS[@]}"; do
     d="${d// /}"
@@ -523,18 +562,27 @@ if [[ "$SETUP_CADDY" == "y" ]]; then
 else
   say "  URL          ${c_bold}http://${HOSTNAME_ANSWER}:9000${c_reset}"
 fi
-say "  Cookie       ${c_dim}Domain=${COOKIE_DOMAIN_ANSWER:-host-only}${c_reset}"
-say "  Allowlist    ${c_dim}${ALLOWED_DOMAINS_ANSWER:-(empty — open enrollment)}${c_reset}"
-say "  Email        ${c_dim}${EMAIL_DRIVER_ANSWER}${c_reset}"
+say "  Login mode   ${c_dim}${LOGIN_MODE_ANSWER}${c_reset}"
+if [[ "$LOGIN_MODE_ANSWER" == "magic" ]]; then
+  say "  Cookie       ${c_dim}Domain=${COOKIE_DOMAIN_ANSWER:-host-only}${c_reset}"
+  say "  Allowlist    ${c_dim}${ALLOWED_DOMAINS_ANSWER:-(empty — open enrollment)}${c_reset}"
+  say "  Email        ${c_dim}${EMAIL_DRIVER_ANSWER}${c_reset}"
+fi
 say "  Data dir     ${APP_DIR}/data"
 say "  Logs         ${c_dim}journalctl -fu auth-server${c_reset}"
 say "  CLI          ${c_dim}auth domain add …  •  auth user list  •  auth restart${c_reset}"
 say
-if [[ "$EMAIL_DRIVER_ANSWER" == "stdout" ]]; then
+if [[ "$LOGIN_MODE_ANSWER" == "magic" && "$EMAIL_DRIVER_ANSWER" == "stdout" ]]; then
   say "  ${c_yellow}heads up:${c_reset} email driver is 'stdout' — magic links print to the journal."
   say "  ${c_dim}Tail with: journalctl -fu auth-server | grep email/stdout${c_reset}"
   say
 fi
-say "  Next: drop the forward_auth snippet from deploy/Caddyfile into"
-say "  each downstream service's Caddyfile to gate it on this cookie."
+if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
+  say "  Next: create an account and register an application:"
+  say "    ${c_dim}auth user create admin@example.com${c_reset}"
+  say "    ${c_dim}auth app create explorer https://explorer.example.com/auth/callback https://explorer.example.com/signed-out${c_reset}"
+else
+  say "  Next: drop the forward_auth snippet from deploy/Caddyfile into"
+  say "  each downstream service's Caddyfile to gate it on this cookie."
+fi
 say

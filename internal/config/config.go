@@ -15,6 +15,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ var allowedEnvVars = map[string]bool{
 	"AUTH_HOSTNAME":   true, // public hostname (e.g. auth.elcanotek.com).
 	"AUTH_DATA_DIR":   true, // where state.db lives. Default /opt/auth/data.
 	"AUTH_LOGIN_MODE": true, // magic (legacy default) | password.
+	"AUTH_ISSUER_URL": true, // externally visible origin; derived from hostname when empty.
 
 	// Crypto. AUTH_SIGNING_KEY is the base64 Ed25519 private seed that
 	// signs both magic-link tokens and the final session cookie. Only the
@@ -38,10 +40,13 @@ var allowedEnvVars = map[string]bool{
 	// it's allowed here so the same .env can document the pair. Generate a
 	// fresh keypair with `auth-admin keygen`; distribute only the pubkey to
 	// verifying services (home, chat, …).
-	"AUTH_SIGNING_KEY":       true,
-	"AUTH_SIGNING_PUBKEY":    true,
-	"AUTH_SESSION_TTL_DAYS":  true, // default 30
-	"AUTH_MAGIC_TTL_MINUTES": true, // default 15
+	"AUTH_SIGNING_KEY":              true,
+	"AUTH_SIGNING_PUBKEY":           true,
+	"AUTH_SIGNING_PREVIOUS_PUBKEYS": true, // comma-separated public keys kept in JWKS during rotation.
+	"AUTH_SESSION_TTL_DAYS":         true, // default 30
+	"AUTH_MAGIC_TTL_MINUTES":        true, // default 15
+	"AUTH_CODE_TTL_SECONDS":         true, // default 60
+	"AUTH_ASSERTION_TTL_MINUTES":    true, // default 5
 
 	// Abuse limits on POST /magic (email-sending endpoint). Counts issued
 	// magic links over a rolling window; at the cap, the same "check your
@@ -108,11 +113,15 @@ type Config struct {
 	Hostname  string
 	DataDir   string
 	LoginMode string
+	IssuerURL string
 
-	SigningKey ed25519.PrivateKey // signs tokens (auth host only)
-	PublicKey  ed25519.PublicKey  // verifies tokens; derived from SigningKey
-	SessionTTL time.Duration
-	MagicTTL   time.Duration
+	SigningKey         ed25519.PrivateKey // signs tokens (auth host only)
+	PublicKey          ed25519.PublicKey  // verifies tokens; derived from SigningKey
+	PreviousPublicKeys []ed25519.PublicKey
+	SessionTTL         time.Duration
+	MagicTTL           time.Duration
+	CodeTTL            time.Duration
+	AssertionTTL       time.Duration
 
 	// Abuse limits on POST /magic. Both count issued magic links over a
 	// fixed rolling window (15 min per-email, 60 min global) and, once the
@@ -179,6 +188,7 @@ func Load(envFile string) (*Config, error) {
 		Hostname:           envOr("AUTH_HOSTNAME", "localhost"),
 		DataDir:            envOr("AUTH_DATA_DIR", "/opt/auth/data"),
 		LoginMode:          strings.ToLower(envOr("AUTH_LOGIN_MODE", "magic")),
+		IssuerURL:          strings.TrimSpace(os.Getenv("AUTH_ISSUER_URL")),
 		CookieName:         envOr("AUTH_COOKIE_NAME", "elcano_auth"),
 		CookieDomain:       os.Getenv("AUTH_COOKIE_DOMAIN"),
 		CookieSecure:       envBool("AUTH_COOKIE_SECURE", true),
@@ -219,6 +229,8 @@ func Load(envFile string) (*Config, error) {
 
 	cfg.SessionTTL = time.Duration(envInt("AUTH_SESSION_TTL_DAYS", 30)) * 24 * time.Hour
 	cfg.MagicTTL = time.Duration(envInt("AUTH_MAGIC_TTL_MINUTES", 15)) * time.Minute
+	cfg.CodeTTL = time.Duration(envInt("AUTH_CODE_TTL_SECONDS", 60)) * time.Second
+	cfg.AssertionTTL = time.Duration(envInt("AUTH_ASSERTION_TTL_MINUTES", 5)) * time.Minute
 	cfg.PasswordAbsoluteTTL = time.Duration(envInt("AUTH_PASSWORD_ABSOLUTE_HOURS", 12)) * time.Hour
 	cfg.PasswordIdleTTL = time.Duration(envInt("AUTH_PASSWORD_IDLE_MINUTES", 60)) * time.Minute
 	cfg.PasswordRatePerEmail = envInt("AUTH_PASSWORD_RATE_PER_EMAIL", 10)
@@ -229,6 +241,21 @@ func Load(envFile string) (*Config, error) {
 
 	cfg.AllowedDomains = splitCSV(os.Getenv("AUTH_ALLOWED_DOMAINS"))
 	cfg.ReturnToHosts = splitCSV(os.Getenv("AUTH_RETURN_TO_HOSTS"))
+	for _, encoded := range splitCSVPreserveCase(os.Getenv("AUTH_SIGNING_PREVIOUS_PUBKEYS")) {
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil || len(raw) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("AUTH_SIGNING_PREVIOUS_PUBKEYS contains an invalid Ed25519 public key")
+		}
+		cfg.PreviousPublicKeys = append(cfg.PreviousPublicKeys, ed25519.PublicKey(raw))
+	}
+
+	if cfg.IssuerURL == "" {
+		scheme := "https"
+		if !cfg.CookieSecure {
+			scheme = "http"
+		}
+		cfg.IssuerURL = scheme + "://" + cfg.Hostname
+	}
 
 	// Sensible default for return-to allowlist: the cookie domain itself
 	// + every subdomain. Derived only when AUTH_RETURN_TO_HOSTS is empty
@@ -276,6 +303,15 @@ func (c *Config) Validate() error {
 		if c.AuditRetention < 0 {
 			return fmt.Errorf("AUTH_AUDIT_RETENTION_DAYS must not be negative (0 keeps audit events forever)")
 		}
+		if c.CodeTTL <= 0 || c.CodeTTL > 5*time.Minute {
+			return fmt.Errorf("AUTH_CODE_TTL_SECONDS must be between 1 and 300")
+		}
+		if c.AssertionTTL <= 0 || c.AssertionTTL > 15*time.Minute {
+			return fmt.Errorf("AUTH_ASSERTION_TTL_MINUTES must be between 1 and 15")
+		}
+		if err := validateIssuerURL(c.IssuerURL, c.CookieSecure); err != nil {
+			return err
+		}
 		if c.CookieSecure && !strings.HasPrefix(c.PasswordCookieName, "__Host-") {
 			return fmt.Errorf("AUTH_PASSWORD_COOKIE_NAME must start with __Host- when secure cookies are enabled")
 		}
@@ -297,6 +333,20 @@ func (c *Config) Validate() error {
 		}
 	default:
 		return fmt.Errorf("unknown AUTH_EMAIL_DRIVER %q (want stdout|sendgrid|smtp)", c.EmailDriver)
+	}
+	return nil
+}
+
+func validateIssuerURL(raw string, requireHTTPS bool) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return fmt.Errorf("AUTH_ISSUER_URL must be an origin without a path, query, credentials, or fragment")
+	}
+	if requireHTTPS && u.Scheme != "https" {
+		return fmt.Errorf("AUTH_ISSUER_URL must use https when secure cookies are enabled")
+	}
+	if !requireHTTPS && u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("AUTH_ISSUER_URL must use http or https")
 	}
 	return nil
 }
@@ -400,6 +450,20 @@ func splitCSV(s string) []string {
 		p = strings.TrimSpace(p)
 		if p != "" {
 			out = append(out, strings.ToLower(p))
+		}
+	}
+	return out
+}
+
+func splitCSVPreserveCase(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
 		}
 	}
 	return out

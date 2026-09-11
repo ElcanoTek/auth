@@ -5,12 +5,14 @@ stack. The deploy model assumes:
 
 - One Fedora server (tested on **Fedora 39+**; should work on RHEL /
   AlmaLinux 9+).
-- Sits next to other services on a shared parent domain (e.g.
-  `auth.elcanotek.com` alongside `chat.elcanotek.com`, `home.elcanotek.com`).
+- Has a public auth hostname. Legacy magic-link deployments may share a parent
+  domain with their apps; password deployments deliberately use host-only
+  Auth and application cookies.
 - Caddy in front for TLS — same Caddy that serves the other services
   can host this one too.
 - SQLite for state (no database to provision).
-- SendGrid for delivery (re-uses the key chat-server already has).
+- SendGrid or SMTP only for legacy magic-link mode. Password mode needs no
+  email provider in v1.
 
 ## TL;DR — one command
 
@@ -23,14 +25,15 @@ sudo git clone https://github.com/elcanotek/auth.git /opt/auth-src
 sudo bash /opt/auth-src/scripts/bootstrap.sh
 ```
 
-`bootstrap.sh` is interactive by default. It will ask you three
-things:
+`bootstrap.sh` is interactive by default. It asks for:
 
 1. **Hostname** — `auth.elcanotek.com` for prod, or `localhost` for dev.
-2. **Cookie domain** — auto-guessed from the hostname (e.g.
+2. **Login mode** — `password` for a new client deployment or `magic` for the
+   existing Elcano deployment.
+3. In magic mode, **cookie domain** — auto-guessed from the hostname (e.g.
    `auth.elcanotek.com` → `elcanotek.com`). The cookie will ride to
    every subdomain of this. Just confirm.
-3. **Email driver** — `sendgrid` (recommended), `smtp`, or `stdout`
+4. In magic mode, **email driver** — `sendgrid` (recommended), `smtp`, or `stdout`
    (dev only — prints the magic link to the journal). For SendGrid,
    you'll also enter your verified sender address and API key.
 
@@ -52,6 +55,7 @@ Every prompt honors an `AUTH_BOOTSTRAP_*` env var. Set
 sudo env \
   AUTH_BOOTSTRAP_NON_INTERACTIVE=1 \
   AUTH_BOOTSTRAP_HOSTNAME="auth.elcanotek.com" \
+  AUTH_BOOTSTRAP_LOGIN_MODE="magic" \
   AUTH_BOOTSTRAP_COOKIE_DOMAIN="elcanotek.com" \
   AUTH_BOOTSTRAP_ALLOWED_DOMAINS="elcanotek.com,clientco.com" \
   AUTH_BOOTSTRAP_EMAIL_DRIVER="sendgrid" \
@@ -60,6 +64,19 @@ sudo env \
   AUTH_BOOTSTRAP_SETUP_CADDY=y \
   AUTH_BOOTSTRAP_USE_LETSENCRYPT=y \
   AUTH_BOOTSTRAP_LE_EMAIL="ops@elcanotek.com" \
+  bash /opt/auth-src/scripts/bootstrap.sh
+```
+
+For a new password-mode client, omit all magic-link settings:
+
+```bash
+sudo env \
+  AUTH_BOOTSTRAP_NON_INTERACTIVE=1 \
+  AUTH_BOOTSTRAP_HOSTNAME="auth.client.example" \
+  AUTH_BOOTSTRAP_LOGIN_MODE="password" \
+  AUTH_BOOTSTRAP_SETUP_CADDY=y \
+  AUTH_BOOTSTRAP_USE_LETSENCRYPT=y \
+  AUTH_BOOTSTRAP_LE_EMAIL="ops@example.com" \
   bash /opt/auth-src/scripts/bootstrap.sh
 ```
 
@@ -91,7 +108,42 @@ this small, the cost doesn't pay off.
 `auth restart`, `auth logs`, `auth backup` is the entire operator
 surface you'll need.
 
-## Domain management
+## Password-mode application setup
+
+Create each person centrally and register each deployment as its own
+confidential client. Do not reuse a client secret between Omnicom, Reklaim, or
+between Explorer and another application:
+
+```bash
+auth user create alice@example.com
+auth app create explorer-omnicom \
+  https://explorer.omnicom.example/auth/callback \
+  https://explorer.omnicom.example/signed-out
+```
+
+Copy the displayed `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` to that Explorer
+instance. The secret is shown once; Auth stores only its SHA-256 hash. Useful
+operations:
+
+```bash
+auth app list
+auth app show explorer-omnicom
+auth app rotate-secret explorer-omnicom
+auth app disable explorer-omnicom
+```
+
+The authorization request must use the exact registered callback and S256
+PKCE. Codes contain 256 random bits, live for 60 seconds, are single-use, and
+remain bound to the central browser session that authorized them. Discovery is
+at `/.well-known/openid-configuration`; current and overlapping Ed25519 keys
+are at `/jwks.json`.
+
+For signing-key rotation, place the old base64 public key in
+`AUTH_SIGNING_PREVIOUS_PUBKEYS`, install the new private signing seed, restart,
+and keep the old public key published for at least the configured assertion
+lifetime (five minutes by default). Then remove it and restart again.
+
+## Domain management (magic mode only)
 
 The domain allowlist controls which email domains can request a
 magic link. Empty allowlist = open enrollment; populated = only
@@ -114,7 +166,7 @@ The DB is the source of truth at runtime; `AUTH_ALLOWED_DOMAINS` in
 > hedges ("if this address has an account…") rather than claiming a link
 > was sent. The allowlist is not an enumeration oracle.
 
-## User management
+## User management (magic mode)
 
 You don't provision users in advance — anyone with an email at an
 allowlisted domain can request a link and log in. The `users` table

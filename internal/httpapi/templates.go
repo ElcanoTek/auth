@@ -169,7 +169,7 @@ label {
   font-weight: var(--font-weight-bold); color: var(--color-text-secondary);
   margin-bottom: var(--space-2);
 }
-input[type=email] {
+input[type=email], input[type=password] {
   width: 100%; min-height: 2.5rem; padding: var(--space-2) var(--space-3);
   font-family: var(--font-body); font-size: var(--font-size-body);
   color: var(--color-text-primary);
@@ -179,9 +179,9 @@ input[type=email] {
   outline: none;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
-input[type=email]::placeholder { color: var(--color-text-muted); }
-input[type=email]:hover { border-color: var(--color-primary); }
-input[type=email]:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
+input[type=email]::placeholder, input[type=password]::placeholder { color: var(--color-text-muted); }
+input[type=email]:hover, input[type=password]:hover { border-color: var(--color-primary); }
+input[type=email]:focus-visible, input[type=password]:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
 .btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 100%; min-height: 2.75rem; margin-top: var(--space-5);
@@ -338,6 +338,7 @@ const changePasswordHTML = `<!doctype html>
       <label for="confirm_password">Confirm new password</label>
       <input id="confirm_password" name="confirm_password" type="password" required minlength="15" maxlength="128" autocomplete="new-password">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
       <button class="btn" type="submit">Replace password</button>
     </form>
   </main>
