@@ -1308,12 +1308,25 @@ func (s *Server) currentPasswordSession(r *http.Request) *passwordIdentity {
 		return nil
 	}
 	a, sess, err := s.store.ValidateAuthSession(r.Context(), hashSecret(c.Value), time.Now().Unix(),
-		s.cfg.PasswordIdleTTL, 5*time.Minute)
+		s.cfg.PasswordIdleTTL, sessionTouchInterval)
 	if err != nil {
 		return nil
 	}
 	return &passwordIdentity{Account: a, Session: sess}
 }
+
+// sessionTouchInterval bounds how often a validated session writes its
+// last-seen and idle-expiry columns. Every request reads the session; only a
+// request more than this long after the previous touch writes. The idle
+// timeout therefore behaves as "idle limit minus at most one interval", never
+// longer, and a burst of requests from one page load costs one write.
+//
+// Convention for every Elcano service that keeps its own sessions (Auth,
+// Explorer, Lens, and anything built later): one minute. It is short enough
+// that the stated idle limit stays accurate to the minute, and long enough to
+// collapse a page's burst of requests into a single write. Do not make it
+// configurable; it is a property of the storage pattern, not a policy knob.
+const sessionTouchInterval = time.Minute
 
 const csrfCookieName = "__Host-auth_csrf"
 
