@@ -155,3 +155,86 @@ func TestSweepDropsDeliveredLogoutEventsButKeepsPendingOnes(t *testing.T) {
 		t.Fatalf("after final sweep deliveries=%d events=%d, want 0/0", deliveries, events)
 	}
 }
+
+func TestEnqueueClientLogoutTargetsOneApplicationAndAudits(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	account := createPasswordAccountForOAuthTest(t, s)
+	registerBackchannelApp(t, s, "explorer")
+	registerBackchannelApp(t, s, "lens")
+
+	queued, err := s.EnqueueClientLogout(ctx, account.ID, "explorer", "code_replayed", 1_000)
+	if err != nil || !queued {
+		t.Fatalf("enqueue = queued %v err %v", queued, err)
+	}
+	due, err := s.ClaimDueLogoutDeliveries(ctx, 1_000, 10, time.Minute)
+	if err != nil || len(due) != 1 || due[0].ClientID != "explorer" || due[0].Reason != "code_replayed" || due[0].Subject != account.ID {
+		t.Fatalf("deliveries = %+v, %v; want exactly the explorer row", due, err)
+	}
+	events, _ := s.RecentAuditEvents(ctx, account.ID, 5)
+	if len(events) == 0 || events[0].EventType != "authorization.code_replayed" || events[0].ApplicationID != "explorer" {
+		t.Fatalf("audit = %+v", events)
+	}
+
+	// An app without a back-channel endpoint: audited, nothing queued.
+	if _, err := s.CreateApplication(ctx, "pages", "pages", "https://pages.example.com/cb", "", secretHashForTest("x"), 900); err != nil {
+		t.Fatal(err)
+	}
+	queued, err = s.EnqueueClientLogout(ctx, account.ID, "pages", "code_replayed", 1_001)
+	if err != nil || queued {
+		t.Fatalf("enqueue for app without endpoint = queued %v err %v", queued, err)
+	}
+}
+
+func TestUndeliveredEventsStopRetryingAfterRetentionAndAreListed(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	account := createPasswordAccountForOAuthTest(t, s)
+	registerBackchannelApp(t, s, "explorer")
+	if _, err := s.RevokeAllAuthSessions(ctx, account.ID, 1_000, "admin_revoked"); err != nil {
+		t.Fatal(err)
+	}
+	due, err := s.ClaimDueLogoutDeliveries(ctx, 1_000, 10, time.Minute)
+	if err != nil || len(due) != 1 {
+		t.Fatalf("claim = %+v, %v", due, err)
+	}
+	if err := s.MarkLogoutDeliveryFailed(ctx, due[0].EventID, due[0].ClientID, 1_001, time.Minute, "connection refused"); err != nil {
+		t.Fatal(err)
+	}
+	retention := int64(LogoutDeliveryRetention.Seconds())
+
+	// Still inside retention: retried and listed as retrying.
+	if got, _ := s.ClaimDueLogoutDeliveries(ctx, 1_000+retention-1, 10, time.Minute); len(got) != 1 {
+		t.Fatalf("inside retention claim = %+v, want 1", got)
+	}
+	pending, err := s.PendingLogoutDeliveries(ctx, "explorer", 1_000+retention-1)
+	if err != nil || len(pending) != 1 || pending[0].Abandoned || pending[0].LastError != "connection refused" || pending[0].Attempts != 2 {
+		t.Fatalf("pending inside retention = %+v, %v", pending, err)
+	}
+
+	// Past retention: never claimed again, listed as abandoned, still visible.
+	if got, _ := s.ClaimDueLogoutDeliveries(ctx, 1_000+retention+3600, 10, time.Minute); len(got) != 0 {
+		t.Fatalf("past-retention claim = %+v, want none", got)
+	}
+	pending, _ = s.PendingLogoutDeliveries(ctx, "explorer", 1_000+retention+3600)
+	if len(pending) != 1 || !pending[0].Abandoned {
+		t.Fatalf("pending past retention = %+v, want abandoned", pending)
+	}
+	if _, err := s.SweepPasswordState(ctx, 1_000+retention+3600, time.Hour, 0); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ = s.PendingLogoutDeliveries(ctx, "explorer", 1_000+retention+3600); len(pending) != 1 {
+		t.Fatalf("sweep inside the grace window removed the abandoned row: %+v", pending)
+	}
+
+	// After a second retention period the abandoned row and its event are gone.
+	if _, err := s.SweepPasswordState(ctx, 1_000+2*retention+1, time.Hour, 0); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ = s.PendingLogoutDeliveries(ctx, "explorer", 1_000+2*retention+1)
+	var events int
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM logout_events`).Scan(&events)
+	if len(pending) != 0 || events != 0 {
+		t.Fatalf("after final sweep pending=%d events=%d, want 0/0", len(pending), events)
+	}
+}

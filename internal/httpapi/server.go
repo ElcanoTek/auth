@@ -785,10 +785,23 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	challenge := pkceChallenge(verifier)
-	grant, err := s.store.ConsumeAuthorizationCode(r.Context(), hashSecret(code), clientID, redirectURI, challenge, now.Unix())
+	codeHash := hashSecret(code)
+	grant, err := s.store.ConsumeAuthorizationCode(r.Context(), codeHash, clientID, redirectURI, challenge, now.Unix())
 	if err != nil {
 		if !errors.Is(err, store.ErrInvalidGrant) {
 			log.Printf("consume authorization code: %v", err)
+		}
+		// OAuth 2.1 §4.1.2: a code presented twice is evidence it leaked, so
+		// revoke what the first exchange produced. The application session
+		// is what that produced; a back-channel logout for this user at this
+		// client ends it. Only codes that were actually exchanged carry
+		// consumed_at, so a superseded second-tab code never trips this.
+		if userID, codeClient, replayed, lookupErr := s.store.ReplayedAuthorizationCode(r.Context(), codeHash); lookupErr != nil {
+			log.Printf("replay lookup: %v", lookupErr)
+		} else if replayed {
+			if _, err := s.store.EnqueueClientLogout(r.Context(), userID, codeClient, "code_replayed", now.Unix()); err != nil {
+				log.Printf("revoke after code replay: %v", err)
+			}
 		}
 		auditRefusal("token.invalid_grant")
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant")

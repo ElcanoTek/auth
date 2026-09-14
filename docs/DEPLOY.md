@@ -152,7 +152,11 @@ deliveries to one worker, and retries non-2xx/network failures. Each attempt
 signs a fresh token (`iat` now, `exp` five minutes later, constant `jti`), so a
 retry hours after the revocation is still accepted; a redirect from the
 endpoint counts as a failure and is never followed. Delivered rows are swept
-after a day; undelivered rows keep retrying with capped backoff. Do not put the
+after a day. Undelivered rows retry with capped backoff for seven days, then
+stop; `auth app show <id>` lists undelivered events with their last error so a
+dead or misregistered endpoint is visible. A code presented at `/token` a
+second time (a replay) queues a back-channel logout for that user at that
+application, ending whatever session the first exchange produced. Do not put the
 back-channel route behind application login; its Ed25519 signature, exact
 issuer/audience, and replay-safe `jti` are the authentication boundary.
 

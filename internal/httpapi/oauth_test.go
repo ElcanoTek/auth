@@ -382,3 +382,62 @@ func TestTokenRefusalsAreAuditedOncePerSourcePerWindow(t *testing.T) {
 		t.Fatalf("token.invalid_client rows = %d after 4 refusals, want 1 (coalesced)", refusals)
 	}
 }
+
+func TestReplayedCodeQueuesLogoutForThatApplicationOnly(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	ctx := t.Context()
+	if _, err := st.CreateApplication(ctx, testOAuthClientID, "Explorer", testOAuthRedirect, "",
+		hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetApplicationBackchannelLogoutURI(ctx, testOAuthClientID, "https://explorer.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateApplication(ctx, "lens", "Lens", "https://lens.example.com/auth/callback", "",
+		hashSecret("lens-secret-lens-secret-lens-secret-1"), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetApplicationBackchannelLogoutURI(ctx, "lens", "https://lens.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	_, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	if session == nil {
+		t.Fatal("no central session")
+	}
+	const verifier = "a-valid-pkce-verifier-that-is-longer-than-forty-three-characters"
+	code := authorizeCode(t, ts.URL, session, verifier)
+	if code == "" {
+		t.Fatal("no authorization code")
+	}
+	first := exchangeOAuthCode(t, ts.URL, code, verifier, testOAuthClientSecret)
+	_ = first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first exchange = %d", first.StatusCode)
+	}
+	if due, _ := st.ClaimDueLogoutDeliveries(ctx, time.Now().Unix(), 10, time.Minute); len(due) != 0 {
+		t.Fatalf("a normal exchange queued logout deliveries: %+v", due)
+	}
+
+	replay := exchangeOAuthCode(t, ts.URL, code, verifier, testOAuthClientSecret)
+	_ = replay.Body.Close()
+	if replay.StatusCode != http.StatusBadRequest {
+		t.Fatalf("replay = %d, want 400", replay.StatusCode)
+	}
+	due, err := st.ClaimDueLogoutDeliveries(ctx, time.Now().Unix()+1, 10, time.Minute)
+	if err != nil || len(due) != 1 || due[0].ClientID != testOAuthClientID || due[0].Reason != "code_replayed" {
+		t.Fatalf("deliveries after replay = %+v, %v; want one for %s only", due, err, testOAuthClientID)
+	}
+	a, _ := st.PasswordAccountByEmail(ctx, "alice@example.com")
+	if due[0].Subject != a.ID {
+		t.Fatalf("delivery subject = %q, want %q", due[0].Subject, a.ID)
+	}
+	// The central session itself stays valid: the leak evidence concerns the
+	// application session the code produced, not the user's login at Auth.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/me", nil)
+	req.AddCookie(session)
+	me, _ := http.DefaultClient.Do(req)
+	_ = me.Body.Close()
+	if me.StatusCode != http.StatusOK {
+		t.Fatalf("central session after replay = %d, want still valid", me.StatusCode)
+	}
+}
