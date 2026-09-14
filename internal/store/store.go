@@ -121,11 +121,32 @@ CREATE TABLE IF NOT EXISTS applications (
   name               TEXT NOT NULL,
   redirect_uri       TEXT NOT NULL,
   logout_uri         TEXT,
+  backchannel_logout_uri TEXT,
   client_secret_hash TEXT NOT NULL,
   created_at         INTEGER NOT NULL,
   updated_at         INTEGER NOT NULL,
   disabled_at        INTEGER
 );
+CREATE TABLE IF NOT EXISTS logout_events (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  email      TEXT NOT NULL,
+  reason     TEXT NOT NULL,
+  issued_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS logout_deliveries (
+  event_id        TEXT NOT NULL REFERENCES logout_events(id) ON DELETE CASCADE,
+  client_id       TEXT NOT NULL,
+  endpoint        TEXT NOT NULL,
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL,
+  lease_until     INTEGER,
+  delivered_at    INTEGER,
+  last_error      TEXT,
+  PRIMARY KEY(event_id, client_id)
+);
+CREATE INDEX IF NOT EXISTS idx_logout_deliveries_due
+  ON logout_deliveries(delivered_at, next_attempt_at, lease_until);
 CREATE TABLE IF NOT EXISTS authorization_codes (
   code_hash          TEXT PRIMARY KEY,
   client_id          TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
@@ -233,6 +254,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("add created_at column: %w", err)
 		}
 	}
+	if !s.hasColumn(ctx, "applications", "backchannel_logout_uri") {
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE applications ADD COLUMN backchannel_logout_uri TEXT`); err != nil {
+			return fmt.Errorf("add backchannel logout URI: %w", err)
+		}
+	}
 	if _, err := s.db.ExecContext(ctx, createdAtIndexes); err != nil {
 		return err
 	}
@@ -245,6 +272,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(3, ?)`,
 		time.Now().Unix()); err != nil {
 		return fmt.Errorf("record application handoff schema version: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, ?)`,
+		time.Now().Unix()); err != nil {
+		return fmt.Errorf("record back-channel logout schema version: %w", err)
 	}
 	return nil
 }
@@ -714,6 +746,9 @@ func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passw
 	if _, err := revokeSessionsTx(ctx, tx, userID, now, "password_replaced"); err != nil {
 		return err
 	}
+	if err := enqueueLogoutEventTx(ctx, tx, userID, "password_replaced", now); err != nil {
+		return err
+	}
 	if err := insertAudit(ctx, tx, "password.replaced", userID, now, `{}`); err != nil {
 		return err
 	}
@@ -742,6 +777,9 @@ func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled b
 	}
 	if disabled {
 		if _, err := revokeSessionsTx(ctx, tx, a.ID, now, "account_disabled"); err != nil {
+			return err
+		}
+		if err := enqueueLogoutEventTx(ctx, tx, a.ID, "account_disabled", now); err != nil {
 			return err
 		}
 	}
@@ -877,7 +915,19 @@ func (s *Store) RevokeAuthSession(ctx context.Context, tokenHash string, now int
 }
 
 func (s *Store) RevokeAllAuthSessions(ctx context.Context, userID string, now int64, reason string) (int64, error) {
-	return revokeSessionsTx(ctx, s.db, userID, now, reason)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	n, err := revokeSessionsTx(ctx, tx, userID, now, reason)
+	if err != nil {
+		return 0, err
+	}
+	if err := enqueueLogoutEventTx(ctx, tx, userID, reason, now); err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }
 
 type execer interface {
@@ -906,14 +956,15 @@ func (s *Store) CountActiveAuthSessions(ctx context.Context, userID string, now 
 // ── confidential applications and authorization codes ──────────────
 
 type Application struct {
-	ID               string
-	Name             string
-	RedirectURI      string
-	LogoutURI        string
-	ClientSecretHash string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	DisabledAt       *time.Time
+	ID                   string
+	Name                 string
+	RedirectURI          string
+	LogoutURI            string
+	BackchannelLogoutURI string
+	ClientSecretHash     string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	DisabledAt           *time.Time
 }
 
 func (s *Store) CreateApplication(ctx context.Context, id, name, redirectURI, logoutURI, secretHash string, now int64) (Application, error) {
@@ -956,9 +1007,9 @@ func (s *Store) ApplicationByID(ctx context.Context, id string) (Application, er
 	var disabled sql.NullInt64
 	var created, updated int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, redirect_uri, logout_uri, client_secret_hash, created_at, updated_at, disabled_at
+		SELECT id, name, redirect_uri, logout_uri, COALESCE(backchannel_logout_uri, ''), client_secret_hash, created_at, updated_at, disabled_at
 		FROM applications WHERE id = ?`, strings.TrimSpace(id)).Scan(
-		&app.ID, &app.Name, &app.RedirectURI, &logout, &app.ClientSecretHash, &created, &updated, &disabled)
+		&app.ID, &app.Name, &app.RedirectURI, &logout, &app.BackchannelLogoutURI, &app.ClientSecretHash, &created, &updated, &disabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Application{}, ErrApplicationNotFound
 	}
@@ -976,7 +1027,7 @@ func (s *Store) ApplicationByID(ctx context.Context, id string) (Application, er
 
 func (s *Store) ListApplications(ctx context.Context) ([]Application, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, redirect_uri, logout_uri, client_secret_hash, created_at, updated_at, disabled_at
+		SELECT id, name, redirect_uri, logout_uri, COALESCE(backchannel_logout_uri, ''), client_secret_hash, created_at, updated_at, disabled_at
 		FROM applications ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -988,7 +1039,7 @@ func (s *Store) ListApplications(ctx context.Context) ([]Application, error) {
 		var logout sql.NullString
 		var disabled sql.NullInt64
 		var created, updated int64
-		if err := rows.Scan(&app.ID, &app.Name, &app.RedirectURI, &logout, &app.ClientSecretHash, &created, &updated, &disabled); err != nil {
+		if err := rows.Scan(&app.ID, &app.Name, &app.RedirectURI, &logout, &app.BackchannelLogoutURI, &app.ClientSecretHash, &created, &updated, &disabled); err != nil {
 			return nil, err
 		}
 		app.ClientSecretHash = ""
@@ -1001,6 +1052,116 @@ func (s *Store) ListApplications(ctx context.Context) ([]Application, error) {
 		out = append(out, app)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) SetApplicationBackchannelLogoutURI(ctx context.Context, id, endpoint string, now int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE applications SET backchannel_logout_uri = NULLIF(?, ''), updated_at = ? WHERE id = ?`,
+		strings.TrimSpace(endpoint), now, strings.TrimSpace(id))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrApplicationNotFound
+	}
+	return nil
+}
+
+type LogoutDelivery struct {
+	EventID  string
+	Subject  string
+	Email    string
+	Reason   string
+	IssuedAt int64
+	ClientID string
+	Endpoint string
+	Attempts int
+}
+
+func enqueueLogoutEventTx(ctx context.Context, tx *sql.Tx, userID, reason string, now int64) error {
+	var email string
+	if err := tx.QueryRowContext(ctx, `SELECT normalized_email FROM accounts WHERE id = ?`, userID).Scan(&email); err != nil {
+		return err
+	}
+	eventID, err := randomID()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO logout_events(id, user_id, email, reason, issued_at)
+		SELECT ?, ?, ?, ?, ?
+		WHERE EXISTS (
+			SELECT 1 FROM applications
+			WHERE disabled_at IS NULL AND COALESCE(backchannel_logout_uri, '') <> ''
+		)`, eventID, userID, email, reason, now); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO logout_deliveries(event_id, client_id, endpoint, next_attempt_at)
+		SELECT ?, id, backchannel_logout_uri, ? FROM applications
+		WHERE disabled_at IS NULL AND COALESCE(backchannel_logout_uri, '') <> ''`, eventID, now)
+	return err
+}
+
+func (s *Store) ClaimDueLogoutDeliveries(ctx context.Context, now int64, limit int, lease time.Duration) ([]LogoutDelivery, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `
+		SELECT d.event_id, e.user_id, e.email, e.reason, e.issued_at, d.client_id, d.endpoint, d.attempts
+		FROM logout_deliveries d JOIN logout_events e ON e.id = d.event_id
+		WHERE d.delivered_at IS NULL AND d.next_attempt_at <= ? AND (d.lease_until IS NULL OR d.lease_until <= ?)
+		ORDER BY d.next_attempt_at, d.event_id, d.client_id LIMIT ?`, now, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	var candidates []LogoutDelivery
+	for rows.Next() {
+		var d LogoutDelivery
+		if err := rows.Scan(&d.EventID, &d.Subject, &d.Email, &d.Reason, &d.IssuedAt, &d.ClientID, &d.Endpoint, &d.Attempts); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		candidates = append(candidates, d)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	leaseUntil := now + int64(lease.Seconds())
+	claimed := make([]LogoutDelivery, 0, len(candidates))
+	for i := range candidates {
+		res, err := tx.ExecContext(ctx, `UPDATE logout_deliveries SET lease_until = ?, attempts = attempts + 1
+			WHERE event_id = ? AND client_id = ? AND delivered_at IS NULL AND (lease_until IS NULL OR lease_until <= ?)`,
+			leaseUntil, candidates[i].EventID, candidates[i].ClientID, now)
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			continue
+		}
+		candidates[i].Attempts++
+		claimed = append(claimed, candidates[i])
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return claimed, nil
+}
+
+func (s *Store) MarkLogoutDeliveryDelivered(ctx context.Context, eventID, clientID string, now int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE logout_deliveries SET delivered_at = ?, lease_until = NULL, last_error = NULL
+		WHERE event_id = ? AND client_id = ?`, now, eventID, clientID)
+	return err
+}
+
+func (s *Store) MarkLogoutDeliveryFailed(ctx context.Context, eventID, clientID string, now int64, retryAfter time.Duration, message string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE logout_deliveries SET next_attempt_at = ?, lease_until = NULL, last_error = ?
+		WHERE event_id = ? AND client_id = ? AND delivered_at IS NULL`, now+int64(retryAfter.Seconds()), message, eventID, clientID)
+	return err
 }
 
 func (s *Store) RotateApplicationSecret(ctx context.Context, id, secretHash string, now int64) error {
@@ -1170,6 +1331,21 @@ func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetent
 		return 0, err
 	}
 	codes, _ := res.RowsAffected()
+	// Delivered logout events have done their job; keep them a day for
+	// operator inspection, then drop them and any event with no delivery
+	// rows left. Undelivered rows are never swept here: they keep retrying.
+	res, err = tx.ExecContext(ctx, `DELETE FROM logout_deliveries WHERE delivered_at IS NOT NULL AND delivered_at < ?`, now-int64((24*time.Hour).Seconds()))
+	if err != nil {
+		return 0, err
+	}
+	deliveries, _ := res.RowsAffected()
+	res, err = tx.ExecContext(ctx, `DELETE FROM logout_events WHERE issued_at < ?
+		AND NOT EXISTS (SELECT 1 FROM logout_deliveries d WHERE d.event_id = logout_events.id)`, now-int64((24*time.Hour).Seconds()))
+	if err != nil {
+		return 0, err
+	}
+	events, _ := res.RowsAffected()
+	codes += deliveries + events
 	res, err = tx.ExecContext(ctx, `DELETE FROM auth_sessions WHERE absolute_expires_at <= ? OR idle_expires_at <= ?`, now, now)
 	if err != nil {
 		return 0, err

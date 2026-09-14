@@ -844,6 +844,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		"grant_types_supported": []string{"authorization_code"}, "subject_types_supported": []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"EdDSA"}, "token_endpoint_auth_methods_supported": []string{"client_secret_basic"},
 		"code_challenge_methods_supported": []string{"S256"}, "scopes_supported": []string{"openid", "email"},
+		"backchannel_logout_supported": true, "backchannel_logout_session_supported": false,
 	})
 }
 

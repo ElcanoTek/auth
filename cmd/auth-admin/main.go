@@ -99,6 +99,8 @@ APPLICATIONS
   auth-admin app list                            list registered clients
   auth-admin app show <id>                       show exact registered URLs
   auth-admin app rotate-secret <id>              replace and print client secret
+  auth-admin app set-backchannel <id> <url>       set signed server-to-server logout endpoint
+  auth-admin app clear-backchannel <id>           disable back-channel logout delivery
   auth-admin app disable|enable <id>              block or allow new handoffs
 
 CRYPTO
@@ -424,7 +426,7 @@ func auditCmd(dataDir string, args []string) {
 
 func applicationCmd(dataDir string, args []string) {
 	if len(args) < 1 {
-		fatalf("usage: auth-admin app <create|list|show|rotate-secret|disable|enable> ...")
+		fatalf("usage: auth-admin app <create|list|show|rotate-secret|set-backchannel|clear-backchannel|disable|enable> ...")
 	}
 	st, ctx := openStore(dataDir)
 	defer func() { _ = st.Close() }()
@@ -455,6 +457,25 @@ func applicationCmd(dataDir string, args []string) {
 			fatalf("app rotate-secret: %v", err)
 		}
 		printApplicationSecret(id, secret)
+	case "set-backchannel":
+		if len(args) != 3 {
+			fatalf("usage: auth-admin app set-backchannel <id> <url>")
+		}
+		id := validateApplicationID(args[1])
+		endpoint := validateApplicationURL(args[2], false)
+		if err := st.SetApplicationBackchannelLogoutURI(ctx, id, endpoint, now); err != nil {
+			fatalf("app set-backchannel: %v", err)
+		}
+		fmt.Printf("✓ back-channel logout configured for %s\n", id)
+	case "clear-backchannel":
+		if len(args) != 2 {
+			fatalf("usage: auth-admin app clear-backchannel <id>")
+		}
+		id := validateApplicationID(args[1])
+		if err := st.SetApplicationBackchannelLogoutURI(ctx, id, "", now); err != nil {
+			fatalf("app clear-backchannel: %v", err)
+		}
+		fmt.Printf("✓ back-channel logout cleared for %s\n", id)
 	case "disable", "enable":
 		if len(args) != 2 {
 			fatalf("usage: auth-admin app %s <id>", args[0])
@@ -554,6 +575,9 @@ func printApplication(app store.Application) {
 	fmt.Printf("%s\t%s\t%s", app.ID, status, app.RedirectURI)
 	if app.LogoutURI != "" {
 		fmt.Printf("\t%s", app.LogoutURI)
+	}
+	if app.BackchannelLogoutURI != "" {
+		fmt.Printf("\t%s", app.BackchannelLogoutURI)
 	}
 	fmt.Println()
 }

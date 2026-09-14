@@ -103,19 +103,18 @@ The authorization response carries `iss` alongside `code` and `state`
 mix-up; discovery and JWKS answer only in password mode. Token-endpoint
 refusals are audited as `token.invalid_client` and `token.invalid_grant`,
 coalesced per source per window.
-The wire response includes the standard identity claims directly for the
-initial Explorer client and as an EdDSA-signed `id_token`; Explorer integration
-is maintained in its own repository. Lens integration remains later work. The
-Auth session, authorization code, and application session remain three
-separate credentials with distinct host and cookie boundaries.
+The wire response includes the standard identity claims directly and as an
+EdDSA-signed `id_token`; Explorer and Lens integrations are maintained in their
+own repositories, while Fleet uses the OIDC response. The Auth session,
+authorization code, and application session remain three separate credentials
+with distinct host and cookie boundaries.
 
 ### PR 3: cross-service revocation and remaining applications
 
 1. Add durable, signed, idempotent back-channel logout events.
 2. Revoke application sessions on central disable, password replacement, or
    sign-out-everywhere.
-3. Integrate Lens, the trusted Pages dashboard, and Fleet OIDC. Untrusted Pages
-   content never participates in the Auth cookie jar.
+3. Integrate Lens and Fleet OIDC. Pages is explicitly outside this phase.
 
 ### Later
 
