@@ -121,6 +121,29 @@ with distinct host and cookie boundaries.
    sign-out-everywhere.
 3. Integrate Lens and Fleet OIDC. Pages is explicitly outside this phase.
 
+### Application session conventions
+
+Every service that mints its own session after the central handoff follows
+the same shape, and any future service should too:
+
+- Opaque 256-bit token, stored only as its SHA-256 hash; host-only cookie
+  (`__Host-` prefix in production), `HttpOnly`, `SameSite=Lax`, `Path=/`.
+- Idle limit 60 minutes, absolute limit 12 hours, enforced server-side on
+  every request; the idle clock never extends past the absolute limit.
+- **Touch interval one minute.** A request only writes `last_seen_at` and
+  `idle_expires_at` when the previous touch is more than a minute old. The
+  idle limit then behaves as "60 minutes minus at most one minute", never
+  longer, and a page's burst of requests costs one write instead of one per
+  request. Keep it a constant, not a setting; it is a storage pattern, not a
+  policy. Auth, Explorer, and Lens all use one minute.
+- Local access decision (an email allowlist or membership table) applied at
+  login; revoking access ends that email's sessions in the same transaction.
+- A `POST /auth/backchannel-logout` receiver that verifies Auth's signed
+  `logout+jwt` (EdDSA, `kid`, exact `iss` and `aud`, live `exp`, the
+  back-channel event, no `nonce`), revokes every session for the subject,
+  and records `jti` so retries are idempotent.
+- Startup refuses to run in central mode without a valid `AUTH_SIGNING_PUBKEY`.
+
 ### Later
 
 - Web administration UI backed by the same service layer as the CLI.
