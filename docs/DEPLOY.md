@@ -108,6 +108,66 @@ this small, the cost doesn't pay off.
 `auth restart`, `auth logs`, `auth backup` is the entire operator
 surface you'll need.
 
+## First password-mode client: rollout checklist
+
+Order matters. Auth first, then each application. Every step is one command or
+one edit; nothing here is optional for the first sign-in to work.
+
+**On the Auth host**
+
+1. Deploy or update Auth (`sudo auth update`) so it carries the current
+   protocol (applications require the `exp` claim on logout tokens).
+2. Set the mode and issuer in `/opt/auth/.env.local`, then `auth restart`:
+   `AUTH_LOGIN_MODE="password"`, `AUTH_ISSUER_URL="https://auth.<client>"`.
+   The password cookie name must keep its `__Host-` prefix in production.
+3. Print the public key every application will need:
+   `auth pubkey` → the `AUTH_SIGNING_PUBKEY=...` line.
+4. Create the first account: `auth user create admin@<client>`. The person
+   must change the temporary password at first login.
+5. Register each application with its exact callback and logout URLs, then its
+   back-channel endpoint. One client ID and secret per deployment; never share
+   a secret between applications or between clients:
+   ```bash
+   auth app create explorer https://explorer.<client>/auth/callback https://explorer.<client>/signed-out
+   auth app set-backchannel explorer https://explorer.<client>/auth/backchannel-logout
+   auth app create lens https://lens.<client>/auth/callback
+   auth app set-backchannel lens https://lens.<client>/auth/backchannel-logout
+   auth app create fleet https://fleet.<client>/api/auth/oidc/callback
+   auth app set-backchannel fleet https://fleet.<client>/api/auth/backchannel-logout
+   ```
+   Copy each `AUTH_CLIENT_SECRET` immediately; it is shown once.
+
+**On each application host**
+
+6. Set the central-auth variables in the application's `.env` (names differ
+   per app; see its DEPLOYMENT.md): mode `central`, `AUTH_ISSUER_URL`, the
+   app's public origin, `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, and
+   `AUTH_SIGNING_PUBKEY` from step 3. Explorer and Lens refuse to start in
+   central mode without a valid public key; Fleet's OIDC client reads
+   `FLEET_OIDC_ISSUER`, `FLEET_OIDC_CLIENT_ID`, `FLEET_OIDC_CLIENT_SECRET`,
+   and `AUTH_SIGNING_PUBKEY`.
+7. Grant access to the people who may use that application. Sign-in without a
+   grant is a 403 at the application, not a login failure at Auth:
+   `explorer access grant admin@<client>`, `lens access grant admin@<client>`,
+   and for Fleet add the email to its user list as usual.
+8. Restart the application and sign in once end to end.
+
+**Verify before handing over**
+
+9. `auth app show <id>` for each application: enabled, correct URLs, no
+   undelivered back-channel events.
+10. `auth user disable admin@<client>` then reload the application: the
+    session must end within seconds, not at idle timeout. Re-enable with
+    `auth user enable`.
+11. `auth audit list 20`: expect `login.succeeded`, `authorization.code_issued`,
+    `authorization.code_exchanged`, and `account.disabled` rows from the steps
+    above, none attributed to the wrong application.
+
+**If the client fronts hostnames with a proxying CDN** (Cloudflare "orange
+cloud"), read "Password mode: client IP and audit retention" below before
+step 2: without Caddy `trusted_proxies` and the real-client header, every
+visitor shares one rate-limit bucket. DNS-only Cloudflare needs no change.
+
 ## Password-mode application setup
 
 Create each person centrally and register each deployment as its own
