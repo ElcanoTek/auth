@@ -822,22 +822,41 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
-	// Keep the bearer credential distinct from the ID token. Explorer only
-	// consumes the authenticated identity response today, but returning the
-	// ID token itself as an access token would invite token-type confusion in
-	// future resource APIs. There is deliberately no user-info/resource
-	// endpoint yet, so this short-lived opaque value is not persisted.
-	accessToken, err := randomSecret(32)
-	if err != nil {
-		log.Printf("generate access token: %v", err)
-		writeOAuthError(w, http.StatusInternalServerError, "server_error")
-		return
-	}
+	// No access_token, token_type, or expires_in in this response, on purpose.
+	//
+	// An OAuth access token is a credential a client presents to some OTHER
+	// service (a resource server) on the user's behalf, and that service must
+	// be able to verify it. Auth has no resource server: applications receive
+	// the identity claims here, apply their own membership rules, and mint
+	// their own sessions. Nothing anywhere accepts an Auth access token, so
+	// issuing one would hand clients a bearer credential that nothing checks.
+	// An earlier revision returned 32 random, unstored bytes purely to match
+	// the textbook OAuth response shape; that is a credential-shaped value
+	// with no verifier behind it, which is exactly the kind of thing that
+	// gets trusted by mistake later. Every credential Auth mints must be
+	// verifiable by something, so the field is gone rather than fake.
+	//
+	// Note that this is unrelated to MFA or upstream Google/Microsoft login:
+	// MFA lands in the id_token's amr/acr claims and the reserved
+	// authenticators tables; upstream login makes Auth an OAuth CLIENT of
+	// Google, consuming Google's tokens inside Auth and still minting only an
+	// id_token downstream. Neither needs an Auth-issued access token.
+	//
+	// Add access_token back when, and only when, an API exists that a client
+	// should call as the signed-in user: for example a shared profile or team
+	// membership endpoint at Auth, or one application calling another's API
+	// on the user's behalf. Doing it properly means: store the token's hash
+	// with user, client, scopes, and expiry; give the API a way to verify it
+	// (an introspection endpoint here, or a signed JWT whose aud names that
+	// API, never the client); define the scopes; sweep expired rows; rate
+	// limit and audit the verifying endpoint; and return token_type "Bearer"
+	// plus expires_in alongside it. Until then, generic OIDC client
+	// libraries that insist on access_token are not supported; every current
+	// consumer reads the claims and id_token only.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iss": claims.Issuer, "sub": claims.Subject, "aud": claims.Audience, "email": claims.Email,
 		"iat": claims.IssuedAt, "exp": claims.ExpiresAt, "nonce": claims.Nonce, "auth_time": claims.AuthTime,
 		"amr": claims.AMR, "acr": claims.ACR, "id_token": idToken,
-		"access_token": accessToken, "token_type": "Bearer", "expires_in": int64(assertionTTL.Seconds()),
 	})
 }
 

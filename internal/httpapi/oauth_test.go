@@ -80,6 +80,8 @@ func TestAuthorizationCodeExplorerRoundTrip(t *testing.T) {
 		Nonce       string   `json:"nonce"`
 		IDToken     string   `json:"id_token"`
 		AccessToken string   `json:"access_token"`
+		TokenType   string   `json:"token_type"`
+		ExpiresIn   int64    `json:"expires_in"`
 		IssuedAt    int64    `json:"iat"`
 		ExpiresAt   int64    `json:"exp"`
 		AuthTime    int64    `json:"auth_time"`
@@ -91,8 +93,11 @@ func TestAuthorizationCodeExplorerRoundTrip(t *testing.T) {
 	if payload.Issuer != "http://auth.example.com" || payload.Subject == "" || payload.Audience != testOAuthClientID || payload.Email != "Alice@Example.com" || payload.Nonce != "browser-nonce" || payload.IDToken == "" {
 		t.Fatalf("identity payload = %+v", payload)
 	}
-	if len(payload.AccessToken) < 43 || payload.AccessToken == payload.IDToken {
-		t.Fatalf("access and identity tokens are not separated: access=%q id=%q", payload.AccessToken, payload.IDToken)
+	// No resource server exists, so no access token is issued: a bearer
+	// credential nothing can verify must not appear in the response. See the
+	// comment in handleToken for when to add it back.
+	if payload.AccessToken != "" || payload.TokenType != "" || payload.ExpiresIn != 0 {
+		t.Fatalf("token response carries an unverifiable access token: access=%q type=%q expires_in=%d", payload.AccessToken, payload.TokenType, payload.ExpiresIn)
 	}
 	claims, _, err := token.VerifyIdentity(cfg.PublicKey, payload.IDToken)
 	if err != nil || claims.Subject != payload.Subject || claims.Nonce != payload.Nonce {

@@ -104,7 +104,12 @@ mix-up; discovery and JWKS answer only in password mode. Token-endpoint
 refusals are audited as `token.invalid_client` and `token.invalid_grant`,
 coalesced per source per window.
 The wire response includes the standard identity claims directly and as an
-EdDSA-signed `id_token`; Explorer and Lens integrations are maintained in their
+EdDSA-signed `id_token`. It deliberately carries no `access_token`: Auth has no
+resource server, so nothing could verify one, and a credential nothing checks
+is a footgun rather than conformance. Add it back only when an API exists that
+a client should call as the signed-in user, with stored hash, scopes, expiry,
+and an introspection or audience-bound JWT for that API (see the comment in
+`handleToken`); Explorer and Lens integrations are maintained in their
 own repositories, while Fleet uses the OIDC response. The Auth session,
 authorization code, and application session remain three separate credentials
 with distinct host and cookie boundaries.
