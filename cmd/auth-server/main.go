@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/elcanotek/auth/internal/backchannel"
 	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/email"
 	"github.com/elcanotek/auth/internal/httpapi"
@@ -62,6 +63,7 @@ func main() {
 
 	sender := pickSender(cfg)
 	srv := httpapi.New(cfg, st, sender)
+	logoutDeliverer := backchannel.New(st, cfg.SigningKey, cfg.IssuerURL, &http.Client{Timeout: 10 * time.Second})
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
@@ -105,6 +107,25 @@ func main() {
 			}
 		}
 	}()
+
+	// Back-channel logout exists only for password-mode applications; magic
+	// mode has no registered clients, so skip the 2-second poll entirely.
+	if cfg.LoginMode == "password" {
+		go func() {
+			t := time.NewTicker(2 * time.Second)
+			defer t.Stop()
+			for {
+				if err := logoutDeliverer.RunOnce(ctx, time.Now()); err != nil && ctx.Err() == nil {
+					log.Printf("back-channel logout: %v", err)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
+	}
 
 	go func() {
 		log.Printf("auth-server listening on %s (hostname=%s, login_mode=%s, cookie_domain=%q)",

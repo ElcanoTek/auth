@@ -256,6 +256,9 @@ func TestDiscoveryAndJWKSDescribeEdDSAService(t *testing.T) {
 	if discovery["issuer"] != "http://auth.example.com" || discovery["authorization_endpoint"] != "http://auth.example.com/authorize" || discovery["token_endpoint"] != "http://auth.example.com/token" {
 		t.Fatalf("discovery = %#v", discovery)
 	}
+	if discovery["backchannel_logout_supported"] != true || discovery["backchannel_logout_session_supported"] != false {
+		t.Fatalf("back-channel discovery = %#v", discovery)
+	}
 	jwks, err := http.Get(ts.URL + "/jwks.json")
 	if err != nil {
 		t.Fatal(err)

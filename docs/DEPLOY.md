@@ -119,6 +119,8 @@ auth user create alice@example.com
 auth app create explorer-omnicom \
   https://explorer.omnicom.example/auth/callback \
   https://explorer.omnicom.example/signed-out
+auth app set-backchannel explorer-omnicom \
+  https://explorer.omnicom.example/auth/backchannel-logout
 ```
 
 Copy the displayed `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` to that Explorer
@@ -129,6 +131,7 @@ operations:
 auth app list
 auth app show explorer-omnicom
 auth app rotate-secret explorer-omnicom
+auth app clear-backchannel explorer-omnicom
 auth app disable explorer-omnicom
 ```
 
@@ -142,6 +145,16 @@ For signing-key rotation, place the old base64 public key in
 `AUTH_SIGNING_PREVIOUS_PUBKEYS`, install the new private signing seed, restart,
 and keep the old public key published for at least the configured assertion
 lifetime (five minutes by default). Then remove it and restart again.
+
+Back-channel endpoints receive a signed `logout_token` form field. Auth stores
+the event and each delivery before the account mutation commits, leases due
+deliveries to one worker, and retries non-2xx/network failures. Each attempt
+signs a fresh token (`iat` now, `exp` five minutes later, constant `jti`), so a
+retry hours after the revocation is still accepted; a redirect from the
+endpoint counts as a failure and is never followed. Delivered rows are swept
+after a day; undelivered rows keep retrying with capped backoff. Do not put the
+back-channel route behind application login; its Ed25519 signature, exact
+issuer/audience, and replay-safe `jti` are the authentication boundary.
 
 ## Domain management (magic mode only)
 

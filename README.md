@@ -125,6 +125,8 @@ only its SHA-256 hash is stored:
 AUTH_DATA_DIR=.localdata ./bin/auth-admin app create explorer \
   https://explorer.example.com/auth/callback \
   https://explorer.example.com/signed-out
+AUTH_DATA_DIR=.localdata ./bin/auth-admin app set-backchannel explorer \
+  https://explorer.example.com/auth/backchannel-logout
 ```
 
 The Auth cookie remains host-only. Applications redirect through `/authorize`,
@@ -132,6 +134,10 @@ exchange a 60-second one-use code at `/token` with client authentication and
 S256 PKCE, then create their own host-only session after applying their local
 membership rules. Discovery lives at `/.well-known/openid-configuration` and
 the current plus overlapping rotation keys are published at `/jwks.json`.
+Password replacement, account disablement, and `user revoke-sessions` enqueue
+one signed OIDC back-channel logout token per configured application in the
+same SQLite transaction. A background worker retries failed deliveries with
+capped backoff; consumers use the token's `jti` for idempotency.
 Explorer's exact integration contract is documented in
 [`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md).
 
