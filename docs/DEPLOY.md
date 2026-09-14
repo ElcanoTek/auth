@@ -205,6 +205,9 @@ For signing-key rotation, place the old base64 public key in
 `AUTH_SIGNING_PREVIOUS_PUBKEYS`, install the new private signing seed, restart,
 and keep the old public key published for at least the configured assertion
 lifetime (five minutes by default). Then remove it and restart again.
+Explorer, Lens, and Fleet read the published `/jwks.json` (cached ten minutes,
+refreshed on an unknown `kid`), so no application env edit is needed for a
+rotation; their static `AUTH_SIGNING_PUBKEY` remains as offline fallback.
 
 Back-channel endpoints receive a signed `logout_token` form field. Auth stores
 the event and each delivery before the account mutation commits, leases due

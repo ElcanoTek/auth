@@ -143,6 +143,11 @@ the same shape, and any future service should too:
   back-channel event, no `nonce`), revokes every session for the subject,
   and records `jti` so retries are idempotent.
 - Startup refuses to run in central mode without a valid `AUTH_SIGNING_PUBKEY`.
+  At runtime the receiver also reads Auth's `/jwks.json` (cached ten minutes,
+  refreshed at most once a minute when a token names an unknown `kid`; a
+  failed fetch keeps the cached set; no redirects; 64 KB cap), so a signing-key
+  rotation is a one-sided change on Auth. The static key is the bootstrap and
+  offline fallback, never the only source.
 
 ### Later
 
