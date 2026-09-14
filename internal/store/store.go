@@ -1115,7 +1115,8 @@ func (s *Store) ClaimDueLogoutDeliveries(ctx context.Context, now int64, limit i
 		SELECT d.event_id, e.user_id, e.email, e.reason, e.issued_at, d.client_id, d.endpoint, d.attempts
 		FROM logout_deliveries d JOIN logout_events e ON e.id = d.event_id
 		WHERE d.delivered_at IS NULL AND d.next_attempt_at <= ? AND (d.lease_until IS NULL OR d.lease_until <= ?)
-		ORDER BY d.next_attempt_at, d.event_id, d.client_id LIMIT ?`, now, now, limit)
+		  AND e.issued_at > ?
+		ORDER BY d.next_attempt_at, d.event_id, d.client_id LIMIT ?`, now, now, now-int64(LogoutDeliveryRetention.Seconds()), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1209,7 +1210,9 @@ func (s *Store) SetApplicationDisabled(ctx context.Context, id string, disabled 
 		return ErrApplicationNotFound
 	}
 	if disabled {
-		if _, err := tx.ExecContext(ctx, `UPDATE authorization_codes SET consumed_at = ? WHERE client_id = ? AND consumed_at IS NULL`, now, id); err != nil {
+		// Delete rather than mark consumed: consumed_at is reserved for codes
+		// that were actually exchanged, which is what replay detection keys on.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM authorization_codes WHERE client_id = ? AND consumed_at IS NULL`, id); err != nil {
 			return err
 		}
 	}
@@ -1247,10 +1250,12 @@ func (s *Store) IssueAuthorizationCode(ctx context.Context, codeHash string, gra
 	}
 	defer func() { _ = tx.Rollback() }()
 	// Keep at most one live code for one app/browser session. A refreshed or
-	// repeated /authorize request invalidates the older code.
-	if _, err := tx.ExecContext(ctx, `UPDATE authorization_codes SET consumed_at = ?
+	// repeated /authorize request invalidates the older code. The older code
+	// is deleted, not marked consumed: it was never exchanged, so presenting
+	// it later (a slower second tab) is a stale code, not a replay.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM authorization_codes
 		WHERE client_id = ? AND session_token_hash = ? AND consumed_at IS NULL`,
-		createdAt, grant.ClientID, grant.SessionTokenHash); err != nil {
+		grant.ClientID, grant.SessionTokenHash); err != nil {
 		return err
 	}
 	res, err := tx.ExecContext(ctx, `
@@ -1317,6 +1322,113 @@ func (s *Store) ConsumeAuthorizationCode(ctx context.Context, codeHash, clientID
 	return grant, nil
 }
 
+// ReplayedAuthorizationCode reports whether codeHash names a code that was
+// ALREADY exchanged. Only exchanged codes carry consumed_at (superseded and
+// app-disabled codes are deleted), so a hit is a genuine replay: either the
+// code leaked or a client is double-posting. Detection lasts until the
+// sweeper drops consumed codes, which is minutes; codes live 60 seconds.
+func (s *Store) ReplayedAuthorizationCode(ctx context.Context, codeHash string) (userID, clientID string, replayed bool, err error) {
+	err = s.db.QueryRowContext(ctx, `
+		SELECT user_id, client_id FROM authorization_codes
+		WHERE code_hash = ? AND consumed_at IS NOT NULL`, codeHash).Scan(&userID, &clientID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	return userID, clientID, true, nil
+}
+
+// EnqueueClientLogout queues a back-channel logout for one user at ONE
+// application (OAuth 2.1 §4.1.2: revoke what a replayed code produced). It
+// audits the event whether or not the application has a back-channel endpoint
+// and returns whether a delivery was queued.
+func (s *Store) EnqueueClientLogout(ctx context.Context, userID, clientID, reason string, now int64) (bool, error) {
+	if userID == "" || clientID == "" || reason == "" {
+		return false, errors.New("user id, client id, and reason are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var email string
+	if err := tx.QueryRowContext(ctx, `SELECT normalized_email FROM accounts WHERE id = ?`, userID).Scan(&email); err != nil {
+		return false, err
+	}
+	eventID, err := randomID()
+	if err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO logout_events(id, user_id, email, reason, issued_at)
+		SELECT ?, ?, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM applications WHERE id = ? AND disabled_at IS NULL AND COALESCE(backchannel_logout_uri, '') <> '')`,
+		eventID, userID, email, reason, now, clientID)
+	if err != nil {
+		return false, err
+	}
+	queued, _ := res.RowsAffected()
+	if queued > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO logout_deliveries(event_id, client_id, endpoint, next_attempt_at)
+			SELECT ?, id, backchannel_logout_uri, ? FROM applications WHERE id = ?`, eventID, now, clientID); err != nil {
+			return false, err
+		}
+	}
+	if err := insertApplicationAudit(ctx, tx, "authorization."+reason, clientID, userID, now); err != nil {
+		return false, err
+	}
+	return queued > 0, tx.Commit()
+}
+
+// LogoutDeliveryRetention bounds how long an undelivered logout event keeps
+// retrying. An endpoint unreachable for a week is misconfigured, and every
+// session the event should have ended expired days earlier (12-hour absolute
+// limit), so continuing is a slow leak with no benefit. Abandoned rows keep
+// their last_error until the sweeper removes them, so `auth app show` can
+// surface them.
+const LogoutDeliveryRetention = 7 * 24 * time.Hour
+
+// PendingLogoutDelivery is one undelivered back-channel event for an app.
+type PendingLogoutDelivery struct {
+	EventID       string
+	Reason        string
+	IssuedAt      time.Time
+	Attempts      int
+	NextAttemptAt time.Time
+	LastError     string
+	Abandoned     bool // past LogoutDeliveryRetention; no longer retried
+}
+
+// PendingLogoutDeliveries lists undelivered events for one application, oldest
+// first, for operator inspection.
+func (s *Store) PendingLogoutDeliveries(ctx context.Context, clientID string, now int64) ([]PendingLogoutDelivery, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT d.event_id, e.reason, e.issued_at, d.attempts, d.next_attempt_at, COALESCE(d.last_error, '')
+		FROM logout_deliveries d JOIN logout_events e ON e.id = d.event_id
+		WHERE d.client_id = ? AND d.delivered_at IS NULL
+		ORDER BY e.issued_at, d.event_id`, strings.TrimSpace(clientID))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	cutoff := now - int64(LogoutDeliveryRetention.Seconds())
+	var out []PendingLogoutDelivery
+	for rows.Next() {
+		var d PendingLogoutDelivery
+		var issued, next int64
+		if err := rows.Scan(&d.EventID, &d.Reason, &issued, &d.Attempts, &next, &d.LastError); err != nil {
+			return nil, err
+		}
+		d.IssuedAt, d.NextAttemptAt = time.Unix(issued, 0), time.Unix(next, 0)
+		d.Abandoned = issued <= cutoff
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // SweepPasswordState deletes expired/consumed authorization codes, expired
 // sessions, stale login attempts, and audit events older than auditRetention
 // (0 keeps audit events forever).
@@ -1339,6 +1451,15 @@ func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetent
 		return 0, err
 	}
 	deliveries, _ := res.RowsAffected()
+	// Undelivered rows stop retrying after LogoutDeliveryRetention and stay
+	// visible to `auth app show` for one more retention period, then go.
+	res, err = tx.ExecContext(ctx, `DELETE FROM logout_deliveries WHERE delivered_at IS NULL
+		AND event_id IN (SELECT id FROM logout_events WHERE issued_at <= ?)`, now-2*int64(LogoutDeliveryRetention.Seconds()))
+	if err != nil {
+		return 0, err
+	}
+	abandoned, _ := res.RowsAffected()
+	deliveries += abandoned
 	res, err = tx.ExecContext(ctx, `DELETE FROM logout_events WHERE issued_at < ?
 		AND NOT EXISTS (SELECT 1 FROM logout_deliveries d WHERE d.event_id = logout_events.id)`, now-int64((24*time.Hour).Seconds()))
 	if err != nil {

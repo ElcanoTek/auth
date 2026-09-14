@@ -494,6 +494,11 @@ func applicationCmd(dataDir string, args []string) {
 			fatalf("app show: %v", err)
 		}
 		printApplication(app)
+		pending, err := st.PendingLogoutDeliveries(ctx, app.ID, now)
+		if err != nil {
+			fatalf("app show deliveries: %v", err)
+		}
+		printPendingDeliveries(pending)
 	case "list", "ls":
 		if len(args) != 1 {
 			fatalf("usage: auth-admin app list")
@@ -565,6 +570,38 @@ func printApplicationSecret(id, secret string) {
 	fmt.Printf("✓ application %s ready\n", id)
 	fmt.Println("Copy this secret now; only its SHA-256 hash is stored:")
 	fmt.Printf("AUTH_CLIENT_ID=%s\nAUTH_CLIENT_SECRET=%s\n", id, secret)
+}
+
+// printPendingDeliveries shows undelivered back-channel logout events so a
+// dead or misregistered endpoint is visible to the operator instead of only
+// to the log. Abandoned rows have stopped retrying (see
+// store.LogoutDeliveryRetention).
+func printPendingDeliveries(pending []store.PendingLogoutDelivery) {
+	if len(pending) == 0 {
+		return
+	}
+	abandoned := 0
+	for _, d := range pending {
+		if d.Abandoned {
+			abandoned++
+		}
+	}
+	fmt.Printf("back-channel logout: %d undelivered event(s), %d abandoned after %s\n",
+		len(pending), abandoned, store.LogoutDeliveryRetention)
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "  ISSUED (UTC)\tREASON\tATTEMPTS\tSTATE\tLAST ERROR")
+	for _, d := range pending {
+		state := "retrying"
+		if d.Abandoned {
+			state = "abandoned"
+		}
+		lastErr := d.LastError
+		if lastErr == "" {
+			lastErr = "-"
+		}
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%d\t%s\t%s\n", d.IssuedAt.UTC().Format("2006-01-02 15:04:05"), d.Reason, d.Attempts, state, lastErr)
+	}
+	_ = tw.Flush()
 }
 
 func printApplication(app store.Application) {

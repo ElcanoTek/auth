@@ -198,3 +198,55 @@ func createPasswordAccountForOAuthTest(t *testing.T, s *Store) Account {
 	}
 	return a
 }
+
+func TestSupersededCodeIsDeletedAndOnlyExchangedCodesCountAsReplayed(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	account := createPasswordAccountForOAuthTest(t, s)
+	if _, err := s.CreateApplication(ctx, "explorer", "Explorer", "https://explorer.example.com/auth/callback", "",
+		secretHashForTest("secret"), 900); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAuthSession(ctx, "sess", account.ID, account.PasswordHash, 900, 5_000, 9_000); err != nil {
+		t.Fatal(err)
+	}
+	grant := AuthorizationGrant{ClientID: "explorer", UserID: account.ID, SessionTokenHash: "sess",
+		RedirectURI: "https://explorer.example.com/auth/callback", Nonce: "n", CodeChallenge: "c", AuthTime: 900}
+
+	// Two tabs: the second /authorize supersedes the first code.
+	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("first"), grant, 1_000, 1_060); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("second"), grant, 1_001, 1_061); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConsumeAuthorizationCode(ctx, secretHashForTest("first"), "explorer", grant.RedirectURI, "c", 1_002); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("superseded code consume = %v, want ErrInvalidGrant", err)
+	}
+	if _, _, replayed, err := s.ReplayedAuthorizationCode(ctx, secretHashForTest("first")); err != nil || replayed {
+		t.Fatalf("superseded code flagged as replay: replayed=%v err=%v (it was never exchanged)", replayed, err)
+	}
+
+	// The live code is exchanged once; presenting it again is a replay.
+	if _, err := s.ConsumeAuthorizationCode(ctx, secretHashForTest("second"), "explorer", grant.RedirectURI, "c", 1_003); err != nil {
+		t.Fatal(err)
+	}
+	userID, clientID, replayed, err := s.ReplayedAuthorizationCode(ctx, secretHashForTest("second"))
+	if err != nil || !replayed || userID != account.ID || clientID != "explorer" {
+		t.Fatalf("exchanged code replay = user %q client %q replayed=%v err=%v", userID, clientID, replayed, err)
+	}
+	if _, _, replayed, _ := s.ReplayedAuthorizationCode(ctx, secretHashForTest("never-issued")); replayed {
+		t.Fatal("unknown code flagged as replay")
+	}
+
+	// Disabling the app deletes its live codes rather than marking them exchanged.
+	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("third"), grant, 1_004, 1_064); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetApplicationDisabled(ctx, "explorer", true, 1_005); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, replayed, _ := s.ReplayedAuthorizationCode(ctx, secretHashForTest("third")); replayed {
+		t.Fatal("code invalidated by app disable flagged as replay")
+	}
+}
