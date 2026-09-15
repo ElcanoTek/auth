@@ -143,9 +143,16 @@ one edit; nothing here is optional for the first sign-in to work.
    per app; see its DEPLOYMENT.md): mode `central`, `AUTH_ISSUER_URL`, the
    app's public origin, `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, and
    `AUTH_SIGNING_PUBKEY` from step 3. Explorer and Lens refuse to start in
-   central mode without a valid public key; Fleet's OIDC client reads
-   `FLEET_OIDC_ISSUER`, `FLEET_OIDC_CLIENT_ID`, `FLEET_OIDC_CLIENT_SECRET`,
-   and `AUTH_SIGNING_PUBKEY`.
+   central mode without a valid public key. Fleet's OIDC client reads
+   `FLEET_OIDC_ISSUER`, `FLEET_OIDC_CLIENT_ID`, and `FLEET_OIDC_CLIENT_SECRET`;
+   **leave `AUTH_SIGNING_PUBKEY` unset on Fleet.** On Fleet that variable
+   also switches on the legacy "Use Elcano email" magic-link button, which
+   password-mode Auth cannot complete (it never mints the shared
+   `elcano_auth` cookie), so users would see a second sign-in button that
+   dead-ends. Fleet verifies back-channel logout tokens from Auth's
+   `/jwks.json` alone, so the only cost is that Fleet must be able to reach
+   the Auth host when a logout arrives (Auth retries failed deliveries for
+   seven days).
 7. Grant access to the people who may use that application. Sign-in without a
    grant is a 403 at the application, not a login failure at Auth:
    `explorer access grant admin@<client>`, `lens access grant admin@<client>`,
