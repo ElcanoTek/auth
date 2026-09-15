@@ -320,6 +320,20 @@ auth start
 > `auth user revoke-sessions <email>` (or invalidate every row in
 > `auth_sessions`) before reopening access.
 
+### Password mode: password policy
+
+Passwords must be 12 to 128 characters of any Unicode text; there are no
+upper/lower/digit rules, so passphrases with spaces work. Auth refuses
+predictable choices instead: a blocklist of common passwords and base words
+matched with digits and punctuation stripped (`Password2026!`, `p@ssw0rd!!`,
+`Welcome123456` all fail), passwords with no letters or only one or two
+distinct characters, and anything built from the user's email address, the
+brand name, this hostname, or the words in `AUTH_PASSWORD_BLOCKED_TERMS`
+(set it to the client's names, e.g. `"Omnicom,OMC"`). A password may contain
+such a word only if it keeps at least eight characters of its own beyond it.
+The same rules apply to `auth user create` and `auth user set-password`,
+which read those settings from `.env.local` through the `auth` wrapper.
+
 ### Password mode: client IP and audit retention
 
 The login rate limiter and the audit log key on the client IP as seen by

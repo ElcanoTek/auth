@@ -15,10 +15,20 @@ func TestValidatePasswordPolicy(t *testing.T) {
 		want error
 	}{
 		{"short", "cat123", ErrTooShort},
-		{"exact minimum", "correct horse!!", nil},
+		{"eleven characters", "elevenchars", ErrTooShort},
+		{"exact minimum", "correct hors", nil},
+		{"passphrase", "correct horse battery", nil},
 		{"spaces and Unicode", "horses love 茶 time", nil},
 		{"no trimming", "  leading spaces work", nil},
-		{"common password", "passwordpassword", ErrCommon},
+		{"exact blocklist", "passwordpassword", ErrCommon},
+		{"base word with decoration", "Password2026!", ErrCommon},
+		{"leet base word", "P@ssw0rd!!2026", ErrCommon},
+		{"welcome with digits", "Welcome123456", ErrCommon},
+		{"doubled base word", "welcomewelcome!", ErrCommon},
+		{"digits only", "123456789012", ErrCommon},
+		{"no letters", "!!!!####$$$$", ErrCommon},
+		{"two distinct characters", "abababababab", ErrCommon},
+		{"unrelated words pass", "purple horse staple", nil},
 		{"too long", strings.Repeat("界", MaxCharacters+1), ErrTooLong},
 		{"invalid UTF-8", string([]byte{0xff, 0xfe}) + strings.Repeat("a", 15), ErrInvalid},
 		{"NUL", strings.Repeat("a", 15) + "\x00", ErrInvalid},
@@ -30,6 +40,46 @@ func TestValidatePasswordPolicy(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidateRejectsContextTerms(t *testing.T) {
+	context := ContextTerms("Alice.Smith@omnicom.com", "Elcano", "auth.omcvic.com", "https://auth.omcvic.com", "Omnicom,OMC")
+	want := []string{"alicesmith", "alice", "smith", "omnicom", "elcano", "auth", "omcvic", "omc"}
+	// "com" is a generic label and must not become a term.
+	got := strings.Join(context, ",")
+	for _, term := range want {
+		if !strings.Contains(","+got+",", ","+term+",") {
+			t.Fatalf("ContextTerms missing %q: %v", term, context)
+		}
+	}
+	for _, generic := range []string{"com", "https"} {
+		if strings.Contains(","+got+",", ","+generic+",") {
+			t.Fatalf("ContextTerms kept generic label %q: %v", generic, context)
+		}
+	}
+	cases := []struct {
+		name string
+		in   string
+		want error
+	}{
+		{"organisation plus year", "Omnicom2026!", ErrContextual},
+		{"brand plus decoration", "elcano-rocks", ErrContextual},
+		{"email local part", "alice.smith99!", ErrContextual},
+		{"hostname label", "omcvic!!2026", ErrContextual},
+		{"term with enough of its own", "omnicom-rocks-2026", nil},
+		{"unrelated passphrase", "purple horse staple", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := Validate(tc.in, context...); !errors.Is(err, tc.want) {
+				t.Fatalf("Validate(%q) = %v, want %v", tc.in, err, tc.want)
+			}
+		})
+	}
+	// Without context the same passwords only hit the static rules.
+	if err := Validate("Omnicom2026!"); err != nil {
+		t.Fatalf("Validate without context = %v, want nil", err)
 	}
 }
 

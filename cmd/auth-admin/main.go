@@ -244,6 +244,9 @@ func userCmd(dataDir string, args []string) {
 		requireUserEmailArg(args, "create")
 		email := validateAccountEmail(args[1])
 		plain := promptNewPassword()
+		if err := passwordauth.Validate(plain, adminPasswordContext(email)...); err != nil {
+			fatalf("password: %v", err)
+		}
 		encoded, err := passwordauth.Hash(plain)
 		if err != nil {
 			fatalf("password: %v", err)
@@ -257,6 +260,9 @@ func userCmd(dataDir string, args []string) {
 		requireUserEmailArg(args, "set-password")
 		email := validateAccountEmail(args[1])
 		plain := promptNewPassword()
+		if err := passwordauth.Validate(plain, adminPasswordContext(email)...); err != nil {
+			fatalf("password: %v", err)
+		}
 		encoded, err := passwordauth.Hash(plain)
 		if err != nil {
 			fatalf("password: %v", err)
@@ -632,6 +638,13 @@ func validateAccountEmail(raw string) string {
 		fatalf("invalid email address %q", raw)
 	}
 	return email
+}
+
+// adminPasswordContext mirrors the server's password context. The `auth`
+// wrapper exports these from .env.local; run directly, only the email applies.
+func adminPasswordContext(email string) []string {
+	return passwordauth.ContextTerms(email, os.Getenv("AUTH_BRAND_NAME"), os.Getenv("AUTH_HOSTNAME"),
+		os.Getenv("AUTH_ISSUER_URL"), os.Getenv("AUTH_PASSWORD_BLOCKED_TERMS"))
 }
 
 func promptNewPassword() string {
