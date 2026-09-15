@@ -230,6 +230,18 @@ application, ending whatever session the first exchange produced. Do not put the
 back-channel route behind application login; its Ed25519 signature, exact
 issuer/audience, and replay-safe `jti` are the authentication boundary.
 
+### Silent sign-in check (`prompt=none`)
+
+An application may add `prompt=none` to its `/authorize` request to ask
+"sign this browser in only if it already has a central session". With a live
+session Auth issues the code as usual; without one it never shows a form and
+redirects back to the registered callback with `error=login_required` (or
+`error=interaction_required` when the account still has to complete a forced
+password change), plus the caller's `state` and `iss`. Fleet uses this to try
+SSO automatically on an anonymous visit and fall back to its own login page
+when the answer is no. Other `prompt` values are rejected (400) until they are
+implemented (auth#29 covers `prompt=login`).
+
 ## Domain management (magic mode only)
 
 The domain allowlist controls which email domains can request a

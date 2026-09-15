@@ -693,15 +693,33 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	clientID, redirectURI := q.Get("client_id"), q.Get("redirect_uri")
 	state, nonce := q.Get("state"), q.Get("nonce")
 	challenge := q.Get("code_challenge")
+	// prompt=none (OIDC Core 3.1.2.1) is a silent check: "sign this browser
+	// in if it already has a central session, otherwise tell me, never show a
+	// form". Applications use it to auto-start SSO on an anonymous visit and
+	// fall back to their own login page when the answer is no.
+	prompt := q.Get("prompt")
 	app, err := s.store.ApplicationByID(r.Context(), clientID)
 	if err != nil || app.DisabledAt != nil || redirectURI != app.RedirectURI || !validApplicationRedirect(app.RedirectURI) ||
 		q.Get("response_type") != "code" || !validAuthorizationScope(q.Get("scope")) ||
 		q.Get("code_challenge_method") != "S256" || !validCodeChallenge(challenge) ||
-		!validProtocolValue(state, 512) || !validProtocolValue(nonce, 512) {
+		!validProtocolValue(state, 512) || !validProtocolValue(nonce, 512) || (prompt != "" && prompt != "none") {
 		http.Error(w, "invalid authorization request", http.StatusBadRequest)
 		return
 	}
 	identity := s.currentPasswordSession(r)
+	if prompt == "none" && (identity == nil || identity.Account.MustChangePassword) {
+		// The redirect target was validated against the registration above,
+		// so an error response may go back to it (OIDC Core 3.1.2.6). No
+		// code, no identity: only the fact that a silent sign-in is not
+		// possible right now. interaction_required means "signed in, but
+		// must finish the forced password change first".
+		code := "login_required"
+		if identity != nil {
+			code = "interaction_required"
+		}
+		s.redirectAuthorizeError(w, r, redirectURI, state, code)
+		return
+	}
 	if identity == nil {
 		http.Redirect(w, r, "/?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 		return
@@ -738,6 +756,22 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// to more than one authorization server can detect a mix-up. Explorer
 	// ignores it today; it costs nothing and the callback signature is
 	// forward-compatible.
+	callbackQuery.Set("iss", s.issuerURL())
+	dest.RawQuery = callbackQuery.Encode()
+	http.Redirect(w, r, dest.String(), http.StatusSeeOther)
+}
+
+// redirectAuthorizeError sends the browser back to a validated redirect URI
+// with an OAuth error, the caller's state, and the issuer (RFC 9207).
+func (s *Server) redirectAuthorizeError(w http.ResponseWriter, r *http.Request, redirectURI, state, code string) {
+	dest, err := url.Parse(redirectURI)
+	if err != nil {
+		http.Error(w, "invalid authorization request", http.StatusBadRequest)
+		return
+	}
+	callbackQuery := dest.Query()
+	callbackQuery.Set("error", code)
+	callbackQuery.Set("state", state)
 	callbackQuery.Set("iss", s.issuerURL())
 	dest.RawQuery = callbackQuery.Encode()
 	http.Redirect(w, r, dest.String(), http.StatusSeeOther)
@@ -883,6 +917,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		"grant_types_supported": []string{"authorization_code"}, "subject_types_supported": []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"EdDSA"}, "token_endpoint_auth_methods_supported": []string{"client_secret_basic"},
 		"code_challenge_methods_supported": []string{"S256"}, "scopes_supported": []string{"openid", "email"},
+		"prompt_values_supported":      []string{"none"},
 		"backchannel_logout_supported": true, "backchannel_logout_session_supported": false,
 	})
 }
