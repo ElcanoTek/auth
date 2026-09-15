@@ -33,6 +33,15 @@ func TestResolveReturnTo(t *testing.T) {
 		{"malformed", "::::not a url", ""},
 		{"http allowed too", "http://chat.example.com/x", "http://chat.example.com/x"},
 		{"bare cookie domain", "https://example.com/x", "https://example.com/x"},
+		// Browsers parse "\" as "/", so these are scheme-relative to evil.com
+		// even though url.Parse sees a path.
+		{"backslash scheme-relative attack", `/\evil.com/`, ""},
+		{"backslash after slash-dot", `/.\evil.com`, ""},
+		{"backslash inside allowed host", `https://chat.example.com\@evil.com/`, ""},
+		{"userinfo confusion", "https://chat.example.com@evil.com/", ""},
+		{"userinfo on allowed host", "https://evil.com@chat.example.com/", ""},
+		{"header injection", "/me\r\nSet-Cookie: x=y", ""},
+		{"tab before protocol-relative", "/\t//evil.com", ""},
 	}
 
 	for _, tc := range cases {

@@ -1465,12 +1465,25 @@ func (s *Server) resolveReturnTo(raw string) string {
 	if raw == "" {
 		return ""
 	}
+	// Browsers follow the WHATWG URL parser, which treats a backslash like a
+	// forward slash: a Location of "/\evil.com" is scheme-relative and lands
+	// on evil.com even though Go's url.Parse (and the "//" check below) sees a
+	// plain path. Control characters have no place in a redirect target
+	// either. Reject both up front so every later check reasons about the
+	// same URL the browser will.
+	for i := 0; i < len(raw); i++ {
+		if c := raw[i]; c == '\\' || c < 0x20 || c == 0x7f {
+			return ""
+		}
+	}
 	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
 		// Relative URL pointing at the auth host. Allowed.
 		return raw
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Host == "" || u.User != nil {
+		// Userinfo ("https://allowed.example.com@evil.com/") only exists to
+		// confuse allowlists; no Elcano service is addressed that way.
 		return ""
 	}
 	if u.Scheme != "https" && u.Scheme != "http" {

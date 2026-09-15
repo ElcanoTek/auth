@@ -1467,6 +1467,22 @@ func TestAccountPageOffersFormLogoutThatRevokes(t *testing.T) {
 	}
 }
 
+// A browser reads "/\evil.com/" as scheme-relative (backslash parses as
+// slash), so a Location built from it leaves the auth host. The logout form's
+// redirect_to must fall back to "/" for it, exactly as for "//evil.com/".
+func TestLogoutRedirectRejectsBackslashSchemeRelativeTarget(t *testing.T) {
+	ts, _, cfg, plain := newPasswordTestServer(t, false)
+	_, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	if session == nil || csrf == nil {
+		t.Fatal("login did not issue a session and CSRF cookie")
+	}
+	out := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf.Value}, "redirect_to": {`/\evil.com/`}}, session, csrf)
+	_ = out.Body.Close()
+	if out.StatusCode != http.StatusSeeOther || out.Header.Get("Location") != "/" {
+		t.Fatalf("logout with backslash redirect_to = %d %q, want 303 to /", out.StatusCode, out.Header.Get("Location"))
+	}
+}
+
 func TestPasswordVerifyWaitHonoursContext(t *testing.T) {
 	s := &Server{passwordSlots: make(chan struct{}, 1)}
 	s.passwordSlots <- struct{}{} // occupy the only slot
