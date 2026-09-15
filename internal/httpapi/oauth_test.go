@@ -153,6 +153,84 @@ func TestAuthorizeRequiresCentralLoginAndPreservesRequest(t *testing.T) {
 	}
 }
 
+// prompt=none is the silent check an application makes on an anonymous
+// visit: a live central session yields a code as usual; no session (or a
+// pending forced password change) bounces straight back to the registered
+// callback with an OAuth error and the state, never a login form. Any other
+// prompt value is rejected until it is implemented.
+func TestAuthorizePromptNoneNeverShowsAForm(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Fleet", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	authorize := func(prompt string, cookies ...*http.Cookie) *http.Response {
+		values := url.Values{
+			"response_type": {"code"}, "client_id": {testOAuthClientID}, "redirect_uri": {testOAuthRedirect},
+			"scope": {"openid email"}, "state": {"state-1"}, "nonce": {"nonce"}, "code_challenge": {oauthChallenge(strings.Repeat("v", 48))}, "code_challenge_method": {"S256"},
+		}
+		if prompt != "" {
+			values.Set("prompt", prompt)
+		}
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/authorize?"+values.Encode(), nil)
+		for _, c := range cookies {
+			if c != nil {
+				req.AddCookie(c)
+			}
+		}
+		resp, err := noFollowClient().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp
+	}
+	registered, _ := url.Parse(testOAuthRedirect)
+
+	anon := authorize("none")
+	location, _ := url.Parse(anon.Header.Get("Location"))
+	if anon.StatusCode != http.StatusSeeOther || location.Host != registered.Host || location.Path != registered.Path ||
+		location.Query().Get("error") != "login_required" || location.Query().Get("state") != "state-1" ||
+		location.Query().Get("iss") != New(cfg, st, &captureSender{}).issuerURL() || location.Query().Get("code") != "" {
+		t.Fatalf("anonymous prompt=none = %d %q", anon.StatusCode, anon.Header.Get("Location"))
+	}
+
+	if bad := authorize("login"); bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("prompt=login = %d, want 400 until implemented", bad.StatusCode)
+	}
+
+	_, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	signedIn := authorize("none", session, csrf)
+	location, _ = url.Parse(signedIn.Header.Get("Location"))
+	if signedIn.StatusCode != http.StatusSeeOther || location.Host != registered.Host || location.Query().Get("code") == "" ||
+		location.Query().Get("error") != "" || location.Query().Get("state") != "state-1" {
+		t.Fatalf("signed-in prompt=none = %d %q", signedIn.StatusCode, signedIn.Header.Get("Location"))
+	}
+
+	forced, forcedStore, forcedCfg, forcedPlain := newPasswordTestServer(t, true)
+	if _, err := forcedStore.CreateApplication(t.Context(), testOAuthClientID, "Fleet", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	_, forcedSession, forcedCSRF := passwordLogin(t, forced, forcedCfg, "alice@example.com", forcedPlain)
+	req, _ := http.NewRequest(http.MethodGet, forced.URL+"/authorize?"+url.Values{
+		"response_type": {"code"}, "client_id": {testOAuthClientID}, "redirect_uri": {testOAuthRedirect},
+		"scope": {"email"}, "state": {"state-2"}, "nonce": {"nonce"}, "code_challenge": {oauthChallenge(strings.Repeat("v", 48))}, "code_challenge_method": {"S256"}, "prompt": {"none"},
+	}.Encode(), nil)
+	for _, c := range []*http.Cookie{forcedSession, forcedCSRF} {
+		if c != nil {
+			req.AddCookie(c)
+		}
+	}
+	resp, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	location, _ = url.Parse(resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || location.Query().Get("error") != "interaction_required" || location.Query().Get("state") != "state-2" {
+		t.Fatalf("must-change prompt=none = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
 func TestForcedPasswordChangeReturnsToAuthorization(t *testing.T) {
 	ts, st, cfg, initial := newPasswordTestServer(t, true)
 	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Explorer", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
