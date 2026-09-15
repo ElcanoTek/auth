@@ -83,6 +83,15 @@ func TestValidateRejectsContextTerms(t *testing.T) {
 	}
 }
 
+func TestUserMessageIsASentence(t *testing.T) {
+	if got := UserMessage(ErrContextual); got != "Password is too similar to your email address or the organisation's name." {
+		t.Fatalf("UserMessage = %q", got)
+	}
+	if got := UserMessage(ErrTooShort); got != "Password must be at least 12 characters." {
+		t.Fatalf("UserMessage = %q", got)
+	}
+}
+
 func TestHashUsesUniqueSaltAndVerifies(t *testing.T) {
 	const plain = "a long passphrase with spaces"
 	first, err := HashWithParams(plain, testParams)

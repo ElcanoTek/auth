@@ -245,11 +245,11 @@ func userCmd(dataDir string, args []string) {
 		email := validateAccountEmail(args[1])
 		plain := promptNewPassword()
 		if err := passwordauth.Validate(plain, adminPasswordContext(email)...); err != nil {
-			fatalf("password: %v", err)
+			fatalf("%s", passwordauth.UserMessage(err))
 		}
 		encoded, err := passwordauth.Hash(plain)
 		if err != nil {
-			fatalf("password: %v", err)
+			fatalf("%s", passwordauth.UserMessage(err))
 		}
 		a, err := st.CreatePasswordAccount(ctx, email, encoded, true, time.Now().Unix())
 		if err != nil {
@@ -261,11 +261,11 @@ func userCmd(dataDir string, args []string) {
 		email := validateAccountEmail(args[1])
 		plain := promptNewPassword()
 		if err := passwordauth.Validate(plain, adminPasswordContext(email)...); err != nil {
-			fatalf("password: %v", err)
+			fatalf("%s", passwordauth.UserMessage(err))
 		}
 		encoded, err := passwordauth.Hash(plain)
 		if err != nil {
-			fatalf("password: %v", err)
+			fatalf("%s", passwordauth.UserMessage(err))
 		}
 		if err := st.SetPassword(ctx, email, encoded, true, time.Now().Unix()); err != nil {
 			fatalf("set-password: %v", err)

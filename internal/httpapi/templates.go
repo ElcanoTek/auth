@@ -328,7 +328,7 @@ const changePasswordHTML = `<!doctype html>
   <main class="card">
     <div class="brand">{{.Brand}}</div>
     <h1>Change password</h1>
-    <p class="muted">Use at least 12 characters; a few unrelated words work well. Spaces and Unicode are allowed. Avoid common passwords and anything built from your email or the organisation's name.</p>
+    <p class="muted">Use at least 12 characters; a few unrelated words work well. Spaces and Unicode are allowed. Avoid common passwords and anything similar to your email or the organisation's name.</p>
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
     <form method="post" action="/change-password">
       <label for="current_password">Current password</label>

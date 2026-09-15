@@ -632,12 +632,12 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// password built from the email or the organisation's name is refused
 	// before any Argon2 work. Hash re-runs the static checks without context.
 	if err := passwordauth.Validate(next, s.passwordContext(identity.Account.Email)...); err != nil {
-		s.renderChangePassword(w, err.Error(), csrf, s.resolveReturnTo(r.FormValue("return_to")))
+		s.renderChangePassword(w, passwordauth.UserMessage(err), csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	encoded, err := s.hashPassword(r.Context(), next)
 	if err != nil {
-		s.renderChangePassword(w, err.Error(), csrf, s.resolveReturnTo(r.FormValue("return_to")))
+		s.renderChangePassword(w, passwordauth.UserMessage(err), csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	// Compare-and-swap against the hash that just verified: if an

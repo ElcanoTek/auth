@@ -1498,7 +1498,7 @@ func TestChangePasswordRefusesPasswordBuiltFromEmail(t *testing.T) {
 	}, session, csrf)
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "must not be built from your email address") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "too similar to your email address") {
 		t.Fatalf("contextual password: status=%d body=%s", resp.StatusCode, body)
 	}
 	after, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")

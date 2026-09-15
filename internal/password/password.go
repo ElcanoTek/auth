@@ -34,11 +34,13 @@ const (
 )
 
 var (
+	// Idiomatic Go error strings (lowercase, no final period). They reach
+	// users through UserMessage, which turns them into sentences.
 	ErrTooShort   = fmt.Errorf("password must be at least %d characters", MinCharacters)
 	ErrTooLong    = fmt.Errorf("password must be at most %d characters", MaxCharacters)
-	ErrInvalid    = errors.New("password must be valid Unicode text")
-	ErrCommon     = errors.New("password is too common or predictable")
-	ErrContextual = errors.New("password must not be built from your email address, the service name, or the organisation's name")
+	ErrInvalid    = errors.New("password must be valid text")
+	ErrCommon     = errors.New("password is too common or predictable; try a few unrelated words")
+	ErrContextual = errors.New("password is too similar to your email address or the organisation's name")
 )
 
 // blockedPasswords are exact matches (lowercased, trimmed) that the base-word
@@ -136,6 +138,17 @@ func DummyHash() string {
 		}
 	})
 	return dummyEncoded
+}
+
+// UserMessage renders a policy error as the sentence shown on the
+// change-password form and by the CLI: capitalised, ending in a period.
+func UserMessage(err error) string {
+	msg := err.Error()
+	r, size := utf8.DecodeRuneInString(msg)
+	if size > 0 {
+		msg = string(unicode.ToUpper(r)) + msg[size:]
+	}
+	return msg + "."
 }
 
 // Validate applies the password policy: valid text, length, and a rejection
