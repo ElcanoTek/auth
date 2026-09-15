@@ -66,6 +66,7 @@ var allowedEnvVars = map[string]bool{
 	"AUTH_PASSWORD_IDLE_MINUTES":   true,
 	"AUTH_PASSWORD_RATE_PER_EMAIL": true,
 	"AUTH_PASSWORD_RATE_PER_IP":    true,
+	"AUTH_PASSWORD_BLOCKED_TERMS":  true, // CSV of organisation/product names a password may not be built from
 	"AUTH_AUDIT_RETENTION_DAYS":    true, // password-mode audit_events retention; 0 = keep forever
 
 	// Tenancy. AUTH_ALLOWED_DOMAINS is a comma-separated list of email
@@ -138,6 +139,7 @@ type Config struct {
 	PasswordIdleTTL      time.Duration
 	PasswordRatePerEmail int
 	PasswordRatePerIP    int
+	PasswordBlockedTerms []string      // deployment words a password must not be built from (client name, products)
 	AuditRetention       time.Duration // 0 = never sweep audit_events
 
 	AllowedDomains []string
@@ -241,6 +243,7 @@ func Load(envFile string) (*Config, error) {
 	cfg.PasswordIdleTTL = time.Duration(envInt("AUTH_PASSWORD_IDLE_MINUTES", 7*24*60)) * time.Minute
 	cfg.PasswordRatePerEmail = envInt("AUTH_PASSWORD_RATE_PER_EMAIL", 10)
 	cfg.PasswordRatePerIP = envInt("AUTH_PASSWORD_RATE_PER_IP", 50)
+	cfg.PasswordBlockedTerms = splitCSV(os.Getenv("AUTH_PASSWORD_BLOCKED_TERMS"))
 	cfg.AuditRetention = time.Duration(envInt("AUTH_AUDIT_RETENTION_DAYS", 90)) * 24 * time.Hour
 	cfg.MagicRatePerEmail = envInt("AUTH_MAGIC_RATE_PER_EMAIL", 10)
 	cfg.MagicGlobalLimit = envInt("AUTH_MAGIC_GLOBAL_LIMIT", 500)

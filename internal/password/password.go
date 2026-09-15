@@ -12,26 +12,96 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 )
 
 const (
-	MinCharacters = 15
+	// MinCharacters is the only complexity rule. NIST SP 800-63B recommends
+	// length plus a blocklist over character-class rules, which push people
+	// toward "Brand2026!" patterns that crackers try first. Twelve was chosen
+	// on 2026-09-15 (down from fifteen) with the blocklist below as the
+	// companion; MFA is the next layer.
+	MinCharacters = 12
 	MaxCharacters = 128
+	// minBeyondContext is how many characters a password must keep beyond a
+	// context term (the user's email, the service or organisation name) that
+	// it contains. "omnicom2026!" is the organisation plus five characters;
+	// "omnicom-rocks-2026" keeps eleven of its own and is allowed.
+	minBeyondContext = 8
 )
 
 var (
-	ErrTooShort = fmt.Errorf("password must be at least %d characters", MinCharacters)
-	ErrTooLong  = fmt.Errorf("password must be at most %d characters", MaxCharacters)
-	ErrInvalid  = errors.New("password must be valid Unicode text")
-	ErrCommon   = errors.New("password is too common")
+	// Idiomatic Go error strings (lowercase, no final period). They reach
+	// users through UserMessage, which turns them into sentences.
+	ErrTooShort   = fmt.Errorf("password must be at least %d characters", MinCharacters)
+	ErrTooLong    = fmt.Errorf("password must be at most %d characters", MaxCharacters)
+	ErrInvalid    = errors.New("password must be valid text")
+	ErrCommon     = errors.New("password is too common or predictable; try a few unrelated words")
+	ErrContextual = errors.New("password is too similar to your email address or the organisation's name")
 )
 
+// blockedPasswords are exact matches (lowercased, trimmed) that the base-word
+// rule below would not catch on its own.
 var blockedPasswords = map[string]struct{}{
 	"123456789012345": {}, "letmeinletmein": {}, "password123456": {},
 	"passwordpassword": {}, "qwertyuiop123456": {}, "welcome123456789": {},
+	"1q2w3e4r5t6y": {}, "1q2w3e4r5t6y7u": {}, "1qaz2wsx3edc": {}, "qazwsxedcrfv": {},
+	"abcdefghijkl": {}, "abcdefghijklmnop": {}, "qwertyuiopasdf": {}, "qwertyuiop[]": {},
+	"asdfghjkl;'": {}, "zxcvbnm,./": {}, "!@#$%^&*()_+": {}, "administrator": {},
+	"adminadmin12": {}, "changeme1234": {}, "welcomewelcome": {}, "iloveyou1234": {},
+	"trustno1trustno1": {}, "letmein12345": {}, "password!@#$": {}, "passwordpass": {},
+	"summer2026!!": {}, "winter2026!!": {}, "spring2026!!": {}, "autumn2026!!": {},
+}
+
+// blockedBaseWords are matched against the password with digits and
+// punctuation stripped (and again after common substitutions such as @→a,
+// 0→o), so "Password2026!", "p@ssw0rd!!", "Welcome123456" and
+// "iloveyou<3<3<3" all fail regardless of the decoration around the word.
+// It is the top of the usual leaked-password lists (base words only) plus
+// service and operator vocabulary; deployment-specific names come in through
+// ContextTerms.
+var blockedBaseWords = wordSet(
+	"password", "passwords", "passwd", "pass", "pwd", "secret", "secrets", "letmein", "letmeinnow",
+	"welcome", "welcomehome", "hello", "hellothere", "login", "logon", "signin", "access", "accessme",
+	"admin", "administrator", "root", "toor", "guest", "user", "username", "test", "tester", "testing",
+	"temp", "temporary", "changeme", "changethis", "default", "defaults", "master", "system", "service",
+	"security", "secure", "private", "public", "unknown", "nothing", "whatever", "anything", "something",
+	"qwerty", "qwertyuiop", "qwertyui", "asdf", "asdfgh", "asdfghjkl", "zxcvbn", "zxcvbnm", "qazwsx",
+	"abc", "abcd", "abcdef", "abcdefg", "abcdefgh", "abcdefghij", "abcdefghijkl", "aaaaaa", "xxxxxx",
+	"iloveyou", "iloveu", "loveyou", "loveme", "lovely", "love", "lover", "forever", "sweetheart", "babygirl",
+	"princess", "prince", "angel", "angels", "sunshine", "shadow", "rainbow", "flower", "flowers", "butterfly",
+	"monkey", "dragon", "tigger", "tiger", "dolphin", "chicken", "pepper", "ginger", "buster", "killer",
+	"hunter", "ranger", "soldier", "warrior", "cowboy", "cowboys", "batman", "superman", "spiderman", "ironman",
+	"starwars", "startrek", "pokemon", "matrix", "godzilla", "snoopy", "mickey", "minnie", "simpsons", "gandalf",
+	"football", "baseball", "basketball", "soccer", "hockey", "tennis", "golfer", "yankees", "lakers", "arsenal",
+	"chelsea", "liverpool", "manchester", "barcelona", "realmadrid", "juventus", "dallas", "chicago", "boston",
+	"america", "american", "canada", "london", "paris", "newyork", "austin", "denver", "seattle", "houston",
+	"michael", "jennifer", "jessica", "ashley", "amanda", "daniel", "thomas", "robert", "william", "andrew",
+	"joshua", "matthew", "anthony", "jordan", "nicole", "michelle", "charlie", "charles", "jonathan", "christopher",
+	"james", "john", "david", "richard", "joseph", "mark", "steven", "brian", "kevin", "jason", "justin", "ryan",
+	"sarah", "emily", "hannah", "samantha", "elizabeth", "lauren", "megan", "rachel", "taylor", "madison",
+	"computer", "internet", "samsung", "google", "facebook", "twitter", "amazon", "microsoft", "apple", "iphone",
+	"cookie", "cookies", "cheese", "chocolate", "banana", "orange", "purple", "yellow", "silver", "golden",
+	"summer", "winter", "spring", "autumn", "monday", "friday", "sunday", "january", "december", "birthday",
+	"freedom", "liberty", "trustno", "trustnoone", "thunder", "lightning", "phoenix", "diamond", "crystal",
+	"mustang", "corvette", "ferrari", "porsche", "harley", "hammer", "gateway", "oracle", "cisco", "linux",
+	"windows", "office", "company", "business", "money", "dollar", "dollars", "number", "numbers", "family",
+	"friend", "friends", "people", "please", "thankyou", "biteme", "fuckyou", "fuckoff", "asshole", "bitch",
+	"blink", "metallica", "nirvana", "eminem", "beatles", "slipknot", "guitar", "music", "dancer", "player",
+)
+
+// leet maps the substitutions people use to dress up a dictionary word.
+var leet = strings.NewReplacer("@", "a", "$", "s", "0", "o", "1", "i", "3", "e", "4", "a", "5", "s", "7", "t", "8", "b")
+
+func wordSet(words ...string) map[string]struct{} {
+	m := make(map[string]struct{}, len(words))
+	for _, w := range words {
+		m[w] = struct{}{}
+	}
+	return m
 }
 
 // Params are deliberately explicit so production can calibrate them on the
@@ -70,7 +140,23 @@ func DummyHash() string {
 	return dummyEncoded
 }
 
-func Validate(plain string) error {
+// UserMessage renders a policy error as the sentence shown on the
+// change-password form and by the CLI: capitalised, ending in a period.
+func UserMessage(err error) string {
+	msg := err.Error()
+	r, size := utf8.DecodeRuneInString(msg)
+	if size > 0 {
+		msg = string(unicode.ToUpper(r)) + msg[size:]
+	}
+	return msg + "."
+}
+
+// Validate applies the password policy: valid text, length, and a rejection
+// of predictable choices. Context terms are deployment- and user-specific
+// words the password must not be built from (see ContextTerms); the static
+// blocklist applies even when none are given. Hash validates without context,
+// so callers that know the user should call Validate with context first.
+func Validate(plain string, context ...string) error {
 	if !utf8.ValidString(plain) || strings.IndexByte(plain, 0) >= 0 {
 		return ErrInvalid
 	}
@@ -81,10 +167,122 @@ func Validate(plain string) error {
 	if n > MaxCharacters {
 		return ErrTooLong
 	}
-	if _, blocked := blockedPasswords[strings.ToLower(strings.TrimSpace(plain))]; blocked {
+	normalized := strings.ToLower(strings.TrimSpace(plain))
+	if _, blocked := blockedPasswords[normalized]; blocked {
 		return ErrCommon
 	}
+	if predictable(normalized) {
+		return ErrCommon
+	}
+	compact := alphanumeric(normalized)
+	for _, term := range context {
+		term = alphanumeric(strings.ToLower(term))
+		if len(term) < 3 || !strings.Contains(compact, term) {
+			continue
+		}
+		if n-utf8.RuneCountInString(term) < minBeyondContext {
+			return ErrContextual
+		}
+	}
 	return nil
+}
+
+// predictable reports whether a lowercased password is a dressed-up
+// dictionary word or a keyboard pattern: no letters at all, at most two
+// distinct characters, or a blocked base word once digits and punctuation are
+// stripped (before or after leet substitution, and allowing the word doubled).
+func predictable(normalized string) bool {
+	letters := lettersOnly(normalized)
+	if letters == "" || distinctRunes(normalized) <= 2 {
+		return true
+	}
+	// The leet pass runs on the word with its leading and trailing decoration
+	// removed, so the "2026" in "p@ssw0rd!!2026" does not turn into letters.
+	trimmed := strings.TrimFunc(normalized, func(r rune) bool { return !unicode.IsLetter(r) })
+	for _, candidate := range []string{letters, lettersOnly(leet.Replace(normalized)), lettersOnly(leet.Replace(trimmed))} {
+		if _, blocked := blockedBaseWords[candidate]; blocked {
+			return true
+		}
+		if half := len(candidate) / 2; half > 0 && len(candidate)%2 == 0 && candidate[:half] == candidate[half:] {
+			if _, blocked := blockedBaseWords[candidate[:half]]; blocked {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func lettersOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func alphanumeric(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func distinctRunes(s string) int {
+	seen := map[rune]struct{}{}
+	for _, r := range s {
+		seen[r] = struct{}{}
+	}
+	return len(seen)
+}
+
+// genericLabels are hostname pieces that identify nothing about a deployment
+// and would only produce false rejections ("communication", "network").
+var genericLabels = wordSet("com", "net", "org", "io", "ai", "co", "uk", "us", "dev", "app", "www", "http", "https")
+
+// ContextTerms derives the words a password must not be built from: the
+// user's email (local part, its segments, and the domain labels) and any raw
+// deployment strings (brand name, hostname, issuer URL, the operator's
+// AUTH_PASSWORD_BLOCKED_TERMS list), split on anything that is not a letter or
+// digit. Terms shorter than three characters and generic hostname labels are
+// dropped. The result feeds Validate's context parameter.
+func ContextTerms(email string, raw ...string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(term string) {
+		term = strings.ToLower(term)
+		if _, generic := genericLabels[term]; generic || len(term) < 3 {
+			return
+		}
+		if _, dup := seen[term]; dup {
+			return
+		}
+		seen[term] = struct{}{}
+		out = append(out, term)
+	}
+	split := func(s string) []string {
+		return strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	}
+	if at := strings.LastIndexByte(email, '@'); at > 0 {
+		local, domain := email[:at], email[at+1:]
+		add(alphanumeric(local))
+		for _, part := range split(local) {
+			add(part)
+		}
+		for _, label := range split(domain) {
+			add(label)
+		}
+	}
+	for _, r := range raw {
+		for _, part := range split(r) {
+			add(part)
+		}
+	}
+	return out
 }
 
 func Hash(plain string) (string, error) {

@@ -628,9 +628,16 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.renderChangePassword(w, "New password must be different from the current password.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
+	// Policy first, with what we know about this user and deployment, so a
+	// password built from the email or the organisation's name is refused
+	// before any Argon2 work. Hash re-runs the static checks without context.
+	if err := passwordauth.Validate(next, s.passwordContext(identity.Account.Email)...); err != nil {
+		s.renderChangePassword(w, passwordauth.UserMessage(err), csrf, s.resolveReturnTo(r.FormValue("return_to")))
+		return
+	}
 	encoded, err := s.hashPassword(r.Context(), next)
 	if err != nil {
-		s.renderChangePassword(w, err.Error(), csrf, s.resolveReturnTo(r.FormValue("return_to")))
+		s.renderChangePassword(w, passwordauth.UserMessage(err), csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	// Compare-and-swap against the hash that just verified: if an
@@ -1015,6 +1022,14 @@ func (s *Server) verifyPassword(ctx context.Context, encoded, plain string) (boo
 	}
 	defer release(s.passwordSlots)
 	return passwordauth.Verify(encoded, plain)
+}
+
+// passwordContext lists the words a new password for email may not be built
+// from: the address itself, the brand, this host's name and issuer, and the
+// operator's AUTH_PASSWORD_BLOCKED_TERMS (typically the client's name).
+func (s *Server) passwordContext(email string) []string {
+	return passwordauth.ContextTerms(email, s.cfg.BrandName, s.cfg.Hostname, s.cfg.IssuerURL,
+		strings.Join(s.cfg.PasswordBlockedTerms, ","))
 }
 
 func (s *Server) hashPassword(ctx context.Context, plain string) (string, error) {

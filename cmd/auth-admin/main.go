@@ -244,9 +244,12 @@ func userCmd(dataDir string, args []string) {
 		requireUserEmailArg(args, "create")
 		email := validateAccountEmail(args[1])
 		plain := promptNewPassword()
+		if err := passwordauth.Validate(plain, adminPasswordContext(email)...); err != nil {
+			fatalf("%s", passwordauth.UserMessage(err))
+		}
 		encoded, err := passwordauth.Hash(plain)
 		if err != nil {
-			fatalf("password: %v", err)
+			fatalf("%s", passwordauth.UserMessage(err))
 		}
 		a, err := st.CreatePasswordAccount(ctx, email, encoded, true, time.Now().Unix())
 		if err != nil {
@@ -257,9 +260,12 @@ func userCmd(dataDir string, args []string) {
 		requireUserEmailArg(args, "set-password")
 		email := validateAccountEmail(args[1])
 		plain := promptNewPassword()
+		if err := passwordauth.Validate(plain, adminPasswordContext(email)...); err != nil {
+			fatalf("%s", passwordauth.UserMessage(err))
+		}
 		encoded, err := passwordauth.Hash(plain)
 		if err != nil {
-			fatalf("password: %v", err)
+			fatalf("%s", passwordauth.UserMessage(err))
 		}
 		if err := st.SetPassword(ctx, email, encoded, true, time.Now().Unix()); err != nil {
 			fatalf("set-password: %v", err)
@@ -632,6 +638,13 @@ func validateAccountEmail(raw string) string {
 		fatalf("invalid email address %q", raw)
 	}
 	return email
+}
+
+// adminPasswordContext mirrors the server's password context. The `auth`
+// wrapper exports these from .env.local; run directly, only the email applies.
+func adminPasswordContext(email string) []string {
+	return passwordauth.ContextTerms(email, os.Getenv("AUTH_BRAND_NAME"), os.Getenv("AUTH_HOSTNAME"),
+		os.Getenv("AUTH_ISSUER_URL"), os.Getenv("AUTH_PASSWORD_BLOCKED_TERMS"))
 }
 
 func promptNewPassword() string {

@@ -328,15 +328,15 @@ const changePasswordHTML = `<!doctype html>
   <main class="card">
     <div class="brand">{{.Brand}}</div>
     <h1>Change password</h1>
-    <p class="muted">Use at least 15 characters. Spaces and Unicode are allowed.</p>
+    <p class="muted">Use at least 12 characters; a few unrelated words work well. Spaces and Unicode are allowed. Avoid common passwords and anything similar to your email or the organisation's name.</p>
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
     <form method="post" action="/change-password">
       <label for="current_password">Current password</label>
       <input id="current_password" name="current_password" type="password" required autocomplete="current-password">
       <label for="new_password">New password</label>
-      <input id="new_password" name="new_password" type="password" required minlength="15" maxlength="128" autocomplete="new-password">
+      <input id="new_password" name="new_password" type="password" required minlength="12" maxlength="128" autocomplete="new-password">
       <label for="confirm_password">Confirm new password</label>
-      <input id="confirm_password" name="confirm_password" type="password" required minlength="15" maxlength="128" autocomplete="new-password">
+      <input id="confirm_password" name="confirm_password" type="password" required minlength="12" maxlength="128" autocomplete="new-password">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
       <button class="btn" type="submit">Replace password</button>

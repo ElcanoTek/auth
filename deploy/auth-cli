@@ -239,6 +239,9 @@ case "$cmd" in
     # shellcheck disable=SC1090
     [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
     export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    # Password policy context: `auth user create|set-password` refuse passwords
+    # built from the brand, hostname, issuer, or the operator's blocked terms.
+    export AUTH_BRAND_NAME AUTH_HOSTNAME AUTH_ISSUER_URL AUTH_PASSWORD_BLOCKED_TERMS
     exec "$ADMIN_BIN" user "$@"
     ;;
   audit)

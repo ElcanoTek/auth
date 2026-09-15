@@ -1483,6 +1483,30 @@ func TestLogoutRedirectRejectsBackslashSchemeRelativeTarget(t *testing.T) {
 	}
 }
 
+// A new password built from the account's own email address is refused with
+// the policy message, before any hashing, and the form is re-rendered.
+func TestChangePasswordRefusesPasswordBuiltFromEmail(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	_, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	if session == nil || csrf == nil {
+		t.Fatal("login did not issue a session and CSRF cookie")
+	}
+	before, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	resp := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+		"csrf_token": {csrf.Value}, "current_password": {plain},
+		"new_password": {"aliceexample1"}, "confirm_password": {"aliceexample1"},
+	}, session, csrf)
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "too similar to your email address") {
+		t.Fatalf("contextual password: status=%d body=%s", resp.StatusCode, body)
+	}
+	after, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if after.PasswordHash != before.PasswordHash {
+		t.Fatal("password was replaced despite failing the policy")
+	}
+}
+
 func TestPasswordVerifyWaitHonoursContext(t *testing.T) {
 	s := &Server{passwordSlots: make(chan struct{}, 1)}
 	s.passwordSlots <- struct{}{} // occupy the only slot
