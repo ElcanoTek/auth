@@ -20,7 +20,8 @@ migrated separately.
 - Argon2id password hashes, minimum 15 and maximum 128 Unicode characters.
 - No composition rules or periodic password expiration.
 - Opaque 256-bit sessions; only SHA-256 token hashes are stored.
-- Twelve-hour absolute and 60-minute idle session limits.
+- 30-day absolute and 7-day idle limits on the central session; one-day
+  absolute and 12-hour idle limits on each application session.
 - Logout, password replacement, and account disablement revoke sessions.
 - Generic login failures, persistent rate limits, CSRF protection, and audit
   events are required before production.
@@ -128,11 +129,19 @@ the same shape, and any future service should too:
 
 - Opaque 256-bit token, stored only as its SHA-256 hash; host-only cookie
   (`__Host-` prefix in production), `HttpOnly`, `SameSite=Lax`, `Path=/`.
-- Idle limit 60 minutes, absolute limit 12 hours, enforced server-side on
+- Idle limit 12 hours, absolute limit 24 hours, enforced server-side on
   every request; the idle clock never extends past the absolute limit.
+  Application sessions are deliberately much shorter than the 30-day central
+  session: expiry costs the user only a redirect, because the code handoff
+  signs them back in silently while the central session is live. The short
+  limit is what bounds a stolen application cookie and forces a daily
+  re-check with Auth that the account is still enabled. The central session
+  is the one that costs a password prompt, so it is the long one (30-day
+  absolute, 7-day idle; `AUTH_PASSWORD_ABSOLUTE_HOURS`,
+  `AUTH_PASSWORD_IDLE_MINUTES`). Owner decision, 2026-09-15.
 - **Touch interval one minute.** A request only writes `last_seen_at` and
   `idle_expires_at` when the previous touch is more than a minute old. The
-  idle limit then behaves as "60 minutes minus at most one minute", never
+  idle limit then behaves as "12 hours minus at most one minute", never
   longer, and a page's burst of requests costs one write instead of one per
   request. Keep it a constant, not a setting; it is a storage pattern, not a
   policy. Auth, Explorer, and Lens all use one minute.

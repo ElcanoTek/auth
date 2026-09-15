@@ -1385,8 +1385,9 @@ func (s *Store) EnqueueClientLogout(ctx context.Context, userID, clientID, reaso
 
 // LogoutDeliveryRetention bounds how long an undelivered logout event keeps
 // retrying. An endpoint unreachable for a week is misconfigured, and every
-// session the event should have ended expired days earlier (12-hour absolute
-// limit), so continuing is a slow leak with no benefit. Abandoned rows keep
+// application session the event should have ended expired days earlier (the
+// one-day absolute limit in "Application session conventions"), so
+// continuing is a slow leak with no benefit. Abandoned rows keep
 // their last_error until the sweeper removes them, so `auth app show` can
 // surface them.
 const LogoutDeliveryRetention = 7 * 24 * time.Hour
