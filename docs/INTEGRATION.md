@@ -181,22 +181,30 @@ keeps owning WHO may use chat; auth only proves WHO they are.
       are dead. The new pattern is just `https://home.elcanotek.com`
       — Caddy handles auth before the app sees the request.
 
-### `lens` — No-username tier (Pattern A)
+### `lens` — DONE (Pattern B in `elcano` mode; password-mode client in `central` mode)
 
-lens currently gates on a single shared password (`LENS_WEB_PASSWORD`,
-defaulting to the hardcoded `"magellanisdead"` in `lens/web_service.py`).
-Replace it with the cookie — cookie present and valid = in, no per-user
-list.
+The shared-password gate is gone. Lens picks its behaviour with
+`LENS_AUTH_MODE`:
 
-- [ ] **Caddyfile.** Same `forward_auth` snippet; reverse-proxy to
-      whatever port lens's FastAPI app listens on.
-- [ ] **Reload caddy.**
-- [ ] **Delete the password gate.** Remove the `LENS_WEB_PASSWORD` read
-      AND the `"magellanisdead"` default, the `/login` route, and the
-      session check. Read identity from
-      `request.headers.get("x-user-email")` if lens needs to know who the
-      user is; otherwise it just needs the request to have cleared
-      forward_auth.
+- **`elcano`** (default): verifies the shared `elcano_auth` cookie natively
+  with `AUTH_SIGNING_PUBKEY` (`lens/auth_cookie.py`, Pattern B) and bounces
+  anonymous browsers to `AUTH_LOGIN_URL/?return_to=…`. Logout redirects the
+  browser to the auth host's `/logout`.
+- **`central`**: the password-mode application handoff. Register the exact
+  callback and back-channel endpoint on the auth host, then set the client
+  variables in Lens's `.env`:
+  ```bash
+  auth app create lens https://lens.<client>/auth/callback
+  auth app set-backchannel lens https://lens.<client>/auth/backchannel-logout
+  ```
+  Lens keeps its own email allowlist (`lens access grant|revoke|list`) and
+  mints a host-only `__Host-lens_session` cookie (24 h absolute, 12 h idle).
+  Auth's back-channel logout revokes every Lens session for the subject.
+  Local logout lands on `/signed-out`, which links to the auth host's
+  `/account` page for ending the central session.
+
+Details: `lens/docs/DEPLOYMENT.md`, and "First password-mode client: rollout
+checklist" in `DEPLOY.md` here.
 
 ### `forwarder` — Pattern A
 
@@ -214,19 +222,23 @@ Same shape as home: single password + link token.
       keep it generic (sent from a service mailbox) or attribute
       to the user who triggered it. Probably keep generic for now.
 
-### `explorer` — Pattern A
+### `explorer` — DONE (same shape as lens)
 
-Identical shape to forwarder. The only quirk: explorer's password
-is hardcoded to `"magellanisdead"` in `explorer/app/config.py`.
-That's the strongest "please replace me" signal there could be.
+The hardcoded password and `ELCANO_LINK_TOKEN` fallback are gone; the removed
+`local` password mode is refused at bootstrap. `EXPLORER_AUTH_MODE` selects:
 
-- [ ] **Caddyfile.** Same snippet, port whatever explorer listens on.
-- [ ] **Reload caddy.**
-- [ ] **Delete the hardcoded password.** Remove the password default
-      AND the `EXPLORER_PASSWORD` env read entirely. `is_logged_in()`
-      and the `/login` route go too.
-- [ ] **Drop `ELCANO_LINK_TOKEN`.** explorer + forwarder + home all
-      share this fallback. After this migration, none of them need it.
+- **`elcano`** (default): native `elcano_auth` verification with
+  `AUTH_SIGNING_PUBKEY` (`explorer/app/auth.py`, Pattern B).
+- **`central`**: password-mode application handoff with an Explorer-local
+  allowlist (`explorer access grant|revoke|list`), a host-only
+  `__Host-explorer_session` cookie (24 h absolute, 12 h idle), and the
+  back-channel receiver at `/auth/backchannel-logout`. Register it as:
+  ```bash
+  auth app create explorer https://explorer.<client>/auth/callback https://explorer.<client>/signed-out
+  auth app set-backchannel explorer https://explorer.<client>/auth/backchannel-logout
+  ```
+
+Details: `explorer/docs/DEPLOYMENT.md` ("Central auth service contract").
 
 ### `voice` (victoria-phone) — Pattern A
 
@@ -368,14 +380,19 @@ isn't being saved — usually `AUTH_COOKIE_DOMAIN` is wrong or
   (you have to control the inbox), but there's no extra factor on
   top. If a client requires hardware tokens, that's a slot for a
   SAML IdP behind `/magic` later.
-- **Per-user blocking.** Today the allowlist is domain-grain. To
-  block a single user without blocking their whole company, you'd
-  need either a denylist in auth-server (~30 lines) or that
-  per-service.
-- **Token revocation.** Sessions live until they expire. Rotating
-  `AUTH_SIGNING_KEY` (and pushing the new public key to every verifier)
-  is the global big-red-button. There's no per-user "log them out
-  remotely" today.
+- **Per-user blocking (magic mode).** The magic-link allowlist is
+  domain-grain. To block a single user without blocking their whole
+  company, you'd need either a denylist in auth-server (~30 lines) or
+  that per-service. Password mode has per-account `auth user disable`.
+- **Token revocation (magic mode).** `elcano_auth` cookies are stateless
+  and live until they expire. Rotating `AUTH_SIGNING_KEY` (and pushing the
+  new public key to every verifier) is the global big-red-button; there is
+  no per-user "log them out remotely" in magic mode.
+  **Password mode is different:** central sessions are server-side rows, so
+  `auth user disable`, `auth user set-password`, and `auth user
+  revoke-sessions` end them at once and fan out a signed back-channel
+  logout to every registered application. A user's own `/logout` ends only
+  that browser's central session and does not fan out (tracked as auth#28).
 - **Per-IP rate limiting / CAPTCHA on `/magic`.** `/magic` already has
   built-in **per-email and global** send caps (`AUTH_MAGIC_RATE_PER_EMAIL`
   / `AUTH_MAGIC_GLOBAL_LIMIT` — see DEPLOY.md), so it can't be used to flood
