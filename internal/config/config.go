@@ -231,8 +231,14 @@ func Load(envFile string) (*Config, error) {
 	cfg.MagicTTL = time.Duration(envInt("AUTH_MAGIC_TTL_MINUTES", 15)) * time.Minute
 	cfg.CodeTTL = time.Duration(envInt("AUTH_CODE_TTL_SECONDS", 60)) * time.Second
 	cfg.AssertionTTL = time.Duration(envInt("AUTH_ASSERTION_TTL_MINUTES", 5)) * time.Minute
-	cfg.PasswordAbsoluteTTL = time.Duration(envInt("AUTH_PASSWORD_ABSOLUTE_HOURS", 12)) * time.Hour
-	cfg.PasswordIdleTTL = time.Duration(envInt("AUTH_PASSWORD_IDLE_MINUTES", 60)) * time.Minute
+	// Password sessions are the only login users feel: application sessions
+	// renew silently through the code handoff while this one is live. 30 days
+	// absolute matches the magic-link session; the 7-day idle limit closes
+	// abandoned devices. Application sessions are far shorter (one day) and
+	// re-check the account here on every renewal; see
+	// docs/AUTH_V2_IMPLEMENTATION.md "Application session conventions".
+	cfg.PasswordAbsoluteTTL = time.Duration(envInt("AUTH_PASSWORD_ABSOLUTE_HOURS", 30*24)) * time.Hour
+	cfg.PasswordIdleTTL = time.Duration(envInt("AUTH_PASSWORD_IDLE_MINUTES", 7*24*60)) * time.Minute
 	cfg.PasswordRatePerEmail = envInt("AUTH_PASSWORD_RATE_PER_EMAIL", 10)
 	cfg.PasswordRatePerIP = envInt("AUTH_PASSWORD_RATE_PER_IP", 50)
 	cfg.AuditRetention = time.Duration(envInt("AUTH_AUDIT_RETENTION_DAYS", 90)) * 24 * time.Hour

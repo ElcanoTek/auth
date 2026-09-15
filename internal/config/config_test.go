@@ -330,8 +330,8 @@ func TestLoadTTLsHaveSensibleDefaults(t *testing.T) {
 	if cfg.LoginMode != "magic" {
 		t.Errorf("LoginMode = %q, want legacy-safe magic default", cfg.LoginMode)
 	}
-	if cfg.PasswordAbsoluteTTL != 12*time.Hour || cfg.PasswordIdleTTL != time.Hour {
-		t.Errorf("password TTLs = absolute %v idle %v, want 12h/1h", cfg.PasswordAbsoluteTTL, cfg.PasswordIdleTTL)
+	if cfg.PasswordAbsoluteTTL != 30*24*time.Hour || cfg.PasswordIdleTTL != 7*24*time.Hour {
+		t.Errorf("password TTLs = absolute %v idle %v, want 30d/7d", cfg.PasswordAbsoluteTTL, cfg.PasswordIdleTTL)
 	}
 }
 
@@ -363,7 +363,7 @@ func TestPasswordModeSecurityConfiguration(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("plain local-dev cookie should be allowed: %v", err)
 	}
-	cfg.PasswordIdleTTL = 13 * time.Hour
+	cfg.PasswordIdleTTL = cfg.PasswordAbsoluteTTL + time.Hour
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("idle TTL longer than absolute TTL was accepted")
 	}
