@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/elcanotek/auth/internal/backchannel"
+	"github.com/elcanotek/auth/internal/branding"
 	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/email"
 	"github.com/elcanotek/auth/internal/httpapi"
@@ -30,7 +31,9 @@ import (
 
 func main() {
 	var envFile string
+	var checkOnly bool
 	flag.StringVar(&envFile, "env", ".env.local", "path to .env file")
+	flag.BoolVar(&checkOnly, "check-config", false, "load and validate the configuration and client branding, then exit (used by update.sh before a swap)")
 	flag.Parse()
 
 	cfg, err := config.Load(envFile)
@@ -39,6 +42,22 @@ func main() {
 	}
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid config: %v", err)
+	}
+	// Client branding comes from the same bundle Fleet consumes. A configured
+	// but broken bundle is a config error: a client's auth host must not
+	// silently ship the default look because of a typo.
+	brand, err := branding.Load(cfg.ClientConfigDir)
+	if err != nil {
+		log.Fatalf("client branding: %v", err)
+	}
+	cfg.Brand = brand
+	if brand != nil {
+		log.Printf("client branding from %s (wordmark=%q logo=%v palette=%v)",
+			brand.Dir, brand.AppName, len(brand.Logo) > 0, brand.CSS != "")
+	}
+	if checkOnly {
+		log.Printf("configuration OK (hostname=%s, login_mode=%s, branding=%v)", cfg.Hostname, cfg.LoginMode, brand != nil)
+		return
 	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {

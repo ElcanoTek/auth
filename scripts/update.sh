@@ -17,6 +17,39 @@ set -euo pipefail
 
 SRC_DIR="${SRC_DIR:-/opt/auth-src}"
 APP_DIR="${APP_DIR:-/opt/auth}"
+
+# The client branding bundle, if .env.local names one. Its commit before this
+# run is remembered so every failure path can put it back: a bundle the new
+# (or current) binary refuses would otherwise defeat the binary rollback,
+# because the restored binary would refuse the same bundle.
+bundle_dir="$(sed -n 's/^[[:space:]]*AUTH_CLIENT_CONFIG_DIR[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$APP_DIR/.env.local" 2>/dev/null | tail -n1)"
+bundle_before=""
+bundle_after=""
+bundle_git() { git -c safe.directory="$bundle_dir" -C "$bundle_dir" "$@"; }
+if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
+  bundle_before="$(bundle_git rev-parse HEAD 2>/dev/null || echo '')"
+  bundle_after="$bundle_before"
+fi
+# restore_bundle puts the checkout back on its pre-update commit. It reports
+# truthfully: bundle_after only changes when the reset succeeded, so a failed
+# reset can be retried and is never described as done. Armed as an EXIT trap
+# the moment the pull advances the bundle (see below), so a cancelled or
+# failed update of any kind cannot leave a bundle the binary has not accepted.
+update_succeeded=0
+restore_bundle() {
+  if [[ -n "$bundle_before" && "$bundle_before" != "$bundle_after" ]]; then
+    if bundle_git reset --hard --quiet "$bundle_before" 2>/dev/null; then
+      warn "client bundle reset to ${bundle_before:0:12}"
+      bundle_after="$bundle_before"
+    else
+      warn "could not reset the client bundle to ${bundle_before:0:12} — check $bundle_dir"
+      return 1
+    fi
+  fi
+}
+restore_bundle_on_exit() {
+  [[ "$update_succeeded" == "1" ]] || restore_bundle || true
+}
 APP_USER="${APP_USER:-auth}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}" # overridable for tests
 CLI_BIN="${CLI_BIN:-/usr/local/bin/auth}"         # overridable for tests
@@ -67,6 +100,17 @@ git config --global --add safe.directory "$SRC_DIR" 2>/dev/null || true
 
 before_sha="$(git rev-parse HEAD)"
 
+# The client bundle may not live inside $APP_DIR: every path through this
+# script, the rebuild-only one included, syncs $APP_DIR with rsync --delete.
+# Checked on canonical paths so a symlinked or relative spelling cannot slip by.
+if [[ -n "$bundle_dir" ]]; then
+  bundle_canon="$(readlink -f -- "$bundle_dir" 2>/dev/null || printf '%s' "$bundle_dir")"
+  app_canon="$(readlink -f -- "$APP_DIR" 2>/dev/null || printf '%s' "$APP_DIR")"
+  case "$bundle_canon/" in
+    "$app_canon"/*) die "AUTH_CLIENT_CONFIG_DIR=$bundle_dir is inside $APP_DIR, which this script syncs with rsync --delete; move the bundle (bootstrap uses ${APP_DIR}-client) and fix .env.local before updating" ;;
+  esac
+fi
+
 if [[ "${AUTH_UPDATE_NO_PULL:-0}" == "1" ]]; then
   after_sha="$before_sha"
   ok "rebuild-only mode — skipping fetch, building ${after_sha:0:12}"
@@ -101,7 +145,49 @@ else
   after_sha="$(git rev-parse --verify --quiet "$target_ref^{commit}")" \
     || die "no remote-tracking ref $target_ref — push '$target_branch', or re-run with AUTH_UPDATE_BRANCH=<branch>"
 
+  # ── 1b. client branding bundle ─────────────────────────────────────
+  # AUTH_CLIENT_CONFIG_DIR (from .env.local) may be a git checkout of the
+  # client's bundle; keep it current so a branding change lands with the
+  # update. A bundle that will not fast-forward is reported, not fatal, and
+  # the previous checkout stays in use. The checkout lives outside $APP_DIR
+  # (bootstrap puts it at ${APP_DIR}-client) so the swap below never touches it.
+  if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
+    if bundle_git pull --ff-only --quiet 2>/dev/null; then
+      bundle_after="$(bundle_git rev-parse HEAD 2>/dev/null || echo "$bundle_before")"
+      chown -R "$APP_USER:$APP_USER" "$bundle_dir" 2>/dev/null || true
+      if [[ "$bundle_before" == "$bundle_after" ]]; then
+        ok "client bundle already current at ${bundle_after:0:12}"
+      else
+        ok "client bundle updated ${bundle_before:0:12} → ${bundle_after:0:12}"
+        # From here until the update succeeds, any exit puts the bundle back.
+        trap restore_bundle_on_exit EXIT
+      fi
+    else
+      warn "client bundle at $bundle_dir did not fast-forward; keeping ${bundle_before:0:12}"
+    fi
+  fi
+
   if [[ "$before_sha" == "$after_sha" ]]; then
+    if [[ "$bundle_before" != "$bundle_after" ]]; then
+      # Branding-only change: the binary is current, the bundle is not. Prove
+      # the current binary accepts the new bundle, then restart onto it. If
+      # it does not, put the bundle back and leave the service untouched.
+      say
+      step "Applying client bundle ${bundle_before:0:12} → ${bundle_after:0:12}"
+      if ! sudo -u "$APP_USER" -H "$APP_DIR/bin/auth-server" -check-config -env "$APP_DIR/.env.local" >/dev/null 2>&1; then
+        die "the updated client bundle fails validation (run: sudo -u $APP_USER $APP_DIR/bin/auth-server -check-config -env $APP_DIR/.env.local); service untouched, bundle being reset"
+      fi
+      systemctl restart auth-server.service || true
+      if wait_healthy; then
+        update_succeeded=1
+        ok "auth-server restarted on bundle ${bundle_after:0:12}"
+        exit 0
+      fi
+      restore_bundle || true
+      systemctl restart auth-server.service || true
+      wait_healthy && die "auth-server did not come up on the new bundle; reset to ${bundle_before:0:12} and healthy again"
+      die "auth-server did not come up on the new bundle AND is unhealthy after the reset — manual recovery needed: journalctl -u auth-server -n 50"
+    fi
     ok "already on ${after_sha:0:12} — nothing to update"
     exit 0
   fi
@@ -137,7 +223,15 @@ step "2/4  Building new artifacts (staging)"
 
 STAGING="$(mktemp -d)"
 BACKUP=""
-trap 'rm -rf "$STAGING"; [[ -z "$BACKUP" ]] || rm -rf "$BACKUP"' EXIT
+# This replaces the EXIT trap armed when the bundle advanced, so it must keep
+# doing that job. The restore runs first: a cleanup failure under set -e must
+# never prevent it, and the cleanups themselves are best effort.
+cleanup_on_exit() {
+  restore_bundle_on_exit
+  rm -rf "$STAGING" || true
+  [[ -z "$BACKUP" ]] || rm -rf "$BACKUP" || true
+}
+trap cleanup_on_exit EXIT
 
 rsync -a --delete \
   --exclude='/.git' \
@@ -156,6 +250,14 @@ sudo -u "$APP_USER" -H bash -c "
   GOTOOLCHAIN=auto go build -o bin/auth-admin  ./cmd/auth-admin
 "
 ok "staging build complete"
+
+# The new binary must accept the live configuration and client bundle before
+# anything is swapped. A refusal here costs nothing: the service is still
+# running on the old build, and the bundle goes back to where it was.
+if ! sudo -u "$APP_USER" -H "$STAGING/bin/auth-server" -check-config -env "$APP_DIR/.env.local" >/dev/null 2>&1; then
+  die "the new build refuses the live configuration (run: sudo -u $APP_USER $STAGING/bin/auth-server -check-config -env $APP_DIR/.env.local); nothing was swapped, bundle being reset"
+fi
+ok "new build accepts the live configuration and client bundle"
 
 # ── 3. atomic swap + restart ─────────────────────────────────────────
 step "3/4  Swapping in and restarting"
@@ -186,6 +288,7 @@ cp -p "$CLI_BIN"                         "$BACKUP/auth-cli"
 rollback_and_die() {
   warn "$1 — rolling back to ${before_sha:0:12}"
   systemctl stop auth-server.service || true
+  restore_bundle || true
   install -o "$APP_USER" -g "$APP_USER" -m 0755 "$BACKUP/auth-server" "$APP_DIR/bin/auth-server" || true
   install -o "$APP_USER" -g "$APP_USER" -m 0755 "$BACKUP/auth-admin"  "$APP_DIR/bin/auth-admin"  || true
   cp -p "$BACKUP/auth-server.service" "$SYSTEMD_DIR/auth-server.service" 2>/dev/null || true
@@ -229,6 +332,9 @@ systemctl start auth-server.service || true
 # ── 4. health check ──────────────────────────────────────────────────
 step "4/4  Health check"
 if wait_healthy; then
+  # The update is complete the moment the new build answers: nothing after
+  # this line may undo the bundle, so flag success before any output.
+  update_succeeded=1
   ok "auth-server healthy"
 else
   rollback_and_die "new build (${after_sha:0:12}) didn't come up healthy"

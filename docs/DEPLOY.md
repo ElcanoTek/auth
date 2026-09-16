@@ -264,6 +264,45 @@ form on `/account` does the same. Scope and timing, stated plainly:
   that costs the user a login, not access, and is accepted in exchange for a
   click-free flow. Any registered client id is honoured (ids are public).
 
+## Branding from the client bundle
+
+Auth can wear the client's name, mark and colours instead of the defaults,
+driven by the same bundle repository Fleet consumes (`FLEET_CLIENT_CONFIG_DIR`),
+so one edit re-brands both. Point `AUTH_CLIENT_CONFIG_DIR` at a checkout of
+the bundle (bootstrap asks for a git URL or path and clones URLs to
+`/opt/auth-client`, a sibling of `/opt/auth` so the source sync never touches
+it; `auth update` fast-forwards a git checkout, validates the result with
+`auth-server -check-config` before touching the service, and puts the bundle
+back on any failure). Auth reads only the `branding:` block of
+`manifest.yaml` and ignores every other key, so Fleet's schema can grow
+without affecting Auth.
+
+| `branding:` field | What Auth does with it |
+|---|---|
+| `app_name` | The wordmark above each card and the tab title (Omnicom's is `OMNICOM`). Prose ("Your X sign-in link", "signed out of X") keeps `AUTH_BRAND_NAME`, so set that to the sentence form (`Omnicom`). |
+| `login_title`, `login_tagline` | The login card's heading and intro line. Absent: "Sign in" and the mode-specific hint. |
+| `logo` | Bundle-relative mark, shown above the wordmark and used as the favicon, served at `/brand/logo`. Fleet's path rules (relative, no `..`, must resolve inside the bundle after symlinks, regular file, `.svg .png .webp .jpg .jpeg .ico`) plus a 512 KB cap (Fleet allows 2 MB). The bytes are read once at startup and served from memory. |
+| `colors.dark`, `colors.light` | `primary`, `primary_hover`, `on_primary`, `accent`, `background`, `surface_1`, `text_primary`, `text_secondary`, `text_muted`, `border`, `border_strong` map onto Auth's stylesheet tokens; the page gradients are re-derived from `primary`, `accent`, `background` and `surface_1`. Values must be hex or `rgb()`/`rgba()`/`hsl()`/`hsla()` (Fleet's grammar); anything else, and any token Auth has no surface for (`surface_2`, `text_disabled`, overlays, rail tokens), is dropped and that one token keeps its default. A partial palette still gets brand gradients (missing inputs come from Auth's defaults); the `color-mix()` ones are guarded by `@supports`. Light and dark are independent. Error colours are not themable. |
+| `share_*`, everything else | Ignored. Email bodies stay generic on purpose. |
+
+Unset `AUTH_CLIENT_CONFIG_DIR` keeps the default look. A configured directory
+that is missing, unreadable or unparseable, or a declared logo that fails
+validation, stops the server at startup (a client's auth host must not
+silently ship the default look because of a typo). Individual bad colour
+values are dropped, not fatal. Everything, the logo bytes included, is read
+once at startup: `auth update` (which fast-forwards a git bundle and restarts
+when it changed) or `auth restart` after editing a local bundle. `auth-server
+-check-config -env /opt/auth/.env.local` validates configuration and bundle
+without starting the service. The clone uses the box's git credential store,
+so the token stored for the auth repository must also cover the bundle
+repository (a read-only fine-grained token or a deploy key); never put a token
+in the bundle URL, bootstrap refuses it. The bundle holds no secrets. When
+that token is rotated, replace it in `/root/.git-credentials` on the auth
+host; until then `auth update` reports that the bundle did not fast-forward
+and keeps serving the last checkout, so branding is stale but sign-in is
+unaffected. The bundle must live outside `/opt/auth` (bootstrap and update
+refuse a path inside it), because the source sync runs `rsync --delete` there.
+
 ## Domain management (magic mode only)
 
 The domain allowlist controls which email domains can request a

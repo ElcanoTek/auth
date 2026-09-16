@@ -26,6 +26,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/hkdf"
@@ -63,6 +64,7 @@ type Server struct {
 	passwordSlots     chan struct{} // bounds concurrent Argon2 computations
 	attemptGate       chan struct{} // 1-slot gate around limit-check + attempt-reserve
 	rateKeyMAC        []byte        // per-deployment HMAC key for rate-limit and audit hashes
+	started           time.Time     // Last-Modified for assets snapshotted at startup (the brand logo)
 
 	// sends tracks in-flight magic-link email goroutines so graceful
 	// shutdown can drain them instead of dropping mid-flight emails.
@@ -71,7 +73,7 @@ type Server struct {
 
 func New(cfg *config.Config, st *store.Store, sender email.Sender) *Server {
 	s := &Server{
-		cfg: cfg, store: st, sender: sender, tmpl: parseTemplates(),
+		cfg: cfg, store: st, sender: sender, tmpl: parseTemplates(), started: time.Now(),
 		passwordSlots: make(chan struct{}, 2),
 		attemptGate:   make(chan struct{}, 1),
 	}
@@ -131,6 +133,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/me", s.handleMe)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.Handle("/fonts/", fontHandler()) // self-hosted Nebula Sans woff2 for the login UI
+	mux.HandleFunc("/brand/logo", s.handleBrandLogo)
 	return logRequests(securityHeaders(mux))
 }
 
@@ -1659,12 +1662,64 @@ func (s *Server) render(w http.ResponseWriter, name string, data map[string]any)
 	if err != nil {
 		return err
 	}
+	s.decorate(data)
 	w.Header().Set("Content-Security-Policy",
 		"default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
 			"font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data["Nonce"] = nonce
 	return s.tmpl.ExecuteTemplate(w, name, data)
+}
+
+// decorate adds the branding fields every page template reads. Without a
+// bundle the wordmark is the prose brand name and the rest is empty, which
+// renders exactly the pre-bundle pages. BrandCSS is template.CSS because the
+// branding package has already validated every value against a strict
+// grammar; nothing else may be marked that way.
+func (s *Server) decorate(data map[string]any) {
+	data["Wordmark"] = s.cfg.BrandName
+	data["LogoURL"] = ""
+	data["BrandCSS"] = template.CSS("")
+	data["LoginTitle"] = ""
+	data["LoginTagline"] = ""
+	b := s.cfg.Brand
+	if b == nil {
+		return
+	}
+	if b.AppName != "" {
+		data["Wordmark"] = b.AppName
+	}
+	if len(b.Logo) > 0 {
+		data["LogoURL"] = "/brand/logo"
+	}
+	data["BrandCSS"] = template.CSS(b.CSS)
+	data["LoginTitle"] = b.LoginTitle
+	data["LoginTagline"] = b.LoginTagline
+}
+
+// handleBrandLogo serves the bundle's mark from the bytes captured at load
+// (containment- and size-checked then), so nothing on disk is consulted per
+// request and a later bundle change cannot redirect this route to another
+// file. SVG can carry script, so the response is sandboxed in case someone
+// opens it directly rather than as an <img>.
+func (s *Server) handleBrandLogo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	b := s.cfg.Brand
+	if b == nil || len(b.Logo) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", b.LogoContentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+	// A re-theme is a restart away; five minutes keeps every page load from
+	// re-fetching while letting a new mark show up promptly.
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Del("Pragma")
+	http.ServeContent(w, r, "", s.started, bytes.NewReader(b.Logo))
 }
 
 // writeJSON encodes v with encoding/json so every string is escaped by JSON
