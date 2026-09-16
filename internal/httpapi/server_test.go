@@ -123,6 +123,7 @@ func TestPasswordLoginCreatesIsolatedServerSession(t *testing.T) {
 	}
 	if session == nil {
 		t.Fatal("successful login did not set a session")
+		return // t.Fatal never returns; the explicit return keeps staticcheck's nil analysis independent of cached facts (SA5011)
 	}
 	if session.Domain != "" || !session.HttpOnly || session.Path != "/" || session.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("unsafe password cookie: %+v", session)
@@ -770,6 +771,7 @@ func TestLogoutClearsCookie(t *testing.T) {
 	}
 	if nuke == nil {
 		t.Fatal("no Set-Cookie")
+		return // see above: keeps SA5011 quiet under a stale golangci cache
 	}
 	if nuke.MaxAge >= 0 {
 		t.Errorf("logout cookie MaxAge = %d, want < 0", nuke.MaxAge)
