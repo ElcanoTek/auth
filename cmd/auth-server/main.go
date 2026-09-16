@@ -31,7 +31,9 @@ import (
 
 func main() {
 	var envFile string
+	var checkOnly bool
 	flag.StringVar(&envFile, "env", ".env.local", "path to .env file")
+	flag.BoolVar(&checkOnly, "check-config", false, "load and validate the configuration and client branding, then exit (used by update.sh before a swap)")
 	flag.Parse()
 
 	cfg, err := config.Load(envFile)
@@ -51,7 +53,11 @@ func main() {
 	cfg.Brand = brand
 	if brand != nil {
 		log.Printf("client branding from %s (wordmark=%q logo=%v palette=%v)",
-			brand.Dir, brand.AppName, brand.LogoPath != "", brand.CSS != "")
+			brand.Dir, brand.AppName, len(brand.Logo) > 0, brand.CSS != "")
+	}
+	if checkOnly {
+		log.Printf("configuration OK (hostname=%s, login_mode=%s, branding=%v)", cfg.Hostname, cfg.LoginMode, brand != nil)
+		return
 	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {

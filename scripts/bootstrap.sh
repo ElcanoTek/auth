@@ -202,29 +202,40 @@ esac
 
 # 3b — client branding bundle (optional). The same repository Fleet consumes
 # (FLEET_CLIENT_CONFIG_DIR); Auth reads only its `branding:` block. A git URL
-# is cloned to $APP_DIR/client with the box's stored git credentials and
-# fast-forwarded on every `auth update`; a local path is used as-is.
+# is cloned to $CLIENT_CHECKOUT (a sibling of $APP_DIR, deliberately outside
+# it: the source sync below runs rsync --delete over $APP_DIR) with the box's
+# stored git credentials and fast-forwarded on every `auth update`; a local
+# path is canonicalised and used as-is.
 say
 say "  Client branding bundle — a git URL or local path of the client's config"
 say "  repository (the one Fleet uses). Auth reads only its branding: block."
 say "  Leave blank for the default look."
 CLIENT_CONFIG_ANSWER="$(prompt AUTH_BOOTSTRAP_CLIENT_CONFIG "Client bundle (git URL or path, blank for none)" "${AUTH_CLIENT_CONFIG_DIR:-}")"
 CLIENT_CONFIG_DIR=""
+CLIENT_CHECKOUT="${AUTH_CLIENT_CHECKOUT:-${APP_DIR}-client}"
 if [[ -n "$CLIENT_CONFIG_ANSWER" ]]; then
   case "$CLIENT_CONFIG_ANSWER" in
+    http://*@*|https://*@*)
+      # The prompt echoes and the clone error prints the URL: a token belongs
+      # in the box's git credential store (bootstrap already configured it for
+      # the auth repository), never in the URL.
+      die "do not put credentials in the bundle URL; store them with git's credential helper and use the plain https:// URL"
+      ;;
     http://*|https://*|git@*|ssh://*)
-      CLIENT_CONFIG_DIR="$APP_DIR/client"
+      CLIENT_CONFIG_DIR="$CLIENT_CHECKOUT"
       if [[ "$DRY_RUN" != "1" ]]; then
         if [[ -d "$CLIENT_CONFIG_DIR/.git" ]]; then
           git -C "$CLIENT_CONFIG_DIR" pull --ff-only --quiet || die "could not fast-forward $CLIENT_CONFIG_DIR"
         else
-          git clone --quiet "$CLIENT_CONFIG_ANSWER" "$CLIENT_CONFIG_DIR" || die "could not clone $CLIENT_CONFIG_ANSWER (does the box's git credential cover it?)"
+          git clone --quiet "$CLIENT_CONFIG_ANSWER" "$CLIENT_CONFIG_DIR" || die "could not clone the bundle (does the box's git credential cover that repository?)"
         fi
         chown -R "$APP_USER:$APP_USER" "$CLIENT_CONFIG_DIR"
       fi
       ;;
     *)
-      CLIENT_CONFIG_DIR="$CLIENT_CONFIG_ANSWER"
+      # systemd starts auth-server in $APP_DIR, so a path relative to wherever
+      # bootstrap ran would not resolve there. Store it absolute.
+      CLIENT_CONFIG_DIR="$(readlink -f -- "$CLIENT_CONFIG_ANSWER" 2>/dev/null || realpath -m -- "$CLIENT_CONFIG_ANSWER")"
       [[ "$DRY_RUN" == "1" || -f "$CLIENT_CONFIG_DIR/manifest.yaml" ]] || die "$CLIENT_CONFIG_DIR has no manifest.yaml"
       ;;
   esac
@@ -427,9 +438,8 @@ AUTH_ASSERTION_TTL_MINUTES="5"
 AUTH_ALLOWED_DOMAINS="$ALLOWED_DOMAINS_ANSWER"
 
 # ── Branding ─────────────────────────────────────────────────────
-# Prose brand name ("Your X sign-in link", "signed out of X"). The wordmark,
-# mark, colours and login copy come from the client bundle below when set.
-AUTH_BRAND_NAME="${AUTH_BRAND_NAME:-Elcano}"
+# Wordmark, mark, colours and login copy come from the client bundle's
+# branding: block when set (see DEPLOY.md). Prose keeps AUTH_BRAND_NAME above.
 AUTH_CLIENT_CONFIG_DIR="$CLIENT_CONFIG_DIR"
 
 # ── Email delivery ───────────────────────────────────────────────

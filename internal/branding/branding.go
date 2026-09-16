@@ -16,11 +16,13 @@ package branding
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -36,9 +38,13 @@ type Brand struct {
 	LoginTitle   string
 	LoginTagline string
 	// LogoPath is the absolute, containment-checked path of the mark, or ""
-	// when the bundle declares none. LogoContentType matches its extension.
+	// when the bundle declares none; Logo holds its bytes as read at load.
+	// Serving the snapshot rather than re-reading the path means a later
+	// bundle pull cannot swap in a symlink to something the service can
+	// read; a re-theme is a restart away, like every other setting.
 	LogoPath        string
 	LogoContentType string
+	Logo            []byte
 	// CSS is the generated override block (":root{...}" and the light-mode
 	// selector), or "" when the bundle sets no colours.
 	CSS string
@@ -106,29 +112,62 @@ func Load(dir string) (*Brand, error) {
 		if err != nil {
 			return nil, fmt.Errorf("AUTH_CLIENT_CONFIG_DIR: branding.logo: %w", err)
 		}
-		b.LogoPath, b.LogoContentType = path, ctype
+		data, err := readBounded(path, MaxLogoBytes)
+		if err != nil {
+			return nil, fmt.Errorf("AUTH_CLIENT_CONFIG_DIR: branding.logo: %w", err)
+		}
+		b.LogoPath, b.LogoContentType, b.Logo = path, ctype, data
 	}
 	b.CSS = generateCSS(m.Branding.Colors.Dark, m.Branding.Colors.Light)
 	return b, nil
 }
 
+// readBounded reads a validated file with the same O_NOFOLLOW guard the
+// validation used, refusing anything over limit bytes. The path was
+// symlink-resolved already; NOFOLLOW closes the window between that check
+// and this read.
+func readBounded(path string, limit int64) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > limit {
+		return nil, fmt.Errorf("%s is not a regular file of at most %d bytes", path, limit)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s grew past %d bytes while being read", path, limit)
+	}
+	return data, nil
+}
+
 // oneLine keeps copy to a single bounded line: control characters are the
 // only thing that could surprise the (auto-escaping) template, and a
-// paragraph-length "app name" is a mistake, not a brand.
-func oneLine(s string, max int) string {
+// paragraph-length "app name" is a mistake, not a brand. The bound counts
+// runes so a multibyte name is never cut into invalid UTF-8.
+func oneLine(s string, maxRunes int) string {
 	s = strings.TrimSpace(s)
 	var b strings.Builder
+	n := 0
 	for _, r := range s {
 		if r < 0x20 || r == 0x7f {
 			continue
 		}
+		if n == maxRunes {
+			break
+		}
 		b.WriteRune(r)
+		n++
 	}
-	out := b.String()
-	if len(out) > max {
-		out = out[:max]
-	}
-	return out
+	return b.String()
 }
 
 var logoContentTypes = map[string]string{
@@ -178,10 +217,12 @@ func validateLogo(bundle, rel string) (string, string, error) {
 	return real, ctype, nil
 }
 
-// colorValue is Fleet's grammar: hex, or rgb()/rgba()/hsl()/hsla() with only
-// digits, dots, commas, percent signs, slashes and spaces inside. Nothing
-// else (no url(), no var(), no semicolons or braces) can reach the stylesheet.
-var colorValue = regexp.MustCompile(`^(?:#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|(?:rgb|rgba|hsl|hsla)\([0-9.,%/\s]+\))$`)
+// colorValue mirrors Fleet's grammar: hex, or rgb()/rgba()/hsl()/hsla()
+// whose arguments are digits, letters (units such as deg), dots, commas,
+// percent signs, slashes, hyphens and spaces. No nested parentheses, so
+// url(), var() and calc() cannot appear, and no semicolons or braces, so a
+// value cannot end the declaration or the block.
+var colorValue = regexp.MustCompile(`^(?:#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|(?:rgb|rgba|hsl|hsla)\([0-9a-zA-Z.,%/\s-]+\))$`)
 
 // tokens maps the bundle's colour names onto the custom properties Auth's
 // stylesheet already uses. Names Auth has no surface for (rail, overlays,
@@ -205,12 +246,23 @@ func ValidColor(v string) bool {
 	return colorValue.MatchString(strings.TrimSpace(v))
 }
 
+// modeDefaults are the values Auth's own stylesheet paints with, per mode,
+// for the inputs the gradients are derived from. A bundle that sets only
+// some of them still gets brand gradients, computed from its values plus
+// these defaults, so a partial palette never keeps the stock purple glow
+// beside a client colour.
+var modeDefaults = map[bool]map[string]string{
+	false: {"primary": "#7272ab", "primary_hover": "#8686c4", "accent": "#9da7ef", "background": "#1a0b1e", "surface_1": "#241b31"},
+	true:  {"primary": "#7272ab", "primary_hover": "#5f5f97", "accent": "#9da7ef", "background": "#f4f6fb", "surface_1": "#ffffff"},
+}
+
 // declarations turns one mode's map into sorted CSS declarations, dropping
-// unknown names and invalid values individually, and derives the three
-// gradients Auth paints with from the brand's own colours so the page does
-// not keep the default purple glow beside a client palette.
-func declarations(mode map[string]string) []string {
-	var out []string
+// unknown names and invalid values individually. It returns the plain token
+// declarations and, separately, the gradient declarations that use
+// color-mix(), so the caller can guard those behind @supports: a browser
+// without color-mix() would otherwise accept the custom property and then
+// paint nothing for the background that consumes it.
+func declarations(mode map[string]string, light bool) (plain, mixed []string) {
 	valid := map[string]string{}
 	for name, value := range mode {
 		prop, known := tokens[name]
@@ -219,44 +271,55 @@ func declarations(mode map[string]string) []string {
 		}
 		v := strings.TrimSpace(value)
 		valid[name] = v
-		out = append(out, prop+": "+v+";")
+		plain = append(plain, prop+": "+v+";")
 	}
 	if len(valid) == 0 {
-		return nil
+		return nil, nil
 	}
-	if primary, ok := valid["primary"]; ok {
-		accent := primary
-		if a, ok := valid["accent"]; ok {
-			accent = a
+	pick := func(name string) string {
+		if v, ok := valid[name]; ok {
+			return v
 		}
-		hover := primary
-		if h, ok := valid["primary_hover"]; ok {
-			hover = h
-		}
-		out = append(out, "--gradient-action-primary: linear-gradient(140deg, "+primary+", "+hover+");")
-		if bg, ok := valid["background"]; ok {
-			out = append(out,
-				"--gradient-bg-home-signature: radial-gradient(circle at 8% -4%, color-mix(in srgb, "+primary+" 34%, transparent), transparent 34%), "+
-					"radial-gradient(circle at 92% 2%, color-mix(in srgb, "+accent+" 22%, transparent), transparent 32%), "+
-					"linear-gradient(150deg, "+bg+" 0%, "+bg+" 100%);")
-			if surface, ok := valid["surface_1"]; ok {
-				out = append(out, "--gradient-surface-card: linear-gradient(145deg, "+surface+", color-mix(in srgb, "+surface+" 88%, "+bg+"));")
-			}
-		}
+		return modeDefaults[light][name]
 	}
-	sort.Strings(out)
-	return out
+	_, hasPrimary := valid["primary"]
+	_, hasAccent := valid["accent"]
+	_, hasBackground := valid["background"]
+	_, hasSurface := valid["surface_1"]
+	if hasPrimary || hasAccent || hasBackground || hasSurface {
+		primary, hover, accent, bg, surface := pick("primary"), pick("primary_hover"), pick("accent"), pick("background"), pick("surface_1")
+		plain = append(plain, "--gradient-action-primary: linear-gradient(140deg, "+primary+", "+hover+");")
+		mixed = append(mixed,
+			"--gradient-bg-home-signature: radial-gradient(circle at 8% -4%, color-mix(in srgb, "+primary+" 34%, transparent), transparent 34%), "+
+				"radial-gradient(circle at 92% 2%, color-mix(in srgb, "+accent+" 22%, transparent), transparent 32%), "+
+				"linear-gradient(150deg, "+bg+" 0%, "+bg+" 100%);",
+			"--gradient-surface-card: linear-gradient(145deg, "+surface+", color-mix(in srgb, "+surface+" 88%, "+bg+"));")
+	}
+	sort.Strings(plain)
+	sort.Strings(mixed)
+	return plain, mixed
 }
 
 // generateCSS renders the override block appended to Auth's own tokens. Dark
-// is the base (:root) and light overrides it, matching the stylesheet.
+// is the base (:root) and light overrides it, matching the stylesheet. The
+// color-mix() gradients sit behind an @supports guard so an older browser
+// keeps the stock gradients instead of an unpainted background.
 func generateCSS(dark, light map[string]string) string {
 	var b strings.Builder
-	if decls := declarations(dark); len(decls) > 0 {
-		b.WriteString(":root {\n  " + strings.Join(decls, "\n  ") + "\n}\n")
+	block := func(selector string, decls []string) {
+		if len(decls) > 0 {
+			b.WriteString(selector + " {\n  " + strings.Join(decls, "\n  ") + "\n}\n")
+		}
 	}
-	if decls := declarations(light); len(decls) > 0 {
-		b.WriteString(`:root[data-theme="light"] {` + "\n  " + strings.Join(decls, "\n  ") + "\n}\n")
+	darkPlain, darkMixed := declarations(dark, false)
+	lightPlain, lightMixed := declarations(light, true)
+	block(":root", darkPlain)
+	block(`:root[data-theme="light"]`, lightPlain)
+	if len(darkMixed)+len(lightMixed) > 0 {
+		b.WriteString("@supports (color: color-mix(in srgb, red, blue)) {\n")
+		block(":root", darkMixed)
+		block(`:root[data-theme="light"]`, lightMixed)
+		b.WriteString("}\n")
 	}
 	return b.String()
 }

@@ -126,14 +126,20 @@ func TestBrandLogoIsServedSandboxed(t *testing.T) {
 	if err != nil || head.StatusCode != http.StatusOK {
 		t.Fatalf("HEAD logo = %v %v", head, err)
 	}
-	// A file swapped in over the limit after startup is refused, not served.
-	if err := os.WriteFile(filepath.Join(dir, "assets", "mark.svg"), make([]byte, branding.MaxLogoBytes+1), 0o644); err != nil {
+	// The mark is a startup snapshot: replacing the file (or swapping it for a
+	// symlink to something the service can read) after load changes nothing
+	// served, so a bundle pull can never turn this route into a file reader.
+	if err := os.Remove(filepath.Join(dir, "assets", "mark.svg")); err != nil {
 		t.Fatal(err)
 	}
-	huge, _ := http.Get(ts.URL + "/brand/logo")
-	_ = huge.Body.Close()
-	if huge.StatusCode != http.StatusNotFound {
-		t.Fatalf("oversized logo = %d, want 404", huge.StatusCode)
+	if err := os.Symlink(filepath.Join(dir, "manifest.yaml"), filepath.Join(dir, "assets", "mark.svg")); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := http.Get(ts.URL + "/brand/logo")
+	afterBody, _ := io.ReadAll(after.Body)
+	_ = after.Body.Close()
+	if after.StatusCode != http.StatusOK || string(afterBody) != string(body) {
+		t.Fatalf("logo after on-disk swap = %d %q, want the snapshot", after.StatusCode, afterBody)
 	}
 }
 
@@ -160,4 +166,25 @@ func TestPagesWithoutABundleAreUnchanged(t *testing.T) {
 		t.Fatalf("/brand/logo without a bundle = %d, want 404", logo.StatusCode)
 	}
 	_ = context.Background()
+}
+
+// A sparse palette (only a background in light mode) still gets brand
+// gradients, derived from the bundle value plus Auth's defaults, and the
+// color-mix() ones sit behind @supports.
+func TestSparsePaletteStillDerivesGradients(t *testing.T) {
+	ts, _ := newBrandedServer(t, brandedManifest)
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	page := string(body)
+	if !strings.Contains(page, "@supports (color: color-mix(in srgb, red, blue))") {
+		t.Fatal("color-mix gradients are not guarded by @supports")
+	}
+	light := page[strings.LastIndex(page, `:root[data-theme="light"] {`):]
+	if !strings.Contains(light, "linear-gradient(150deg, #F4F8F6 0%, #F4F8F6 100%)") || !strings.Contains(light, "color-mix(in srgb, #7272ab 34%, transparent)") {
+		t.Fatalf("light gradients not derived from bundle background + default primary:\n%s", light)
+	}
 }

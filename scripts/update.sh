@@ -17,6 +17,28 @@ set -euo pipefail
 
 SRC_DIR="${SRC_DIR:-/opt/auth-src}"
 APP_DIR="${APP_DIR:-/opt/auth}"
+
+# The client branding bundle, if .env.local names one. Its commit before this
+# run is remembered so every failure path can put it back: a bundle the new
+# (or current) binary refuses would otherwise defeat the binary rollback,
+# because the restored binary would refuse the same bundle.
+bundle_dir="$(sed -n 's/^[[:space:]]*AUTH_CLIENT_CONFIG_DIR[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$APP_DIR/.env.local" 2>/dev/null | tail -n1)"
+bundle_before=""
+bundle_after=""
+if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
+  bundle_before="$(git -c safe.directory="$bundle_dir" -C "$bundle_dir" rev-parse --short HEAD 2>/dev/null || echo '')"
+  bundle_after="$bundle_before"
+fi
+restore_bundle() {
+  if [[ -n "$bundle_before" && "$bundle_before" != "$bundle_after" ]]; then
+    if git -c safe.directory="$bundle_dir" -C "$bundle_dir" reset --hard --quiet "$bundle_before" 2>/dev/null; then
+      warn "client bundle reset to $bundle_before"
+    else
+      warn "could not reset the client bundle to $bundle_before — check $bundle_dir"
+    fi
+    bundle_after="$bundle_before"
+  fi
+}
 APP_USER="${APP_USER:-auth}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}" # overridable for tests
 CLI_BIN="${CLI_BIN:-/usr/local/bin/auth}"         # overridable for tests
@@ -101,7 +123,47 @@ else
   after_sha="$(git rev-parse --verify --quiet "$target_ref^{commit}")" \
     || die "no remote-tracking ref $target_ref — push '$target_branch', or re-run with AUTH_UPDATE_BRANCH=<branch>"
 
+  # ── 1b. client branding bundle ─────────────────────────────────────
+  # AUTH_CLIENT_CONFIG_DIR (from .env.local) may be a git checkout of the
+  # client's bundle; keep it current so a branding change lands with the
+  # update. A bundle that will not fast-forward is reported, not fatal, and
+  # the previous checkout stays in use. The checkout lives outside $APP_DIR
+  # (bootstrap puts it at ${APP_DIR}-client) so the swap below never touches it.
+  if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
+    if git -c safe.directory="$bundle_dir" -C "$bundle_dir" pull --ff-only --quiet 2>/dev/null; then
+      bundle_after="$(git -C "$bundle_dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
+      chown -R "$APP_USER:$APP_USER" "$bundle_dir" 2>/dev/null || true
+      if [[ "$bundle_before" == "$bundle_after" ]]; then
+        ok "client bundle already current at $bundle_after"
+      else
+        ok "client bundle updated $bundle_before → $bundle_after"
+      fi
+    else
+      warn "client bundle at $bundle_dir did not fast-forward; keeping $bundle_before"
+    fi
+  fi
+
   if [[ "$before_sha" == "$after_sha" ]]; then
+    if [[ "$bundle_before" != "$bundle_after" ]]; then
+      # Branding-only change: the binary is current, the bundle is not. Prove
+      # the current binary accepts the new bundle, then restart onto it. If
+      # it does not, put the bundle back and leave the service untouched.
+      say
+      step "Applying client bundle $bundle_before → $bundle_after"
+      if ! sudo -u "$APP_USER" -H "$APP_DIR/bin/auth-server" -check-config -env "$APP_DIR/.env.local" >/dev/null 2>&1; then
+        restore_bundle
+        die "the updated client bundle fails validation (run: sudo -u $APP_USER $APP_DIR/bin/auth-server -check-config -env $APP_DIR/.env.local); bundle reset to $bundle_before, service untouched"
+      fi
+      systemctl restart auth-server.service || true
+      if wait_healthy; then
+        ok "auth-server restarted on bundle $bundle_after"
+        exit 0
+      fi
+      restore_bundle
+      systemctl restart auth-server.service || true
+      wait_healthy && die "auth-server did not come up on bundle $bundle_after; reset to $bundle_before and healthy again"
+      die "auth-server did not come up on bundle $bundle_after AND is unhealthy after resetting to $bundle_before — manual recovery needed: journalctl -u auth-server -n 50"
+    fi
     ok "already on ${after_sha:0:12} — nothing to update"
     exit 0
   fi
@@ -132,27 +194,6 @@ else
   fi
 fi
 
-# ── 1b. client branding bundle ───────────────────────────────────────
-# AUTH_CLIENT_CONFIG_DIR (from .env.local) may point at a git checkout of the
-# client's bundle; keep it current so a branding change lands with the update.
-# Best effort: a bundle that will not fast-forward is reported, not fatal, and
-# the previous checkout stays in use.
-bundle_dir="$(sed -n 's/^[[:space:]]*AUTH_CLIENT_CONFIG_DIR[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$APP_DIR/.env.local" 2>/dev/null | tail -n1)"
-if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
-  bundle_before="$(git -C "$bundle_dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
-  if git -c safe.directory="$bundle_dir" -C "$bundle_dir" pull --ff-only --quiet 2>/dev/null; then
-    bundle_after="$(git -C "$bundle_dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
-    chown -R "${APP_USER:-auth}:${APP_USER:-auth}" "$bundle_dir" 2>/dev/null || true
-    if [[ "$bundle_before" == "$bundle_after" ]]; then
-      ok "client bundle already current at $bundle_after"
-    else
-      ok "client bundle updated $bundle_before → $bundle_after"
-    fi
-  else
-    warn "client bundle at $bundle_dir did not fast-forward; keeping $bundle_before"
-  fi
-fi
-
 # ── 2. build in staging ──────────────────────────────────────────────
 step "2/4  Building new artifacts (staging)"
 
@@ -177,6 +218,15 @@ sudo -u "$APP_USER" -H bash -c "
   GOTOOLCHAIN=auto go build -o bin/auth-admin  ./cmd/auth-admin
 "
 ok "staging build complete"
+
+# The new binary must accept the live configuration and client bundle before
+# anything is swapped. A refusal here costs nothing: the service is still
+# running on the old build, and the bundle goes back to where it was.
+if ! sudo -u "$APP_USER" -H "$STAGING/bin/auth-server" -check-config -env "$APP_DIR/.env.local" >/dev/null 2>&1; then
+  restore_bundle
+  die "the new build refuses the live configuration (run: sudo -u $APP_USER $STAGING/bin/auth-server -check-config -env $APP_DIR/.env.local); nothing was swapped"
+fi
+ok "new build accepts the live configuration and client bundle"
 
 # ── 3. atomic swap + restart ─────────────────────────────────────────
 step "3/4  Swapping in and restarting"
@@ -207,6 +257,7 @@ cp -p "$CLI_BIN"                         "$BACKUP/auth-cli"
 rollback_and_die() {
   warn "$1 — rolling back to ${before_sha:0:12}"
   systemctl stop auth-server.service || true
+  restore_bundle
   install -o "$APP_USER" -g "$APP_USER" -m 0755 "$BACKUP/auth-server" "$APP_DIR/bin/auth-server" || true
   install -o "$APP_USER" -g "$APP_USER" -m 0755 "$BACKUP/auth-admin"  "$APP_DIR/bin/auth-admin"  || true
   cp -p "$BACKUP/auth-server.service" "$SYSTEMD_DIR/auth-server.service" 2>/dev/null || true

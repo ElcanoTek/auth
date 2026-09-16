@@ -87,11 +87,22 @@ func TestLoadReadsOnlyBrandingAndValidatesValues(t *testing.T) {
 			t.Fatalf("CSS contains %q:\n%s", reject, b.CSS)
 		}
 	}
-	// The light block has no surface_1, so no card gradient there; it still
-	// gets the action gradient from primary alone.
-	light := b.CSS[strings.Index(b.CSS, `[data-theme="light"]`):]
-	if strings.Contains(light, "--gradient-surface-card") || !strings.Contains(light, "--gradient-action-primary: linear-gradient(140deg, #0B6E4F, #0B6E4F);") {
-		t.Fatalf("light block:\n%s", light)
+	// The light block sets only primary and background: the missing inputs
+	// come from Auth's light defaults, so every gradient is still derived,
+	// and the color-mix() ones sit behind @supports.
+	if !strings.Contains(b.CSS, "@supports (color: color-mix(in srgb, red, blue)) {") {
+		t.Fatalf("color-mix gradients not guarded:\n%s", b.CSS)
+	}
+	supports := b.CSS[strings.Index(b.CSS, "@supports"):]
+	light := supports[strings.Index(supports, `[data-theme="light"]`):]
+	if !strings.Contains(light, "linear-gradient(150deg, #F4F8F6 0%, #F4F8F6 100%)") || !strings.Contains(light, "color-mix(in srgb, #ffffff 88%, #F4F8F6)") {
+		t.Fatalf("light gradients not derived with defaults:\n%s", light)
+	}
+	if !strings.Contains(b.CSS, "--gradient-action-primary: linear-gradient(140deg, #0B6E4F, #5f5f97);") {
+		t.Fatalf("light action gradient should use the default light hover:\n%s", b.CSS)
+	}
+	if len(b.Logo) == 0 || !strings.Contains(string(b.Logo), "<svg") {
+		t.Fatal("logo bytes were not snapshotted at load")
 	}
 }
 
@@ -154,7 +165,7 @@ func TestLogoValidation(t *testing.T) {
 }
 
 func TestValidColorGrammar(t *testing.T) {
-	for _, ok := range []string{"#fff", "#FFFF", "#0089F7", "#0089F7CC", "rgb(0, 137, 247)", "rgba(0,137,247,0.55)", "hsl(210 100% 48%)", "hsla(210, 100%, 48%, .5)", " #abc "} {
+	for _, ok := range []string{"#fff", "#FFFF", "#0089F7", "#0089F7CC", "rgb(0, 137, 247)", "rgba(0,137,247,0.55)", "hsl(210 100% 48%)", "hsla(210, 100%, 48%, .5)", " #abc ", "hsl(210deg 100% 48%)", "rgb(0 0 0 / 50%)"} {
 		if !ValidColor(ok) {
 			t.Errorf("%q rejected", ok)
 		}
@@ -172,5 +183,9 @@ func TestOneLineStripsControlCharactersAndBounds(t *testing.T) {
 	}
 	if got := oneLine(strings.Repeat("a", 100), 10); len(got) != 10 {
 		t.Fatalf("oneLine did not bound: %d", len(got))
+	}
+	// Bounding counts runes: a multibyte wordmark is never cut mid-character.
+	if got := oneLine(strings.Repeat("界", 20), 5); got != strings.Repeat("界", 5) {
+		t.Fatalf("oneLine cut a multibyte name: %q", got)
 	}
 }
