@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -177,7 +178,17 @@ func TestAdminConsoleIsAbsentInMagicMode(t *testing.T) {
 	}
 }
 
-var secretRE = regexp.MustCompile(`<code>([^<]+)</code>`)
+var secretRE = regexp.MustCompile(`<div class="secret"[^>]*>(?s:.*?)<code>([^<]+)</code>`)
+
+// shownSecret is the one-time password as the administrator would read it.
+func shownSecret(t *testing.T, body string) string {
+	t.Helper()
+	m := secretRE.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no temporary password shown:\n%s", body)
+	}
+	return html.UnescapeString(m[1])
+}
 
 func TestAdminCreatesAccountWithAccessAndOneTimePassword(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
@@ -186,11 +197,7 @@ func TestAdminCreatesAccountWithAccessAndOneTimePassword(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Created carol@example.com") {
 		t.Fatalf("create = %d\n%s", resp.StatusCode, body)
 	}
-	m := secretRE.FindStringSubmatch(body)
-	if m == nil {
-		t.Fatalf("no temporary password shown:\n%s", body)
-	}
-	temp := m[1]
+	temp := shownSecret(t, body)
 	if len(temp) != 20 {
 		t.Fatalf("temporary password %q has length %d", temp, len(temp))
 	}
@@ -249,10 +256,10 @@ func TestAdminResetRevokeDisableEnableBob(t *testing.T) {
 
 	// Reset: old password fails, temporary one works and forces a change.
 	_, body = alice.post(url.Values{"action": {"reset-password"}, "email": {"bob@example.com"}})
-	m := secretRE.FindStringSubmatch(body)
-	if m == nil || !strings.Contains(body, "Reset the password for bob@example.com") {
+	if !strings.Contains(body, "Reset the password for bob@example.com") {
 		t.Fatalf("reset:\n%s", body)
 	}
+	m := []string{"", shownSecret(t, body)}
 	old, oldSession, _ := passwordLogin(t, ts, cfg, "bob@example.com", plain)
 	_ = old.Body.Close()
 	if oldSession != nil {

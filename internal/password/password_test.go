@@ -2,6 +2,8 @@ package password
 
 import (
 	"errors"
+	"html"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -136,6 +138,19 @@ func TestVerifyMalformedHashesFailClosed(t *testing.T) {
 	}
 }
 
+func TestGeneratedAlphabetIsSixtyFourDistinctSymbols(t *testing.T) {
+	seen := map[rune]bool{}
+	for _, r := range generatedAlphabet {
+		if seen[r] {
+			t.Fatalf("duplicate symbol %q", r)
+		}
+		seen[r] = true
+	}
+	if len(seen) != 64 || len(generatedAlphabet) != 64 {
+		t.Fatalf("alphabet has %d symbols, want 64 (unbiased byte reduction)", len(seen))
+	}
+}
+
 func TestGenerateMeetsPolicyAndVaries(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
@@ -153,6 +168,9 @@ func TestGenerateMeetsPolicyAndVaries(t *testing.T) {
 			if !strings.ContainsRune(generatedAlphabet, r) {
 				t.Fatalf("symbol %q outside alphabet in %q", r, p)
 			}
+		}
+		if html.EscapeString(p) != p || url.QueryEscape(p) == "" {
+			t.Fatalf("generated password %q is rewritten by HTML escaping", p)
 		}
 		if seen[p] {
 			t.Fatalf("duplicate generated password %q", p)

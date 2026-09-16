@@ -376,9 +376,12 @@ func parseParameter(field, prefix string, bits int) (uint64, error) {
 	return strconv.ParseUint(field[len(prefix):], 10, bits)
 }
 
-// generatedAlphabet has 64 symbols with no ambiguous pairs (0/O, 1/l/I), so a
-// password read out over a call or copied from a screen survives the trip.
-const generatedAlphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_.!#@%&"
+// generatedAlphabet has 64 symbols: no ambiguous pairs (0/O, 1/l/I) so a
+// password read out over a call or copied from a screen survives the trip,
+// and no symbol that HTML, URLs or shells rewrite (& < > % # " ' \ space), so
+// what the administrator sees is byte-for-byte what they paste. 256 mod 64 is
+// 0, so reducing a random byte modulo the length is unbiased.
+const generatedAlphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_.!@*=~"
 
 // GeneratedLength is the length of Generate's output: 20 symbols from a
 // 64-symbol alphabet is 120 bits, far past the policy's 12-character floor.

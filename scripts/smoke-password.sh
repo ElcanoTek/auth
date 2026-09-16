@@ -43,6 +43,9 @@ SIGNING_KEY="$("$WORK/auth-admin" keygen | sed -n 's/^AUTH_SIGNING_KEY=//p')"
 printf '%s\n%s\n' "$INITIAL" "$INITIAL" | AUTH_DATA_DIR="$WORK/data" \
   "$WORK/auth-admin" user create alice@example.com >/dev/null
 app_output="$(AUTH_DATA_DIR="$WORK/data" "$WORK/auth-admin" app create explorer "$CALLBACK")"
+# An account may sign in only to applications it was granted; the checklist's
+# `auth user access` step, in miniature.
+AUTH_DATA_DIR="$WORK/data" "$WORK/auth-admin" user access alice@example.com explorer on >/dev/null
 CLIENT_SECRET="$(printf '%s\n' "$app_output" | sed -n 's/^AUTH_CLIENT_SECRET=//p')"
 [[ -n "$CLIENT_SECRET" ]] || fail "application registration did not return a client secret"
 

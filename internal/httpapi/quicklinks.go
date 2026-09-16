@@ -64,8 +64,8 @@ func quickLinksFor(apps []store.Application, access map[string]bool, isAdmin boo
 	out := make([]quickLink, 0, len(quickLinkCatalog))
 	for _, spec := range quickLinkCatalog {
 		link := quickLink{Kicker: spec.Kicker, Name: spec.Name, Description: spec.Description}
-		switch {
-		case spec.Kind == adminKind:
+		switch spec.Kind {
+		case adminKind:
 			if isAdmin {
 				link.URL, link.Available = spec.Path, true
 			}
