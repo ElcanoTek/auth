@@ -283,3 +283,40 @@ func TestChangePasswordWithStaleCSRFRerendersForm(t *testing.T) {
 		t.Fatal("stale form replaced the password")
 	}
 }
+
+// A stale submission is rejected before authentication, so it consumes no
+// rate-limit budget: more stale posts than the per-email (login) or per-IP
+// (change-password) limit allow are followed by a valid attempt that still
+// succeeds.
+func TestStaleFormsDoNotSpendRateLimit(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	csrf := getCSRFCookie(t, ts.URL+"/", "auth_csrf")
+	for i := 0; i < cfg.PasswordRatePerEmail+2; i++ {
+		resp := postPasswordForm(t, ts.URL+"/login", url.Values{
+			"email": {"alice@example.com"}, "password": {"wrong-password-on-purpose"}, "csrf_token": {"stale"},
+		}, csrf)
+		_ = resp.Body.Close()
+	}
+	login, session, rotated := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	_ = login.Body.Close()
+	if session == nil || login.Header.Get("Location") != "/account" {
+		t.Fatalf("valid login after stale floods = %q session=%v (rate limit was spent)", login.Header.Get("Location"), session != nil)
+	}
+	for i := 0; i < cfg.PasswordRatePerIP+2; i++ {
+		resp := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+			"csrf_token": {"stale"}, "current_password": {"wrong"}, "new_password": {"a-brand-new-passphrase-42"}, "confirm_password": {"a-brand-new-passphrase-42"},
+		}, session, rotated)
+		_ = resp.Body.Close()
+	}
+	changed := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+		"csrf_token": {rotated.Value}, "current_password": {plain}, "new_password": {"a-brand-new-passphrase-42"}, "confirm_password": {"a-brand-new-passphrase-42"},
+	}, session, rotated)
+	_ = changed.Body.Close()
+	if changed.StatusCode != http.StatusSeeOther {
+		t.Fatalf("valid change after stale floods = %d (rate limit was spent)", changed.StatusCode)
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if ok, _, _ := passwordauth.Verify(a.PasswordHash, "a-brand-new-passphrase-42"); !ok {
+		t.Fatal("valid change did not apply")
+	}
+}
