@@ -78,13 +78,24 @@ type adminAppView struct {
 	Granted     int
 }
 
-// adminResult is what one POST leaves for the re-rendered page.
+// adminResult is what one POST leaves for the re-rendered page. Status is
+// non-zero when the action must not render the page at all: an unexpected
+// failure (500, so an uncertain outcome is never dressed up as "nothing
+// changed") or a request the UI never sends (400).
 type adminResult struct {
 	Notice   string
 	Error    string
 	Secret   string // temporary password, shown once
 	ForEmail string
 	Tab      string
+	Status   int
+}
+
+// failed logs an unexpected error and marks the result as a 500.
+func (res adminResult) failed(what string, err error) adminResult {
+	logUnlessCancelled("admin "+what, err)
+	res.Status = http.StatusInternalServerError
+	return res
 }
 
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +137,15 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result = s.adminAction(r, identity.Account)
+		switch result.Status {
+		case 0:
+		case http.StatusBadRequest:
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		default:
+			http.Error(w, "something went wrong", result.Status)
+			return
+		}
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -161,9 +181,7 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		res.Tab = app.ID
 		disable := action == "disable-app"
 		if err := s.store.SetApplicationDisabled(ctx, app.ID, disable, now.Unix()); err != nil {
-			logUnlessCancelled("admin "+action, err)
-			res.Error = "Something went wrong. Nothing was changed."
-			return res
+			return res.failed(action, err)
 		}
 		if disable {
 			audit("admin.application_disabled", "", app.ID)
@@ -186,15 +204,11 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 	if action == "create" {
 		plain, err := passwordauth.Generate(s.passwordContext(email)...)
 		if err != nil {
-			logUnlessCancelled("admin generate password", err)
-			res.Error = "Something went wrong. Nothing was changed."
-			return res
+			return res.failed("generate password", err)
 		}
 		encoded, err := s.hashPassword(ctx, plain)
 		if err != nil {
-			logUnlessCancelled("admin hash password", err)
-			res.Error = "Something went wrong. Nothing was changed."
-			return res
+			return res.failed("hash password", err)
 		}
 		account, err := s.store.CreatePasswordAccount(ctx, email, encoded, true, now.Unix())
 		if errors.Is(err, store.ErrAccountExists) {
@@ -202,12 +216,13 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			return res
 		}
 		if err != nil {
-			logUnlessCancelled("admin create account", err)
-			res.Error = "Something went wrong. Nothing was changed."
-			return res
+			return res.failed("create account", err)
 		}
 		audit("admin.user_created", account.ID, "")
 		if _, _, err := s.store.SetApplicationAccess(ctx, account.ID, r.Form["apps"], now.Unix()); err != nil {
+			// The account exists and its password is in hand, so this is
+			// reported on the page rather than as a 500 that would hide
+			// the one-time password of a committed create.
 			logUnlessCancelled("admin initial access", err)
 			res.Error = "The account was created, but its application access could not be saved. Set it from the account's row."
 		} else {
@@ -226,9 +241,7 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		return res
 	}
 	if err != nil {
-		logUnlessCancelled("admin lookup", err)
-		res.Error = "Something went wrong. Nothing was changed."
-		return res
+		return res.failed("lookup", err)
 	}
 	self := target.ID == actor.ID
 	switch action {
@@ -246,9 +259,7 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			}
 		}
 		if err != nil {
-			logUnlessCancelled("admin reset password", err)
-			res.Error = "Something went wrong. Nothing was changed."
-			return res
+			return res.failed("reset password", err)
 		}
 		audit("admin.password_reset", target.ID, "")
 		res.Notice = fmt.Sprintf("Reset the password for %s and signed them out everywhere. Share the temporary password below.", target.Email)
@@ -260,9 +271,7 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		}
 		n, err := s.store.RevokeAllAuthSessions(ctx, target.ID, now.Unix(), "admin_revoked")
 		if err != nil {
-			logUnlessCancelled("admin revoke sessions", err)
-			res.Error = "Something went wrong. Nothing was changed."
-			return res
+			return res.failed("revoke sessions", err)
 		}
 		audit("admin.sessions_revoked", target.ID, "")
 		res.Notice = fmt.Sprintf("Signed %s out of %d session(s) and every application.", target.Email, n)
@@ -278,9 +287,7 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			return res
 		}
 		if err != nil {
-			logUnlessCancelled("admin "+action, err)
-			res.Error = "Something went wrong. Nothing was changed."
-			return res
+			return res.failed(action, err)
 		}
 		if disable {
 			audit("admin.account_disabled", target.ID, "")
@@ -301,9 +308,7 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			return res
 		}
 		if err != nil {
-			logUnlessCancelled("admin "+action, err)
-			res.Error = "Something went wrong. Nothing was changed."
-			return res
+			return res.failed(action, err)
 		}
 		if grant {
 			audit("admin.admin_granted", target.ID, "")
@@ -319,9 +324,7 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			return res
 		}
 		if err != nil {
-			logUnlessCancelled("admin set access", err)
-			res.Error = "Something went wrong. Nothing was changed."
-			return res
+			return res.failed("set access", err)
 		}
 		for _, id := range added {
 			audit("admin.access_granted", target.ID, id)
@@ -340,7 +343,7 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			res.Notice = fmt.Sprintf("%s: added %s; removed %s (and signed out of it).", target.Email, strings.Join(added, ", "), strings.Join(removed, ", "))
 		}
 	default:
-		res.Error = "Unknown action."
+		res.Status = http.StatusBadRequest
 	}
 	return res
 }
@@ -393,15 +396,16 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, actor store
 				enabledAdmins++
 			}
 		}
+		sessions, err := s.store.ActiveSessionCounts(ctx, now.Unix())
+		if err != nil {
+			logUnlessCancelled("admin count sessions", err)
+			data["Error"] = joinMessages(result.Error, "Session counts could not be loaded.")
+		}
 		rows := make([]adminAccountRow, 0, len(accounts))
 		for _, a := range accounts {
-			sessions, err := s.store.CountActiveAuthSessions(ctx, a.ID, now.Unix())
-			if err != nil {
-				logUnlessCancelled("admin count sessions", err)
-			}
 			row := adminAccountRow{
 				Email: a.Email, IsAdmin: a.IsAdmin, Created: a.CreatedAt.UTC().Format("2006-01-02"),
-				Sessions: sessions, Self: a.ID == actor.ID,
+				Sessions: sessions[a.ID], Self: a.ID == actor.ID,
 			}
 			switch {
 			case a.DisabledAt != nil:

@@ -464,8 +464,16 @@ func auditCmd(dataDir string, args []string) {
 		fmt.Println("(no audit events)")
 		return
 	}
+	// Console actions name the administrator who performed them; resolve
+	// the ids to emails once so the column reads like the ACCOUNT one.
+	emails := map[string]string{}
+	if accounts, err := st.ListPasswordAccounts(ctx); err == nil {
+		for _, a := range accounts {
+			emails[a.ID] = a.Email
+		}
+	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "TIME (UTC)\tEVENT\tACCOUNT\tAPPLICATION\tSOURCE")
+	_, _ = fmt.Fprintln(tw, "TIME (UTC)\tEVENT\tACCOUNT\tBY\tAPPLICATION\tSOURCE")
 	for _, e := range events {
 		who := e.Email
 		if who == "" {
@@ -473,6 +481,13 @@ func auditCmd(dataDir string, args []string) {
 		}
 		if who == "" {
 			who = "-"
+		}
+		by := "-"
+		if actor := e.Actor(); actor != "" {
+			by = actor
+			if email, ok := emails[actor]; ok {
+				by = email
+			}
 		}
 		source := "-"
 		if e.SourceIPHash != "" {
@@ -486,7 +501,7 @@ func auditCmd(dataDir string, args []string) {
 		if application == "" {
 			application = "-"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.OccurredAt.UTC().Format("2006-01-02 15:04:05"), e.EventType, who, application, source)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", e.OccurredAt.UTC().Format("2006-01-02 15:04:05"), e.EventType, who, by, application, source)
 	}
 	_ = tw.Flush()
 }

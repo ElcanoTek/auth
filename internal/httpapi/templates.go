@@ -598,7 +598,7 @@ const adminHTML = `<!doctype html>
     {{if .Secret}}<div class="secret" role="status">
       <p class="muted">Temporary password for <strong>{{.SecretFor}}</strong>. It is shown once and not stored: copy it now.</p>
       <code>{{.Secret}}</code>
-      <p class="muted">They sign in with it and are asked to choose their own password before anything else.</p>
+      <p class="muted">They sign in with it and are asked to choose their own password before anything else. It does not expire on its own; if it is lost, run the action again for a new one. Reloading this page repeats the action.</p>
     </div>{{end}}
 
     {{if eq .Tab "accounts"}}
@@ -616,7 +616,7 @@ const adminHTML = `<!doctype html>
           <td class="date">{{.Created}}</td>
         </tr><tr class="manage">
           <td colspan="5"><div class="actions">
-            <details class="confirm"><summary>Access</summary>
+            <details class="confirm"><summary aria-label="Access: {{.Email}}">Access</summary>
               <form class="pane" method="post" action="/admin">
                 <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{.Email}}">
                 <div class="checks">{{range .Apps}}<label><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</div>
@@ -624,14 +624,14 @@ const adminHTML = `<!doctype html>
               </form>
             </details>
             {{if not .Self}}
-            <details class="confirm danger"><summary>Reset password</summary>
+            <details class="confirm danger"><summary aria-label="Reset password: {{.Email}}">Reset password</summary>
               <form class="pane" method="post" action="/admin">
                 <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{.Email}}">
                 <p class="muted">Signs {{.Email}} out everywhere and shows a new temporary password.</p>
                 <button class="btn" type="submit">Confirm reset</button>
               </form>
             </details>
-            <details class="confirm danger"><summary>Sign out</summary>
+            <details class="confirm danger"><summary aria-label="Sign out: {{.Email}}">Sign out</summary>
               <form class="pane" method="post" action="/admin">
                 <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-sessions"><input type="hidden" name="email" value="{{.Email}}">
                 <p class="muted">Ends every session of {{.Email}}, in every application, on every device.</p>
@@ -641,10 +641,10 @@ const adminHTML = `<!doctype html>
             {{if eq .StatusClass "off"}}
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="enable"><input type="hidden" name="email" value="{{.Email}}">
-              <button class="btn-ghost" type="submit">Enable</button>
+              <button class="btn-ghost" type="submit" aria-label="Enable {{.Email}}">Enable</button>
             </form>
             {{else if .CanDisable}}
-            <details class="confirm danger"><summary>Disable</summary>
+            <details class="confirm danger"><summary aria-label="Disable: {{.Email}}">Disable</summary>
               <form class="pane" method="post" action="/admin">
                 <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="disable"><input type="hidden" name="email" value="{{.Email}}">
                 <p class="muted">{{.Email}} is signed out everywhere and cannot sign in until enabled again.</p>
@@ -653,7 +653,7 @@ const adminHTML = `<!doctype html>
             </details>
             {{end}}
             {{if .IsAdmin}}{{if .CanDemote}}
-            <details class="confirm danger"><summary>Remove admin</summary>
+            <details class="confirm danger"><summary aria-label="Remove admin: {{.Email}}">Remove admin</summary>
               <form class="pane" method="post" action="/admin">
                 <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-admin"><input type="hidden" name="email" value="{{.Email}}">
                 <p class="muted">{{.Email}} keeps their account and applications but can no longer open this console.</p>
@@ -663,7 +663,7 @@ const adminHTML = `<!doctype html>
             {{end}}{{else}}
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="grant-admin"><input type="hidden" name="email" value="{{.Email}}">
-              <button class="btn-ghost" type="submit">Make admin</button>
+              <button class="btn-ghost" type="submit" aria-label="Make {{.Email}} an admin">Make admin</button>
             </form>
             {{end}}
             {{end}}

@@ -166,8 +166,38 @@ func TestRecordAdminActionNamesTheActor(t *testing.T) {
 		t.Fatalf("application_id = %q (%v)", app, err)
 	}
 	events, _ := s.RecentAuditEvents(ctx, target.ID, 5)
-	if len(events) == 0 || events[0].EventType != "admin.password_reset" || events[0].Email != "user@example.com" {
+	if len(events) == 0 || events[0].EventType != "admin.password_reset" || events[0].Email != "user@example.com" || events[0].Actor() != admin.ID {
 		t.Fatalf("target audit = %+v", events)
+	}
+	// Rows without an actor answer "" rather than failing.
+	if events[len(events)-1].Actor() != "" {
+		t.Fatalf("account.created row has an actor: %+v", events[len(events)-1])
+	}
+}
+
+func TestActiveSessionCountsMatchPerAccountCounts(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	alice, _ := s.CreatePasswordAccount(ctx, "alice@example.com", "$argon2id$a", false, now)
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$b", false, now)
+	for i := 0; i < 2; i++ {
+		if err := s.CreateAuthSession(ctx, "tok-a"+string(rune('0'+i)), alice.ID, "$argon2id$a", now, now+600, now+3600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CreateAuthSession(ctx, "tok-b", bob.ID, "$argon2id$b", now, now+600, now+3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RevokeAuthSession(ctx, "tok-b", now, "test"); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := s.ActiveSessionCounts(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[alice.ID] != 2 || counts[bob.ID] != 0 {
+		t.Fatalf("counts = %v", counts)
 	}
 }
 

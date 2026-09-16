@@ -828,15 +828,18 @@ func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled b
 	if disabled {
 		disabledAt = now
 		event = "account.disabled"
-		if a.IsAdmin && a.DisabledAt == nil {
-			if err := requireAnotherAdminTx(ctx, tx, a.ID); err != nil {
-				return err
-			}
-		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET disabled_at = ?, updated_at = ? WHERE id = ?`,
-		disabledAt, now, a.ID); err != nil {
+	// Disabling an administrator is conditional at write time on another
+	// enabled administrator existing, so two concurrent disables that each
+	// observed two admins cannot both succeed: the second finds zero rows.
+	res, err := tx.ExecContext(ctx, `UPDATE accounts SET disabled_at = ?, updated_at = ? WHERE id = ?
+		AND (? = 0 OR is_admin = 0 OR `+anotherEnabledAdminExists+`)`,
+		disabledAt, now, a.ID, boolInt(disabled), a.ID)
+	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrLastAdmin
 	}
 	if disabled {
 		if _, err := revokeSessionsTx(ctx, tx, a.ID, now, "account_disabled"); err != nil {
@@ -892,15 +895,18 @@ func (s *Store) SetAccountAdmin(ctx context.Context, email string, admin bool, n
 	event := "account.admin_granted"
 	if !admin {
 		event = "account.admin_revoked"
-		if a.IsAdmin && a.DisabledAt == nil {
-			if err := requireAnotherAdminTx(ctx, tx, a.ID); err != nil {
-				return err
-			}
-		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET is_admin = ?, updated_at = ? WHERE id = ?`,
-		boolInt(admin), now, a.ID); err != nil {
+	// Demotion is conditional at write time (see SetAccountDisabled): it
+	// applies only while another enabled administrator exists, or when the
+	// target is disabled and so never counted as cover.
+	res, err := tx.ExecContext(ctx, `UPDATE accounts SET is_admin = ?, updated_at = ? WHERE id = ?
+		AND (? = 1 OR disabled_at IS NOT NULL OR `+anotherEnabledAdminExists+`)`,
+		boolInt(admin), now, a.ID, boolInt(admin), a.ID)
+	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrLastAdmin
 	}
 	if err := insertAudit(ctx, tx, event, a.ID, now, `{}`); err != nil {
 		return err
@@ -908,22 +914,13 @@ func (s *Store) SetAccountAdmin(ctx context.Context, email string, admin bool, n
 	return tx.Commit()
 }
 
-// requireAnotherAdminTx fails with ErrLastAdmin unless some enabled
-// administrator other than exceptID exists. Called inside the transaction
-// that is about to demote or disable exceptID, so two concurrent demotions
-// cannot both pass the check (SQLite serializes writers).
-func requireAnotherAdminTx(ctx context.Context, tx *sql.Tx, exceptID string) error {
-	var n int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM accounts a JOIN password_credentials p ON p.user_id = a.id
-		WHERE a.is_admin = 1 AND a.disabled_at IS NULL AND a.id <> ?`, exceptID).Scan(&n); err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrLastAdmin
-	}
-	return nil
-}
+// anotherEnabledAdminExists is the write-time guard fragment shared by
+// demotion and disabling: true when some enabled administrator other than
+// the bound account id exists. Evaluated inside the UPDATE itself, so it
+// sees the committed state at the moment the write lock is held.
+const anotherEnabledAdminExists = `EXISTS (
+		SELECT 1 FROM accounts o JOIN password_credentials op ON op.user_id = o.id
+		WHERE o.is_admin = 1 AND o.disabled_at IS NULL AND o.id <> ?)`
 
 // RecordAdminAction attributes a console action to the administrator who
 // performed it. The row belongs to the target account (so `auth audit list
@@ -1300,6 +1297,29 @@ func revokeSessionsTx(ctx context.Context, e execer, userID string, now int64, r
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// ActiveSessionCounts is CountActiveAuthSessions for every account in one
+// query at one instant, for the admin console's table.
+func (s *Store) ActiveSessionCounts(ctx context.Context, now int64) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT user_id, COUNT(*) FROM auth_sessions
+		WHERE revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?
+		GROUP BY user_id`, now, now)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) CountActiveAuthSessions(ctx context.Context, userID string, now int64) (int, error) {
@@ -1939,6 +1959,18 @@ type AuditEvent struct {
 	SourceIPHash  string
 	OccurredAt    time.Time
 	Email         string // display email when the account still exists
+	Metadata      string // JSON object; console actions carry {"actor_id": ..., "via": "web"}
+}
+
+// Actor returns the acting account id recorded in the metadata, or "".
+func (e AuditEvent) Actor() string {
+	var m struct {
+		ActorID string `json:"actor_id"`
+	}
+	if err := json.Unmarshal([]byte(e.Metadata), &m); err != nil {
+		return ""
+	}
+	return m.ActorID
 }
 
 // RecentAuditEvents returns the newest events first. An empty userID returns
@@ -1950,7 +1982,7 @@ func (s *Store) RecentAuditEvents(ctx context.Context, userID string, limit int)
 	if limit > 1000 {
 		limit = 1000
 	}
-	query := `SELECT e.id, e.event_type, COALESCE(e.user_id, ''), COALESCE(e.application_id, ''), COALESCE(e.source_ip_hash, ''), e.occurred_at, COALESCE(a.email, '')
+	query := `SELECT e.id, e.event_type, COALESCE(e.user_id, ''), COALESCE(e.application_id, ''), COALESCE(e.source_ip_hash, ''), e.occurred_at, COALESCE(a.email, ''), e.metadata
 		FROM audit_events e LEFT JOIN accounts a ON a.id = e.user_id`
 	args := []any{}
 	if userID != "" {
@@ -1968,7 +2000,7 @@ func (s *Store) RecentAuditEvents(ctx context.Context, userID string, limit int)
 	for rows.Next() {
 		var e AuditEvent
 		var at int64
-		if err := rows.Scan(&e.ID, &e.EventType, &e.UserID, &e.ApplicationID, &e.SourceIPHash, &at, &e.Email); err != nil {
+		if err := rows.Scan(&e.ID, &e.EventType, &e.UserID, &e.ApplicationID, &e.SourceIPHash, &at, &e.Email, &e.Metadata); err != nil {
 			return nil, err
 		}
 		e.OccurredAt = time.Unix(at, 0)

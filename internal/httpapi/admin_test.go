@@ -93,7 +93,7 @@ func (c *adminClient) post(form url.Values) (*http.Response, string) {
 }
 
 func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
-	ts, _, cfg, plain := adminFixture(t)
+	ts, st, cfg, plain := adminFixture(t)
 	// Anonymous: back to sign-in, remembering where they were going.
 	anon, err := noFollowClient().Get(ts.URL + "/admin?tab=fleet")
 	if err != nil {
@@ -138,6 +138,30 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 	// Unknown tab falls back to Accounts.
 	if _, body := alice.get("/admin?tab=nope"); !strings.Contains(body, `class="tab active" href="/admin"`) {
 		t.Fatal("unknown tab did not fall back to Accounts")
+	}
+	// Requests the UI never sends are refused outright rather than rendered.
+	if resp, _ := alice.post(url.Values{"action": {"explode"}, "email": {"bob@example.com"}}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown action = %d", resp.StatusCode)
+	}
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/admin", nil)
+	req.AddCookie(alice.session)
+	req.AddCookie(alice.csrf)
+	put, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = put.Body.Close()
+	if put.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT = %d", put.StatusCode)
+	}
+	huge := url.Values{"csrf_token": {alice.csrf.Value}, "action": {"create"}, "email": {"eve@example.com"}, "pad": {strings.Repeat("x", 20<<10)}}
+	big := postPasswordForm(t, ts.URL+"/admin", huge, alice.session, alice.csrf)
+	_ = big.Body.Close()
+	if big.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized body = %d", big.StatusCode)
+	}
+	if _, err := st.PasswordAccountByEmail(context.Background(), "eve@example.com"); err == nil {
+		t.Fatal("oversized request created an account")
 	}
 }
 

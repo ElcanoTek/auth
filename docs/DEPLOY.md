@@ -319,12 +319,20 @@ Tabs:
   rotating secrets and setting back-channel URLs stay on the CLI because the
   secret prints once and the CLI validates the URLs.
 
+Temporary passwords do not expire on their own: an account whose holder never
+signs in keeps a valid temporary credential until an administrator resets or
+disables it, so check the Accounts tab for long-standing "Must change
+password" rows. If the one-time display is lost (closed tab, failed
+response), run Reset password again; reloading the result page repeats the
+action, which the browser warns about.
+
 Every console action is audited on the target account with the acting
 administrator in the metadata (`admin.user_created`, `admin.password_reset`,
 `admin.sessions_revoked`, `admin.account_disabled` / `_enabled`,
 `admin.admin_granted` / `_revoked`, `admin.access_granted` / `_revoked`,
 `admin.application_disabled` / `_enabled`); `auth audit list <email>` shows
-them next to the `account.*` and `access.*` rows the store writes itself.
+them, with the administrator in the BY column, next to the `account.*` and
+`access.*` rows the store writes itself.
 
 ## Per-application access (password mode)
 
