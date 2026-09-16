@@ -295,6 +295,7 @@ const loginHTML = `<!doctype html>
     <div class="brand">{{.Brand}}</div>
     <h1>Sign in</h1>
     {{if .PasswordMode}}<p class="muted">Enter your work email and password.</p>{{else}}<p class="muted">Enter your work email. We'll send you a one-time link.</p>{{end}}
+    {{if .Notice}}<p class="muted">{{.Notice}}</p>{{end}}
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
     <form method="post" action="{{if .PasswordMode}}/login{{else}}/magic{{end}}">
       <label for="email">Email</label>
@@ -364,10 +365,10 @@ const accountHTML = `<!doctype html>
     <p><a href="/change-password">Change password</a></p>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-      <input type="hidden" name="redirect_to" value="/">
+      <input type="hidden" name="redirect_to" value="/?notice=signed_out">
       <button class="btn" type="submit">Sign out</button>
     </form>
-    <div class="foot">Signing out ends this browser's session only. An administrator can revoke every session for your account.</div>
+    <div class="foot">Signing out ends your session in every {{.Brand}} app, on every device.</div>
   </main>
 </body>
 </html>`

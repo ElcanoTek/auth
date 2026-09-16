@@ -147,6 +147,13 @@ the same shape, and any future service should too:
   policy. Auth, Explorer, and Lens all use one minute.
 - Local access decision (an email allowlist or membership table) applied at
   login; revoking access ends that email's sessions in the same transaction.
+- Logout is "sign out of every Elcano app": the application revokes its own
+  session, clears its cookie, and redirects the browser to Auth's
+  `GET /logout?client_id=<its id>`. Auth revokes every central session of
+  the account, fans the back-channel logout out to every application, and
+  lands on its login page. An application never ends only its own session
+  from a user-facing logout, because a silent SSO start would sign the user
+  straight back in.
 - A `POST /auth/backchannel-logout` receiver that verifies Auth's signed
   `logout+jwt` (EdDSA, `kid`, exact `iss` and `aud`, live `exp`, the
   back-channel event, no `nonce`), revokes every session for the subject,
@@ -178,7 +185,9 @@ the same shape, and any future service should too:
 - SQLite contains no plaintext password or raw session token.
 - Valid sessions respect idle and absolute expiry independently.
 - Touching a session extends idle time but never absolute time.
-- Logout revokes only the presented session.
+- Logout (the /account form or an application's GET /logout?client_id) revokes
+  every session of the account and queues the back-channel logout to every
+  application with a receiver, disabled ones included.
 - Password replacement and account disablement revoke every user session in
   the same transaction.
 - A disabled account cannot create or validate a session.

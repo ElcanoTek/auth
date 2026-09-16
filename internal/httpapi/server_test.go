@@ -1447,10 +1447,10 @@ func TestAccountPageOffersFormLogoutThatRevokes(t *testing.T) {
 		t.Fatalf("account page: status=%d body=%s", resp.StatusCode, body)
 	}
 
-	out := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf.Value}, "redirect_to": {"/"}}, session, csrf)
+	out := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf.Value}, "redirect_to": {"/?notice=signed_out"}}, session, csrf)
 	_ = out.Body.Close()
-	if out.StatusCode != http.StatusSeeOther || out.Header.Get("Location") != "/" {
-		t.Fatalf("form logout = %d %q, want 303 to /", out.StatusCode, out.Header.Get("Location"))
+	if out.StatusCode != http.StatusSeeOther || out.Header.Get("Location") != "/?notice=signed_out" {
+		t.Fatalf("form logout = %d %q, want 303 to /?notice=signed_out", out.StatusCode, out.Header.Get("Location"))
 	}
 	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
 	if n, _ := st.CountActiveAuthSessions(context.Background(), a.ID, time.Now().Unix()); n != 0 {
@@ -1594,6 +1594,23 @@ func TestLogoutKeepsCookieWhenRevocationFails(t *testing.T) {
 	for _, c := range resp.Cookies() {
 		if c.Name == cfg.PasswordCookieName {
 			t.Fatalf("session cookie was cleared despite failed revocation: %+v", c)
+		}
+	}
+	// The RP-initiated GET fails the same way: a database error is never
+	// reported as "unknown client", and the cookie survives.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/logout?client_id=anything", nil)
+	req.AddCookie(session)
+	get, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = get.Body.Close()
+	if get.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("GET logout with database down = %d, want 500", get.StatusCode)
+	}
+	for _, c := range get.Cookies() {
+		if c.Name == cfg.PasswordCookieName {
+			t.Fatalf("session cookie was cleared by GET despite database failure: %+v", c)
 		}
 	}
 }

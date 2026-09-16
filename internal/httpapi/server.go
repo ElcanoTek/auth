@@ -198,6 +198,7 @@ func (s *Server) handlePasswordRoot(w http.ResponseWriter, r *http.Request) {
 		"PasswordMode": true,
 		"ReturnTo":     r.URL.Query().Get("return_to"),
 		"Error":        errorMessage(r.URL.Query().Get("err")),
+		"Notice":       s.noticeMessage(r.URL.Query().Get("notice")),
 		"CSRF":         csrf,
 	}); err != nil {
 		log.Printf("render password login: %v", err)
@@ -396,6 +397,18 @@ var errorMessages = map[string]string{
 // nothing rather than echoing the input.
 func errorMessage(code string) string {
 	return errorMessages[code]
+}
+
+// noticeMessage maps a ?notice= code on the login page to neutral text; an
+// unknown code renders nothing, so the query can never inject content.
+func (s *Server) noticeMessage(code string) string {
+	if code == "signed_out" {
+		// Sign-out of the other apps is delivered over the back-channel
+		// (immediately, then a 2-second poll), so it is complete within
+		// seconds rather than at the instant this page renders.
+		return "You are signed out of " + s.cfg.BrandName + ". Any " + s.cfg.BrandName + " app still open is being signed out too."
+	}
+	return ""
 }
 
 // bounceWithErr redirects to the login page carrying an error code.
@@ -1162,47 +1175,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if s.passwordMode() {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-		if err := r.ParseForm(); err != nil || !s.validCSRF(r) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		now := time.Now().Unix()
-		if c, err := r.Cookie(s.cfg.PasswordCookieName); err == nil && c.Value != "" {
-			userID := ""
-			if identity := s.currentPasswordSession(r); identity != nil {
-				userID = identity.Account.ID
-			}
-			revoked, err := s.store.RevokeAuthSession(r.Context(), hashSecret(c.Value), now, "logout")
-			if err != nil {
-				// Fail closed: keep the cookie so the user can retry, and do
-				// not claim a sign-out the database did not record. A stolen
-				// copy of this session would otherwise stay valid while the
-				// user believes it is gone.
-				log.Printf("logout revoke: %v", err)
-				http.Error(w, "sign-out failed, please try again", http.StatusInternalServerError)
-				return
-			}
-			if revoked {
-				_ = s.store.RecordAudit(r.Context(), "session.logged_out", userID, s.rateKey("ip", clientIP(r)), now)
-			}
-		}
-		s.clearPasswordCookies(w)
-		// A browser form (the /account page) asks for a redirect; API-style
-		// callers omit redirect_to and get the bare 204.
-		if rt := r.FormValue("redirect_to"); rt != "" {
-			dest := s.resolveReturnTo(rt)
-			if dest == "" {
-				dest = "/"
-			}
-			http.Redirect(w, r, dest, http.StatusSeeOther)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
+		s.handlePasswordLogout(w, r)
 		return
 	}
 	s.clearSessionCookie(w)
@@ -1212,6 +1185,84 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handlePasswordLogout is "sign out of every Elcano app". Two entry points
+// share it:
+//
+//   - POST with the CSRF token: the form on /account.
+//   - GET /logout?client_id=<registered app>: RP-initiated logout (OpenID
+//     Connect RP-Initiated Logout 1.0, without id_token_hint). Explorer, Lens
+//     and Fleet send the browser here after ending their own session.
+//
+// Either way every central session of the signed-in account is revoked and a
+// back-channel logout is queued to every registered application in the same
+// transaction (RevokeAllAuthSessions), so an application session cannot
+// outlive the logout and an application that signs in silently (prompt=none)
+// cannot sign the user straight back in. The browser lands on this host's
+// login page with a notice.
+//
+// The GET form can be triggered by a hostile page navigating the browser
+// here. That is a forced sign-out, not access; RP-initiated logout permits GET
+// and we accept the nuisance rather than add a confirmation click. Only a
+// registered client_id is honoured; application ids are public anyway, so
+// this is hygiene, not a secret.
+func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
+	redirectTo := ""
+	switch r.Method {
+	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		if err := r.ParseForm(); err != nil || !s.validCSRF(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		redirectTo = r.FormValue("redirect_to")
+	case http.MethodGet:
+		// Any registered application may start a logout, disabled ones
+		// included: their users still hold sessions that should end (and the
+		// fan-out below reaches disabled apps too). A database error is a
+		// 500, never folded into "unknown client".
+		if _, err := s.store.ApplicationByID(r.Context(), r.URL.Query().Get("client_id")); err != nil {
+			if errors.Is(err, store.ErrApplicationNotFound) {
+				http.Error(w, "invalid logout request", http.StatusBadRequest)
+				return
+			}
+			log.Printf("logout client lookup: %v", err)
+			http.Error(w, "sign-out failed, please try again", http.StatusInternalServerError)
+			return
+		}
+		redirectTo = "/?notice=signed_out"
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	now := time.Now()
+	if c, err := r.Cookie(s.cfg.PasswordCookieName); err == nil && c.Value != "" {
+		userID, err := s.store.RevokeAllAuthSessionsByToken(r.Context(), hashSecret(c.Value), now.Unix(), "user_logout")
+		if err != nil {
+			// Fail closed: keep the cookie so the user can retry, and do not
+			// claim a sign-out the database did not record. A stolen copy of
+			// this session would otherwise stay valid while the user believes
+			// it is gone.
+			log.Printf("logout revoke: %v", err)
+			http.Error(w, "sign-out failed, please try again", http.StatusInternalServerError)
+			return
+		}
+		if userID != "" {
+			_ = s.store.RecordAudit(r.Context(), "session.logged_out", userID, s.rateKey("ip", clientIP(r)), now.Unix())
+		}
+	}
+	s.clearPasswordCookies(w)
+	if redirectTo == "" {
+		// API-style callers omit redirect_to and get the bare 204.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	dest := s.resolveReturnTo(redirectTo)
+	if dest == "" {
+		dest = "/"
+	}
+	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
 // ── /verify — Caddy forward_auth target ──────────────────────────────
