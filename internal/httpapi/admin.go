@@ -135,8 +135,10 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !s.validCSRF(r) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
+			// Stale console page (left open across a re-login): nothing
+			// runs; the page re-renders with the live token and says so.
+			result = adminResult{Error: staleFormMessage, Tab: r.FormValue("tab")}
+			break
 		}
 		result = s.adminAction(r, identity.Account)
 		switch result.Status {

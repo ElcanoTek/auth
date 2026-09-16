@@ -157,14 +157,77 @@ func TestPasswordLoginCreatesIsolatedServerSession(t *testing.T) {
 	}
 }
 
-func TestPasswordLoginRequiresCSRF(t *testing.T) {
-	ts, _, _, plain := newPasswordTestServer(t, false)
+// A login form whose anti-forgery token does not match is never processed:
+// no session, no rate-limit hit on the account. Instead of a bare 403 the
+// browser goes to a fresh login page with a notice, keeping return_to, and a
+// browser that is already signed in (the stale-tab case) is sent onward.
+func TestPasswordLoginWithStaleCSRFBouncesToFreshForm(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	// Missing cookie and token entirely.
 	resp := postPasswordForm(t, ts.URL+"/login", url.Values{
 		"email": {"alice@example.com"}, "password": {plain},
 	})
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("missing CSRF status = %d, want 403", resp.StatusCode)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?notice=stale_form" {
+		t.Fatalf("missing CSRF = %d %q, want 303 /?notice=stale_form", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == "auth_session" && c.Value != "" {
+			t.Fatal("stale form minted a session")
+		}
+	}
+	// A valid return_to survives the bounce; a foreign one is dropped.
+	csrf := getCSRFCookie(t, ts.URL+"/", "auth_csrf")
+	resp = postPasswordForm(t, ts.URL+"/login", url.Values{
+		"email": {"alice@example.com"}, "password": {plain}, "csrf_token": {"stale"}, "return_to": {"/authorize?client_id=x"},
+	}, csrf)
+	_ = resp.Body.Close()
+	loc, _ := url.Parse(resp.Header.Get("Location"))
+	if loc.Path != "/" || loc.Query().Get("notice") != "stale_form" || loc.Query().Get("return_to") != "/authorize?client_id=x" {
+		t.Fatalf("stale token with return_to → %q", resp.Header.Get("Location"))
+	}
+	resp = postPasswordForm(t, ts.URL+"/login", url.Values{
+		"email": {"alice@example.com"}, "password": {plain}, "csrf_token": {"stale"}, "return_to": {"https://evil.example/"},
+	}, csrf)
+	_ = resp.Body.Close()
+	if resp.Header.Get("Location") != "/?notice=stale_form" {
+		t.Fatalf("foreign return_to kept: %q", resp.Header.Get("Location"))
+	}
+	// The notice renders on the fresh page.
+	page, err := http.Get(ts.URL + "/?notice=stale_form")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(page.Body)
+	_ = page.Body.Close()
+	if !strings.Contains(string(body), "That page had expired, so nothing was submitted.") {
+		t.Fatalf("notice missing:\n%s", body)
+	}
+	// The real-world case: sign in, then resubmit the pre-login form. The
+	// token rotated at sign-in, so the old one is stale; the bounce lands a
+	// signed-in browser straight on /account.
+	stale := getCSRFCookie(t, ts.URL+"/", "auth_csrf")
+	_, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	again := postPasswordForm(t, ts.URL+"/login", url.Values{
+		"email": {"alice@example.com"}, "password": {plain}, "csrf_token": {stale.Value},
+	}, session)
+	_ = again.Body.Close()
+	if again.StatusCode != http.StatusSeeOther || again.Header.Get("Location") != "/?notice=stale_form" {
+		t.Fatalf("stale resubmit = %d %q", again.StatusCode, again.Header.Get("Location"))
+	}
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+again.Header.Get("Location"), nil)
+	req.AddCookie(session)
+	home, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = home.Body.Close()
+	if home.StatusCode != http.StatusSeeOther || home.Header.Get("Location") != "/account" {
+		t.Fatalf("signed-in bounce = %d %q, want 303 /account", home.StatusCode, home.Header.Get("Location"))
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if n, _ := st.CountActiveAuthSessions(context.Background(), a.ID, time.Now().Unix()); n != 1 {
+		t.Fatalf("sessions after stale resubmit = %d, want the one real login", n)
 	}
 }
 
@@ -328,10 +391,17 @@ func TestPasswordLogoutRequiresCSRFAndRevokesSession(t *testing.T) {
 	ts, _, cfg, plain := newPasswordTestServer(t, false)
 	login, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	_ = login.Body.Close()
+	// A stale /account page (no or old token) revokes nothing and is sent
+	// back to a fresh /account whose button carries the live token.
 	missing := postPasswordForm(t, ts.URL+"/logout", url.Values{}, session)
 	_ = missing.Body.Close()
-	if missing.StatusCode != http.StatusForbidden {
-		t.Fatalf("logout without CSRF = %d", missing.StatusCode)
+	if missing.StatusCode != http.StatusSeeOther || missing.Header.Get("Location") != "/account" {
+		t.Fatalf("logout without CSRF = %d %q, want 303 /account", missing.StatusCode, missing.Header.Get("Location"))
+	}
+	stillIn, _ := http.NewRequest(http.MethodGet, ts.URL+"/account", nil)
+	stillIn.AddCookie(session)
+	if resp, err := noFollowClient().Do(stillIn); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("session revoked by a stale logout form: %v %v", resp, err)
 	}
 	logout := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf.Value}}, session, csrf)
 	_ = logout.Body.Close()

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/elcanotek/auth/internal/config"
+	passwordauth "github.com/elcanotek/auth/internal/password"
 )
 
 // The signed-in page links to the applications this deployment registered
@@ -261,5 +262,61 @@ func TestAppInitiatedLoginReturnsToTheAppNotTheAccountPage(t *testing.T) {
 	_ = plain2.Body.Close()
 	if plain2.Header.Get("Location") != "/account" {
 		t.Fatalf("direct login = %q, want /account", plain2.Header.Get("Location"))
+	}
+}
+
+// A stale change-password form changes nothing and re-renders with the live
+// token and the expired-page message rather than a bare 403.
+func TestChangePasswordWithStaleCSRFRerendersForm(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	_, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	resp := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+		"csrf_token": {"stale"}, "current_password": {plain}, "new_password": {"a-brand-new-passphrase-42"}, "confirm_password": {"a-brand-new-passphrase-42"},
+	}, session, csrf)
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "That page had expired, so nothing was submitted.") || !strings.Contains(string(body), csrf.Value) {
+		t.Fatalf("stale change-password = %d\n%s", resp.StatusCode, body)
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if ok, _, _ := passwordauth.Verify(a.PasswordHash, plain); !ok {
+		t.Fatal("stale form replaced the password")
+	}
+}
+
+// A stale submission is rejected before authentication, so it consumes no
+// rate-limit budget: more stale posts than the per-email (login) or per-IP
+// (change-password) limit allow are followed by a valid attempt that still
+// succeeds.
+func TestStaleFormsDoNotSpendRateLimit(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	csrf := getCSRFCookie(t, ts.URL+"/", "auth_csrf")
+	for i := 0; i < cfg.PasswordRatePerEmail+2; i++ {
+		resp := postPasswordForm(t, ts.URL+"/login", url.Values{
+			"email": {"alice@example.com"}, "password": {"wrong-password-on-purpose"}, "csrf_token": {"stale"},
+		}, csrf)
+		_ = resp.Body.Close()
+	}
+	login, session, rotated := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	_ = login.Body.Close()
+	if session == nil || login.Header.Get("Location") != "/account" {
+		t.Fatalf("valid login after stale floods = %q session=%v (rate limit was spent)", login.Header.Get("Location"), session != nil)
+	}
+	for i := 0; i < cfg.PasswordRatePerIP+2; i++ {
+		resp := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+			"csrf_token": {"stale"}, "current_password": {"wrong"}, "new_password": {"a-brand-new-passphrase-42"}, "confirm_password": {"a-brand-new-passphrase-42"},
+		}, session, rotated)
+		_ = resp.Body.Close()
+	}
+	changed := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+		"csrf_token": {rotated.Value}, "current_password": {plain}, "new_password": {"a-brand-new-passphrase-42"}, "confirm_password": {"a-brand-new-passphrase-42"},
+	}, session, rotated)
+	_ = changed.Body.Close()
+	if changed.StatusCode != http.StatusSeeOther {
+		t.Fatalf("valid change after stale floods = %d (rate limit was spent)", changed.StatusCode)
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if ok, _, _ := passwordauth.Verify(a.PasswordHash, "a-brand-new-passphrase-42"); !ok {
+		t.Fatal("valid change did not apply")
 	}
 }
