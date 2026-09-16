@@ -254,6 +254,10 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 	if n, _ := st.CountActiveAuthSessions(ctx, account.ID, time.Now().Unix()); n != 2 {
 		t.Fatalf("active sessions before logout = %d, want 2", n)
 	}
+	// A code issued to this browser just before logout must not complete a
+	// sign-in afterwards: the session it was bound to is gone.
+	verifier := strings.Repeat("v", 48)
+	pendingCode := authorizeCode(t, ts.URL, deviceOne, verifier)
 
 	for _, bad := range []string{"", "?client_id=unknown"} {
 		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/logout"+bad, nil)
@@ -297,6 +301,28 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 	due, err := st.ClaimDueLogoutDeliveries(ctx, time.Now().Unix()+1, 10, time.Minute)
 	if err != nil || len(due) != 1 || due[0].ClientID != testOAuthClientID || due[0].Reason != "user_logout" || due[0].Subject != account.ID {
 		t.Fatalf("back-channel deliveries after logout = %+v (err %v), want one user_logout for %s", due, err, testOAuthClientID)
+	}
+
+	late := exchangeOAuthCode(t, ts.URL, pendingCode, verifier, testOAuthClientSecret)
+	_ = late.Body.Close()
+	if late.StatusCode != http.StatusBadRequest {
+		t.Fatalf("code exchange after logout = %d, want 400", late.StatusCode)
+	}
+
+	// Replaying the now-stale cookie is harmless: it names no live session,
+	// so nothing is revoked again and no second fan-out is queued.
+	stale, _ := http.NewRequest(http.MethodGet, ts.URL+"/logout?client_id="+testOAuthClientID, nil)
+	stale.AddCookie(deviceOne)
+	staleResp, err := noFollowClient().Do(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = staleResp.Body.Close()
+	if staleResp.StatusCode != http.StatusSeeOther || staleResp.Header.Get("Location") != "/?notice=signed_out" {
+		t.Fatalf("stale-cookie logout = %d %q", staleResp.StatusCode, staleResp.Header.Get("Location"))
+	}
+	if again, _ := st.ClaimDueLogoutDeliveries(ctx, time.Now().Unix()+1, 10, time.Minute); len(again) != 0 {
+		t.Fatalf("stale-cookie logout queued %d new deliveries, want 0", len(again))
 	}
 
 	page, err := noFollowClient().Get(ts.URL + "/?notice=signed_out")
