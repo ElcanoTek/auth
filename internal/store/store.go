@@ -253,14 +253,6 @@ CREATE INDEX IF NOT EXISTS idx_magic_links_created ON magic_links(created_at);
 `
 
 func (s *Store) migrate(ctx context.Context) error {
-	// Per-application access (schema v5) arrived after deployments had
-	// accounts signing in to every registered application. Until the v5
-	// marker is recorded, every start grants every existing password account
-	// every existing application, and the marker is written in the same
-	// transaction as the backfill, so a crash between creating the table and
-	// filling it cannot leave an upgraded deployment with no access rows.
-	// From the marker on, grants are explicit.
-	accessMigrated := s.hasMigration(ctx, 5)
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
 	}
@@ -309,27 +301,41 @@ func (s *Store) migrate(ctx context.Context) error {
 		time.Now().Unix()); err != nil {
 		return fmt.Errorf("record back-channel logout schema version: %w", err)
 	}
-	if !accessMigrated {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		now := time.Now().Unix()
-		if _, err := tx.ExecContext(ctx, `
-			INSERT OR IGNORE INTO application_access(user_id, application_id, granted_at)
-			SELECT a.id, app.id, ? FROM accounts a
-			JOIN password_credentials p ON p.user_id = a.id
-			CROSS JOIN applications app`, now); err != nil {
-			return fmt.Errorf("backfill application access: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?)`, now); err != nil {
-			return fmt.Errorf("record admin console schema version: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit admin console migration: %w", err)
-		}
+	return s.migrateApplicationAccess(ctx)
+}
+
+// migrateApplicationAccess is schema v5. Per-application access arrived
+// after deployments had accounts signing in to every registered
+// application, so the first start to claim the v5 marker grants every
+// existing password account every existing application; from then on grants
+// are explicit. The claim is the marker INSERT itself, inside the same
+// transaction as the backfill: a second or stale opener finds the row taken
+// and does nothing, and a failed backfill rolls the marker back with it, so
+// the backfill runs exactly once and never against post-migration rows.
+func (s *Store) migrateApplicationAccess(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().Unix()
+	claim, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES(5, ?) ON CONFLICT(version) DO NOTHING`, now)
+	if err != nil {
+		return fmt.Errorf("claim admin console schema version: %w", err)
+	}
+	if n, _ := claim.RowsAffected(); n == 0 {
+		return nil // already migrated (or another opener is doing it)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO application_access(user_id, application_id, granted_at)
+		SELECT a.id, app.id, ? FROM accounts a
+		JOIN password_credentials p ON p.user_id = a.id
+		CROSS JOIN applications app`, now); err != nil {
+		return fmt.Errorf("backfill application access: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit admin console migration: %w", err)
 	}
 	return nil
 }

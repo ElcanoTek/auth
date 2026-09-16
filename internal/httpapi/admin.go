@@ -156,8 +156,9 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminAction performs one console action and reports the outcome for the
-// page. Every failure is a message, never a 500: the administrator is
-// looking at the page and can act on it.
+// page. Expected conflicts (unknown email, duplicate account, last admin,
+// self-target) are inline messages the administrator can act on; unexpected
+// failures are a 500 and requests the UI never sends are a 400, via Status.
 func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 	ctx := r.Context()
 	now := time.Now()

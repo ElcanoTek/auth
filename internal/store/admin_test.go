@@ -363,6 +363,22 @@ func TestMigrationBackfillsApplicationAccessOnce(t *testing.T) {
 	if !s.hasMigration(ctx, 5) {
 		t.Fatal("v5 marker not recorded with the backfill")
 	}
+	// A stale opener that decided to migrate before this one committed
+	// runs the same code again: the marker is already claimed, so the
+	// accounts and applications created since are not joined up.
+	stale, _ := s.CreatePasswordAccount(ctx, "stale@example.com", "$argon2id$s", false, now)
+	if _, err := s.CreateApplication(ctx, "pages", "Pages", "https://pages.example/cb", "", "hash", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrateApplicationAccess(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ids, _ := s.ApplicationAccess(ctx, stale.ID); len(ids) != 0 {
+		t.Fatalf("stale opener backfilled post-migration rows: %v", ids)
+	}
+	if ids, _ := s.ApplicationAccess(ctx, alice.ID); strings.Join(ids, ",") != "fleet" {
+		t.Fatalf("stale opener granted alice a new app: %v", ids)
+	}
 	// A later account and application are NOT joined up by another Open.
 	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$b", false, now)
 	if _, err := s.CreateApplication(ctx, "lens", "Lens", "https://lens.example/cb", "", "hash", now); err != nil {
