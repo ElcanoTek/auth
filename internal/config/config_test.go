@@ -96,6 +96,31 @@ func TestDefaultReturnToLanding(t *testing.T) {
 	})
 }
 
+// Password mode never inherits the magic-mode home.<cookie-domain> landing:
+// its signed-in page is /account, and a client deployment has no home
+// service. An explicit AUTH_DEFAULT_RETURN_TO still wins.
+func TestPasswordModeDoesNotDeriveHomeLanding(t *testing.T) {
+	clearAllAuthEnv(t)
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+	t.Setenv("AUTH_LOGIN_MODE", "password")
+	t.Setenv("AUTH_COOKIE_DOMAIN", "omcvic.com")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultReturnTo != "" {
+		t.Fatalf("password mode derived DefaultReturnTo %q, want empty (→ /account)", cfg.DefaultReturnTo)
+	}
+	t.Setenv("AUTH_DEFAULT_RETURN_TO", "https://fleet.omcvic.com/")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultReturnTo != "https://fleet.omcvic.com/" {
+		t.Fatalf("explicit AUTH_DEFAULT_RETURN_TO not kept: %q", cfg.DefaultReturnTo)
+	}
+}
+
 func TestValidateRejectsMissingKey(t *testing.T) {
 	c := &Config{} // no SigningKey
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_SIGNING_KEY") {
