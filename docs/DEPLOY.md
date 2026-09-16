@@ -137,6 +137,20 @@ one edit; nothing here is optional for the first sign-in to work.
    ```
    Copy each `AUTH_CLIENT_SECRET` immediately; it is shown once.
 
+   The signed-in page at `/account` shows a quick-link tile per application
+   family (Admin, Fleet, Explorer, Lens). A tile links to the **origin** of
+   the registered callback (applications are assumed origin-rooted; a
+   callback under a sub-path such as `/apps/fleet/...` would link to the
+   wrong place) when an enabled application of that family exists, and is
+   greyed out otherwise. The family is read from the ID only: the exact ID
+   (`fleet`, `explorer`, `lens`) wins; otherwise exactly one `<family>-<suffix>`
+   ID (`explorer-omnicom`) stands in. Two suffixed IDs and no exact one is
+   ambiguous, so that tile stays greyed and the server log says why. Admin
+   points at Fleet's console (`/settings/admin`) and lights up whenever Fleet
+   does: it means "this deployment has Fleet", not "you are an admin"; Fleet's
+   own server-side authorization still decides who gets in. Disabling an
+   application greys its tiles out.
+
 **On each application host**
 
 6. Set the central-auth variables in the application's `.env` (names differ

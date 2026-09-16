@@ -1056,8 +1056,17 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "something went wrong", http.StatusInternalServerError)
 		return
 	}
+	// The quick links are a convenience on a page whose job is the account
+	// itself, so a registry read failure greys every tile out rather than
+	// turning the page into a 500.
+	apps, err := s.store.ListApplications(r.Context())
+	if err != nil {
+		log.Printf("account: list applications: %v", err)
+		apps = nil
+	}
 	if err := s.render(w, "account.html", map[string]any{
 		"Brand": s.cfg.BrandName, "Email": identity.Account.Email, "CSRF": csrf,
+		"Links": quickLinksFor(apps),
 	}); err != nil {
 		log.Printf("render account: %v", err)
 	}

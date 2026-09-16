@@ -135,7 +135,7 @@ html, body { height: 100%; }
 body {
   margin: 0;
   min-height: 100vh;
-  display: flex; align-items: center; justify-content: center;
+  display: flex;
   padding: var(--space-6);
   font-family: var(--font-body);
   font-size: var(--font-size-body); line-height: var(--line-height-body);
@@ -146,6 +146,7 @@ body {
 }
 .card {
   width: 100%; max-width: 25rem;
+  margin: auto;
   padding: var(--space-8);
   background: var(--gradient-surface-card);
   border: 1px solid var(--color-border);
@@ -206,6 +207,40 @@ input[type=email]:focus-visible, input[type=password]:focus-visible { border-col
 }
 .foot { margin-top: var(--space-6); font-size: var(--font-size-caption); color: var(--color-text-muted); text-align: center; }
 .foot a { color: var(--color-accent); }
+.card.wide { max-width: 40rem; }
+.apps { margin-bottom: var(--space-6); padding-bottom: var(--space-6); border-bottom: 1px solid var(--color-border); }
+.apps h2 {
+  font-family: var(--font-heading); font-weight: var(--font-weight-bold);
+  font-size: 1.125rem; line-height: var(--line-height-title);
+  color: var(--color-text-primary); letter-spacing: -0.01em; margin: 0 0 var(--space-2);
+}
+.apps .muted { margin-bottom: var(--space-4); }
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.tile {
+  position: relative; display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-4); overflow: hidden;
+  color: var(--color-text-primary); text-decoration: none;
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.tile::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, var(--color-accent), var(--color-primary)); opacity: 0.85;
+}
+a.tile:hover, a.tile:focus-visible { border-color: var(--color-border-strong); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.tile-kicker {
+  margin: 0; font-size: var(--font-size-overline); line-height: var(--line-height-overline);
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--color-accent);
+}
+.tile h3 { margin: 0; font-family: var(--font-heading); font-weight: var(--font-weight-bold); font-size: var(--font-size-body); color: var(--color-text-primary); }
+.tile p { margin: 0; font-size: var(--font-size-caption); line-height: var(--line-height-caption); color: var(--color-text-secondary); }
+.tile-off { cursor: default; background: transparent; border-style: dashed; }
+.tile-off::before { background: var(--color-border-strong); opacity: 1; }
+.tile-off .tile-kicker, .tile-off h3 { color: var(--color-text-muted); }
+.tile-off .tile-meta { color: var(--color-text-muted); font-style: italic; }
+@media (max-width: 30rem) { .tiles { grid-template-columns: 1fr; } }
 .theme-toggle {
   position: fixed; top: var(--space-5); right: var(--space-5);
   width: 2.5rem; height: 2.5rem;
@@ -365,11 +400,27 @@ const accountHTML = `<!doctype html>
 </head>
 <body>
   ` + themeToggle + `
-  <main class="card">
+  <main class="card wide">
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
     <h1>Signed in</h1>
     <p class="muted">You are signed in as <strong>{{.Email}}</strong>.</p>
+    <section class="apps" aria-labelledby="apps-heading">
+      <h2 id="apps-heading">Your apps</h2>
+      <p class="muted">One sign-in for every {{.Brand}} app. Greyed tiles are not part of this deployment.</p>
+      <div class="tiles">
+        {{range .Links}}{{if .Available}}<a class="tile" href="{{.URL}}" rel="noreferrer">
+          <p class="tile-kicker">{{.Kicker}}</p>
+          <h3>{{.Name}}</h3>
+          <p>{{.Description}}</p>
+        </a>{{else}}<div class="tile tile-off" aria-disabled="true">
+          <p class="tile-kicker">{{.Kicker}}</p>
+          <h3>{{.Name}}</h3>
+          <p class="tile-meta">Not available</p>
+        </div>{{end}}
+        {{end}}
+      </div>
+    </section>
     <p><a href="/change-password">Change password</a></p>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
