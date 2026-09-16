@@ -132,6 +132,27 @@ else
   fi
 fi
 
+# ── 1b. client branding bundle ───────────────────────────────────────
+# AUTH_CLIENT_CONFIG_DIR (from .env.local) may point at a git checkout of the
+# client's bundle; keep it current so a branding change lands with the update.
+# Best effort: a bundle that will not fast-forward is reported, not fatal, and
+# the previous checkout stays in use.
+bundle_dir="$(sed -n 's/^[[:space:]]*AUTH_CLIENT_CONFIG_DIR[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$APP_DIR/.env.local" 2>/dev/null | tail -n1)"
+if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
+  bundle_before="$(git -C "$bundle_dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
+  if git -c safe.directory="$bundle_dir" -C "$bundle_dir" pull --ff-only --quiet 2>/dev/null; then
+    bundle_after="$(git -C "$bundle_dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
+    chown -R "${APP_USER:-auth}:${APP_USER:-auth}" "$bundle_dir" 2>/dev/null || true
+    if [[ "$bundle_before" == "$bundle_after" ]]; then
+      ok "client bundle already current at $bundle_after"
+    else
+      ok "client bundle updated $bundle_before → $bundle_after"
+    fi
+  else
+    warn "client bundle at $bundle_dir did not fast-forward; keeping $bundle_before"
+  fi
+fi
+
 # ── 2. build in staging ──────────────────────────────────────────────
 step "2/4  Building new artifacts (staging)"
 

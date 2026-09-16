@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/elcanotek/auth/internal/backchannel"
+	"github.com/elcanotek/auth/internal/branding"
 	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/email"
 	"github.com/elcanotek/auth/internal/httpapi"
@@ -39,6 +40,18 @@ func main() {
 	}
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid config: %v", err)
+	}
+	// Client branding comes from the same bundle Fleet consumes. A configured
+	// but broken bundle is a config error: a client's auth host must not
+	// silently ship the default look because of a typo.
+	brand, err := branding.Load(cfg.ClientConfigDir)
+	if err != nil {
+		log.Fatalf("client branding: %v", err)
+	}
+	cfg.Brand = brand
+	if brand != nil {
+		log.Printf("client branding from %s (wordmark=%q logo=%v palette=%v)",
+			brand.Dir, brand.AppName, brand.LogoPath != "", brand.CSS != "")
 	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {

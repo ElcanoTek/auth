@@ -66,6 +66,7 @@ const tokensCSS = `
   --color-primary: #7272ab;
   --color-primary-hover: #8686c4;
   --color-accent: #9da7ef;
+  --color-on-primary: #ffffff;
   --color-white: #ffffff;
   --color-border: rgba(114, 114, 171, 0.35);
   --color-border-strong: rgba(114, 114, 171, 0.55);
@@ -151,6 +152,7 @@ body {
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
 }
+.mark { display: block; height: 2.25rem; width: auto; max-width: 12rem; margin-bottom: var(--space-4); }
 .brand {
   font-size: var(--font-size-overline); line-height: var(--line-height-overline);
   letter-spacing: 0.14em; text-transform: uppercase;
@@ -187,7 +189,7 @@ input[type=email]:focus-visible, input[type=password]:focus-visible { border-col
   width: 100%; min-height: 2.75rem; margin-top: var(--space-5);
   padding: var(--space-3) var(--space-4);
   font-family: var(--font-body); font-size: var(--font-size-body);
-  font-weight: var(--font-weight-bold); color: var(--color-white);
+  font-weight: var(--font-weight-bold); color: var(--color-on-primary);
   background: var(--gradient-action-primary);
   border: 0; border-radius: var(--radius-md); cursor: pointer;
   transition: filter var(--transition-fast), transform var(--transition-fast);
@@ -285,16 +287,18 @@ const loginHTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{.Brand}} — Sign in</title>
-<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `</style>
+<title>{{.Wordmark}} — Sign in</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
 <script nonce="{{.Nonce}}">` + themeScript + `</script>
 </head>
 <body>
   ` + themeToggle + `
   <main class="card">
-    <div class="brand">{{.Brand}}</div>
-    <h1>Sign in</h1>
-    {{if .PasswordMode}}<p class="muted">Enter your work email and password.</p>{{else}}<p class="muted">Enter your work email. We'll send you a one-time link.</p>{{end}}
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>{{if .LoginTitle}}{{.LoginTitle}}{{else}}Sign in{{end}}</h1>
+    {{if .LoginTagline}}<p class="muted">{{.LoginTagline}}</p>{{else if .PasswordMode}}<p class="muted">Enter your work email and password.</p>{{else}}<p class="muted">Enter your work email. We'll send you a one-time link.</p>{{end}}
     {{if .Notice}}<p class="muted">{{.Notice}}</p>{{end}}
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
     <form method="post" action="{{if .PasswordMode}}/login{{else}}/magic{{end}}">
@@ -320,14 +324,16 @@ const changePasswordHTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{.Brand}} — Change password</title>
-<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `</style>
+<title>{{.Wordmark}} — Change password</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
 <script nonce="{{.Nonce}}">` + themeScript + `</script>
 </head>
 <body>
   ` + themeToggle + `
   <main class="card">
-    <div class="brand">{{.Brand}}</div>
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
     <h1>Change password</h1>
     <p class="muted">Use at least 12 characters; a few unrelated words work well. Spaces and Unicode are allowed. Avoid common passwords and anything similar to your email or the organisation's name.</p>
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
@@ -352,14 +358,16 @@ const accountHTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{.Brand}} — Signed in</title>
-<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `</style>
+<title>{{.Wordmark}} — Signed in</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
 <script nonce="{{.Nonce}}">` + themeScript + `</script>
 </head>
 <body>
   ` + themeToggle + `
   <main class="card">
-    <div class="brand">{{.Brand}}</div>
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
     <h1>Signed in</h1>
     <p class="muted">You are signed in as <strong>{{.Email}}</strong>.</p>
     <p><a href="/change-password">Change password</a></p>
@@ -379,14 +387,16 @@ const sentHTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{.Brand}} — Check your inbox</title>
-<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `</style>
+<title>{{.Wordmark}} — Check your inbox</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
 <script nonce="{{.Nonce}}">` + themeScript + `</script>
 </head>
 <body>
   ` + themeToggle + `
   <main class="card">
-    <div class="brand">{{.Brand}}</div>
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
     <h1>Check your inbox</h1>
     <p class="muted">If <b>{{.Email}}</b> has an account, a one-time sign-in link is on its way. Click it to continue.</p>
     <div class="foot">The link expires in 15 minutes. Didn't get one? Check spam, or

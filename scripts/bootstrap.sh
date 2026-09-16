@@ -200,6 +200,36 @@ case "$LOGIN_MODE_ANSWER" in
   *) die "unknown login mode: $LOGIN_MODE_ANSWER (want password or magic)" ;;
 esac
 
+# 3b — client branding bundle (optional). The same repository Fleet consumes
+# (FLEET_CLIENT_CONFIG_DIR); Auth reads only its `branding:` block. A git URL
+# is cloned to $APP_DIR/client with the box's stored git credentials and
+# fast-forwarded on every `auth update`; a local path is used as-is.
+say
+say "  Client branding bundle — a git URL or local path of the client's config"
+say "  repository (the one Fleet uses). Auth reads only its branding: block."
+say "  Leave blank for the default look."
+CLIENT_CONFIG_ANSWER="$(prompt AUTH_BOOTSTRAP_CLIENT_CONFIG "Client bundle (git URL or path, blank for none)" "${AUTH_CLIENT_CONFIG_DIR:-}")"
+CLIENT_CONFIG_DIR=""
+if [[ -n "$CLIENT_CONFIG_ANSWER" ]]; then
+  case "$CLIENT_CONFIG_ANSWER" in
+    http://*|https://*|git@*|ssh://*)
+      CLIENT_CONFIG_DIR="$APP_DIR/client"
+      if [[ "$DRY_RUN" != "1" ]]; then
+        if [[ -d "$CLIENT_CONFIG_DIR/.git" ]]; then
+          git -C "$CLIENT_CONFIG_DIR" pull --ff-only --quiet || die "could not fast-forward $CLIENT_CONFIG_DIR"
+        else
+          git clone --quiet "$CLIENT_CONFIG_ANSWER" "$CLIENT_CONFIG_DIR" || die "could not clone $CLIENT_CONFIG_ANSWER (does the box's git credential cover it?)"
+        fi
+        chown -R "$APP_USER:$APP_USER" "$CLIENT_CONFIG_DIR"
+      fi
+      ;;
+    *)
+      CLIENT_CONFIG_DIR="$CLIENT_CONFIG_ANSWER"
+      [[ "$DRY_RUN" == "1" || -f "$CLIENT_CONFIG_DIR/manifest.yaml" ]] || die "$CLIENT_CONFIG_DIR has no manifest.yaml"
+      ;;
+  esac
+fi
+
 COOKIE_DOMAIN_ANSWER=""
 ALLOWED_DOMAINS_ANSWER=""
 EMAIL_DRIVER_ANSWER="stdout"
@@ -396,6 +426,12 @@ AUTH_ASSERTION_TTL_MINUTES="5"
 # ── Tenancy / allowlist ──────────────────────────────────────────
 AUTH_ALLOWED_DOMAINS="$ALLOWED_DOMAINS_ANSWER"
 
+# ── Branding ─────────────────────────────────────────────────────
+# Prose brand name ("Your X sign-in link", "signed out of X"). The wordmark,
+# mark, colours and login copy come from the client bundle below when set.
+AUTH_BRAND_NAME="${AUTH_BRAND_NAME:-Elcano}"
+AUTH_CLIENT_CONFIG_DIR="$CLIENT_CONFIG_DIR"
+
 # ── Email delivery ───────────────────────────────────────────────
 AUTH_EMAIL_DRIVER="$EMAIL_DRIVER_ANSWER"
 AUTH_EMAIL_FROM="$EMAIL_FROM_ANSWER"
@@ -563,6 +599,9 @@ else
   say "  URL          ${c_bold}http://${HOSTNAME_ANSWER}:9000${c_reset}"
 fi
 say "  Login mode   ${c_dim}${LOGIN_MODE_ANSWER}${c_reset}"
+if [[ -n "$CLIENT_CONFIG_DIR" ]]; then
+  say "  Branding     ${c_dim}${CLIENT_CONFIG_DIR} (bundle branding: block)${c_reset}"
+fi
 if [[ "$LOGIN_MODE_ANSWER" == "magic" ]]; then
   say "  Cookie       ${c_dim}Domain=${COOKIE_DOMAIN_ANSWER:-host-only}${c_reset}"
   say "  Allowlist    ${c_dim}${ALLOWED_DOMAINS_ANSWER:-(empty — open enrollment)}${c_reset}"

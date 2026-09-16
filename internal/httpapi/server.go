@@ -43,10 +43,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/elcanotek/auth/internal/branding"
 	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/email"
 	passwordauth "github.com/elcanotek/auth/internal/password"
@@ -131,6 +133,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/me", s.handleMe)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.Handle("/fonts/", fontHandler()) // self-hosted Nebula Sans woff2 for the login UI
+	mux.HandleFunc("/brand/logo", s.handleBrandLogo)
 	return logRequests(securityHeaders(mux))
 }
 
@@ -1659,12 +1662,75 @@ func (s *Server) render(w http.ResponseWriter, name string, data map[string]any)
 	if err != nil {
 		return err
 	}
+	s.decorate(data)
 	w.Header().Set("Content-Security-Policy",
 		"default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
 			"font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data["Nonce"] = nonce
 	return s.tmpl.ExecuteTemplate(w, name, data)
+}
+
+// decorate adds the branding fields every page template reads. Without a
+// bundle the wordmark is the prose brand name and the rest is empty, which
+// renders exactly the pre-bundle pages. BrandCSS is template.CSS because the
+// branding package has already validated every value against a strict
+// grammar; nothing else may be marked that way.
+func (s *Server) decorate(data map[string]any) {
+	data["Wordmark"] = s.cfg.BrandName
+	data["LogoURL"] = ""
+	data["BrandCSS"] = template.CSS("")
+	data["LoginTitle"] = ""
+	data["LoginTagline"] = ""
+	b := s.cfg.Brand
+	if b == nil {
+		return
+	}
+	if b.AppName != "" {
+		data["Wordmark"] = b.AppName
+	}
+	if b.LogoPath != "" {
+		data["LogoURL"] = "/brand/logo"
+	}
+	data["BrandCSS"] = template.CSS(b.CSS)
+	data["LoginTitle"] = b.LoginTitle
+	data["LoginTagline"] = b.LoginTagline
+}
+
+// handleBrandLogo serves the bundle's mark. The path was containment-checked
+// at load; the file is re-read per request (a re-theme needs no rebuild) and
+// re-bounded so a swapped-in giant cannot be served. SVG can carry script, so
+// the response is sandboxed in case someone opens it directly rather than as
+// an <img>.
+func (s *Server) handleBrandLogo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	b := s.cfg.Brand
+	if b == nil || b.LogoPath == "" {
+		http.NotFound(w, r)
+		return
+	}
+	info, err := os.Stat(b.LogoPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > branding.MaxLogoBytes {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(b.LogoPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	w.Header().Set("Content-Type", b.LogoContentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+	// A re-theme is a restart away; five minutes keeps every page load from
+	// re-fetching while letting a new mark show up promptly.
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Del("Pragma")
+	http.ServeContent(w, r, "", info.ModTime(), f)
 }
 
 // writeJSON encodes v with encoding/json so every string is escaped by JSON

@@ -15,6 +15,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
+	"github.com/elcanotek/auth/internal/branding"
 	"net/url"
 	"os"
 	"strconv"
@@ -99,6 +100,9 @@ var allowedEnvVars = map[string]bool{
 	// service's URL).
 	"AUTH_BRAND_NAME":        true,
 	"AUTH_DEFAULT_RETURN_TO": true,
+	// Optional client bundle (the same repository Fleet consumes). Only its
+	// branding block is read: wordmark, mark, colours, login copy.
+	"AUTH_CLIENT_CONFIG_DIR": true,
 
 	// Allowlist of hosts /callback?return_to= will redirect to. Comma-
 	// separated. Empty means "any host on the cookie domain"; explicit
@@ -152,7 +156,12 @@ type Config struct {
 	SMTPUser       string
 	SMTPPass       string
 
-	BrandName       string
+	BrandName string
+	// ClientConfigDir is the bundle checkout whose branding block re-skins
+	// the pages; empty keeps the built-in look. Brand is what main loaded
+	// from it (nil when unset) — kept here so tests can inject one.
+	ClientConfigDir string
+	Brand           *branding.Brand
 	DefaultReturnTo string
 	ReturnToHosts   []string
 }
@@ -204,6 +213,7 @@ func Load(envFile string) (*Config, error) {
 		SMTPPass:           os.Getenv("AUTH_SMTP_PASS"),
 		BrandName:          envOr("AUTH_BRAND_NAME", "Elcano"),
 		DefaultReturnTo:    os.Getenv("AUTH_DEFAULT_RETURN_TO"),
+		ClientConfigDir:    strings.TrimSpace(os.Getenv("AUTH_CLIENT_CONFIG_DIR")),
 	}
 
 	// PRODUCTION TODO (may or may not be needed, depending on deployment):
