@@ -200,8 +200,8 @@ The shared-password gate is gone. Lens picks its behaviour with
   Lens keeps its own email allowlist (`lens access grant|revoke|list`) and
   mints a host-only `__Host-lens_session` cookie (24 h absolute, 12 h idle).
   Auth's back-channel logout revokes every Lens session for the subject.
-  Local logout lands on `/signed-out`, which links to the auth host's
-  `/account` page for ending the central session.
+  Logout redirects to Auth's `/logout?client_id=lens`, which signs the user
+  out of every application and lands on the auth host's login page.
 
 Details: `lens/docs/DEPLOYMENT.md`, and "First password-mode client: rollout
 checklist" in `DEPLOY.md` here.

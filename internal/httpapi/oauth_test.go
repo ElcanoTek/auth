@@ -231,6 +231,91 @@ func TestAuthorizePromptNoneNeverShowsAForm(t *testing.T) {
 	}
 }
 
+// Signing out at any application is "sign out of every Elcano app": the
+// RP-initiated GET /logout?client_id=<app> revokes every central session of
+// the account, queues a back-channel logout to each registered application,
+// clears the cookies, and lands on the login page with a notice. Unknown or
+// missing client_ids are refused so the endpoint cannot enumerate apps.
+func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	ctx := t.Context()
+	if _, err := st.CreateApplication(ctx, testOAuthClientID, "Explorer", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetApplicationBackchannelLogoutURI(ctx, testOAuthClientID, "https://explorer.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	_, deviceOne, csrfOne := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	_, deviceTwo, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	if deviceOne == nil || deviceTwo == nil || csrfOne == nil {
+		t.Fatal("logins did not issue sessions")
+	}
+	account, _ := st.PasswordAccountByEmail(ctx, "alice@example.com")
+	if n, _ := st.CountActiveAuthSessions(ctx, account.ID, time.Now().Unix()); n != 2 {
+		t.Fatalf("active sessions before logout = %d, want 2", n)
+	}
+
+	for _, bad := range []string{"", "?client_id=unknown"} {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/logout"+bad, nil)
+		req.AddCookie(deviceOne)
+		resp, err := noFollowClient().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("GET /logout%s = %d, want 400", bad, resp.StatusCode)
+		}
+	}
+	if n, _ := st.CountActiveAuthSessions(ctx, account.ID, time.Now().Unix()); n != 2 {
+		t.Fatalf("a refused logout changed session state: %d active", n)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/logout?client_id="+testOAuthClientID, nil)
+	req.AddCookie(deviceOne)
+	req.AddCookie(csrfOne)
+	resp, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?notice=signed_out" {
+		t.Fatalf("RP-initiated logout = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	cleared := 0
+	for _, c := range resp.Cookies() {
+		if (c.Name == cfg.PasswordCookieName || c.Name == "auth_csrf") && c.MaxAge < 0 {
+			cleared++
+		}
+	}
+	if cleared != 2 {
+		t.Fatalf("logout cleared %d cookies, want the session and CSRF cookies", cleared)
+	}
+	if n, _ := st.CountActiveAuthSessions(ctx, account.ID, time.Now().Unix()); n != 0 {
+		t.Fatalf("active sessions after logout = %d, want 0 (every device)", n)
+	}
+	due, err := st.ClaimDueLogoutDeliveries(ctx, time.Now().Unix()+1, 10, time.Minute)
+	if err != nil || len(due) != 1 || due[0].ClientID != testOAuthClientID || due[0].Reason != "user_logout" || due[0].Subject != account.ID {
+		t.Fatalf("back-channel deliveries after logout = %+v (err %v), want one user_logout for %s", due, err, testOAuthClientID)
+	}
+
+	page, err := noFollowClient().Get(ts.URL + "/?notice=signed_out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(page.Body)
+	_ = page.Body.Close()
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(body), "You are signed out of all") {
+		t.Fatalf("login page after logout: %d %s", page.StatusCode, body)
+	}
+	unknown, _ := noFollowClient().Get(ts.URL + "/?notice=<script>")
+	body, _ = io.ReadAll(unknown.Body)
+	_ = unknown.Body.Close()
+	if strings.Contains(string(body), "<script>") || strings.Contains(string(body), "signed out") {
+		t.Fatal("unknown notice code rendered content")
+	}
+}
+
 func TestForcedPasswordChangeReturnsToAuthorization(t *testing.T) {
 	ts, st, cfg, initial := newPasswordTestServer(t, true)
 	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Explorer", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {

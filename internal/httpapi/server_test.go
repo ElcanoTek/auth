@@ -1447,10 +1447,10 @@ func TestAccountPageOffersFormLogoutThatRevokes(t *testing.T) {
 		t.Fatalf("account page: status=%d body=%s", resp.StatusCode, body)
 	}
 
-	out := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf.Value}, "redirect_to": {"/"}}, session, csrf)
+	out := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf.Value}, "redirect_to": {"/?notice=signed_out"}}, session, csrf)
 	_ = out.Body.Close()
-	if out.StatusCode != http.StatusSeeOther || out.Header.Get("Location") != "/" {
-		t.Fatalf("form logout = %d %q, want 303 to /", out.StatusCode, out.Header.Get("Location"))
+	if out.StatusCode != http.StatusSeeOther || out.Header.Get("Location") != "/?notice=signed_out" {
+		t.Fatalf("form logout = %d %q, want 303 to /?notice=signed_out", out.StatusCode, out.Header.Get("Location"))
 	}
 	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
 	if n, _ := st.CountActiveAuthSessions(context.Background(), a.ID, time.Now().Unix()); n != 0 {

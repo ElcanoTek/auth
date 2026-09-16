@@ -930,6 +930,38 @@ func (s *Store) RevokeAllAuthSessions(ctx context.Context, userID string, now in
 	return n, tx.Commit()
 }
 
+// RevokeAllAuthSessionsByToken is the user-facing logout: the presented
+// session must be live (a stale or forged cookie cannot force other devices
+// out), and then every session of its account is revoked and the back-channel
+// logout is queued to every application, all in one transaction. It returns
+// the account id, or "" when the token named no live session. A database
+// error is returned so the caller can fail closed.
+func (s *Store) RevokeAllAuthSessionsByToken(ctx context.Context, tokenHash string, now int64, reason string) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var userID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT user_id FROM auth_sessions
+		WHERE token_hash = ? AND revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?`,
+		tokenHash, now, now).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err := revokeSessionsTx(ctx, tx, userID, now, reason); err != nil {
+		return "", err
+	}
+	if err := enqueueLogoutEventTx(ctx, tx, userID, reason, now); err != nil {
+		return "", err
+	}
+	return userID, tx.Commit()
+}
+
 type execer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
