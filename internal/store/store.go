@@ -1109,6 +1109,10 @@ type LogoutDelivery struct {
 	Attempts int
 }
 
+// enqueueLogoutEventTx queues one logout event and one delivery per
+// application that has a back-channel endpoint. Disabled applications are
+// included on purpose: disabling stops new handoffs, but sessions minted
+// before that still exist there and must end with everything else.
 func enqueueLogoutEventTx(ctx context.Context, tx *sql.Tx, userID, reason string, now int64) error {
 	var email string
 	if err := tx.QueryRowContext(ctx, `SELECT normalized_email FROM accounts WHERE id = ?`, userID).Scan(&email); err != nil {
@@ -1122,15 +1126,14 @@ func enqueueLogoutEventTx(ctx context.Context, tx *sql.Tx, userID, reason string
 		INSERT INTO logout_events(id, user_id, email, reason, issued_at)
 		SELECT ?, ?, ?, ?, ?
 		WHERE EXISTS (
-			SELECT 1 FROM applications
-			WHERE disabled_at IS NULL AND COALESCE(backchannel_logout_uri, '') <> ''
+			SELECT 1 FROM applications WHERE COALESCE(backchannel_logout_uri, '') <> ''
 		)`, eventID, userID, email, reason, now); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO logout_deliveries(event_id, client_id, endpoint, next_attempt_at)
 		SELECT ?, id, backchannel_logout_uri, ? FROM applications
-		WHERE disabled_at IS NULL AND COALESCE(backchannel_logout_uri, '') <> ''`, eventID, now)
+		WHERE COALESCE(backchannel_logout_uri, '') <> ''`, eventID, now)
 	return err
 }
 

@@ -245,6 +245,17 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 	if err := st.SetApplicationBackchannelLogoutURI(ctx, testOAuthClientID, "https://explorer.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	// A second application that has since been disabled still holds sessions
+	// minted earlier, so it must receive the logout as well.
+	if _, err := st.CreateApplication(ctx, "lens", "Lens", "https://lens.example.com/auth/callback", "", hashSecret("lens-secret"), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetApplicationBackchannelLogoutURI(ctx, "lens", "https://lens.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetApplicationDisabled(ctx, "lens", true, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
 	_, deviceOne, csrfOne := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	_, deviceTwo, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	if deviceOne == nil || deviceTwo == nil || csrfOne == nil {
@@ -299,8 +310,18 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 		t.Fatalf("active sessions after logout = %d, want 0 (every device)", n)
 	}
 	due, err := st.ClaimDueLogoutDeliveries(ctx, time.Now().Unix()+1, 10, time.Minute)
-	if err != nil || len(due) != 1 || due[0].ClientID != testOAuthClientID || due[0].Reason != "user_logout" || due[0].Subject != account.ID {
-		t.Fatalf("back-channel deliveries after logout = %+v (err %v), want one user_logout for %s", due, err, testOAuthClientID)
+	if err != nil || len(due) != 2 {
+		t.Fatalf("back-channel deliveries after logout = %+v (err %v), want one per application with a receiver", due, err)
+	}
+	clients := map[string]bool{}
+	for _, d := range due {
+		if d.Reason != "user_logout" || d.Subject != account.ID {
+			t.Fatalf("delivery %+v: want reason user_logout for %s", d, account.ID)
+		}
+		clients[d.ClientID] = true
+	}
+	if !clients[testOAuthClientID] || !clients["lens"] {
+		t.Fatalf("deliveries reached %v, want %s and the disabled lens", clients, testOAuthClientID)
 	}
 
 	late := exchangeOAuthCode(t, ts.URL, pendingCode, verifier, testOAuthClientSecret)
@@ -331,7 +352,7 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 	}
 	body, _ := io.ReadAll(page.Body)
 	_ = page.Body.Close()
-	if page.StatusCode != http.StatusOK || !strings.Contains(string(body), "You are signed out of") {
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(body), "You are signed out of") || !strings.Contains(string(body), "is being signed out too") {
 		t.Fatalf("login page after logout: %d %s", page.StatusCode, body)
 	}
 	unknown, _ := noFollowClient().Get(ts.URL + "/?notice=<script>")

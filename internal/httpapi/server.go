@@ -406,7 +406,7 @@ func (s *Server) noticeMessage(code string) string {
 		// Sign-out of the other apps is delivered over the back-channel
 		// (immediately, then a 2-second poll), so it is complete within
 		// seconds rather than at the instant this page renders.
-		return "You are signed out of " + s.cfg.BrandName + ". Any " + s.cfg.BrandName + " app still open will sign you out within a few seconds."
+		return "You are signed out of " + s.cfg.BrandName + ". Any " + s.cfg.BrandName + " app still open is being signed out too."
 	}
 	return ""
 }
@@ -1219,8 +1219,9 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 		redirectTo = r.FormValue("redirect_to")
 	case http.MethodGet:
 		// Any registered application may start a logout, disabled ones
-		// included: their users still hold sessions that should end. A
-		// database error is a 500, never folded into "unknown client".
+		// included: their users still hold sessions that should end (and the
+		// fan-out below reaches disabled apps too). A database error is a
+		// 500, never folded into "unknown client".
 		if _, err := s.store.ApplicationByID(r.Context(), r.URL.Query().Get("client_id")); err != nil {
 			if errors.Is(err, store.ErrApplicationNotFound) {
 				http.Error(w, "invalid logout request", http.StatusBadRequest)

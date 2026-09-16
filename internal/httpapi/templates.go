@@ -368,7 +368,7 @@ const accountHTML = `<!doctype html>
       <input type="hidden" name="redirect_to" value="/?notice=signed_out">
       <button class="btn" type="submit">Sign out</button>
     </form>
-    <div class="foot">Signing out ends this browser's session only. An administrator can revoke every session for your account.</div>
+    <div class="foot">Signing out ends your session in every {{.Brand}} app, on every device.</div>
   </main>
 </body>
 </html>`
