@@ -1596,6 +1596,23 @@ func TestLogoutKeepsCookieWhenRevocationFails(t *testing.T) {
 			t.Fatalf("session cookie was cleared despite failed revocation: %+v", c)
 		}
 	}
+	// The RP-initiated GET fails the same way: a database error is never
+	// reported as "unknown client", and the cookie survives.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/logout?client_id=anything", nil)
+	req.AddCookie(session)
+	get, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = get.Body.Close()
+	if get.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("GET logout with database down = %d, want 500", get.StatusCode)
+	}
+	for _, c := range get.Cookies() {
+		if c.Name == cfg.PasswordCookieName {
+			t.Fatalf("session cookie was cleared by GET despite database failure: %+v", c)
+		}
+	}
 }
 
 func TestPagesCarryNonceCSPAndNoUnnoncedInlineCode(t *testing.T) {

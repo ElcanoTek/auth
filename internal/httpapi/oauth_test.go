@@ -305,7 +305,7 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 	}
 	body, _ := io.ReadAll(page.Body)
 	_ = page.Body.Close()
-	if page.StatusCode != http.StatusOK || !strings.Contains(string(body), "You are signed out of all") {
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(body), "You are signed out of") {
 		t.Fatalf("login page after logout: %d %s", page.StatusCode, body)
 	}
 	unknown, _ := noFollowClient().Get(ts.URL + "/?notice=<script>")

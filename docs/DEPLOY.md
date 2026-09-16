@@ -250,10 +250,19 @@ ending its own session, Explorer, Lens or Fleet sends the browser to
 every central session of that account (all devices), queues the signed
 back-channel logout to every registered application in the same transaction,
 clears its cookies and shows its login page with a "signed out" notice. The
-form on `/account` does the same. Because the request is a plain GET, a
-hostile page can force a sign-out; that costs the user a login, not access,
-and is accepted in exchange for a click-free flow. Only registered, enabled
-client ids are honoured.
+form on `/account` does the same. Scope and timing, stated plainly:
+
+- Application sessions end when each application's back-channel receiver
+  accepts the event: immediately in practice (the deliverer runs at once and
+  then every two seconds), and retried for up to seven days if an
+  application is down. A sign-in that completed in the same instant as the
+  logout can survive for one application session (24 hours).
+- Only central (password-mode) sessions and the application sessions built on
+  them are covered. Legacy stateless `elcano_auth` cookies on other devices
+  and Fleet's own password sessions are not.
+- Because the request is a plain GET, a hostile page can force a sign-out;
+  that costs the user a login, not access, and is accepted in exchange for a
+  click-free flow. Any registered client id is honoured (ids are public).
 
 ## Domain management (magic mode only)
 
