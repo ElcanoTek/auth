@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -160,5 +162,104 @@ func TestAccountPageGreysAppsTheAccountCannotOpen(t *testing.T) {
 	}
 	if n := strings.Count(body, `class="tile tile-off"`); n != 3 {
 		t.Fatalf("greyed tiles = %d, want 3 (Admin, Fleet, Lens)", n)
+	}
+}
+
+// Someone who arrives at Auth from an application goes straight back to it
+// after signing in: the login page carries the application's authorize
+// request as return_to, the login POST lands on it, and /authorize sends the
+// browser to the application's callback with a code. The signed-in page with
+// its quick links is never part of that trip; it is only where a direct visit
+// to Auth ends up.
+func TestAppInitiatedLoginReturnsToTheAppNotTheAccountPage(t *testing.T) {
+	ts, st, _, plain := newPasswordTestServer(t, false)
+	now := time.Now().Unix()
+	if _, err := st.CreateApplication(context.Background(), "explorer", "Explorer", "https://explorer.client.example/auth/callback", "", hashSecret("s"), now); err != nil {
+		t.Fatal(err)
+	}
+	grantAccess(t, st, "alice@example.com", "explorer")
+	const verifier = "a-valid-pkce-verifier-that-is-longer-than-forty-three-characters"
+	authorizePath := "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"explorer"}, "redirect_uri": {"https://explorer.client.example/auth/callback"},
+		"scope": {"email"}, "state": {"st"}, "nonce": {"n"}, "code_challenge": {oauthChallenge(verifier)}, "code_challenge_method": {"S256"},
+	}.Encode()
+
+	// 1. The application sends an anonymous browser to /authorize.
+	first, err := noFollowClient().Get(ts.URL + authorizePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = first.Body.Close()
+	loginURL, _ := url.Parse(first.Header.Get("Location"))
+	if first.StatusCode != http.StatusSeeOther || loginURL.Path != "/" || loginURL.Query().Get("return_to") != authorizePath {
+		t.Fatalf("anonymous authorize = %d %q", first.StatusCode, first.Header.Get("Location"))
+	}
+
+	// 2. The login page remembers where they were going and shows no tiles.
+	page, err := http.Get(ts.URL + first.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(page.Body)
+	_ = page.Body.Close()
+	var csrf *http.Cookie
+	for _, c := range page.Cookies() {
+		if c.Name == "auth_csrf" {
+			csrf = c
+		}
+	}
+	if csrf == nil || !strings.Contains(string(body), `name="return_to" value="`+html.EscapeString(authorizePath)+`"`) {
+		t.Fatalf("login page did not carry return_to:\n%s", body)
+	}
+	if strings.Contains(string(body), `class="tile`) || strings.Contains(string(body), "Your apps") {
+		t.Fatalf("login page shows quick links:\n%s", body)
+	}
+
+	// 3. Signing in lands on the authorize request, not on /account.
+	login := postPasswordForm(t, ts.URL+"/login", url.Values{
+		"email": {"alice@example.com"}, "password": {plain}, "csrf_token": {csrf.Value}, "return_to": {authorizePath},
+	}, csrf)
+	_ = login.Body.Close()
+	var session *http.Cookie
+	for _, c := range login.Cookies() {
+		if c.Name == "auth_session" && c.Value != "" {
+			session = c
+		}
+	}
+	if session == nil || login.StatusCode != http.StatusSeeOther || login.Header.Get("Location") != authorizePath {
+		t.Fatalf("post-login = %d %q (session=%v), want 303 to the authorize request", login.StatusCode, login.Header.Get("Location"), session != nil)
+	}
+
+	// 4. /authorize now hands the browser back to the application with a code.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+authorizePath, nil)
+	req.AddCookie(session)
+	back, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = back.Body.Close()
+	callback, _ := url.Parse(back.Header.Get("Location"))
+	if back.StatusCode != http.StatusSeeOther || callback.Host != "explorer.client.example" || callback.Path != "/auth/callback" ||
+		callback.Query().Get("code") == "" || callback.Query().Get("state") != "st" {
+		t.Fatalf("authorize with session = %d %q", back.StatusCode, back.Header.Get("Location"))
+	}
+
+	// 5. A direct visit to Auth, already signed in, is where the tiles live.
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/", nil)
+	req.AddCookie(session)
+	home, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = home.Body.Close()
+	if home.StatusCode != http.StatusSeeOther || home.Header.Get("Location") != "/account" {
+		t.Fatalf("direct visit while signed in = %d %q, want 303 /account", home.StatusCode, home.Header.Get("Location"))
+	}
+	// And a direct visit that is NOT signed in signs in to /account, not to any app.
+	direct := getCSRFCookie(t, ts.URL+"/", "auth_csrf")
+	plain2 := postPasswordForm(t, ts.URL+"/login", url.Values{"email": {"alice@example.com"}, "password": {plain}, "csrf_token": {direct.Value}}, direct)
+	_ = plain2.Body.Close()
+	if plain2.Header.Get("Location") != "/account" {
+		t.Fatalf("direct login = %q, want /account", plain2.Header.Get("Location"))
 	}
 }
