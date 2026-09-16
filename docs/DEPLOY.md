@@ -146,6 +146,12 @@ one edit; nothing here is optional for the first sign-in to work.
    `fleet` and `lens`. From here on the admin console does this with
    checkboxes.
 
+   A direct visit to Auth (no application in the picture) lands on the
+   signed-in page at `/account`; a visit that started at an application goes
+   straight back to it after sign-in and never sees that page. In password
+   mode the magic-mode `home.<cookie-domain>` landing is not derived, so only
+   an explicit `AUTH_DEFAULT_RETURN_TO` changes where a direct visit lands.
+
    The signed-in page at `/account` shows a quick-link tile per application
    family (Admin, Fleet, Explorer, Lens). A tile is live when an enabled
    application of that family is registered **and the signed-in account has

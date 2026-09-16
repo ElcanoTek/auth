@@ -284,14 +284,19 @@ func Load(envFile string) (*Config, error) {
 		cfg.ReturnToHosts = []string{"." + strings.TrimPrefix(cfg.CookieDomain, ".")}
 	}
 
-	// Default landing page: send freshly-authenticated users (and anyone
-	// hitting the bare auth host while already signed in) to the stack's
-	// home service on the cookie domain — home.<cookie-domain> — instead
-	// of the raw /me JSON. Only derived when AUTH_DEFAULT_RETURN_TO is
-	// unset AND we have a cookie domain to anchor to; localhost/dev with
+	// Default landing page (magic mode): send freshly-authenticated users
+	// (and anyone hitting the bare auth host while already signed in) to the
+	// stack's home service on the cookie domain — home.<cookie-domain> —
+	// instead of the raw /me JSON. Only derived when AUTH_DEFAULT_RETURN_TO
+	// is unset AND we have a cookie domain to anchor to; localhost/dev with
 	// no cookie domain keeps the /me fallback. Override explicitly via
 	// AUTH_DEFAULT_RETURN_TO for a different landing service.
-	if cfg.DefaultReturnTo == "" && cfg.CookieDomain != "" {
+	//
+	// Password mode has its own signed-in page (/account, with the quick
+	// links to the client's applications) and client deployments have no
+	// home.<domain> service, so nothing is derived there: a direct visit
+	// lands on /account unless the operator sets AUTH_DEFAULT_RETURN_TO.
+	if cfg.DefaultReturnTo == "" && cfg.CookieDomain != "" && cfg.LoginMode != "password" {
 		cfg.DefaultReturnTo = "https://home." + strings.TrimPrefix(cfg.CookieDomain, ".")
 	}
 
