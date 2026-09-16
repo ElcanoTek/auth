@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/elcanotek/auth/internal/config"
+	passwordauth "github.com/elcanotek/auth/internal/password"
 )
 
 // The signed-in page links to the applications this deployment registered
@@ -261,5 +262,24 @@ func TestAppInitiatedLoginReturnsToTheAppNotTheAccountPage(t *testing.T) {
 	_ = plain2.Body.Close()
 	if plain2.Header.Get("Location") != "/account" {
 		t.Fatalf("direct login = %q, want /account", plain2.Header.Get("Location"))
+	}
+}
+
+// A stale change-password form changes nothing and re-renders with the live
+// token and the expired-page message rather than a bare 403.
+func TestChangePasswordWithStaleCSRFRerendersForm(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	_, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	resp := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+		"csrf_token": {"stale"}, "current_password": {plain}, "new_password": {"a-brand-new-passphrase-42"}, "confirm_password": {"a-brand-new-passphrase-42"},
+	}, session, csrf)
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "That page had expired, so nothing was submitted.") || !strings.Contains(string(body), csrf.Value) {
+		t.Fatalf("stale change-password = %d\n%s", resp.StatusCode, body)
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if ok, _, _ := passwordauth.Verify(a.PasswordHash, plain); !ok {
+		t.Fatal("stale form replaced the password")
 	}
 }

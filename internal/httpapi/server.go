@@ -405,14 +405,33 @@ func errorMessage(code string) string {
 
 // noticeMessage maps a ?notice= code on the login page to neutral text; an
 // unknown code renders nothing, so the query can never inject content.
+// staleFormMessage is shown when a form arrives with an anti-forgery token
+// that no longer matches the cookie: a page left open across a sign-in or
+// sign-out. It says what happened (nothing) and what to do (try again).
+const staleFormMessage = "That page had expired, so nothing was submitted. Please try again."
+
 func (s *Server) noticeMessage(code string) string {
-	if code == "signed_out" {
+	switch code {
+	case "signed_out":
 		// Sign-out of the other apps is delivered over the back-channel
 		// (immediately, then a 2-second poll), so it is complete within
 		// seconds rather than at the instant this page renders.
 		return "You are signed out of " + s.cfg.BrandName + ". Any " + s.cfg.BrandName + " app still open is being signed out too."
+	case "stale_form":
+		return staleFormMessage
 	}
 	return ""
+}
+
+// bounceStaleForm sends a stale login form back to a fresh login page with
+// the stale_form notice, preserving a valid return_to so an app-initiated
+// sign-in still lands in the app afterwards.
+func (s *Server) bounceStaleForm(w http.ResponseWriter, r *http.Request, rawReturnTo string) {
+	q := url.Values{"notice": {"stale_form"}}
+	if dest := s.resolveReturnTo(rawReturnTo); dest != "" {
+		q.Set("return_to", dest)
+	}
+	http.Redirect(w, r, "/?"+q.Encode(), http.StatusSeeOther)
 }
 
 // bounceWithErr redirects to the login page carrying an error code.
@@ -443,7 +462,12 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.validCSRF(r) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		// A token mismatch is almost always a stale copy of this form (the
+		// back button, a second tab) submitted after a sign-in rotated the
+		// cookie, not an attack. Either way nothing is processed; send the
+		// browser to a fresh page, keeping where it was going. A browser that
+		// is already signed in is redirected onward from there.
+		s.bounceStaleForm(w, r, r.FormValue("return_to"))
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
@@ -619,7 +643,9 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.validCSRF(r) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		// Stale form (see handlePasswordLogin): nothing is changed; the
+		// page re-renders with the live token so a retry just works.
+		s.renderChangePassword(w, staleFormMessage, csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	current, next, confirm := r.FormValue("current_password"), r.FormValue("new_password"), r.FormValue("confirm_password")
@@ -1256,8 +1282,14 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-		if err := r.ParseForm(); err != nil || !s.validCSRF(r) {
-			http.Error(w, "forbidden", http.StatusForbidden)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		if !s.validCSRF(r) {
+			// Stale /account page: nothing is revoked; a fresh copy of the
+			// page carries the live token and its Sign out button works.
+			http.Redirect(w, r, "/account", http.StatusSeeOther)
 			return
 		}
 		redirectTo = r.FormValue("redirect_to")

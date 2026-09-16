@@ -132,11 +132,16 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 	if resp.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("Cache-Control = %q", resp.Header.Get("Cache-Control"))
 	}
-	// CSRF is required on every action.
+	// CSRF is required on every action: a stale token runs nothing and the
+	// page re-renders with the message and the live token.
 	noCSRF := postPasswordForm(t, ts.URL+"/admin", url.Values{"csrf_token": {"wrong"}, "action": {"create"}, "email": {"eve@example.com"}}, alice.session, alice.csrf)
+	staleBody, _ := io.ReadAll(noCSRF.Body)
 	_ = noCSRF.Body.Close()
-	if noCSRF.StatusCode != http.StatusForbidden {
-		t.Fatalf("bad CSRF = %d", noCSRF.StatusCode)
+	if noCSRF.StatusCode != http.StatusOK || !strings.Contains(string(staleBody), "That page had expired, so nothing was submitted.") || !strings.Contains(string(staleBody), alice.csrf.Value) {
+		t.Fatalf("bad CSRF = %d\n%s", noCSRF.StatusCode, staleBody)
+	}
+	if _, err := st.PasswordAccountByEmail(context.Background(), "eve@example.com"); err == nil {
+		t.Fatal("stale form created an account")
 	}
 	// Unknown tab falls back to Accounts.
 	if _, body := alice.get("/admin?tab=nope"); !strings.Contains(body, `class="tab active" href="/admin"`) {
