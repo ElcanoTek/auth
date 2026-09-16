@@ -100,6 +100,17 @@ git config --global --add safe.directory "$SRC_DIR" 2>/dev/null || true
 
 before_sha="$(git rev-parse HEAD)"
 
+# The client bundle may not live inside $APP_DIR: every path through this
+# script, the rebuild-only one included, syncs $APP_DIR with rsync --delete.
+# Checked on canonical paths so a symlinked or relative spelling cannot slip by.
+if [[ -n "$bundle_dir" ]]; then
+  bundle_canon="$(readlink -f -- "$bundle_dir" 2>/dev/null || printf '%s' "$bundle_dir")"
+  app_canon="$(readlink -f -- "$APP_DIR" 2>/dev/null || printf '%s' "$APP_DIR")"
+  case "$bundle_canon/" in
+    "$app_canon"/*) die "AUTH_CLIENT_CONFIG_DIR=$bundle_dir is inside $APP_DIR, which this script syncs with rsync --delete; move the bundle (bootstrap uses ${APP_DIR}-client) and fix .env.local before updating" ;;
+  esac
+fi
+
 if [[ "${AUTH_UPDATE_NO_PULL:-0}" == "1" ]]; then
   after_sha="$before_sha"
   ok "rebuild-only mode — skipping fetch, building ${after_sha:0:12}"
@@ -140,11 +151,6 @@ else
   # update. A bundle that will not fast-forward is reported, not fatal, and
   # the previous checkout stays in use. The checkout lives outside $APP_DIR
   # (bootstrap puts it at ${APP_DIR}-client) so the swap below never touches it.
-  if [[ -n "$bundle_dir" ]]; then
-    case "$bundle_dir/" in
-      "$APP_DIR"/*) die "AUTH_CLIENT_CONFIG_DIR=$bundle_dir is inside $APP_DIR, which this update syncs with rsync --delete; move the bundle (bootstrap uses ${APP_DIR}-client) and fix .env.local before updating" ;;
-    esac
-  fi
   if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
     if bundle_git pull --ff-only --quiet 2>/dev/null; then
       bundle_after="$(bundle_git rev-parse HEAD 2>/dev/null || echo "$bundle_before")"
@@ -218,8 +224,14 @@ step "2/4  Building new artifacts (staging)"
 STAGING="$(mktemp -d)"
 BACKUP=""
 # This replaces the EXIT trap armed when the bundle advanced, so it must keep
-# doing that job: staging/backup cleanup AND the bundle restore on failure.
-trap 'rm -rf "$STAGING"; [[ -z "$BACKUP" ]] || rm -rf "$BACKUP"; restore_bundle_on_exit' EXIT
+# doing that job. The restore runs first: a cleanup failure under set -e must
+# never prevent it, and the cleanups themselves are best effort.
+cleanup_on_exit() {
+  restore_bundle_on_exit
+  rm -rf "$STAGING" || true
+  [[ -z "$BACKUP" ]] || rm -rf "$BACKUP" || true
+}
+trap cleanup_on_exit EXIT
 
 rsync -a --delete \
   --exclude='/.git' \
@@ -320,13 +332,15 @@ systemctl start auth-server.service || true
 # ── 4. health check ──────────────────────────────────────────────────
 step "4/4  Health check"
 if wait_healthy; then
+  # The update is complete the moment the new build answers: nothing after
+  # this line may undo the bundle, so flag success before any output.
+  update_succeeded=1
   ok "auth-server healthy"
 else
   rollback_and_die "new build (${after_sha:0:12}) didn't come up healthy"
 fi
 
 say
-update_succeeded=1
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
 printf '%s ✓ Updated %s → %s%s\n' "$c_bold" "${before_sha:0:12}" "${after_sha:0:12}" "$c_reset"
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"

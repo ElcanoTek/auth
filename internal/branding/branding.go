@@ -108,11 +108,15 @@ func Load(dir string) (*Brand, error) {
 		LoginTagline: oneLine(m.Branding.LoginTagline, 240),
 	}
 	if logo := strings.TrimSpace(m.Branding.Logo); logo != "" {
+		bundleRoot, err := filepath.EvalSymlinks(abs)
+		if err != nil {
+			return nil, fmt.Errorf("AUTH_CLIENT_CONFIG_DIR: %w", err)
+		}
 		path, ctype, validated, err := validateLogo(abs, logo)
 		if err != nil {
 			return nil, fmt.Errorf("AUTH_CLIENT_CONFIG_DIR: branding.logo: %w", err)
 		}
-		data, err := readBounded(path, validated, MaxLogoBytes)
+		data, err := readBounded(path, bundleRoot, validated, MaxLogoBytes)
 		if err != nil {
 			return nil, fmt.Errorf("AUTH_CLIENT_CONFIG_DIR: branding.logo: %w", err)
 		}
@@ -123,11 +127,13 @@ func Load(dir string) (*Brand, error) {
 }
 
 // readBounded reads the file validateLogo just examined and refuses to read
-// anything else: the open uses O_NOFOLLOW for the final component, and the
-// opened descriptor must be the very inode validation saw (os.SameFile), so a
-// swap of the file OR of any ancestor directory for a symlink between the
-// check and this read yields an error instead of another file's bytes.
-func readBounded(path string, validated os.FileInfo, limit int64) ([]byte, error) {
+// anything else. Three checks close the check-then-open window: the open uses
+// O_NOFOLLOW for the final component; the opened descriptor must be the very
+// inode validation saw (os.SameFile); and, where the kernel exposes it
+// (/proc/self/fd on Linux), the descriptor's resolved path must still lie
+// inside the bundle, which catches an ancestor directory swapped for a
+// symlink between the containment check and the open.
+func readBounded(path, bundleRoot string, validated os.FileInfo, limit int64) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
@@ -139,6 +145,11 @@ func readBounded(path string, validated os.FileInfo, limit int64) ([]byte, error
 	}
 	if !os.SameFile(validated, info) {
 		return nil, fmt.Errorf("%s changed between validation and read", path)
+	}
+	if target, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", f.Fd())); err == nil {
+		if target != bundleRoot && !strings.HasPrefix(target, bundleRoot+string(filepath.Separator)) {
+			return nil, fmt.Errorf("%s resolved outside the bundle at read time (%s)", path, target)
+		}
 	}
 	if !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, fmt.Errorf("%s is not a regular file of at most %d bytes", path, limit)
