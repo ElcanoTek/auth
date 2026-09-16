@@ -28,13 +28,13 @@ type quickLinkSpec struct {
 	Kicker, Name, Description, Kind, Path string
 }
 
-// quickLinkCatalog is the fixed tile order. Admin rides on Fleet: its
-// operator console lives under /settings/admin (Fleet keeps /admin as a
-// permanent alias) and Fleet's own server-side authorization decides who may
-// use it. Auth has no role model, so the tile says "this deployment has
-// Fleet", not "you are a Fleet admin".
+// adminKind marks the tile for Auth's own console: it follows the signed-in
+// account's administrator flag, not the applications table.
+const adminKind = "admin"
+
+// quickLinkCatalog is the fixed tile order.
 var quickLinkCatalog = []quickLinkSpec{
-	{Kicker: "Administration", Name: "Admin", Description: "Manage users, features, and providers.", Kind: "fleet", Path: "/settings/admin"},
+	{Kicker: "Administration", Name: "Admin", Description: "Accounts, access, and applications on this sign-in.", Kind: adminKind, Path: "/admin"},
 	{Kicker: "Agents", Name: "Fleet", Description: "Work with your AI agents and their tasks.", Kind: "fleet", Path: "/"},
 	{Kicker: "Reporting", Name: "Explorer", Description: "Explore reporting on your programmatic activity.", Kind: "explorer", Path: "/"},
 	{Kicker: "Classification", Name: "Lens", Description: "Classify supply quality with AI signals.", Kind: "lens", Path: "/"},
@@ -43,29 +43,48 @@ var quickLinkCatalog = []quickLinkSpec{
 // quickLinkKinds are the application families the catalogue knows.
 var quickLinkKinds = []string{"fleet", "explorer", "lens"}
 
-// quickLinksFor resolves the catalogue against the registered applications.
-// It never fails: a kind with no usable application just leaves its tiles
-// greyed out. Tiles of the same kind (Admin and Fleet) always share one
-// origin because the selection happens once per kind.
-func quickLinksFor(apps []store.Application) []quickLink {
+// quickLinksFor resolves the catalogue for one signed-in account: a tile is
+// live when an enabled application of that kind is registered with a usable
+// origin AND the account has been granted access to it (access is keyed by
+// application ID). The Admin tile is live for administrators only. It never
+// fails: anything unusable leaves its tile greyed out.
+func quickLinksFor(apps []store.Application, access map[string]bool, isAdmin bool) []quickLink {
 	origins := map[string]*url.URL{}
 	for _, kind := range quickLinkKinds {
-		if app, ok := selectApplication(apps, kind); ok {
-			if origin, ok := appOrigin(app.RedirectURI); ok {
-				origins[kind] = origin
-			} else {
-				log.Printf("quick links: application %q has no https origin to link to; %s tile greyed out", app.ID, kind)
-			}
+		app, ok := selectApplication(apps, kind)
+		if !ok || !access[app.ID] {
+			continue
+		}
+		if origin, ok := appOrigin(app.RedirectURI); ok {
+			origins[kind] = origin
+		} else {
+			log.Printf("quick links: application %q has no https origin to link to; %s tile greyed out", app.ID, kind)
 		}
 	}
 	out := make([]quickLink, 0, len(quickLinkCatalog))
 	for _, spec := range quickLinkCatalog {
 		link := quickLink{Kicker: spec.Kicker, Name: spec.Name, Description: spec.Description}
-		if origin, ok := origins[spec.Kind]; ok {
-			link.URL = (&url.URL{Scheme: origin.Scheme, Host: origin.Host, Path: spec.Path}).String()
-			link.Available = true
+		switch {
+		case spec.Kind == adminKind:
+			if isAdmin {
+				link.URL, link.Available = spec.Path, true
+			}
+		default:
+			if origin, ok := origins[spec.Kind]; ok {
+				link.URL = (&url.URL{Scheme: origin.Scheme, Host: origin.Host, Path: spec.Path}).String()
+				link.Available = true
+			}
 		}
 		out = append(out, link)
+	}
+	return out
+}
+
+// accessSet turns an account's application IDs into a lookup.
+func accessSet(ids []string) map[string]bool {
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[id] = true
 	}
 	return out
 }

@@ -135,3 +135,28 @@ func TestVerifyMalformedHashesFailClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateMeetsPolicyAndVaries(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		p, err := Generate(ContextTerms("alice@example.com", "Acme", "auth.acme.example")...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p) != GeneratedLength {
+			t.Fatalf("length %d: %q", len(p), p)
+		}
+		if err := Validate(p, ContextTerms("alice@example.com", "Acme", "auth.acme.example")...); err != nil {
+			t.Fatalf("generated password fails policy: %v (%q)", err, p)
+		}
+		for _, r := range p {
+			if !strings.ContainsRune(generatedAlphabet, r) {
+				t.Fatalf("symbol %q outside alphabet in %q", r, p)
+			}
+		}
+		if seen[p] {
+			t.Fatalf("duplicate generated password %q", p)
+		}
+		seen[p] = true
+	}
+}

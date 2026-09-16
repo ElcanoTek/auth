@@ -335,6 +335,8 @@ USERS
   auth user set-password <email>    replace password and revoke sessions
   auth user disable <email>         disable account and revoke sessions
   auth user enable <email>          re-enable account
+  auth user admin <email> on|off    grant or remove access to the web admin console
+  auth user access <email> <app> on|off  let (or stop letting) an account sign in to one application
   auth user show <email>            show account state and active sessions
   auth user revoke-sessions <email> revoke all sessions for one account
   auth user list                    password accounts + magic-link audit

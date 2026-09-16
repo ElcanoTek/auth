@@ -24,6 +24,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -233,7 +234,7 @@ func domainCmd(dataDir string, args []string) {
 
 func userCmd(dataDir string, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: auth-admin user <list|del> [email]")
+		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|set-password|disable|enable|admin|access|show|revoke-sessions|list|del> [email]")
 		os.Exit(2)
 	}
 	st, ctx := openStore(dataDir)
@@ -297,8 +298,68 @@ func userCmd(dataDir string, args []string) {
 		if a.DisabledAt != nil {
 			status = "disabled"
 		}
-		fmt.Printf("email: %s\nid: %s\nstatus: %s\nmust change password: %t\nactive sessions: %d\n",
-			a.Email, a.ID, status, a.MustChangePassword, active)
+		apps, err := st.ApplicationAccess(ctx, a.ID)
+		if err != nil {
+			fatalf("show access: %v", err)
+		}
+		appList := "(none)"
+		if len(apps) > 0 {
+			appList = strings.Join(apps, ", ")
+		}
+		fmt.Printf("email: %s\nid: %s\nstatus: %s\nadmin: %t\nmust change password: %t\nactive sessions: %d\napplications: %s\n",
+			a.Email, a.ID, status, a.IsAdmin, a.MustChangePassword, active, appList)
+	case "admin":
+		if len(args) != 3 || (args[2] != "on" && args[2] != "off") {
+			fatalf("usage: auth-admin user admin <email> on|off")
+		}
+		email := validateAccountEmail(args[1])
+		grant := args[2] == "on"
+		if err := st.SetAccountAdmin(ctx, email, grant, time.Now().Unix()); err != nil {
+			if errors.Is(err, store.ErrLastAdmin) {
+				fatalf("admin off: %s is the last enabled administrator; grant another account first", email)
+			}
+			fatalf("admin %s: %v", args[2], err)
+		}
+		if grant {
+			fmt.Printf("✓ %s can open the admin console\n", email)
+		} else {
+			fmt.Printf("✓ %s is no longer an administrator\n", email)
+		}
+	case "access":
+		if len(args) != 4 || (args[3] != "on" && args[3] != "off") {
+			fatalf("usage: auth-admin user access <email> <app-id> on|off")
+		}
+		email := validateAccountEmail(args[1])
+		appID := validateApplicationID(args[2])
+		a, err := st.PasswordAccountByEmail(ctx, email)
+		if err != nil {
+			fatalf("access: %v", err)
+		}
+		have, err := st.ApplicationAccess(ctx, a.ID)
+		if err != nil {
+			fatalf("access: %v", err)
+		}
+		want := make([]string, 0, len(have)+1)
+		for _, id := range have {
+			if id != appID {
+				want = append(want, id)
+			}
+		}
+		if args[3] == "on" {
+			want = append(want, appID)
+		}
+		added, removed, err := st.SetApplicationAccess(ctx, a.ID, want, time.Now().Unix())
+		if err != nil {
+			fatalf("access %s: %v", args[3], err)
+		}
+		switch {
+		case len(added) > 0:
+			fmt.Printf("✓ %s can now sign in to %s\n", a.Email, appID)
+		case len(removed) > 0:
+			fmt.Printf("✓ %s can no longer sign in to %s (signed out of it)\n", a.Email, appID)
+		default:
+			fmt.Printf("✓ no change for %s on %s\n", a.Email, appID)
+		}
 	case "revoke-sessions":
 		requireUserEmailArg(args, "revoke-sessions")
 		a, err := st.PasswordAccountByEmail(ctx, args[1])
@@ -318,13 +379,13 @@ func userCmd(dataDir string, args []string) {
 		if len(accounts) > 0 {
 			fmt.Println("PASSWORD ACCOUNTS")
 			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			_, _ = fmt.Fprintln(tw, "EMAIL\tSTATUS\tMUST CHANGE\tCREATED")
+			_, _ = fmt.Fprintln(tw, "EMAIL\tSTATUS\tADMIN\tMUST CHANGE\tCREATED")
 			for _, a := range accounts {
 				status := "enabled"
 				if a.DisabledAt != nil {
 					status = "disabled"
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%t\t%s\n", a.Email, status, a.MustChangePassword, a.CreatedAt.Format("2006-01-02"))
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%t\t%t\t%s\n", a.Email, status, a.IsAdmin, a.MustChangePassword, a.CreatedAt.Format("2006-01-02"))
 			}
 			_ = tw.Flush()
 		}

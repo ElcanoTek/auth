@@ -32,10 +32,16 @@ func TestAccountPageLinksRegisteredAppsAndGreysOutTheRest(t *testing.T) {
 	if err := st.SetApplicationDisabled(context.Background(), "lens", true, now); err != nil {
 		t.Fatal(err)
 	}
+	for _, id := range []string{"explorer", "fleet", "lens"} {
+		grantAccess(t, st, "alice@example.com", id)
+	}
+	if err := st.SetAccountAdmin(context.Background(), "alice@example.com", true, now); err != nil {
+		t.Fatal(err)
+	}
 
 	body := accountPage(t, ts, cfg, plain)
 	for _, want := range []string{
-		`href="https://fleet.client.example/settings/admin"`,
+		`href="/admin"`,
 		`href="https://fleet.client.example/"`,
 		`href="https://explorer.client.example/"`,
 		`<h3>Lens</h3>`,
@@ -83,6 +89,7 @@ func TestAccountPageIsUncachedAndReferrerFree(t *testing.T) {
 	if _, err := st.CreateApplication(context.Background(), "fleet", "Fleet", "https://fleet.client.example/api/auth/oidc/callback", "", hashSecret("s"), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", "fleet")
 	_, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/account", nil)
 	req.AddCookie(session)
@@ -133,4 +140,25 @@ func accountPage(t *testing.T, ts *httptest.Server, cfg *config.Config, plain st
 		t.Fatalf("GET /account = %d\n%s", resp.StatusCode, body)
 	}
 	return string(body)
+}
+
+// Registered but not granted: the tile is greyed for this account, and the
+// page says so with the same inert markup.
+func TestAccountPageGreysAppsTheAccountCannotOpen(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	now := time.Now().Unix()
+	if _, err := st.CreateApplication(context.Background(), "fleet", "Fleet", "https://fleet.client.example/api/auth/oidc/callback", "", hashSecret("s"), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateApplication(context.Background(), "explorer", "Explorer", "https://explorer.client.example/auth/callback", "", hashSecret("s"), now); err != nil {
+		t.Fatal(err)
+	}
+	grantAccess(t, st, "alice@example.com", "explorer")
+	body := accountPage(t, ts, cfg, plain)
+	if strings.Contains(body, "fleet.client.example") || !strings.Contains(body, `href="https://explorer.client.example/"`) {
+		t.Fatalf("access not reflected:\n%s", body)
+	}
+	if n := strings.Count(body, `class="tile tile-off"`); n != 3 {
+		t.Fatalf("greyed tiles = %d, want 3 (Admin, Fleet, Lens)", n)
+	}
 }
