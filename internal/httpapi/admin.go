@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -44,6 +45,7 @@ type adminAccountRow struct {
 	Created     string
 	Sessions    int
 	Apps        []adminAppChoice
+	GrantedApps int
 	Self        bool
 	CanDisable  bool // not self and not the last enabled admin
 	CanDemote   bool
@@ -163,9 +165,14 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 	tab := r.FormValue("tab")
 	res := adminResult{Tab: tab}
 	ipHash := s.rateKey("ip", clientIP(r))
+	// Attribution is written after the mutation commits, on a context that
+	// survives the client hanging up, so a disconnect right after a
+	// successful change does not lose who made it.
 	audit := func(event, targetID, appID string) {
-		if err := s.store.RecordAdminAction(ctx, event, actor.ID, targetID, appID, ipHash, now.Unix()); err != nil {
-			log.Printf("admin audit %s: %v", event, err)
+		auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := s.store.RecordAdminAction(auditCtx, event, actor.ID, targetID, appID, ipHash, now.Unix()); err != nil {
+			log.Printf("admin audit %s by %s on target=%q app=%q: %v", event, actor.ID, targetID, appID, err)
 		}
 	}
 
@@ -174,9 +181,12 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 	case "disable-app", "enable-app":
 		appID := strings.TrimSpace(r.FormValue("app"))
 		app, err := s.store.ApplicationByID(ctx, appID)
-		if err != nil {
+		if errors.Is(err, store.ErrApplicationNotFound) {
 			res.Error = "No application with that ID."
 			return res
+		}
+		if err != nil {
+			return res.failed("application lookup", err)
 		}
 		res.Tab = app.ID
 		disable := action == "disable-app"
@@ -421,6 +431,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, actor store
 			granted := accessSet(access[a.ID])
 			for _, app := range apps {
 				row.Apps = append(row.Apps, adminAppChoice{ID: app.ID, Name: app.Name, Granted: granted[app.ID]})
+				if granted[app.ID] {
+					row.GrantedApps++
+				}
 			}
 			rows = append(rows, row)
 		}

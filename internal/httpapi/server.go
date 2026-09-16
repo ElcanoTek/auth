@@ -764,8 +764,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !hasAccess {
-		w.WriteHeader(http.StatusForbidden)
-		if err := s.render(w, "no-access.html", map[string]any{
+		if err := s.renderStatus(w, http.StatusForbidden, "no-access.html", map[string]any{
 			"Brand": s.cfg.BrandName, "Email": identity.Account.Email, "AppName": app.Name,
 		}); err != nil {
 			log.Printf("render no-access: %v", err)
@@ -1700,6 +1699,14 @@ func logRequests(h http.Handler) http.Handler {
 // the redirect that follows a form post, which would break the post-login
 // bounce to a client application host.
 func (s *Server) render(w http.ResponseWriter, name string, data map[string]any) error {
+	return s.renderStatus(w, 0, name, data)
+}
+
+// renderStatus is render with an explicit status code. Headers (the nonce
+// CSP, the content type) are set before the status is written, because
+// anything set after WriteHeader is silently dropped; status 0 leaves the
+// implicit 200.
+func (s *Server) renderStatus(w http.ResponseWriter, status int, name string, data map[string]any) error {
 	nonce, err := randomSecret(16)
 	if err != nil {
 		return err
@@ -1709,6 +1716,9 @@ func (s *Server) render(w http.ResponseWriter, name string, data map[string]any)
 		"default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
 			"font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if status != 0 {
+		w.WriteHeader(status)
+	}
 	data["Nonce"] = nonce
 	return s.tmpl.ExecuteTemplate(w, name, data)
 }

@@ -344,8 +344,13 @@ func TestMigrationBackfillsApplicationAccessOnce(t *testing.T) {
 	if _, err := s.CreateApplication(ctx, "fleet", "Fleet", "https://fleet.example/cb", "", "hash", now); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate the pre-access schema: the table does not exist yet.
-	if _, err := s.db.ExecContext(ctx, `DROP TABLE application_access`); err != nil {
+	// Simulate a v4 deployment whose upgrade died between creating the table
+	// and filling it: the table exists (empty) but the v5 marker was never
+	// recorded. The next start must still backfill.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM application_access`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 5`); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Close()
@@ -354,6 +359,9 @@ func TestMigrationBackfillsApplicationAccessOnce(t *testing.T) {
 	}
 	if ids, _ := s.ApplicationAccess(ctx, alice.ID); strings.Join(ids, ",") != "fleet" {
 		t.Fatalf("backfill = %v", ids)
+	}
+	if !s.hasMigration(ctx, 5) {
+		t.Fatal("v5 marker not recorded with the backfill")
 	}
 	// A later account and application are NOT joined up by another Open.
 	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$b", false, now)
@@ -370,5 +378,104 @@ func TestMigrationBackfillsApplicationAccessOnce(t *testing.T) {
 	}
 	if ids, _ := s.ApplicationAccess(ctx, alice.ID); strings.Join(ids, ",") != "fleet" {
 		t.Fatalf("alice gained lens from a routine restart: %v", ids)
+	}
+}
+
+// Access is enforced in the statements that mint and redeem codes, not only
+// in the handler: no grant, no code; grant revoked between issue and
+// exchange, no token.
+func TestAuthorizationCodesRequireApplicationAccess(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := int64(1_000)
+	alice, _ := s.CreatePasswordAccount(ctx, "alice@example.com", "$argon2id$a", false, now)
+	if _, err := s.CreateApplication(ctx, "explorer", "Explorer", "https://explorer.example/cb", "", "hash", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAuthSession(ctx, "sess", alice.ID, "$argon2id$a", now, now+600, now+3600); err != nil {
+		t.Fatal(err)
+	}
+	grant := AuthorizationGrant{ClientID: "explorer", UserID: alice.ID, SessionTokenHash: "sess",
+		RedirectURI: "https://explorer.example/cb", Nonce: "n", CodeChallenge: "c", AuthTime: now}
+	if err := s.IssueAuthorizationCode(ctx, "code1", grant, now, now+60); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("issue without grant = %v, want ErrInvalidGrant", err)
+	}
+	if _, _, err := s.SetApplicationAccess(ctx, alice.ID, []string{"explorer"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.IssueAuthorizationCode(ctx, "code1", grant, now, now+60); err != nil {
+		t.Fatalf("issue with grant: %v", err)
+	}
+	// Revoke between issue and exchange: the pending code is gone and, even
+	// if it were not, consumption re-checks the grant.
+	if _, removed, err := s.SetApplicationAccess(ctx, alice.ID, nil, now+1); err != nil || strings.Join(removed, ",") != "explorer" {
+		t.Fatalf("revoke: %v %v", removed, err)
+	}
+	if _, err := s.ConsumeAuthorizationCode(ctx, "code1", "explorer", grant.RedirectURI, grant.CodeChallenge, now+2); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("exchange after revoke = %v, want ErrInvalidGrant", err)
+	}
+	var pending int
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM authorization_codes WHERE user_id = ? AND consumed_at IS NULL`, alice.ID).Scan(&pending)
+	if pending != 0 {
+		t.Fatalf("unconsumed codes after revoke = %d", pending)
+	}
+	// Re-granted: a fresh code exchanges normally.
+	if _, _, err := s.SetApplicationAccess(ctx, alice.ID, []string{"explorer"}, now+3); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.IssueAuthorizationCode(ctx, "code2", grant, now+3, now+63); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ConsumeAuthorizationCode(ctx, "code2", "explorer", grant.RedirectURI, grant.CodeChallenge, now+4); err != nil || got.UserID != alice.ID {
+		t.Fatalf("exchange after re-grant = %+v %v", got, err)
+	}
+}
+
+// Two administrators demoting each other at the same instant: the guard is
+// in the UPDATE, so exactly one succeeds and one enabled admin remains.
+func TestLastAdminGuardHoldsUnderConcurrentDemotion(t *testing.T) {
+	for round := 0; round < 5; round++ {
+		s := openTestStore(t)
+		ctx := context.Background()
+		now := time.Now().Unix()
+		for _, email := range []string{"alice@example.com", "bob@example.com"} {
+			if _, err := s.CreatePasswordAccount(ctx, email, "$argon2id$x", false, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetAccountAdmin(ctx, email, true, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		errs := make(chan error, 2)
+		start := make(chan struct{})
+		for _, email := range []string{"alice@example.com", "bob@example.com"} {
+			go func(email string) {
+				<-start
+				errs <- s.SetAccountAdmin(ctx, email, false, now+1)
+			}(email)
+		}
+		close(start)
+		var refused, ok int
+		for i := 0; i < 2; i++ {
+			switch err := <-errs; {
+			case err == nil:
+				ok++
+			case errors.Is(err, ErrLastAdmin):
+				refused++
+			default:
+				t.Fatalf("round %d: unexpected error %v", round, err)
+			}
+		}
+		accounts, _ := s.ListPasswordAccounts(ctx)
+		admins := 0
+		for _, a := range accounts {
+			if a.IsAdmin && a.DisabledAt == nil {
+				admins++
+			}
+		}
+		if ok != 1 || refused != 1 || admins != 1 {
+			t.Fatalf("round %d: ok=%d refused=%d enabled admins=%d", round, ok, refused, admins)
+		}
+		_ = s.Close()
 	}
 }

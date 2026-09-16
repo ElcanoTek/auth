@@ -122,6 +122,8 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 		`class="tab active" href="/admin"`, `href="/admin?tab=fleet"`, `href="/admin?tab=explorer"`,
 		"Alice@Example.com", "bob@example.com", `<span class="badge admin">Admin</span>`, `<span class="chip">Fleet</span>`,
 		`name="action" value="create"`, `action="/logout"`,
+		// alice has registered apps but no grants: the cell says so.
+		`<span class="chip off">none</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("admin page lacks %s", want)
@@ -474,6 +476,13 @@ func TestAuthorizeRefusesAccountsWithoutAccess(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "No access to Explorer") || !strings.Contains(string(body), `href="/account"`) {
 		t.Fatalf("interactive = %d\n%s", resp.StatusCode, body)
 	}
+	// The 403 is a real page: HTML content type and the nonce policy that
+	// lets its own style and theme script run.
+	nonce := regexp.MustCompile(`<style nonce="([^"]+)"`).FindStringSubmatch(string(body))
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") || nonce == nil ||
+		!strings.Contains(resp.Header.Get("Content-Security-Policy"), "'nonce-"+nonce[1]+"'") {
+		t.Fatalf("403 headers: Content-Type=%q CSP=%q", resp.Header.Get("Content-Type"), resp.Header.Get("Content-Security-Policy"))
+	}
 	resp = authorize("none")
 	_ = resp.Body.Close()
 	loc, _ := url.Parse(resp.Header.Get("Location"))
@@ -485,8 +494,19 @@ func TestAuthorizeRefusesAccountsWithoutAccess(t *testing.T) {
 	resp = authorize("")
 	_ = resp.Body.Close()
 	loc, _ = url.Parse(resp.Header.Get("Location"))
-	if resp.StatusCode != http.StatusSeeOther || loc.Query().Get("code") == "" {
+	code := loc.Query().Get("code")
+	if resp.StatusCode != http.StatusSeeOther || code == "" {
 		t.Fatalf("granted = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	// Access removed between authorize and the token call: no token.
+	bob, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com")
+	if _, _, err := st.SetApplicationAccess(context.Background(), bob.ID, nil, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	exch := exchangeOAuthCodeFor(t, ts.URL, code, verifier, "explorer", "s2", "https://explorer.client.example/auth/callback")
+	_ = exch.Body.Close()
+	if exch.StatusCode != http.StatusBadRequest {
+		t.Fatalf("exchange after revoke = %d, want 400", exch.StatusCode)
 	}
 }
 

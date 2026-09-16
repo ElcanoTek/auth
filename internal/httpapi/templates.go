@@ -611,7 +611,7 @@ const adminHTML = `<!doctype html>
         {{range .Accounts}}<tr class="account">
           <td class="who">{{.Email}}{{if .IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if .Self}} <span class="badge">You</span>{{end}}</td>
           <td><span class="badge {{.StatusClass}}">{{.Status}}</span></td>
-          <td><div class="chips">{{range .Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if not .Apps}}<span class="chip off">none</span>{{end}}</div></td>
+          <td><div class="chips">{{range .Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq .GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
           <td class="num">{{.Sessions}}</td>
           <td class="date">{{.Created}}</td>
         </tr><tr class="manage">

@@ -73,6 +73,7 @@ func TestAuthorizationCodeIsBoundSingleUseAndHashedAtRest(t *testing.T) {
 		RedirectURI: "https://explorer.example.com/auth/callback", Nonce: "browser-nonce",
 		CodeChallenge: "correct-s256-challenge", AuthTime: 1_000,
 	}
+	mustGrantForTest(t, s, grant.UserID, grant.ClientID)
 	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("raw-code"), grant, 1_010, 1_070); err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +109,7 @@ func TestAuthorizationCodeRequiresLiveBoundSession(t *testing.T) {
 	}
 	grant := AuthorizationGrant{ClientID: "explorer", UserID: account.ID, SessionTokenHash: sessionHash,
 		RedirectURI: "https://explorer.example.com/auth/callback", Nonce: "nonce", CodeChallenge: "challenge", AuthTime: 1_000}
+	mustGrantForTest(t, s, grant.UserID, grant.ClientID)
 	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("code"), grant, 1_010, 1_070); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +144,7 @@ func TestAuthorizationCodeRejectsExpiredOrMismatchedBindings(t *testing.T) {
 		{name: "wrong PKCE", code: "pkce", client: "explorer", redirect: grant.RedirectURI, challenge: "wrong", expires: 1_070, consume: 1_020},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			mustGrantForTest(t, s, grant.UserID, grant.ClientID)
 			if err := s.IssueAuthorizationCode(ctx, secretHashForTest(tc.code), grant, 1_010, tc.expires); err != nil {
 				t.Fatal(err)
 			}
@@ -165,6 +168,7 @@ func TestAuthorizationCodeConcurrentExchangeOnlyOneWins(t *testing.T) {
 	}
 	grant := AuthorizationGrant{ClientID: "explorer", UserID: account.ID, SessionTokenHash: sessionHash,
 		RedirectURI: "https://explorer.example.com/auth/callback", Nonce: "nonce", CodeChallenge: "challenge", AuthTime: 1_000}
+	mustGrantForTest(t, s, grant.UserID, grant.ClientID)
 	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("raced-code"), grant, 1_010, 1_070); err != nil {
 		t.Fatal(err)
 	}
@@ -214,9 +218,11 @@ func TestSupersededCodeIsDeletedAndOnlyExchangedCodesCountAsReplayed(t *testing.
 		RedirectURI: "https://explorer.example.com/auth/callback", Nonce: "n", CodeChallenge: "c", AuthTime: 900}
 
 	// Two tabs: the second /authorize supersedes the first code.
+	mustGrantForTest(t, s, grant.UserID, grant.ClientID)
 	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("first"), grant, 1_000, 1_060); err != nil {
 		t.Fatal(err)
 	}
+	mustGrantForTest(t, s, grant.UserID, grant.ClientID)
 	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("second"), grant, 1_001, 1_061); err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +246,7 @@ func TestSupersededCodeIsDeletedAndOnlyExchangedCodesCountAsReplayed(t *testing.
 	}
 
 	// Disabling the app deletes its live codes rather than marking them exchanged.
+	mustGrantForTest(t, s, grant.UserID, grant.ClientID)
 	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("third"), grant, 1_004, 1_064); err != nil {
 		t.Fatal(err)
 	}
@@ -248,5 +255,23 @@ func TestSupersededCodeIsDeletedAndOnlyExchangedCodesCountAsReplayed(t *testing.
 	}
 	if _, _, replayed, _ := s.ReplayedAuthorizationCode(ctx, secretHashForTest("third")); replayed {
 		t.Fatal("code invalidated by app disable flagged as replay")
+	}
+}
+
+// mustGrantForTest gives the account the application, the precondition every
+// code issue and exchange now carries.
+func mustGrantForTest(t *testing.T, s *Store, userID, applicationID string) {
+	t.Helper()
+	have, err := s.ApplicationAccess(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range have {
+		if id == applicationID {
+			return
+		}
+	}
+	if _, _, err := s.SetApplicationAccess(context.Background(), userID, append(have, applicationID), 1_000); err != nil {
+		t.Fatalf("grant %s %s: %v", userID, applicationID, err)
 	}
 }

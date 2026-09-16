@@ -169,8 +169,11 @@ func TestGenerateMeetsPolicyAndVaries(t *testing.T) {
 				t.Fatalf("symbol %q outside alphabet in %q", r, p)
 			}
 		}
-		if html.EscapeString(p) != p || url.QueryEscape(p) == "" {
+		if html.EscapeString(p) != p {
 			t.Fatalf("generated password %q is rewritten by HTML escaping", p)
+		}
+		if back, err := url.QueryUnescape(url.QueryEscape(p)); err != nil || back != p {
+			t.Fatalf("generated password %q does not survive a URL round trip", p)
 		}
 		if seen[p] {
 			t.Fatalf("duplicate generated password %q", p)

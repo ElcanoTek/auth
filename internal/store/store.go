@@ -253,22 +253,16 @@ CREATE INDEX IF NOT EXISTS idx_magic_links_created ON magic_links(created_at);
 `
 
 func (s *Store) migrate(ctx context.Context) error {
-	// Per-application access arrived after deployments had accounts signing
-	// in to every registered application. The first time the table appears,
-	// grant every existing password account every existing application so the
-	// upgrade changes nothing for them; from then on grants are explicit.
-	hadApplicationAccess := s.hasTable(ctx, "application_access")
+	// Per-application access (schema v5) arrived after deployments had
+	// accounts signing in to every registered application. Until the v5
+	// marker is recorded, every start grants every existing password account
+	// every existing application, and the marker is written in the same
+	// transaction as the backfill, so a crash between creating the table and
+	// filling it cannot leave an upgraded deployment with no access rows.
+	// From the marker on, grants are explicit.
+	accessMigrated := s.hasMigration(ctx, 5)
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
-	}
-	if !hadApplicationAccess {
-		if _, err := s.db.ExecContext(ctx, `
-			INSERT OR IGNORE INTO application_access(user_id, application_id, granted_at)
-			SELECT a.id, app.id, ? FROM accounts a
-			JOIN password_credentials p ON p.user_id = a.id
-			CROSS JOIN applications app`, time.Now().Unix()); err != nil {
-			return fmt.Errorf("backfill application access: %w", err)
-		}
 	}
 	// Additive migration: bring pre-existing DBs (created before the
 	// rate-limit work) up to schema by adding created_at. Guarded by a
@@ -315,28 +309,45 @@ func (s *Store) migrate(ctx context.Context) error {
 		time.Now().Unix()); err != nil {
 		return fmt.Errorf("record back-channel logout schema version: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?)`,
-		time.Now().Unix()); err != nil {
-		return fmt.Errorf("record admin console schema version: %w", err)
+	if !accessMigrated {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		now := time.Now().Unix()
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO application_access(user_id, application_id, granted_at)
+			SELECT a.id, app.id, ? FROM accounts a
+			JOIN password_credentials p ON p.user_id = a.id
+			CROSS JOIN applications app`, now); err != nil {
+			return fmt.Errorf("backfill application access: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?)`, now); err != nil {
+			return fmt.Errorf("record admin console schema version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit admin console migration: %w", err)
+		}
 	}
 	return nil
 }
 
-// hasColumn reports whether table has a column named col. table is always a
-// trusted in-package literal, so interpolating it into the PRAGMA (which
-// can't be parameterized) is safe.
-// hasTable reports whether a table exists; table is a trusted in-package
-// literal, as for hasColumn.
-func (s *Store) hasTable(ctx context.Context, table string) bool {
+// hasMigration reports whether the schema_migrations marker for version has
+// been recorded (false before the table exists).
+func (s *Store) hasMigration(ctx context.Context, version int) bool {
 	var n int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&n); err != nil {
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&n); err != nil {
 		return false
 	}
 	return n > 0
 }
 
+// hasColumn reports whether table has a column named col. table is always a
+// trusted in-package literal, so interpolating it into the PRAGMA (which
+// can't be parameterized) is safe.
 func (s *Store) hasColumn(ctx context.Context, table, col string) bool {
 	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
 	if err != nil {
@@ -1128,6 +1139,13 @@ func (s *Store) SetApplicationAccess(ctx context.Context, userID string, applica
 		if err := insertApplicationAudit(ctx, tx, "access.revoked", id, userID, now); err != nil {
 			return nil, nil, err
 		}
+		// A code minted before the revocation must not become a session
+		// after it. Consumption re-checks the grant too; this just keeps
+		// the table honest.
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM authorization_codes WHERE user_id = ? AND client_id = ? AND consumed_at IS NULL`, userID, id); err != nil {
+			return nil, nil, err
+		}
 		if err := enqueueLogoutEventForTx(ctx, tx, userID, id, "access_revoked", now); err != nil {
 			return nil, nil, err
 		}
@@ -1654,6 +1672,7 @@ func (s *Store) IssueAuthorizationCode(ctx context.Context, codeHash string, gra
 		FROM applications app
 		JOIN accounts a ON a.id = ?
 		JOIN auth_sessions sess ON sess.token_hash = ? AND sess.user_id = a.id
+		JOIN application_access x ON x.user_id = a.id AND x.application_id = app.id
 		WHERE app.id = ? AND app.redirect_uri = ? AND app.disabled_at IS NULL
 		  AND a.disabled_at IS NULL AND a.must_change_password = 0
 		  AND sess.revoked_at IS NULL AND sess.idle_expires_at > ? AND sess.absolute_expires_at > ?`,
@@ -1686,6 +1705,7 @@ func (s *Store) ConsumeAuthorizationCode(ctx context.Context, codeHash, clientID
 		  AND client_id = ? AND redirect_uri = ? AND code_challenge = ?
 		  AND EXISTS (SELECT 1 FROM applications app WHERE app.id = code.client_id AND app.disabled_at IS NULL)
 		  AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = code.user_id AND a.disabled_at IS NULL AND a.must_change_password = 0)
+		  AND EXISTS (SELECT 1 FROM application_access x WHERE x.user_id = code.user_id AND x.application_id = code.client_id)
 		  AND EXISTS (SELECT 1 FROM auth_sessions sess
 		              WHERE sess.token_hash = code.session_token_hash AND sess.user_id = code.user_id
 		                AND sess.revoked_at IS NULL AND sess.idle_expires_at > ? AND sess.absolute_expires_at > ?)
