@@ -122,8 +122,11 @@ one edit; nothing here is optional for the first sign-in to work.
    The password cookie name must keep its `__Host-` prefix in production.
 3. Print the public key every application will need:
    `auth pubkey` → the `AUTH_SIGNING_PUBKEY=...` line.
-4. Create the first account: `auth user create admin@<client>`. The person
-   must change the temporary password at first login.
+4. Create the first account and make it an administrator:
+   `auth user create admin@<client>` then `auth user admin admin@<client> on`.
+   The person must change the temporary password at first login; after
+   that they can open the web admin console at `https://auth.<client>/admin`
+   and create every other account from there (see "Admin console" below).
 5. Register each application with its exact callback and logout URLs, then its
    back-channel endpoint. One client ID and secret per deployment; never share
    a secret between applications or between clients:
@@ -136,6 +139,24 @@ one edit; nothing here is optional for the first sign-in to work.
    auth app set-backchannel fleet https://fleet.<client>/api/auth/backchannel-logout
    ```
    Copy each `AUTH_CLIENT_SECRET` immediately; it is shown once.
+
+   Then grant the first account its applications, because an account may
+   only sign in to applications it has been given (see "Per-application
+   access"): `auth user access admin@<client> explorer on`, and the same for
+   `fleet` and `lens`. From here on the admin console does this with
+   checkboxes.
+
+   The signed-in page at `/account` shows a quick-link tile per application
+   family (Admin, Fleet, Explorer, Lens). A tile is live when an enabled
+   application of that family is registered **and the signed-in account has
+   access to it**; otherwise it is greyed out. It links to the **origin** of
+   the registered callback (applications are assumed origin-rooted; a
+   callback under a sub-path such as `/apps/fleet/...` would link to the
+   wrong place). The family is read from the ID only: the exact ID (`fleet`,
+   `explorer`, `lens`) wins; otherwise exactly one `<family>-<suffix>` ID
+   (`explorer-omnicom`) stands in. Two suffixed IDs and no exact one is
+   ambiguous, so that tile stays greyed and the server log says why. The
+   Admin tile opens Auth's own console and is live for administrators only.
 
 **On each application host**
 
@@ -263,6 +284,73 @@ form on `/account` does the same. Scope and timing, stated plainly:
 - Because the request is a plain GET, a hostile page can force a sign-out;
   that costs the user a login, not access, and is accepted in exchange for a
   click-free flow. Any registered client id is honoured (ids are public).
+
+## Admin console (password mode)
+
+`https://auth.<client>/admin` is the web console for administrators: accounts
+whose flag was set with `auth user admin <email> on` (or "Make admin" in the
+console itself). Everyone else gets a 404 there, and the Admin tile on their
+signed-in page stays greyed. Magic-mode deployments (Elcano's own
+auth.elcanotek.com) have no accounts, applications or administrators, so the
+route does not exist for them at all.
+
+Tabs:
+
+- **Accounts.** Every password account with status (Active / Disabled / Must
+  change password), the Admin badge, the applications it may sign in to, its
+  live central sessions and creation date. Per account: **Access** (tick the
+  applications; unticking one signs them out of it now), **Reset password**
+  (generates a new temporary password, shown once, signs them out
+  everywhere), **Sign out** (every session, every application, every
+  device), **Disable / Enable**, **Make admin / Remove admin**. Destructive
+  actions open a small confirm step first. **Add user** creates an account
+  from an email plus the applications it should have; the temporary password
+  is generated (20 characters, meets the policy), shown once, and forced to
+  change at first sign-in. Administrators cannot reset, sign out, disable or
+  demote themselves from here (Change password and Sign out already cover
+  that), and the last enabled administrator can never be demoted or disabled,
+  from the console or the CLI.
+- **One tab per registered application.** Its status with Enable / Disable,
+  the registered endpoints, how many accounts have access, **who signs in
+  here** (every account that has completed a sign-in to it, with counts and
+  the last time) and **pending sign-outs** (back-channel logouts the
+  application has not accepted yet; an empty list is healthy, a growing one
+  means its receiver is down or misconfigured). Registering applications,
+  rotating secrets and setting back-channel URLs stay on the CLI because the
+  secret prints once and the CLI validates the URLs.
+
+Temporary passwords do not expire on their own: an account whose holder never
+signs in keeps a valid temporary credential until an administrator resets or
+disables it, so check the Accounts tab for long-standing "Must change
+password" rows. If the one-time display is lost (closed tab, failed
+response), run Reset password again; reloading the result page repeats the
+action, which the browser warns about.
+
+Every console action is audited on the target account with the acting
+administrator in the metadata (`admin.user_created`, `admin.password_reset`,
+`admin.sessions_revoked`, `admin.account_disabled` / `_enabled`,
+`admin.admin_granted` / `_revoked`, `admin.access_granted` / `_revoked`,
+`admin.application_disabled` / `_enabled`); `auth audit list <email>` shows
+them, with the administrator in the BY column, next to the `account.*` and
+`access.*` rows the store writes itself.
+
+## Per-application access (password mode)
+
+An account may sign in to an application only if it has been granted that
+application: in the console (Add user / Access) or with
+`auth user access <email> <app-id> on|off`. `/authorize` checks the grant
+before issuing a code. A person without access who follows a sign-in link
+sees Auth's own "No access to <application>" page with a link back to their
+apps; a silent check (`prompt=none`) returns `error=access_denied` to the
+application, which Fleet shows as its generic "denied" login message.
+Removing access queues a back-channel logout to that one application, so the
+person is signed out of it within seconds. Disabling an application closes
+the gate for everyone without touching the grants.
+
+Upgrading a deployment that predates this: the first start after the update
+grants every existing account every registered application, once, so nothing
+that worked before stops working. New accounts start with exactly what the
+administrator ticks; newly registered applications start with nobody.
 
 ## Branding from the client bundle
 

@@ -63,6 +63,23 @@ func newPasswordTestServer(t *testing.T, mustChange bool) (*httptest.Server, *st
 	return ts, st, cfg, plain
 }
 
+// grantAccess adds one application to an account's set without disturbing
+// the rest, the way an administrator ticking a box would.
+func grantAccess(t *testing.T, st *store.Store, email, applicationID string) {
+	t.Helper()
+	a, err := st.PasswordAccountByEmail(context.Background(), email)
+	if err != nil {
+		t.Fatalf("grantAccess %s: %v", email, err)
+	}
+	have, err := st.ApplicationAccess(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.SetApplicationAccess(context.Background(), a.ID, append(have, applicationID), time.Now().Unix()); err != nil {
+		t.Fatalf("grantAccess %s %s: %v", email, applicationID, err)
+	}
+}
+
 func getCSRFCookie(t *testing.T, endpoint, name string) *http.Cookie {
 	t.Helper()
 	resp, err := http.Get(endpoint)

@@ -26,9 +26,11 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -96,6 +98,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   normalized_email     TEXT NOT NULL UNIQUE,
   disabled_at          INTEGER,
   must_change_password INTEGER NOT NULL DEFAULT 1 CHECK (must_change_password IN (0, 1)),
+  is_admin             INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
   created_at           INTEGER NOT NULL,
   updated_at           INTEGER NOT NULL
 );
@@ -127,6 +130,15 @@ CREATE TABLE IF NOT EXISTS applications (
   updated_at         INTEGER NOT NULL,
   disabled_at        INTEGER
 );
+-- Which applications an account may sign in to. No row, no code: /authorize
+-- refuses before issuing anything. Rows cascade with either side.
+CREATE TABLE IF NOT EXISTS application_access (
+  user_id        TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  granted_at     INTEGER NOT NULL,
+  PRIMARY KEY (user_id, application_id)
+);
+CREATE INDEX IF NOT EXISTS idx_application_access_app ON application_access(application_id);
 CREATE TABLE IF NOT EXISTS logout_events (
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -182,6 +194,8 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_user_time ON audit_events(user_id, o
 -- sweep; without them every rate-limited request would scan the audit table.
 CREATE INDEX IF NOT EXISTS idx_audit_events_type_source_time ON audit_events(event_type, source_ip_hash, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_audit_events_time ON audit_events(occurred_at);
+-- Backs the admin console's per-application "who signs in here" view.
+CREATE INDEX IF NOT EXISTS idx_audit_events_app_type_user ON audit_events(application_id, event_type, user_id);
 
 -- Reserved authentication-factor plumbing. These tables deliberately carry
 -- no enabled v1 behavior, but keep future factors out of the accounts table.
@@ -260,6 +274,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("add backchannel logout URI: %w", err)
 		}
 	}
+	// Admin console (schema v5): accounts created before it have no is_admin
+	// column. Existing accounts default to 0; the first admin is granted with
+	// `auth user admin <email> on`, never implicitly.
+	if !s.hasColumn(ctx, "accounts", "is_admin") {
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE accounts ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))`); err != nil {
+			return fmt.Errorf("add is_admin column: %w", err)
+		}
+	}
 	if _, err := s.db.ExecContext(ctx, createdAtIndexes); err != nil {
 		return err
 	}
@@ -278,7 +301,54 @@ func (s *Store) migrate(ctx context.Context) error {
 		time.Now().Unix()); err != nil {
 		return fmt.Errorf("record back-channel logout schema version: %w", err)
 	}
+	return s.migrateApplicationAccess(ctx)
+}
+
+// migrateApplicationAccess is schema v5. Per-application access arrived
+// after deployments had accounts signing in to every registered
+// application, so the first start to claim the v5 marker grants every
+// existing password account every existing application; from then on grants
+// are explicit. The claim is the marker INSERT itself, inside the same
+// transaction as the backfill: a second or stale opener finds the row taken
+// and does nothing, and a failed backfill rolls the marker back with it, so
+// the backfill runs exactly once and never against post-migration rows.
+func (s *Store) migrateApplicationAccess(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().Unix()
+	claim, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES(5, ?) ON CONFLICT(version) DO NOTHING`, now)
+	if err != nil {
+		return fmt.Errorf("claim admin console schema version: %w", err)
+	}
+	if n, _ := claim.RowsAffected(); n == 0 {
+		return nil // already migrated (or another opener is doing it)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO application_access(user_id, application_id, granted_at)
+		SELECT a.id, app.id, ? FROM accounts a
+		JOIN password_credentials p ON p.user_id = a.id
+		CROSS JOIN applications app`, now); err != nil {
+		return fmt.Errorf("backfill application access: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit admin console migration: %w", err)
+	}
 	return nil
+}
+
+// hasMigration reports whether the schema_migrations marker for version has
+// been recorded (false before the table exists).
+func (s *Store) hasMigration(ctx context.Context, version int) bool {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
 }
 
 // hasColumn reports whether table has a column named col. table is always a
@@ -585,6 +655,9 @@ var (
 	// ErrCredentialChanged means the password verified by the caller is no
 	// longer the account's current credential (replaced concurrently).
 	ErrCredentialChanged = errors.New("credential changed")
+	// ErrLastAdmin means the change would leave the deployment with no
+	// enabled administrator, locking everyone out of the admin console.
+	ErrLastAdmin = errors.New("this is the last enabled administrator")
 )
 
 type Account struct {
@@ -594,6 +667,7 @@ type Account struct {
 	PasswordHash       string
 	DisabledAt         *time.Time
 	MustChangePassword bool
+	IsAdmin            bool
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
@@ -650,7 +724,7 @@ func (s *Store) CreatePasswordAccount(ctx context.Context, email, passwordHash s
 func (s *Store) PasswordAccountByEmail(ctx context.Context, email string) (Account, error) {
 	return scanAccount(s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
-		       a.must_change_password, a.created_at, a.updated_at
+		       a.must_change_password, a.is_admin, a.created_at, a.updated_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.normalized_email = ?`, normalizeAccountEmail(email)))
 }
@@ -658,7 +732,7 @@ func (s *Store) PasswordAccountByEmail(ctx context.Context, email string) (Accou
 func (s *Store) PasswordAccountByID(ctx context.Context, id string) (Account, error) {
 	return scanAccount(s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
-		       a.must_change_password, a.created_at, a.updated_at
+		       a.must_change_password, a.is_admin, a.created_at, a.updated_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.id = ?`, id))
 }
@@ -668,16 +742,17 @@ type rowScanner interface{ Scan(...any) error }
 func scanAccount(row rowScanner) (Account, error) {
 	var a Account
 	var disabled sql.NullInt64
-	var mustChange int
+	var mustChange, isAdmin int
 	var created, updated int64
 	if err := row.Scan(&a.ID, &a.Email, &a.NormalizedEmail, &a.PasswordHash, &disabled,
-		&mustChange, &created, &updated); err != nil {
+		&mustChange, &isAdmin, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Account{}, ErrAccountNotFound
 		}
 		return Account{}, err
 	}
 	a.MustChangePassword = mustChange != 0
+	a.IsAdmin = isAdmin != 0
 	a.CreatedAt = time.Unix(created, 0)
 	a.UpdatedAt = time.Unix(updated, 0)
 	if disabled.Valid {
@@ -771,9 +846,17 @@ func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled b
 		disabledAt = now
 		event = "account.disabled"
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET disabled_at = ?, updated_at = ? WHERE id = ?`,
-		disabledAt, now, a.ID); err != nil {
+	// Disabling an administrator is conditional at write time on another
+	// enabled administrator existing, so two concurrent disables that each
+	// observed two admins cannot both succeed: the second finds zero rows.
+	res, err := tx.ExecContext(ctx, `UPDATE accounts SET disabled_at = ?, updated_at = ? WHERE id = ?
+		AND (? = 0 OR is_admin = 0 OR `+anotherEnabledAdminExists+`)`,
+		disabledAt, now, a.ID, boolInt(disabled), a.ID)
+	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrLastAdmin
 	}
 	if disabled {
 		if _, err := revokeSessionsTx(ctx, tx, a.ID, now, "account_disabled"); err != nil {
@@ -792,7 +875,7 @@ func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled b
 func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
-		       a.must_change_password, a.created_at, a.updated_at
+		       a.must_change_password, a.is_admin, a.created_at, a.updated_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		ORDER BY a.normalized_email`)
 	if err != nil {
@@ -811,6 +894,269 @@ func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// SetAccountAdmin grants or removes the administrator flag. Removing it from
+// the last enabled administrator is refused with ErrLastAdmin: the console
+// must always have someone who can open it. Granting is never refused.
+func (s *Store) SetAccountAdmin(ctx context.Context, email string, admin bool, now int64) error {
+	a, err := s.PasswordAccountByEmail(ctx, email)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	event := "account.admin_granted"
+	if !admin {
+		event = "account.admin_revoked"
+	}
+	// Demotion is conditional at write time (see SetAccountDisabled): it
+	// applies only while another enabled administrator exists, or when the
+	// target is disabled and so never counted as cover.
+	res, err := tx.ExecContext(ctx, `UPDATE accounts SET is_admin = ?, updated_at = ? WHERE id = ?
+		AND (? = 1 OR disabled_at IS NOT NULL OR `+anotherEnabledAdminExists+`)`,
+		boolInt(admin), now, a.ID, boolInt(admin), a.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrLastAdmin
+	}
+	if err := insertAudit(ctx, tx, event, a.ID, now, `{}`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// anotherEnabledAdminExists is the write-time guard fragment shared by
+// demotion and disabling: true when some enabled administrator other than
+// the bound account id exists. Evaluated inside the UPDATE itself, so it
+// sees the committed state at the moment the write lock is held.
+const anotherEnabledAdminExists = `EXISTS (
+		SELECT 1 FROM accounts o JOIN password_credentials op ON op.user_id = o.id
+		WHERE o.is_admin = 1 AND o.disabled_at IS NULL AND o.id <> ?)`
+
+// RecordAdminAction attributes a console action to the administrator who
+// performed it. The row belongs to the target account (so `auth audit list
+// <email>` shows it) and the metadata names the actor; the store function
+// that did the work has already written its own unattributed account.* row.
+func (s *Store) RecordAdminAction(ctx context.Context, event, actorID, targetID, applicationID, sourceIPHash string, now int64) error {
+	metadata, err := json.Marshal(map[string]string{"actor_id": actorID, "via": "web"})
+	if err != nil {
+		return err
+	}
+	var nullableUser, nullableApp, nullableIP any
+	if targetID != "" {
+		nullableUser = targetID
+	}
+	if applicationID != "" {
+		nullableApp = applicationID
+	}
+	if sourceIPHash != "" {
+		nullableIP = sourceIPHash
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO audit_events(event_type, user_id, application_id, source_ip_hash, occurred_at, metadata)
+		VALUES(?, ?, ?, ?, ?, ?)`, event, nullableUser, nullableApp, nullableIP, now, string(metadata))
+	return err
+}
+
+// ApplicationSignIn is one account's history with one application, from the
+// authorization.code_exchanged audit rows (a completed sign-in).
+type ApplicationSignIn struct {
+	UserID   string
+	Email    string
+	Count    int
+	LastAt   time.Time
+	Disabled bool
+}
+
+// ApplicationSignIns answers "who signs in to this application": one row per
+// account, most recent first, capped at limit (default and maximum 500).
+// Deleted accounts drop out (their audit rows lose user_id via ON DELETE SET
+// NULL), so every row names a live or disabled account.
+func (s *Store) ApplicationSignIns(ctx context.Context, applicationID string, limit int) ([]ApplicationSignIn, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT e.user_id, COALESCE(a.email, ''), COUNT(*), MAX(e.occurred_at), a.disabled_at IS NOT NULL
+		FROM audit_events e LEFT JOIN accounts a ON a.id = e.user_id
+		WHERE e.application_id = ? AND e.event_type = 'authorization.code_exchanged' AND e.user_id IS NOT NULL
+		GROUP BY e.user_id
+		ORDER BY MAX(e.occurred_at) DESC
+		LIMIT ?`, strings.TrimSpace(applicationID), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ApplicationSignIn
+	for rows.Next() {
+		var r ApplicationSignIn
+		var last int64
+		var disabled int
+		if err := rows.Scan(&r.UserID, &r.Email, &r.Count, &last, &disabled); err != nil {
+			return nil, err
+		}
+		r.LastAt = time.Unix(last, 0)
+		r.Disabled = disabled != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ── per-application access ──────────────────────────────────────────
+
+// HasApplicationAccess reports whether the account may sign in to the
+// application. It is the /authorize gate, so it answers only for enabled
+// accounts and enabled applications.
+func (s *Store) HasApplicationAccess(ctx context.Context, userID, applicationID string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM application_access x
+		JOIN accounts a ON a.id = x.user_id AND a.disabled_at IS NULL
+		JOIN applications app ON app.id = x.application_id AND app.disabled_at IS NULL
+		WHERE x.user_id = ? AND x.application_id = ?`, userID, applicationID).Scan(&n)
+	return n > 0, err
+}
+
+// ApplicationAccess lists the application IDs one account may sign in to,
+// ID-ordered, regardless of either side's disabled state (it is the
+// administrative view of what was granted).
+func (s *Store) ApplicationAccess(ctx context.Context, userID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT application_id FROM application_access WHERE user_id = ? ORDER BY application_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// AllApplicationAccess returns every account's application IDs in one query,
+// for the console's account table.
+func (s *Store) AllApplicationAccess(ctx context.Context) (map[string][]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT user_id, application_id FROM application_access ORDER BY user_id, application_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string][]string{}
+	for rows.Next() {
+		var user, app string
+		if err := rows.Scan(&user, &app); err != nil {
+			return nil, err
+		}
+		out[user] = append(out[user], app)
+	}
+	return out, rows.Err()
+}
+
+// SetApplicationAccess makes applicationIDs the account's exact set of
+// applications. Every ID must name a registered application
+// (ErrApplicationNotFound otherwise, and nothing changes). Each application
+// removed gets a back-channel logout for this account so its session there
+// ends now rather than at expiry. It returns what was added and removed.
+func (s *Store) SetApplicationAccess(ctx context.Context, userID string, applicationIDs []string, now int64) (added, removed []string, err error) {
+	if userID == "" {
+		return nil, nil, errors.New("user id is required")
+	}
+	want := map[string]bool{}
+	for _, id := range applicationIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			want[id] = true
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE id = ?`, userID).Scan(&exists); err != nil {
+		return nil, nil, err
+	}
+	if exists == 0 {
+		return nil, nil, ErrAccountNotFound
+	}
+	for id := range want {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM applications WHERE id = ?`, id).Scan(&exists); err != nil {
+			return nil, nil, err
+		}
+		if exists == 0 {
+			return nil, nil, fmt.Errorf("%w: %s", ErrApplicationNotFound, id)
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT application_id FROM application_access WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, nil, err
+		}
+		have[id] = true
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	for id := range want {
+		if !have[id] {
+			added = append(added, id)
+		}
+	}
+	for id := range have {
+		if !want[id] {
+			removed = append(removed, id)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	for _, id := range added {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO application_access(user_id, application_id, granted_at) VALUES(?, ?, ?)`, userID, id, now); err != nil {
+			return nil, nil, err
+		}
+		if err := insertApplicationAudit(ctx, tx, "access.granted", id, userID, now); err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, id := range removed {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM application_access WHERE user_id = ? AND application_id = ?`, userID, id); err != nil {
+			return nil, nil, err
+		}
+		if err := insertApplicationAudit(ctx, tx, "access.revoked", id, userID, now); err != nil {
+			return nil, nil, err
+		}
+		// A code minted before the revocation must not become a session
+		// after it. Consumption re-checks the grant too; this just keeps
+		// the table honest.
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM authorization_codes WHERE user_id = ? AND client_id = ? AND consumed_at IS NULL`, userID, id); err != nil {
+			return nil, nil, err
+		}
+		if err := enqueueLogoutEventForTx(ctx, tx, userID, id, "access_revoked", now); err != nil {
+			return nil, nil, err
+		}
+	}
+	return added, removed, tx.Commit()
 }
 
 // ── opaque central sessions ─────────────────────────────────────────
@@ -860,11 +1206,11 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 	var sess AuthSession
 	var a Account
 	var disabled, revoked sql.NullInt64
-	var mustChange int
+	var mustChange, isAdmin int
 	var created, updated, sessionCreated, lastSeen, idleExpires, absoluteExpires int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, a.disabled_at,
-		       a.must_change_password, a.created_at, a.updated_at,
+		       a.must_change_password, a.is_admin, a.created_at, a.updated_at,
 		       s.token_hash, s.created_at, s.last_seen_at, s.idle_expires_at,
 		       s.absolute_expires_at, s.revoked_at, COALESCE(s.revocation_reason, '')
 		FROM auth_sessions s
@@ -872,7 +1218,7 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 		JOIN password_credentials p ON p.user_id = a.id
 		WHERE s.token_hash = ?`, tokenHash).Scan(
 		&a.ID, &a.Email, &a.NormalizedEmail, &disabled,
-		&mustChange, &created, &updated, &sess.TokenHash, &sessionCreated,
+		&mustChange, &isAdmin, &created, &updated, &sess.TokenHash, &sessionCreated,
 		&lastSeen, &idleExpires, &absoluteExpires, &revoked, &sess.RevocationReason)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -884,6 +1230,7 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 		return Account{}, AuthSession{}, ErrInvalidSession
 	}
 	a.MustChangePassword = mustChange != 0
+	a.IsAdmin = isAdmin != 0
 	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
 	sess.UserID = a.ID
 	sess.CreatedAt, sess.LastSeenAt = time.Unix(sessionCreated, 0), time.Unix(lastSeen, 0)
@@ -974,6 +1321,29 @@ func revokeSessionsTx(ctx context.Context, e execer, userID string, now int64, r
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// ActiveSessionCounts is CountActiveAuthSessions for every account in one
+// query at one instant, for the admin console's table.
+func (s *Store) ActiveSessionCounts(ctx context.Context, now int64) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT user_id, COUNT(*) FROM auth_sessions
+		WHERE revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?
+		GROUP BY user_id`, now, now)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) CountActiveAuthSessions(ctx context.Context, userID string, now int64) (int, error) {
@@ -1114,6 +1484,13 @@ type LogoutDelivery struct {
 // included on purpose: disabling stops new handoffs, but sessions minted
 // before that still exist there and must end with everything else.
 func enqueueLogoutEventTx(ctx context.Context, tx *sql.Tx, userID, reason string, now int64) error {
+	return enqueueLogoutEventForTx(ctx, tx, userID, "", reason, now)
+}
+
+// enqueueLogoutEventForTx queues a back-channel logout for one account to
+// every application with a receiver, or to the single application clientID
+// when it is non-empty (access revoked from that application only).
+func enqueueLogoutEventForTx(ctx context.Context, tx *sql.Tx, userID, clientID, reason string, now int64) error {
 	var email string
 	if err := tx.QueryRowContext(ctx, `SELECT normalized_email FROM accounts WHERE id = ?`, userID).Scan(&email); err != nil {
 		return err
@@ -1127,13 +1504,14 @@ func enqueueLogoutEventTx(ctx context.Context, tx *sql.Tx, userID, reason string
 		SELECT ?, ?, ?, ?, ?
 		WHERE EXISTS (
 			SELECT 1 FROM applications WHERE COALESCE(backchannel_logout_uri, '') <> ''
-		)`, eventID, userID, email, reason, now); err != nil {
+			  AND (? = '' OR id = ?)
+		)`, eventID, userID, email, reason, now, clientID, clientID); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO logout_deliveries(event_id, client_id, endpoint, next_attempt_at)
 		SELECT ?, id, backchannel_logout_uri, ? FROM applications
-		WHERE COALESCE(backchannel_logout_uri, '') <> ''`, eventID, now)
+		WHERE COALESCE(backchannel_logout_uri, '') <> '' AND (? = '' OR id = ?)`, eventID, now, clientID, clientID)
 	return err
 }
 
@@ -1300,6 +1678,7 @@ func (s *Store) IssueAuthorizationCode(ctx context.Context, codeHash string, gra
 		FROM applications app
 		JOIN accounts a ON a.id = ?
 		JOIN auth_sessions sess ON sess.token_hash = ? AND sess.user_id = a.id
+		JOIN application_access x ON x.user_id = a.id AND x.application_id = app.id
 		WHERE app.id = ? AND app.redirect_uri = ? AND app.disabled_at IS NULL
 		  AND a.disabled_at IS NULL AND a.must_change_password = 0
 		  AND sess.revoked_at IS NULL AND sess.idle_expires_at > ? AND sess.absolute_expires_at > ?`,
@@ -1332,6 +1711,7 @@ func (s *Store) ConsumeAuthorizationCode(ctx context.Context, codeHash, clientID
 		  AND client_id = ? AND redirect_uri = ? AND code_challenge = ?
 		  AND EXISTS (SELECT 1 FROM applications app WHERE app.id = code.client_id AND app.disabled_at IS NULL)
 		  AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = code.user_id AND a.disabled_at IS NULL AND a.must_change_password = 0)
+		  AND EXISTS (SELECT 1 FROM application_access x WHERE x.user_id = code.user_id AND x.application_id = code.client_id)
 		  AND EXISTS (SELECT 1 FROM auth_sessions sess
 		              WHERE sess.token_hash = code.session_token_hash AND sess.user_id = code.user_id
 		                AND sess.revoked_at IS NULL AND sess.idle_expires_at > ? AND sess.absolute_expires_at > ?)
@@ -1605,6 +1985,18 @@ type AuditEvent struct {
 	SourceIPHash  string
 	OccurredAt    time.Time
 	Email         string // display email when the account still exists
+	Metadata      string // JSON object; console actions carry {"actor_id": ..., "via": "web"}
+}
+
+// Actor returns the acting account id recorded in the metadata, or "".
+func (e AuditEvent) Actor() string {
+	var m struct {
+		ActorID string `json:"actor_id"`
+	}
+	if err := json.Unmarshal([]byte(e.Metadata), &m); err != nil {
+		return ""
+	}
+	return m.ActorID
 }
 
 // RecentAuditEvents returns the newest events first. An empty userID returns
@@ -1616,7 +2008,7 @@ func (s *Store) RecentAuditEvents(ctx context.Context, userID string, limit int)
 	if limit > 1000 {
 		limit = 1000
 	}
-	query := `SELECT e.id, e.event_type, COALESCE(e.user_id, ''), COALESCE(e.application_id, ''), COALESCE(e.source_ip_hash, ''), e.occurred_at, COALESCE(a.email, '')
+	query := `SELECT e.id, e.event_type, COALESCE(e.user_id, ''), COALESCE(e.application_id, ''), COALESCE(e.source_ip_hash, ''), e.occurred_at, COALESCE(a.email, ''), e.metadata
 		FROM audit_events e LEFT JOIN accounts a ON a.id = e.user_id`
 	args := []any{}
 	if userID != "" {
@@ -1634,7 +2026,7 @@ func (s *Store) RecentAuditEvents(ctx context.Context, userID string, limit int)
 	for rows.Next() {
 		var e AuditEvent
 		var at int64
-		if err := rows.Scan(&e.ID, &e.EventType, &e.UserID, &e.ApplicationID, &e.SourceIPHash, &at, &e.Email); err != nil {
+		if err := rows.Scan(&e.ID, &e.EventType, &e.UserID, &e.ApplicationID, &e.SourceIPHash, &at, &e.Email, &e.Metadata); err != nil {
 			return nil, err
 		}
 		e.OccurredAt = time.Unix(at, 0)

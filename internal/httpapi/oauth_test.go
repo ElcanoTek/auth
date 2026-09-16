@@ -33,6 +33,7 @@ func TestAuthorizationCodeExplorerRoundTrip(t *testing.T) {
 		"https://explorer.example.com/signed-out", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", testOAuthClientID)
 	login, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	_ = login.Body.Close()
 	if session == nil {
@@ -116,6 +117,7 @@ func TestAuthorizeRejectsUnregisteredRedirectWithoutRedirecting(t *testing.T) {
 	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Explorer", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", testOAuthClientID)
 	login, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	_ = login.Body.Close()
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/authorize?"+url.Values{
@@ -138,6 +140,7 @@ func TestAuthorizeRequiresCentralLoginAndPreservesRequest(t *testing.T) {
 	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Explorer", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", testOAuthClientID)
 	original := "/authorize?" + url.Values{
 		"response_type": {"code"}, "client_id": {testOAuthClientID}, "redirect_uri": {testOAuthRedirect},
 		"scope": {"email"}, "state": {"state"}, "nonce": {"nonce"}, "code_challenge": {oauthChallenge(strings.Repeat("v", 48))}, "code_challenge_method": {"S256"},
@@ -163,6 +166,7 @@ func TestAuthorizePromptNoneNeverShowsAForm(t *testing.T) {
 	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Fleet", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", testOAuthClientID)
 	authorize := func(prompt string, cookies ...*http.Cookie) *http.Response {
 		values := url.Values{
 			"response_type": {"code"}, "client_id": {testOAuthClientID}, "redirect_uri": {testOAuthRedirect},
@@ -242,6 +246,7 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 	if _, err := st.CreateApplication(ctx, testOAuthClientID, "Explorer", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", testOAuthClientID)
 	if err := st.SetApplicationBackchannelLogoutURI(ctx, testOAuthClientID, "https://explorer.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +255,7 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 	if _, err := st.CreateApplication(ctx, "lens", "Lens", "https://lens.example.com/auth/callback", "", hashSecret("lens-secret"), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", "lens")
 	if err := st.SetApplicationBackchannelLogoutURI(ctx, "lens", "https://lens.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
@@ -368,6 +374,7 @@ func TestForcedPasswordChangeReturnsToAuthorization(t *testing.T) {
 	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Explorer", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", testOAuthClientID)
 	verifier := strings.Repeat("v", 48)
 	authorizePath := "/authorize?" + url.Values{
 		"response_type": {"code"}, "client_id": {testOAuthClientID}, "redirect_uri": {testOAuthRedirect},
@@ -416,6 +423,7 @@ func TestTokenRejectsWrongClientSecretAndPKCE(t *testing.T) {
 	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Explorer", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", testOAuthClientID)
 	login, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	_ = login.Body.Close()
 	code := authorizeCode(t, ts.URL, session, strings.Repeat("v", 48))
@@ -437,6 +445,7 @@ func TestTokenRejectsCodeAfterAccountDisableWithoutIdentityLeak(t *testing.T) {
 	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Explorer", testOAuthRedirect, "", hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", testOAuthClientID)
 	login, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	_ = login.Body.Close()
 	verifier := strings.Repeat("v", 48)
@@ -526,6 +535,7 @@ func TestAuthorizeResponseNamesTheIssuer(t *testing.T) {
 		hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", testOAuthClientID)
 	_, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	if session == nil {
 		t.Fatal("no central session")
@@ -605,6 +615,7 @@ func TestReplayedCodeQueuesLogoutForThatApplicationOnly(t *testing.T) {
 		hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", testOAuthClientID)
 	if err := st.SetApplicationBackchannelLogoutURI(ctx, testOAuthClientID, "https://explorer.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
@@ -612,6 +623,7 @@ func TestReplayedCodeQueuesLogoutForThatApplicationOnly(t *testing.T) {
 		hashSecret("lens-secret-lens-secret-lens-secret-1"), time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
+	grantAccess(t, st, "alice@example.com", "lens")
 	if err := st.SetApplicationBackchannelLogoutURI(ctx, "lens", "https://lens.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}

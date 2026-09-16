@@ -122,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/login", s.handlePasswordLogin)
 	mux.HandleFunc("/change-password", s.handleChangePassword)
 	mux.HandleFunc("/account", s.handleAccount)
+	mux.HandleFunc("/admin", s.handleAdmin)
 	mux.HandleFunc("/authorize", s.handleAuthorize)
 	mux.HandleFunc("/token", s.handleToken)
 	mux.HandleFunc("/.well-known/openid-configuration", s.handleDiscovery)
@@ -723,6 +724,24 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identity := s.currentPasswordSession(r)
+	// Per-application access: an account may only be handed to applications
+	// an administrator granted. Checked before any redirect so a silent
+	// check learns access_denied (OIDC Core 3.1.2.6) and an interactive one
+	// gets Auth's own explanation instead of an error the app cannot word.
+	hasAccess := false
+	if identity != nil && !identity.Account.MustChangePassword {
+		ok, err := s.store.HasApplicationAccess(r.Context(), identity.Account.ID, clientID)
+		if err != nil {
+			logUnlessCancelled("authorize access check", err)
+			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			return
+		}
+		hasAccess = ok
+	}
+	if prompt == "none" && identity != nil && !identity.Account.MustChangePassword && !hasAccess {
+		s.redirectAuthorizeError(w, r, redirectURI, state, "access_denied")
+		return
+	}
 	if prompt == "none" && (identity == nil || identity.Account.MustChangePassword) {
 		// The redirect target was validated against the registration above,
 		// so an error response may go back to it (OIDC Core 3.1.2.6). No
@@ -742,6 +761,14 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if identity.Account.MustChangePassword {
 		http.Redirect(w, r, "/change-password?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+		return
+	}
+	if !hasAccess {
+		if err := s.renderStatus(w, http.StatusForbidden, "no-access.html", map[string]any{
+			"Brand": s.cfg.BrandName, "Email": identity.Account.Email, "AppName": app.Name,
+		}); err != nil {
+			log.Printf("render no-access: %v", err)
+		}
 		return
 	}
 	rawCode, err := randomSecret(32)
@@ -1056,8 +1083,22 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "something went wrong", http.StatusInternalServerError)
 		return
 	}
+	// The quick links are a convenience on a page whose job is the account
+	// itself, so a registry read failure greys every tile out rather than
+	// turning the page into a 500.
+	apps, err := s.store.ListApplications(r.Context())
+	if err != nil {
+		log.Printf("account: list applications: %v", err)
+		apps = nil
+	}
+	granted, err := s.store.ApplicationAccess(r.Context(), identity.Account.ID)
+	if err != nil {
+		log.Printf("account: application access: %v", err)
+		granted = nil
+	}
 	if err := s.render(w, "account.html", map[string]any{
 		"Brand": s.cfg.BrandName, "Email": identity.Account.Email, "CSRF": csrf,
+		"Links": quickLinksFor(apps, accessSet(granted), identity.Account.IsAdmin),
 	}); err != nil {
 		log.Printf("render account: %v", err)
 	}
@@ -1658,6 +1699,14 @@ func logRequests(h http.Handler) http.Handler {
 // the redirect that follows a form post, which would break the post-login
 // bounce to a client application host.
 func (s *Server) render(w http.ResponseWriter, name string, data map[string]any) error {
+	return s.renderStatus(w, 0, name, data)
+}
+
+// renderStatus is render with an explicit status code. Headers (the nonce
+// CSP, the content type) are set before the status is written, because
+// anything set after WriteHeader is silently dropped; status 0 leaves the
+// implicit 200.
+func (s *Server) renderStatus(w http.ResponseWriter, status int, name string, data map[string]any) error {
 	nonce, err := randomSecret(16)
 	if err != nil {
 		return err
@@ -1667,6 +1716,9 @@ func (s *Server) render(w http.ResponseWriter, name string, data map[string]any)
 		"default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
 			"font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if status != 0 {
+		w.WriteHeader(status)
+	}
 	data["Nonce"] = nonce
 	return s.tmpl.ExecuteTemplate(w, name, data)
 }

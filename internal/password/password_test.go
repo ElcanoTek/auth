@@ -2,6 +2,8 @@ package password
 
 import (
 	"errors"
+	"html"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -133,5 +135,49 @@ func TestVerifyMalformedHashesFailClosed(t *testing.T) {
 		if ok, _, err := Verify(encoded, "a long enough password"); err == nil || ok {
 			t.Errorf("Verify(%q): ok=%v err=%v, want closed error", encoded, ok, err)
 		}
+	}
+}
+
+func TestGeneratedAlphabetIsSixtyFourDistinctSymbols(t *testing.T) {
+	seen := map[rune]bool{}
+	for _, r := range generatedAlphabet {
+		if seen[r] {
+			t.Fatalf("duplicate symbol %q", r)
+		}
+		seen[r] = true
+	}
+	if len(seen) != 64 || len(generatedAlphabet) != 64 {
+		t.Fatalf("alphabet has %d symbols, want 64 (unbiased byte reduction)", len(seen))
+	}
+}
+
+func TestGenerateMeetsPolicyAndVaries(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		p, err := Generate(ContextTerms("alice@example.com", "Acme", "auth.acme.example")...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p) != GeneratedLength {
+			t.Fatalf("length %d: %q", len(p), p)
+		}
+		if err := Validate(p, ContextTerms("alice@example.com", "Acme", "auth.acme.example")...); err != nil {
+			t.Fatalf("generated password fails policy: %v (%q)", err, p)
+		}
+		for _, r := range p {
+			if !strings.ContainsRune(generatedAlphabet, r) {
+				t.Fatalf("symbol %q outside alphabet in %q", r, p)
+			}
+		}
+		if html.EscapeString(p) != p {
+			t.Fatalf("generated password %q is rewritten by HTML escaping", p)
+		}
+		if back, err := url.QueryUnescape(url.QueryEscape(p)); err != nil || back != p {
+			t.Fatalf("generated password %q does not survive a URL round trip", p)
+		}
+		if seen[p] {
+			t.Fatalf("duplicate generated password %q", p)
+		}
+		seen[p] = true
 	}
 }

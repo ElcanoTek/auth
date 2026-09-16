@@ -372,10 +372,15 @@ isn't being saved — usually `AUTH_COOKIE_DOMAIN` is wrong or
 
 ## What auth-server does NOT do (yet)
 
-- **Roles / permissions.** auth-server says "this user is
-  alice@clientco.com". It says nothing about what alice can do.
-  Authorization lives in each downstream service — usually as a
-  scopes / roles table keyed by email or tenant.
+- **Roles / permissions inside an application.** auth-server says "this
+  user is alice@clientco.com" and, in password mode, "alice may sign in to
+  this application" (per-application access, granted in the admin console
+  or with `auth user access`; `/authorize` refuses otherwise, with Auth's own
+  "No access" page interactively and `error=access_denied` for
+  `prompt=none`). What alice can *do* inside the application is still that
+  application's business — a scopes / roles table keyed by email or tenant.
+  The only role Auth itself knows is its administrator flag, which gates its
+  own console at `/admin`.
 - **Step-up / MFA.** Magic links are themselves an MFA-ish thing
   (you have to control the inbox), but there's no extra factor on
   top. If a client requires hardware tokens, that's a slot for a

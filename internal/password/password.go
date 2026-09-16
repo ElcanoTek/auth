@@ -375,3 +375,36 @@ func parseParameter(field, prefix string, bits int) (uint64, error) {
 	}
 	return strconv.ParseUint(field[len(prefix):], 10, bits)
 }
+
+// generatedAlphabet has 64 symbols: no ambiguous pairs (0/O, 1/l/I) so a
+// password read out over a call or copied from a screen survives the trip,
+// and no symbol that HTML, URLs or shells rewrite (& < > % # " ' \ space), so
+// what the administrator sees is byte-for-byte what they paste. 256 mod 64 is
+// 0, so reducing a random byte modulo the length is unbiased.
+const generatedAlphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_.!@*=~"
+
+// GeneratedLength is the length of Generate's output: 20 symbols from a
+// 64-symbol alphabet is 120 bits, far past the policy's 12-character floor.
+const GeneratedLength = 20
+
+// Generate returns a random temporary password that satisfies Validate for
+// the given context (it is retried in the vanishingly rare case the random
+// output resembles a blocked or context word). Callers issue it with
+// must-change set so the person picks their own at first login.
+func Generate(context ...string) (string, error) {
+	for attempt := 0; attempt < 8; attempt++ {
+		buf := make([]byte, GeneratedLength)
+		if _, err := rand.Read(buf); err != nil {
+			return "", fmt.Errorf("generate password: %w", err)
+		}
+		out := make([]byte, GeneratedLength)
+		for i, b := range buf {
+			out[i] = generatedAlphabet[int(b)%len(generatedAlphabet)]
+		}
+		plain := string(out)
+		if err := Validate(plain, context...); err == nil {
+			return plain, nil
+		}
+	}
+	return "", errors.New("generate password: could not produce a policy-conforming password")
+}
