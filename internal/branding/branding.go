@@ -108,11 +108,11 @@ func Load(dir string) (*Brand, error) {
 		LoginTagline: oneLine(m.Branding.LoginTagline, 240),
 	}
 	if logo := strings.TrimSpace(m.Branding.Logo); logo != "" {
-		path, ctype, err := validateLogo(abs, logo)
+		path, ctype, validated, err := validateLogo(abs, logo)
 		if err != nil {
 			return nil, fmt.Errorf("AUTH_CLIENT_CONFIG_DIR: branding.logo: %w", err)
 		}
-		data, err := readBounded(path, MaxLogoBytes)
+		data, err := readBounded(path, validated, MaxLogoBytes)
 		if err != nil {
 			return nil, fmt.Errorf("AUTH_CLIENT_CONFIG_DIR: branding.logo: %w", err)
 		}
@@ -122,11 +122,12 @@ func Load(dir string) (*Brand, error) {
 	return b, nil
 }
 
-// readBounded reads a validated file with the same O_NOFOLLOW guard the
-// validation used, refusing anything over limit bytes. The path was
-// symlink-resolved already; NOFOLLOW closes the window between that check
-// and this read.
-func readBounded(path string, limit int64) ([]byte, error) {
+// readBounded reads the file validateLogo just examined and refuses to read
+// anything else: the open uses O_NOFOLLOW for the final component, and the
+// opened descriptor must be the very inode validation saw (os.SameFile), so a
+// swap of the file OR of any ancestor directory for a symlink between the
+// check and this read yields an error instead of another file's bytes.
+func readBounded(path string, validated os.FileInfo, limit int64) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
@@ -135,6 +136,9 @@ func readBounded(path string, limit int64) ([]byte, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
+	}
+	if !os.SameFile(validated, info) {
+		return nil, fmt.Errorf("%s changed between validation and read", path)
 	}
 	if !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, fmt.Errorf("%s is not a regular file of at most %d bytes", path, limit)
@@ -179,42 +183,42 @@ var logoContentTypes = map[string]string{
 // ".." element, resolving (through symlinks) to a regular file inside the
 // bundle, with an extension the HTTP layer knows a content type for, and a
 // bounded size.
-func validateLogo(bundle, rel string) (string, string, error) {
+func validateLogo(bundle, rel string) (string, string, os.FileInfo, error) {
 	if filepath.IsAbs(rel) || strings.Contains(rel, "\\") {
-		return "", "", fmt.Errorf("%q must be a relative path inside the bundle", rel)
+		return "", "", nil, fmt.Errorf("%q must be a relative path inside the bundle", rel)
 	}
 	clean := filepath.Clean(rel)
 	for _, part := range strings.Split(clean, string(filepath.Separator)) {
 		if part == ".." {
-			return "", "", fmt.Errorf("%q escapes the bundle", rel)
+			return "", "", nil, fmt.Errorf("%q escapes the bundle", rel)
 		}
 	}
 	ctype, ok := logoContentTypes[strings.ToLower(filepath.Ext(clean))]
 	if !ok {
-		return "", "", fmt.Errorf("%q: extension must be one of .svg .png .webp .jpg .jpeg .ico", rel)
+		return "", "", nil, fmt.Errorf("%q: extension must be one of .svg .png .webp .jpg .jpeg .ico", rel)
 	}
 	bundleReal, err := filepath.EvalSymlinks(bundle)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	real, err := filepath.EvalSymlinks(filepath.Join(bundle, clean))
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if real != bundleReal && !strings.HasPrefix(real, bundleReal+string(filepath.Separator)) {
-		return "", "", fmt.Errorf("%q resolves outside the bundle", rel)
+		return "", "", nil, fmt.Errorf("%q resolves outside the bundle", rel)
 	}
 	info, err := os.Stat(real)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return "", "", fmt.Errorf("%q is not a regular file", rel)
+		return "", "", nil, fmt.Errorf("%q is not a regular file", rel)
 	}
 	if info.Size() > MaxLogoBytes {
-		return "", "", fmt.Errorf("%q is %d bytes; the limit is %d", rel, info.Size(), MaxLogoBytes)
+		return "", "", nil, fmt.Errorf("%q is %d bytes; the limit is %d", rel, info.Size(), MaxLogoBytes)
 	}
-	return real, ctype, nil
+	return real, ctype, info, nil
 }
 
 // colorValue mirrors Fleet's grammar: hex, or rgb()/rgba()/hsl()/hsla()
@@ -283,10 +287,11 @@ func declarations(mode map[string]string, light bool) (plain, mixed []string) {
 		return modeDefaults[light][name]
 	}
 	_, hasPrimary := valid["primary"]
+	_, hasHover := valid["primary_hover"]
 	_, hasAccent := valid["accent"]
 	_, hasBackground := valid["background"]
 	_, hasSurface := valid["surface_1"]
-	if hasPrimary || hasAccent || hasBackground || hasSurface {
+	if hasPrimary || hasHover || hasAccent || hasBackground || hasSurface {
 		primary, hover, accent, bg, surface := pick("primary"), pick("primary_hover"), pick("accent"), pick("background"), pick("surface_1")
 		plain = append(plain, "--gradient-action-primary: linear-gradient(140deg, "+primary+", "+hover+");")
 		mixed = append(mixed,

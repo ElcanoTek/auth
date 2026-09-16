@@ -239,6 +239,12 @@ if [[ -n "$CLIENT_CONFIG_ANSWER" ]]; then
       [[ "$DRY_RUN" == "1" || -f "$CLIENT_CONFIG_DIR/manifest.yaml" ]] || die "$CLIENT_CONFIG_DIR has no manifest.yaml"
       ;;
   esac
+  # The source sync below (and every `auth update`) runs rsync --delete over
+  # $APP_DIR, so a bundle inside it would be wiped on the next update and the
+  # service would then refuse to start. Refuse the layout up front.
+  case "$CLIENT_CONFIG_DIR/" in
+    "$APP_DIR"/*) die "the client bundle must live outside $APP_DIR (it is synced with rsync --delete); use $CLIENT_CHECKOUT or another path" ;;
+  esac
 fi
 
 COOKIE_DOMAIN_ANSWER=""

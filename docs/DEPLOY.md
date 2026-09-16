@@ -296,7 +296,12 @@ when it changed) or `auth restart` after editing a local bundle. `auth-server
 without starting the service. The clone uses the box's git credential store,
 so the token stored for the auth repository must also cover the bundle
 repository (a read-only fine-grained token or a deploy key); never put a token
-in the bundle URL, bootstrap refuses it. The bundle holds no secrets.
+in the bundle URL, bootstrap refuses it. The bundle holds no secrets. When
+that token is rotated, replace it in `/root/.git-credentials` on the auth
+host; until then `auth update` reports that the bundle did not fast-forward
+and keeps serving the last checkout, so branding is stale but sign-in is
+unaffected. The bundle must live outside `/opt/auth` (bootstrap and update
+refuse a path inside it), because the source sync runs `rsync --delete` there.
 
 ## Domain management (magic mode only)
 

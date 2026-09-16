@@ -164,6 +164,17 @@ func TestLogoValidation(t *testing.T) {
 	}
 }
 
+func TestHoverOnlyPaletteRepaintsTheButton(t *testing.T) {
+	dir := writeBundle(t, "branding:\n  colors:\n    dark:\n      primary_hover: \"#123456\"\n", nil)
+	b, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.CSS, "--color-primary-hover: #123456;") || !strings.Contains(b.CSS, "--gradient-action-primary: linear-gradient(140deg, #7272ab, #123456);") {
+		t.Fatalf("hover-only palette did not reach the action gradient:\n%s", b.CSS)
+	}
+}
+
 func TestValidColorGrammar(t *testing.T) {
 	for _, ok := range []string{"#fff", "#FFFF", "#0089F7", "#0089F7CC", "rgb(0, 137, 247)", "rgba(0,137,247,0.55)", "hsl(210 100% 48%)", "hsla(210, 100%, 48%, .5)", " #abc ", "hsl(210deg 100% 48%)", "rgb(0 0 0 / 50%)"} {
 		if !ValidColor(ok) {
