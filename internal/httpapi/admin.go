@@ -95,6 +95,7 @@ type adminResult struct {
 	Tab      string
 	Status   int
 	Reopen   string
+	Redirect string // send the browser here instead of rendering (own sign-out)
 }
 
 // failed logs an unexpected error and marks the result as a 500.
@@ -145,6 +146,11 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		result = s.adminAction(r, identity.Account)
+		if result.Redirect != "" {
+			s.clearPasswordCookies(w)
+			http.Redirect(w, r, result.Redirect, http.StatusSeeOther)
+			return
+		}
 		switch result.Status {
 		case 0:
 		case http.StatusBadRequest:
@@ -316,15 +322,17 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		res.Notice = fmt.Sprintf("Reset the password for %s and signed them out everywhere. Share the temporary password below.", target.Email)
 		res.Secret = plain
 	case "revoke-sessions":
-		if self {
-			res.Error = "Use Sign out for your own sessions."
-			return res
-		}
+		// Allowed on one's own row too: it is "sign out everywhere", which
+		// ends this session as well, so the browser goes to the sign-in page.
 		n, err := s.store.RevokeAllAuthSessions(ctx, target.ID, now.Unix(), "admin_revoked")
 		if err != nil {
 			return res.failed("revoke sessions", err)
 		}
 		audit("admin.sessions_revoked", target.ID, "")
+		if self {
+			res.Redirect = "/?notice=signed_out"
+			return res
+		}
 		res.Notice = fmt.Sprintf("Signed %s out of %d session(s) and every application.", target.Email, n)
 	case "disable", "enable":
 		disable := action == "disable"
@@ -384,6 +392,30 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			res.Notice = fmt.Sprintf("%s is tagged %s.", target.Email, team)
 		}
 	case "set-access":
+		// The admin console is one more thing an account may be granted, so it
+		// sits in the Access popup with the applications. The checkbox is
+		// absent from the form when unticked; the self and last-admin rules
+		// still apply and are reported without touching the applications.
+		_, wantAdmin := r.Form["admin"]
+		if wantAdmin != target.IsAdmin {
+			if self && !wantAdmin {
+				res.Error = "You cannot remove your own administrator access."
+				return res
+			}
+			err := s.store.SetAccountAdmin(ctx, target.Email, wantAdmin, now.Unix())
+			if errors.Is(err, store.ErrLastAdmin) {
+				res.Error = "That is the last enabled administrator. Make someone else an admin first."
+				return res
+			}
+			if err != nil {
+				return res.failed("set-access admin", err)
+			}
+			if wantAdmin {
+				audit("admin.admin_granted", target.ID, "")
+			} else {
+				audit("admin.admin_revoked", target.ID, "")
+			}
+		}
 		added, removed, err := s.store.SetApplicationAccess(ctx, target.ID, r.Form["apps"], now.Unix())
 		if errors.Is(err, store.ErrApplicationNotFound) {
 			res.Error = "One of those applications is not registered."
@@ -398,15 +430,23 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		for _, id := range removed {
 			audit("admin.access_revoked", target.ID, id)
 		}
+		adminNote := ""
+		if wantAdmin != target.IsAdmin {
+			if wantAdmin {
+				adminNote = " Admin console granted."
+			} else {
+				adminNote = " Admin console removed."
+			}
+		}
 		switch {
 		case len(added) == 0 && len(removed) == 0:
-			res.Notice = fmt.Sprintf("No change to %s's applications.", target.Email)
+			res.Notice = fmt.Sprintf("No change to %s's applications.%s", target.Email, adminNote)
 		case len(removed) == 0:
-			res.Notice = fmt.Sprintf("%s can now sign in to %s.", target.Email, strings.Join(added, ", "))
+			res.Notice = fmt.Sprintf("%s can now sign in to %s.%s", target.Email, strings.Join(added, ", "), adminNote)
 		case len(added) == 0:
-			res.Notice = fmt.Sprintf("%s was signed out of and can no longer sign in to %s.", target.Email, strings.Join(removed, ", "))
+			res.Notice = fmt.Sprintf("%s was signed out of and can no longer sign in to %s.%s", target.Email, strings.Join(removed, ", "), adminNote)
 		default:
-			res.Notice = fmt.Sprintf("%s: added %s; removed %s (and signed out of it).", target.Email, strings.Join(added, ", "), strings.Join(removed, ", "))
+			res.Notice = fmt.Sprintf("%s: added %s; removed %s (and signed out of it).%s", target.Email, strings.Join(added, ", "), strings.Join(removed, ", "), adminNote)
 		}
 	default:
 		res.Status = http.StatusBadRequest

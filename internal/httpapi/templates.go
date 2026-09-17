@@ -270,8 +270,7 @@ a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .corner-actions .theme-toggle { position: static; }
 .corner-bottom { position: fixed; left: var(--space-5); bottom: var(--space-5); display: flex; gap: var(--space-3); align-items: center; z-index: 3; }
 .corner-bottom form { margin: 0; }
-.corner-bottom a { color: var(--color-text-muted); font-size: var(--font-size-caption); }
-.corner-bottom a:hover { color: var(--color-text-primary); }
+a.btn-ghost { text-decoration: none; }
 .icon-btn {
   width: 2.5rem; height: 2.5rem; display: inline-flex; align-items: center; justify-content: center;
   font-size: 1.25rem; line-height: 1; text-decoration: none;
@@ -296,6 +295,7 @@ a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .modal-head h3 { margin: 0; font-family: var(--font-heading); font-size: 1.125rem; color: var(--color-text-primary); }
 .modal-head .icon-btn { width: 2rem; height: 2rem; font-size: 1.1rem; }
 .modal .who { color: var(--color-text-muted); font-size: var(--font-size-caption); margin: 0 0 var(--space-5); overflow-wrap: anywhere; }
+.modal .who .dot { margin: 0 0.35em; }
 .modal .field { margin-bottom: var(--space-4); }
 .modal .field label { margin-bottom: var(--space-2); }
 .modal input[type=email], .modal input[type=text], .modal input[type=password] {
@@ -314,6 +314,7 @@ a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .setting strong { display: block; color: var(--color-text-primary); font-size: var(--font-size-caption); }
 .setting .muted { margin: 0; font-size: var(--font-size-caption); }
 .setting .confirm .pane { left: auto; right: 0; border-radius: var(--radius-md) 0 var(--radius-md) var(--radius-md); }
+.setting .confirm > summary, .setting .btn-ghost { white-space: nowrap; }
 .modal .checks { margin-top: var(--space-2); }
 .tag { display: inline-block; padding: 0.1rem 0.5rem; border-radius: var(--radius-pill); font-size: 0.6875rem; font-weight: var(--font-weight-bold); letter-spacing: 0.04em; background: var(--color-bg); border: 1px solid var(--color-border-strong); color: var(--color-text-secondary); white-space: nowrap; }
 .card.admin { max-width: 68rem; }
@@ -355,7 +356,6 @@ table.list td { color: var(--color-text-secondary); }
 table.list td.who { color: var(--color-text-primary); font-weight: var(--font-weight-bold); overflow-wrap: anywhere; }
 table.list td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.list tr:last-child td { border-bottom: 0; }
-table.list td.date { white-space: nowrap; }
 table.list tr.account td { border-bottom: 0; padding-bottom: var(--space-2); }
 table.list tr.manage td { padding-top: 0; padding-bottom: var(--space-3); }
 table.list tr.manage:last-child td { border-bottom: 0; }
@@ -409,7 +409,6 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .kv dd { margin: 0; color: var(--color-text-secondary); word-break: break-all; }
 .kv dd code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8125rem; }
 .empty { margin: 0; padding: var(--space-4); border: 1px dashed var(--color-border); border-radius: var(--radius-md); color: var(--color-text-muted); font-size: var(--font-size-caption); text-align: center; }
-@media (max-width: 64rem) { table.list .date { display: none; } }
 @media (max-width: 40rem) {
   table.list .num { display: none; }
   /* The corner controls would float over a long table on a phone; let them
@@ -682,7 +681,6 @@ const adminHTML = `<!doctype html>
       <input type="hidden" name="redirect_to" value="/?notice=signed_out">
       <button class="btn-ghost" type="submit">Sign out</button>
     </form>
-    <a href="/change-password?return_to=/admin">Change your password</a>
   </div>
   <main class="card admin">
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
@@ -712,7 +710,7 @@ const adminHTML = `<!doctype html>
         <button class="btn inline" type="button" popovertarget="add-user">Add user</button>
       </div>
       {{if .Accounts}}<div class="table-wrap"><table class="list">
-        <thead><tr><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th class="num">Sessions</th><th>Created</th><th></th></tr></thead>
+        <thead><tr><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th class="num">Sessions</th><th></th></tr></thead>
         <tbody>
         {{range $i, $row := .Accounts}}<tr>
           <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
@@ -720,7 +718,6 @@ const adminHTML = `<!doctype html>
           <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
           <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
           <td class="num">{{$row.Sessions}}</td>
-          <td class="date">{{$row.Created}}</td>
           <td><div class="row-actions">
             <button class="btn-ghost" type="button" popovertarget="access-{{$i}}" aria-label="Access: {{$row.Email}}">Access</button>
             <button class="btn-ghost" type="button" popovertarget="settings-{{$i}}" aria-label="Settings: {{$row.Email}}">Settings</button>
@@ -730,14 +727,23 @@ const adminHTML = `<!doctype html>
             <p class="who">{{$row.Email}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{$row.Email}}">
-              {{if $row.Apps}}<div class="checks">{{range $row.Apps}}<label><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</div>
-              <p class="hint">Unticking an application signs them out of it now.</p>
-              <button class="btn" type="submit">Save access</button>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
+              <div class="field"><label>Applications</label>
+                {{if $row.Apps}}<div class="checks">{{range $row.Apps}}<label><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</div>
+                <p class="hint">Unticking an application signs them out of it now.</p>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
+              </div>
+              <div class="field"><label>Console</label>
+                <div class="checks">
+                  {{if or $row.Self (and $row.IsAdmin (not $row.CanDemote))}}<label class="off"><input type="checkbox" checked disabled> Admin console</label><input type="hidden" name="admin" value="on">
+                  {{else}}<label><input type="checkbox" name="admin" value="on"{{if $row.IsAdmin}} checked{{end}}> Admin console</label>{{end}}
+                </div>
+                <p class="hint">{{if $row.Self}}You cannot remove your own administrator access.{{else if and $row.IsAdmin (not $row.CanDemote)}}The last enabled administrator cannot be removed.{{else}}Administrators can open this console and manage every account.{{end}}</p>
+              </div>
+              <button class="btn" type="submit">Save access</button>
             </form>
           </div>
           <div id="settings-{{$i}}" class="modal" popover aria-labelledby="settings-{{$i}}-title">
             <div class="modal-head"><h3 id="settings-{{$i}}-title">Settings</h3><button class="icon-btn" type="button" popovertarget="settings-{{$i}}" popovertargetaction="hide" aria-label="Close">&times;</button></div>
-            <p class="who">{{$row.Email}}</p>
+            <p class="who">{{$row.Email}} <span class="dot">&middot;</span> created {{$row.Created}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-team"><input type="hidden" name="email" value="{{$row.Email}}">
               <div class="field"><label for="team-{{$i}}">Team</label>
@@ -747,7 +753,7 @@ const adminHTML = `<!doctype html>
             </form>
             {{if not $row.Self}}
             <div class="setting">
-              <div><strong>Reset password</strong><p class="muted">Signs them out everywhere; shows a new temporary password.</p></div>
+              <div><strong>Reset password</strong><p class="muted">Signs them out of every app and device; shows a new temporary password they must change.</p></div>
               <details class="confirm danger"><summary aria-label="Reset password: {{$row.Email}}">Reset</summary>
                 <form class="pane" method="post" action="/admin">
                   <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{$row.Email}}">
@@ -784,26 +790,21 @@ const adminHTML = `<!doctype html>
               </details>{{else}}<span class="badge off">Last admin</span>{{end}}
               {{end}}
             </div>
-            <div class="setting">
-              {{if $row.IsAdmin}}
-              <div><strong>Administrator</strong><p class="muted">Can open this console.</p></div>
-              {{if $row.CanDemote}}<details class="confirm danger"><summary aria-label="Remove admin: {{$row.Email}}">Remove admin</summary>
-                <form class="pane" method="post" action="/admin">
-                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-admin"><input type="hidden" name="email" value="{{$row.Email}}">
-                  <p class="muted">{{$row.Email}} keeps their account and applications but can no longer open this console.</p>
-                  <button class="btn" type="submit">Confirm remove</button>
-                </form>
-              </details>{{else}}<span class="badge off">Last admin</span>{{end}}
-              {{else}}
-              <div><strong>Administrator</strong><p class="muted">Not an administrator.</p></div>
-              <form method="post" action="/admin">
-                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="grant-admin"><input type="hidden" name="email" value="{{$row.Email}}">
-                <button class="btn-ghost" type="submit" aria-label="Make {{$row.Email}} an admin">Make admin</button>
-              </form>
-              {{end}}
-            </div>
             {{else}}
-            <p class="hint">Your own password and sessions are managed from the corner controls: Change your password, and Sign out.</p>
+            <div class="setting">
+              <div><strong>Reset password</strong><p class="muted">Your own password: change it with your current one. Every other device and app is signed out; this browser stays signed in.</p></div>
+              <a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>
+            </div>
+            <div class="setting">
+              <div><strong>Sign out everywhere</strong><p class="muted">Ends every one of your sessions, in every application, on every device, this one included.</p></div>
+              <details class="confirm danger"><summary aria-label="Sign out everywhere: {{$row.Email}}">Sign out</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-sessions"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">You will be signed out here too and return to the sign-in page.</p>
+                  <button class="btn" type="submit">Confirm sign out</button>
+                </form>
+              </details>
+            </div>
             {{end}}
           </div></td>
         </tr>{{end}}

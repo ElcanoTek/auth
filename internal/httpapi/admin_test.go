@@ -320,10 +320,9 @@ func TestAdminGuardsSelfAndLastAdministrator(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
 	for action, want := range map[string]string{
-		"reset-password":  "Use Change password for your own account.",
-		"revoke-sessions": "Use Sign out for your own sessions.",
-		"disable":         "You cannot disable your own account.",
-		"revoke-admin":    "You cannot remove your own administrator access.",
+		"reset-password": "Use Change password for your own account.",
+		"disable":        "You cannot disable your own account.",
+		"revoke-admin":   "You cannot remove your own administrator access.",
 	} {
 		if _, body := alice.post(url.Values{"action": {action}, "email": {"alice@example.com"}}); !strings.Contains(body, want) {
 			t.Fatalf("%s on self did not say %q:\n%s", action, want, body)
@@ -566,7 +565,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		`popovertarget="access-0"`, `id="access-0" class="modal" popover`,
 		`popovertarget="settings-0"`, `id="settings-0" class="modal" popover`,
 		`<a class="icon-btn" href="/account" aria-label="Back to your apps"`,
-		`<div class="corner-bottom">`, `action="/logout"`, `href="/change-password?return_to=/admin">Change your password</a>`,
+		`<div class="corner-bottom">`, `action="/logout"`, `<a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>`,
 		`data-generate="new-password"`, `name="password" type="text"`, `name="team" type="text" list="teams"`, `<datalist id="teams">`,
 	} {
 		if !strings.Contains(body, want) {
@@ -671,5 +670,96 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	_ = page.Body.Close()
 	if !strings.Contains(string(loginBody), `<div class="banner alert" role="status"><strong>Signed out.</strong>`) {
 		t.Fatalf("signed-out banner missing:\n%s", loginBody)
+	}
+}
+
+// The administrator flag is granted from the Access popup alongside the
+// applications: a ticked "Admin console" grants, an unticked one removes,
+// with the self and last-admin rules intact and the applications untouched
+// when the flag change is refused.
+func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	_, body := alice.get("/admin")
+	if !strings.Contains(body, `<input type="checkbox" checked disabled> Admin console</label><input type="hidden" name="admin" value="on">`) {
+		t.Fatalf("own row does not lock the admin checkbox:\n%s", body)
+	}
+	if !strings.Contains(body, `<input type="checkbox" name="admin" value="on"> Admin console`) {
+		t.Fatalf("bob's row lacks the admin checkbox:\n%s", body)
+	}
+	if strings.Contains(body, `value="grant-admin"`) || strings.Contains(body, `value="revoke-admin"`) {
+		t.Fatal("Settings still offers the old admin buttons")
+	}
+	// Grant bob through Access, keeping his apps.
+	_, body = alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"fleet"}, "admin": {"on"}})
+	if !strings.Contains(body, "No change to bob@example.com&#39;s applications. Admin console granted.") {
+		t.Fatalf("grant via access:\n%s", body)
+	}
+	bob, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com")
+	if !bob.IsAdmin {
+		t.Fatal("bob not admin")
+	}
+	// Remove it again while also changing apps: both applied, one notice.
+	_, body = alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}})
+	if !strings.Contains(body, "bob@example.com: added explorer; removed fleet (and signed out of it). Admin console removed.") {
+		t.Fatalf("revoke via access:\n%s", body)
+	}
+	bob, _ = st.PasswordAccountByEmail(context.Background(), "bob@example.com")
+	if bob.IsAdmin {
+		t.Fatal("bob still admin")
+	}
+	// Self: a forged post without the hidden field is refused and apps untouched.
+	before, _ := st.ApplicationAccess(context.Background(), func() string {
+		a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+		return a.ID
+	}())
+	_, body = alice.post(url.Values{"action": {"set-access"}, "email": {"alice@example.com"}, "apps": {"fleet"}})
+	if !strings.Contains(body, "You cannot remove your own administrator access.") {
+		t.Fatalf("self revoke via access:\n%s", body)
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	after, _ := st.ApplicationAccess(context.Background(), a.ID)
+	if !a.IsAdmin || strings.Join(after, ",") != strings.Join(before, ",") {
+		t.Fatalf("self refusal changed state: admin=%v apps %v → %v", a.IsAdmin, before, after)
+	}
+	// Last admin: bob (admin again) tries to remove alice while alice is the only other... make alice the last.
+	alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}, "admin": {"on"}})
+	bobClient := loginAdmin(t, ts, cfg, "bob@example.com", plain)
+	bobClient.post(url.Values{"action": {"set-access"}, "email": {"alice@example.com"}, "apps": {}})
+	// alice demoted by bob (allowed: bob remains). Now bob is last; alice cannot open the console any more,
+	// and bob removing himself is refused as self.
+	if resp, _ := alice.get("/admin"); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("alice still admin after bob removed her: %d", resp.StatusCode)
+	}
+	_, body = bobClient.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}})
+	if !strings.Contains(body, "You cannot remove your own administrator access.") {
+		t.Fatalf("last admin self revoke:\n%s", body)
+	}
+}
+
+// An administrator may sign themself out everywhere from their own row; it
+// ends the current session too, so the response is the signed-out page, and
+// the created date has moved from the table into the Settings header.
+func TestAdminOwnRowSignsOutEverywhereAndShowsCreated(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	_, body := alice.get("/admin")
+	if !strings.Contains(body, `<span class="dot">&middot;</span> created 20`) || strings.Contains(body, `<th>Created</th>`) {
+		t.Fatalf("created date not in Settings header / still a column:\n%s", body)
+	}
+	if !strings.Contains(body, `aria-label="Sign out everywhere: Alice@Example.com"`) {
+		t.Fatalf("own row lacks Sign out everywhere:\n%s", body)
+	}
+	resp := postPasswordForm(t, ts.URL+"/admin", url.Values{"csrf_token": {alice.csrf.Value}, "action": {"revoke-sessions"}, "email": {"alice@example.com"}}, alice.session, alice.csrf)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?notice=signed_out" {
+		t.Fatalf("own sign-out = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if n, _ := st.CountActiveAuthSessions(context.Background(), a.ID, time.Now().Unix()); n != 0 {
+		t.Fatalf("own sessions after sign out everywhere = %d", n)
+	}
+	if r, _ := alice.get("/admin"); r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("stale session still opens the console: %d", r.StatusCode)
 	}
 }
