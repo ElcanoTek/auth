@@ -352,6 +352,7 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .footer-actions { margin-top: var(--space-8); display: flex; gap: var(--space-4); align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .footer-actions .btn { width: auto; margin: 0; padding-inline: var(--space-6); min-height: 2.5rem; }
 .footer-actions a { color: var(--color-accent); font-size: var(--font-size-caption); }
+.footer-links { color: var(--color-text-muted); font-size: var(--font-size-caption); }
 @media (max-width: 40rem) {
   .add { grid-template-columns: 1fr; } .add .btn { width: 100%; }
   table.list .num, table.list .date { display: none; }
@@ -536,13 +537,12 @@ const accountHTML = `<!doctype html>
         {{end}}
       </div>
     </section>
-    <p><a href="/change-password">Change password</a></p>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <input type="hidden" name="redirect_to" value="/?notice=signed_out">
       <button class="btn" type="submit">Sign out</button>
     </form>
-    <div class="foot">Signing out ends your session in every {{.Brand}} app, on every device.</div>
+    <div class="foot">Signing out ends your session in every {{.Brand}} app, on every device. Passwords are managed by your administrator.</div>
   </main>
 </body>
 </html>`
@@ -734,7 +734,7 @@ const adminHTML = `<!doctype html>
     {{end}}{{end}}
 
     <div class="footer-actions">
-      <a href="/account">Back to your apps</a>
+      <span class="footer-links"><a href="/account">Back to your apps</a> · <a href="/change-password?return_to=/admin">Change your password</a></span>
       <form method="post" action="/logout">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}">
         <input type="hidden" name="redirect_to" value="/?notice=signed_out">

@@ -63,6 +63,15 @@ func newPasswordTestServer(t *testing.T, mustChange bool) (*httptest.Server, *st
 	return ts, st, cfg, plain
 }
 
+// makeAdmin flags an account as an administrator (voluntary password changes
+// are an administrator's page; everyone else gets a reset from the console).
+func makeAdmin(t *testing.T, st *store.Store, email string) {
+	t.Helper()
+	if err := st.SetAccountAdmin(context.Background(), email, true, time.Now().Unix()); err != nil {
+		t.Fatalf("makeAdmin %s: %v", email, err)
+	}
+}
+
 // grantAccess adds one application to an account's set without disturbing
 // the rest, the way an administrator ticking a box would.
 func grantAccess(t *testing.T, st *store.Store, email, applicationID string) {
@@ -354,6 +363,7 @@ func TestPasswordChangeRevokesOldSessionAndClearsMustChange(t *testing.T) {
 
 func TestPasswordChangeCurrentPasswordAttemptsAreRateLimited(t *testing.T) {
 	ts, st, cfg, current := newPasswordTestServer(t, false)
+	makeAdmin(t, st, "alice@example.com") // voluntary changes are an administrator's page
 	login, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", current)
 	_ = login.Body.Close()
 	cfg.PasswordRatePerEmail = 1
@@ -1576,6 +1586,7 @@ func TestLogoutRedirectRejectsBackslashSchemeRelativeTarget(t *testing.T) {
 // the policy message, before any hashing, and the form is re-rendered.
 func TestChangePasswordRefusesPasswordBuiltFromEmail(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	makeAdmin(t, st, "alice@example.com") // voluntary changes are an administrator's page
 	_, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	if session == nil || csrf == nil {
 		t.Fatal("login did not issue a session and CSRF cookie")

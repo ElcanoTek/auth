@@ -269,6 +269,7 @@ func TestAppInitiatedLoginReturnsToTheAppNotTheAccountPage(t *testing.T) {
 // token and the expired-page message rather than a bare 403.
 func TestChangePasswordWithStaleCSRFRerendersForm(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	makeAdmin(t, st, "alice@example.com")
 	_, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
 	resp := postPasswordForm(t, ts.URL+"/change-password", url.Values{
 		"csrf_token": {"stale"}, "current_password": {plain}, "new_password": {"a-brand-new-passphrase-42"}, "confirm_password": {"a-brand-new-passphrase-42"},
@@ -290,6 +291,7 @@ func TestChangePasswordWithStaleCSRFRerendersForm(t *testing.T) {
 // succeeds.
 func TestStaleFormsDoNotSpendRateLimit(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	makeAdmin(t, st, "alice@example.com")
 	csrf := getCSRFCookie(t, ts.URL+"/", "auth_csrf")
 	for i := 0; i < cfg.PasswordRatePerEmail+2; i++ {
 		resp := postPasswordForm(t, ts.URL+"/login", url.Values{
@@ -318,5 +320,73 @@ func TestStaleFormsDoNotSpendRateLimit(t *testing.T) {
 	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
 	if ok, _, _ := passwordauth.Verify(a.PasswordHash, "a-brand-new-passphrase-42"); !ok {
 		t.Fatal("valid change did not apply")
+	}
+}
+
+// Passwords are managed by administrators: a signed-in non-admin whose
+// temporary password has already been changed has no self-service change.
+// The page admits the forced first-login change and administrators only, and
+// the links follow the same rule.
+func TestVoluntaryPasswordChangeIsForAdministratorsOnly(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	_, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	// GET and POST both bounce to the apps page and change nothing.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/change-password", nil)
+	req.AddCookie(session)
+	get, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = get.Body.Close()
+	if get.StatusCode != http.StatusSeeOther || get.Header.Get("Location") != "/account" {
+		t.Fatalf("non-admin GET /change-password = %d %q, want 303 /account", get.StatusCode, get.Header.Get("Location"))
+	}
+	post := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+		"csrf_token": {csrf.Value}, "current_password": {plain}, "new_password": {"a-brand-new-passphrase-42"}, "confirm_password": {"a-brand-new-passphrase-42"},
+	}, session, csrf)
+	_ = post.Body.Close()
+	if post.StatusCode != http.StatusSeeOther || post.Header.Get("Location") != "/account" {
+		t.Fatalf("non-admin POST /change-password = %d %q, want 303 /account", post.StatusCode, post.Header.Get("Location"))
+	}
+	// A stale token gets the same bounce, never the form (and its live token).
+	stale := postPasswordForm(t, ts.URL+"/change-password", url.Values{
+		"csrf_token": {"stale"}, "current_password": {plain}, "new_password": {"a-brand-new-passphrase-42"}, "confirm_password": {"a-brand-new-passphrase-42"},
+	}, session, csrf)
+	staleBody, _ := io.ReadAll(stale.Body)
+	_ = stale.Body.Close()
+	if stale.StatusCode != http.StatusSeeOther || stale.Header.Get("Location") != "/account" || strings.Contains(string(staleBody), "csrf_token") {
+		t.Fatalf("non-admin stale POST = %d %q", stale.StatusCode, stale.Header.Get("Location"))
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if ok, _, _ := passwordauth.Verify(a.PasswordHash, plain); !ok {
+		t.Fatal("non-admin changed their own password")
+	}
+	// The apps page no longer offers it.
+	if body := accountPage(t, ts, cfg, plain); strings.Contains(body, "/change-password") {
+		t.Fatalf("account page still links to /change-password:\n%s", body)
+	}
+	// An administrator keeps the page and is offered it from the console.
+	makeAdmin(t, st, "alice@example.com")
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/change-password", nil)
+	req.AddCookie(session)
+	adminGet, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = adminGet.Body.Close()
+	if adminGet.StatusCode != http.StatusOK {
+		t.Fatalf("admin GET /change-password = %d, want 200", adminGet.StatusCode)
+	}
+	req, _ = http.NewRequest(http.MethodGet, ts.URL+"/admin", nil)
+	req.AddCookie(session)
+	req.AddCookie(csrf)
+	console, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consoleBody, _ := io.ReadAll(console.Body)
+	_ = console.Body.Close()
+	if !strings.Contains(string(consoleBody), `href="/change-password?return_to=/admin">Change your password</a>`) {
+		t.Fatalf("admin console lacks the change-password link:\n%s", consoleBody)
 	}
 }
