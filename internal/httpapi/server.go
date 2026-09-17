@@ -4,7 +4,7 @@
 //
 //	GET  /           — login form (HTML)
 //	POST /login      — password-mode login
-//	GET|POST /change-password — password-mode forced replacement
+//	GET|POST /change-password — password-mode forced replacement, or an administrator changing their own
 //	GET  /account    — password-mode signed-in page with the logout form
 //	GET  /authorize  — password-mode application authorization request
 //	POST /token      — confidential-client authorization-code exchange
