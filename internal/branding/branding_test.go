@@ -74,8 +74,9 @@ func TestLoadReadsOnlyBrandingAndValidatesValues(t *testing.T) {
 		"--color-primary: #0B6E4F;", "--color-primary-hover: #118A63;", "--color-on-primary: #FFFFFF;",
 		"--color-bg: #0E1512;", "--color-border: rgba(255, 255, 255, 0.14);",
 		"--gradient-action-primary: linear-gradient(140deg, #0B6E4F, #118A63);",
-		"color-mix(in srgb, #0B6E4F 34%, transparent)", "color-mix(in srgb, #F2A93B 22%, transparent)",
-		"--gradient-surface-card: linear-gradient(145deg, #16201B,",
+		"color-mix(in srgb, #0B6E4F 34%, transparent)", "color-mix(in srgb, #586f7c 28%, transparent)",
+		"radial-gradient(circle at 72% 82%, color-mix(in srgb, #0B6E4F 18%, transparent), transparent 30%)",
+		"--gradient-surface-card: linear-gradient(145deg, color-mix(in srgb, color-mix(in srgb, #16201B 90%, #000) 92%, transparent)",
 		`:root[data-theme="light"] {`, "--color-bg: #F4F8F6;",
 	} {
 		if !strings.Contains(b.CSS, want) {
@@ -95,7 +96,7 @@ func TestLoadReadsOnlyBrandingAndValidatesValues(t *testing.T) {
 	}
 	supports := b.CSS[strings.Index(b.CSS, "@supports"):]
 	light := supports[strings.Index(supports, `[data-theme="light"]`):]
-	if !strings.Contains(light, "linear-gradient(150deg, #F4F8F6 0%, #F4F8F6 100%)") || !strings.Contains(light, "color-mix(in srgb, #ffffff 88%, #F4F8F6)") {
+	if !strings.Contains(light, "color-mix(in srgb, #e9eefc 34%, #fff) 0%") || !strings.Contains(light, "--gradient-surface-card: linear-gradient(145deg, #ffffff, color-mix(in srgb, #e9eefc 70%, #fff))") {
 		t.Fatalf("light gradients not derived with defaults:\n%s", light)
 	}
 	if !strings.Contains(b.CSS, "--gradient-action-primary: linear-gradient(140deg, #0B6E4F, #5f5f97);") {
@@ -198,5 +199,40 @@ func TestOneLineStripsControlCharactersAndBounds(t *testing.T) {
 	// Bounding counts runes: a multibyte wordmark is never cut mid-character.
 	if got := oneLine(strings.Repeat("界", 20), 5); got != strings.Repeat("界", 5) {
 		t.Fatalf("oneLine cut a multibyte name: %q", got)
+	}
+}
+
+// A bundle that supplies only the two gradient-input tokens still reaches
+// both the plain declaration and the derived gradients, in each mode.
+func TestSparseSecondaryAndSurface2ReachTokensAndGradients(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(`name: sparse
+branding:
+  colors:
+    dark:
+      secondary: "#123456"
+    light:
+      surface_2: "#ABCDEF"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"--color-secondary: #123456;",
+		"color-mix(in srgb, #123456 28%, transparent)", // dark second radial
+		"--color-surface-2: #ABCDEF;",
+		"color-mix(in srgb, #ABCDEF 34%, #fff) 0%", // light background linear
+		"--gradient-surface-card: linear-gradient(145deg, #ffffff, color-mix(in srgb, #ABCDEF 70%, #fff))",
+	} {
+		if !strings.Contains(b.CSS, want) {
+			t.Errorf("CSS lacks %s\n%s", want, b.CSS)
+		}
+	}
+	// The dark card still derives from the stock surface_1 and background.
+	if !strings.Contains(b.CSS, "color-mix(in srgb, color-mix(in srgb, #241b31 90%, #000) 92%, transparent)") {
+		t.Fatalf("dark card did not fall back to stock surface_1:\n%s", b.CSS)
 	}
 }

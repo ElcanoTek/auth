@@ -65,8 +65,10 @@ const tokensCSS = `
 
   --color-bg: #1a0b1e;
   --color-surface-1: #241b31;
+  --color-surface-2: #2f2741;
   --color-primary: #7272ab;
   --color-primary-hover: #8686c4;
+  --color-secondary: #586f7c;
   --color-accent: #9da7ef;
   --color-on-primary: #ffffff;
   --color-white: #ffffff;
@@ -115,6 +117,7 @@ const tokensCSS = `
   color-scheme: light;
   --color-bg: #f4f6fb;
   --color-surface-1: #ffffff;
+  --color-surface-2: #e9eefc;
   --color-primary-hover: #5f5f97;
   --color-border: rgba(38, 55, 92, 0.2);
   --color-border-strong: rgba(38, 55, 92, 0.32);
