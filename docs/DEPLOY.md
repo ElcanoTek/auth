@@ -304,7 +304,8 @@ Tabs:
 
 - **Accounts.** Every password account with status (Active / Disabled / Must
   change password), the Admin badge, its team tag, the applications it may
-  sign in to, its live central sessions and creation date. Each row has two
+  sign in to and its live central sessions (the creation date sits in the
+  Settings popup beside the email). Each row has two
   buttons: **Access** opens a popup with one checkbox per application
   (unticking one signs them out of it now) plus an **Admin console** checkbox
   (the administrator flag; your own and the last enabled administrator's are
@@ -316,9 +317,10 @@ Tabs:
   suggested), a temporary password you type or fill with **Generate** (blank
   means a strong one is generated and shown once; a typed one must meet the
   same 12-character policy), and the applications to grant. Administrators
-  cannot reset, sign out, disable or demote themselves from a row (their own
-  row's Settings links to the change-password form, and the corner Sign out
-  covers sessions), and the
+  cannot reset, disable or demote themselves from a row (their own row's
+  Settings links to the change-password form instead, and its Sign out
+  everywhere ends their own session too, returning them to the sign-in page),
+  and the
   last enabled administrator can never be demoted or disabled, from the
   console or the CLI. Passwords are managed by administrators: a non-admin has
   no self-service change (the `/change-password` page admits only a forced

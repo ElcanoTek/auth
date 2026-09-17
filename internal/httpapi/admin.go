@@ -95,6 +95,7 @@ type adminResult struct {
 	Tab      string
 	Status   int
 	Reopen   string
+	Redirect string // send the browser here instead of rendering (own sign-out)
 }
 
 // failed logs an unexpected error and marks the result as a 500.
@@ -145,6 +146,11 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		result = s.adminAction(r, identity.Account)
+		if result.Redirect != "" {
+			s.clearPasswordCookies(w)
+			http.Redirect(w, r, result.Redirect, http.StatusSeeOther)
+			return
+		}
 		switch result.Status {
 		case 0:
 		case http.StatusBadRequest:
@@ -316,15 +322,17 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		res.Notice = fmt.Sprintf("Reset the password for %s and signed them out everywhere. Share the temporary password below.", target.Email)
 		res.Secret = plain
 	case "revoke-sessions":
-		if self {
-			res.Error = "Use Sign out for your own sessions."
-			return res
-		}
+		// Allowed on one's own row too: it is "sign out everywhere", which
+		// ends this session as well, so the browser goes to the sign-in page.
 		n, err := s.store.RevokeAllAuthSessions(ctx, target.ID, now.Unix(), "admin_revoked")
 		if err != nil {
 			return res.failed("revoke sessions", err)
 		}
 		audit("admin.sessions_revoked", target.ID, "")
+		if self {
+			res.Redirect = "/?notice=signed_out"
+			return res
+		}
 		res.Notice = fmt.Sprintf("Signed %s out of %d session(s) and every application.", target.Email, n)
 	case "disable", "enable":
 		disable := action == "disable"

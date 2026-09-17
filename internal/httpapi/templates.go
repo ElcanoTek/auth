@@ -295,6 +295,7 @@ a.btn-ghost { text-decoration: none; }
 .modal-head h3 { margin: 0; font-family: var(--font-heading); font-size: 1.125rem; color: var(--color-text-primary); }
 .modal-head .icon-btn { width: 2rem; height: 2rem; font-size: 1.1rem; }
 .modal .who { color: var(--color-text-muted); font-size: var(--font-size-caption); margin: 0 0 var(--space-5); overflow-wrap: anywhere; }
+.modal .who .dot { margin: 0 0.35em; }
 .modal .field { margin-bottom: var(--space-4); }
 .modal .field label { margin-bottom: var(--space-2); }
 .modal input[type=email], .modal input[type=text], .modal input[type=password] {
@@ -354,7 +355,6 @@ table.list td { color: var(--color-text-secondary); }
 table.list td.who { color: var(--color-text-primary); font-weight: var(--font-weight-bold); overflow-wrap: anywhere; }
 table.list td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.list tr:last-child td { border-bottom: 0; }
-table.list td.date { white-space: nowrap; }
 table.list tr.account td { border-bottom: 0; padding-bottom: var(--space-2); }
 table.list tr.manage td { padding-top: 0; padding-bottom: var(--space-3); }
 table.list tr.manage:last-child td { border-bottom: 0; }
@@ -408,7 +408,6 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .kv dd { margin: 0; color: var(--color-text-secondary); word-break: break-all; }
 .kv dd code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8125rem; }
 .empty { margin: 0; padding: var(--space-4); border: 1px dashed var(--color-border); border-radius: var(--radius-md); color: var(--color-text-muted); font-size: var(--font-size-caption); text-align: center; }
-@media (max-width: 64rem) { table.list .date { display: none; } }
 @media (max-width: 40rem) {
   table.list .num { display: none; }
   /* The corner controls would float over a long table on a phone; let them
@@ -710,7 +709,7 @@ const adminHTML = `<!doctype html>
         <button class="btn inline" type="button" popovertarget="add-user">Add user</button>
       </div>
       {{if .Accounts}}<div class="table-wrap"><table class="list">
-        <thead><tr><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th class="num">Sessions</th><th>Created</th><th></th></tr></thead>
+        <thead><tr><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th class="num">Sessions</th><th></th></tr></thead>
         <tbody>
         {{range $i, $row := .Accounts}}<tr>
           <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
@@ -718,7 +717,6 @@ const adminHTML = `<!doctype html>
           <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
           <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
           <td class="num">{{$row.Sessions}}</td>
-          <td class="date">{{$row.Created}}</td>
           <td><div class="row-actions">
             <button class="btn-ghost" type="button" popovertarget="access-{{$i}}" aria-label="Access: {{$row.Email}}">Access</button>
             <button class="btn-ghost" type="button" popovertarget="settings-{{$i}}" aria-label="Settings: {{$row.Email}}">Settings</button>
@@ -744,7 +742,7 @@ const adminHTML = `<!doctype html>
           </div>
           <div id="settings-{{$i}}" class="modal" popover aria-labelledby="settings-{{$i}}-title">
             <div class="modal-head"><h3 id="settings-{{$i}}-title">Settings</h3><button class="icon-btn" type="button" popovertarget="settings-{{$i}}" popovertargetaction="hide" aria-label="Close">&times;</button></div>
-            <p class="who">{{$row.Email}}</p>
+            <p class="who">{{$row.Email}} <span class="dot">&middot;</span> created {{$row.Created}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-team"><input type="hidden" name="email" value="{{$row.Email}}">
               <div class="field"><label for="team-{{$i}}">Team</label>
@@ -797,7 +795,14 @@ const adminHTML = `<!doctype html>
               <a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>
             </div>
             <div class="setting">
-              <div><strong>Sign out</strong><p class="muted">Your own sessions end from the Sign out control at the bottom left.</p></div>
+              <div><strong>Sign out everywhere</strong><p class="muted">Ends every one of your sessions, in every application, on every device, this one included.</p></div>
+              <details class="confirm danger"><summary aria-label="Sign out everywhere: {{$row.Email}}">Sign out</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-sessions"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">You will be signed out here too and return to the sign-in page.</p>
+                  <button class="btn" type="submit">Confirm sign out</button>
+                </form>
+              </details>
             </div>
             {{end}}
           </div></td>

@@ -320,10 +320,9 @@ func TestAdminGuardsSelfAndLastAdministrator(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
 	for action, want := range map[string]string{
-		"reset-password":  "Use Change password for your own account.",
-		"revoke-sessions": "Use Sign out for your own sessions.",
-		"disable":         "You cannot disable your own account.",
-		"revoke-admin":    "You cannot remove your own administrator access.",
+		"reset-password": "Use Change password for your own account.",
+		"disable":        "You cannot disable your own account.",
+		"revoke-admin":   "You cannot remove your own administrator access.",
 	} {
 		if _, body := alice.post(url.Values{"action": {action}, "email": {"alice@example.com"}}); !strings.Contains(body, want) {
 			t.Fatalf("%s on self did not say %q:\n%s", action, want, body)
@@ -735,5 +734,32 @@ func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
 	_, body = bobClient.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}})
 	if !strings.Contains(body, "You cannot remove your own administrator access.") {
 		t.Fatalf("last admin self revoke:\n%s", body)
+	}
+}
+
+// An administrator may sign themself out everywhere from their own row; it
+// ends the current session too, so the response is the signed-out page, and
+// the created date has moved from the table into the Settings header.
+func TestAdminOwnRowSignsOutEverywhereAndShowsCreated(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	_, body := alice.get("/admin")
+	if !strings.Contains(body, `<span class="dot">&middot;</span> created 20`) || strings.Contains(body, `<th>Created</th>`) {
+		t.Fatalf("created date not in Settings header / still a column:\n%s", body)
+	}
+	if !strings.Contains(body, `aria-label="Sign out everywhere: Alice@Example.com"`) {
+		t.Fatalf("own row lacks Sign out everywhere:\n%s", body)
+	}
+	resp := postPasswordForm(t, ts.URL+"/admin", url.Values{"csrf_token": {alice.csrf.Value}, "action": {"revoke-sessions"}, "email": {"alice@example.com"}}, alice.session, alice.csrf)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?notice=signed_out" {
+		t.Fatalf("own sign-out = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if n, _ := st.CountActiveAuthSessions(context.Background(), a.ID, time.Now().Unix()); n != 0 {
+		t.Fatalf("own sessions after sign out everywhere = %d", n)
+	}
+	if r, _ := alice.get("/admin"); r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("stale session still opens the console: %d", r.StatusCode)
 	}
 }
