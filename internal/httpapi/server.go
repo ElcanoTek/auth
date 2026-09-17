@@ -203,6 +203,8 @@ func (s *Server) handlePasswordRoot(w http.ResponseWriter, r *http.Request) {
 		"ReturnTo":     r.URL.Query().Get("return_to"),
 		"Error":        errorMessage(r.URL.Query().Get("err")),
 		"Notice":       s.noticeMessage(r.URL.Query().Get("notice")),
+		"NoticeClass":  noticeClass(r.URL.Query().Get("notice")),
+		"NoticeTitle":  noticeTitle(r.URL.Query().Get("notice")),
 		"CSRF":         csrf,
 	}); err != nil {
 		log.Printf("render password login: %v", err)
@@ -409,6 +411,29 @@ func errorMessage(code string) string {
 // that no longer matches the cookie: a page left open across a sign-in or
 // sign-out. It says what happened (nothing) and what to do (try again).
 const staleFormMessage = "That page had expired, so nothing was submitted. Please try again."
+
+// noticeClass and noticeTitle style the login-page notice: a sign-out is a
+// red banner so it cannot be mistaken for the ordinary sign-in page, an
+// expired form is a warning.
+func noticeClass(code string) string {
+	switch code {
+	case "signed_out":
+		return "alert"
+	case "stale_form":
+		return "warn"
+	}
+	return ""
+}
+
+func noticeTitle(code string) string {
+	switch code {
+	case "signed_out":
+		return "Signed out."
+	case "stale_form":
+		return "Expired."
+	}
+	return ""
+}
 
 func (s *Server) noticeMessage(code string) string {
 	switch code {

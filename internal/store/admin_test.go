@@ -495,3 +495,87 @@ func TestLastAdminGuardHoldsUnderConcurrentDemotion(t *testing.T) {
 		_ = s.Close()
 	}
 }
+
+func TestTeamTagSetClearedValidatedAndMigrated(t *testing.T) {
+	dir := t.TempDir()
+	raw, err := sql.Open("sqlite", filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A pre-team accounts table (post-admin-console shape without `team`).
+	if _, err := raw.Exec(`CREATE TABLE accounts (
+		id TEXT PRIMARY KEY, email TEXT NOT NULL, normalized_email TEXT NOT NULL UNIQUE,
+		disabled_at INTEGER, must_change_password INTEGER NOT NULL DEFAULT 1 CHECK (must_change_password IN (0, 1)),
+		is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
+		created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE password_credentials (
+		user_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+		password_hash TEXT NOT NULL, changed_at INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	_, _ = raw.Exec(`INSERT INTO accounts(id, email, normalized_email, must_change_password, created_at, updated_at) VALUES('legacy', 'old@example.com', 'old@example.com', 0, ?, ?)`, now, now)
+	_, _ = raw.Exec(`INSERT INTO password_credentials(user_id, password_hash, changed_at) VALUES('legacy', '$argon2id$x', ?)`, now)
+	_ = raw.Close()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	a, err := s.PasswordAccountByEmail(ctx, "old@example.com")
+	if err != nil || a.Team != "" {
+		t.Fatalf("migrated account = %+v (%v)", a, err)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", "  Trading  ", now); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ = s.PasswordAccountByID(ctx, a.ID); a.Team != "Trading" {
+		t.Fatalf("team = %q", a.Team)
+	}
+	list, _ := s.ListPasswordAccounts(ctx)
+	if len(list) != 1 || list[0].Team != "Trading" {
+		t.Fatalf("list team = %+v", list)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("x", 41), now); !errors.Is(err, ErrInvalidTeam) {
+		t.Fatalf("long team = %v", err)
+	}
+	// The bound is characters, not bytes: 40 CJK runes (120 bytes) fit, 41 do not.
+	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("交", 40), now); err != nil {
+		t.Fatalf("40 multibyte runes refused: %v", err)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("交", 41), now); !errors.Is(err, ErrInvalidTeam) {
+		t.Fatalf("41 runes accepted: %v", err)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", "bad\x00team", now); !errors.Is(err, ErrInvalidTeam) {
+		t.Fatalf("control char = %v", err)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", "bad\u0085team", now); !errors.Is(err, ErrInvalidTeam) {
+		t.Fatalf("C1 control accepted: %v", err)
+	}
+	// The session join carries the team too.
+	if err := s.CreateAuthSession(ctx, "sess-team", a.ID, "$argon2id$x", now, now+600, now+3600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", "Trading", now); err != nil {
+		t.Fatal(err)
+	}
+	if viaSession, _, err := s.ValidateAuthSession(ctx, "sess-team", now+1, time.Hour, time.Minute); err != nil || viaSession.Team != "Trading" {
+		t.Fatalf("session projection team = %q (%v)", viaSession.Team, err)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", "", now); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ = s.PasswordAccountByID(ctx, a.ID); a.Team != "" {
+		t.Fatalf("team not cleared: %q", a.Team)
+	}
+	if err := s.SetAccountTeam(ctx, "nobody@example.com", "x", now); !errors.Is(err, ErrAccountNotFound) {
+		t.Fatalf("unknown = %v", err)
+	}
+	events, _ := s.RecentAuditEvents(ctx, a.ID, 5)
+	if len(events) == 0 || events[0].EventType != "account.team_set" {
+		t.Fatalf("audit = %+v", events)
+	}
+}

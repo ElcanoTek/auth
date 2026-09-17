@@ -552,3 +552,124 @@ func exchangeOAuthCodeFor(t *testing.T, base, code, verifier, clientID, secret, 
 	}
 	return resp
 }
+
+// The console's account rows open popovers for Access and Settings, Add user
+// is a popup with a typed-or-generated temporary password and a team tag,
+// the corner controls carry the way out and the sign-out, and the login page
+// shows a sign-out as a red banner.
+func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	_, body := alice.get("/admin")
+	for _, want := range []string{
+		`popovertarget="add-user"`, `id="add-user" class="modal" popover`,
+		`popovertarget="access-0"`, `id="access-0" class="modal" popover`,
+		`popovertarget="settings-0"`, `id="settings-0" class="modal" popover`,
+		`<a class="icon-btn" href="/account" aria-label="Back to your apps"`,
+		`<div class="corner-bottom">`, `action="/logout"`, `href="/change-password?return_to=/admin">Change your password</a>`,
+		`data-generate="new-password"`, `name="password" type="text"`, `name="team" type="text" list="teams"`, `<datalist id="teams">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("console lacks %s", want)
+		}
+	}
+	if strings.Contains(body, "footer-actions") {
+		t.Fatal("old footer actions still rendered")
+	}
+
+	// A typed temporary password that breaks the policy is refused, nothing is
+	// created, and the Add user popup is asked to reopen.
+	_, body = alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "password": {"danexample1"}, "team": {"Trading"}})
+	if !strings.Contains(body, "Temporary password:") || !strings.Contains(body, `<body data-reopen="add-user">`) {
+		t.Fatalf("policy refusal:\n%s", body)
+	}
+	if _, err := st.PasswordAccountByEmail(context.Background(), "dan@example.com"); err == nil {
+		t.Fatal("account created despite a refused password")
+	}
+	// An overlong team is refused the same way.
+	if _, body := alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "team": {strings.Repeat("x", 41)}}); !strings.Contains(body, "Team must be at most 40 characters.") {
+		t.Fatalf("long team:\n%s", body)
+	}
+	// A typed password that passes: created with team, must-change, no secret panel.
+	_, body = alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "password": {"Quartz-Harbor-Lantern-4471"}, "team": {" Trading "}, "apps": {"fleet"}})
+	if !strings.Contains(body, "Created dan@example.com with the password you entered") || strings.Contains(body, `class="secret" role`) || strings.Contains(body, `<body data-reopen`) {
+		t.Fatalf("typed create:\n%s", body)
+	}
+	dan, err := st.PasswordAccountByEmail(context.Background(), "dan@example.com")
+	if err != nil || !dan.MustChangePassword || dan.Team != "Trading" {
+		t.Fatalf("dan = %+v (%v)", dan, err)
+	}
+	if ok, _, _ := passwordauth.Verify(dan.PasswordHash, "Quartz-Harbor-Lantern-4471"); !ok {
+		t.Fatal("typed password not stored")
+	}
+	if !strings.Contains(body, `<span class="tag">Trading</span>`) || !strings.Contains(body, `<option value="Trading">`) {
+		t.Fatalf("team tag / datalist missing:\n%s", body)
+	}
+	// A typed password is stored byte-for-byte: surrounding spaces are part of it.
+	_, body = alice.post(url.Values{"action": {"create"}, "email": {"gil@example.com"}, "password": {"  Quartz-Harbor-Lantern-4471  "}})
+	if !strings.Contains(body, "Created gil@example.com with the password you entered") {
+		t.Fatalf("spaced typed create:\n%s", body)
+	}
+	gil, _ := st.PasswordAccountByEmail(context.Background(), "gil@example.com")
+	if ok, _, _ := passwordauth.Verify(gil.PasswordHash, "  Quartz-Harbor-Lantern-4471  "); !ok {
+		t.Fatal("typed password with spaces was not stored as typed")
+	}
+	if ok, _, _ := passwordauth.Verify(gil.PasswordHash, "Quartz-Harbor-Lantern-4471"); ok {
+		t.Fatal("typed password was trimmed before hashing")
+	}
+	// Team text is untrusted and appears in three contexts: the tag, the
+	// quoted value attribute, and the datalist option.
+	hostile := `<b onmouseover="x">"Ops" & co</b>`
+	_, body = alice.post(url.Values{"action": {"set-team"}, "email": {"gil@example.com"}, "team": {hostile}})
+	if strings.Contains(body, hostile) || strings.Contains(body, `<b onmouseover`) {
+		t.Fatalf("team text rendered unescaped:\n%s", body)
+	}
+	for _, want := range []string{
+		`<span class="tag">&lt;b onmouseover=&#34;x&#34;&gt;&#34;Ops&#34; &amp; co&lt;/b&gt;</span>`,
+		`value="&lt;b onmouseover=&#34;x&#34;&gt;&#34;Ops&#34; &amp; co&lt;/b&gt;"`,
+		`<option value="&lt;b onmouseover=&#34;x&#34;&gt;&#34;Ops&#34; &amp; co&lt;/b&gt;">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("escaped team missing in one context: %s", want)
+		}
+	}
+	// Every row gets its own popover ids.
+	for _, want := range []string{`id="access-1"`, `id="settings-1"`, `id="access-2"`, `id="settings-2"`, `popovertarget="settings-2"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	// Blank password still generates one and shows it once.
+	_, body = alice.post(url.Values{"action": {"create"}, "email": {"eve@example.com"}})
+	if shownSecret(t, body) == "" || !strings.Contains(body, "Share the temporary password below") {
+		t.Fatalf("generated create:\n%s", body)
+	}
+	// Settings → team save and clear.
+	_, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {"Ops"}})
+	if !strings.Contains(body, "bob@example.com is tagged Ops.") {
+		t.Fatalf("set-team:\n%s", body)
+	}
+	_, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {""}})
+	if !strings.Contains(body, "Removed bob@example.com&#39;s team tag.") {
+		t.Fatalf("clear team:\n%s", body)
+	}
+	events, _ := st.RecentAuditEvents(context.Background(), func() string { b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); return b.ID }(), 6)
+	var types []string
+	for _, e := range events {
+		types = append(types, e.EventType)
+	}
+	if !strings.Contains(strings.Join(types, " "), "admin.team_set") || !strings.Contains(strings.Join(types, " "), "account.team_set") {
+		t.Fatalf("team audit = %v", types)
+	}
+
+	// The login page renders a sign-out as a red banner.
+	page, err := http.Get(ts.URL + "/?notice=signed_out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginBody, _ := io.ReadAll(page.Body)
+	_ = page.Body.Close()
+	if !strings.Contains(string(loginBody), `<div class="banner alert" role="status"><strong>Signed out.</strong>`) {
+		t.Fatalf("signed-out banner missing:\n%s", loginBody)
+	}
+}

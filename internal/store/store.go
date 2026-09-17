@@ -33,6 +33,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 )
@@ -99,6 +101,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   disabled_at          INTEGER,
   must_change_password INTEGER NOT NULL DEFAULT 1 CHECK (must_change_password IN (0, 1)),
   is_admin             INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
+  team                 TEXT NOT NULL DEFAULT '',
   created_at           INTEGER NOT NULL,
   updated_at           INTEGER NOT NULL
 );
@@ -281,6 +284,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx,
 			`ALTER TABLE accounts ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))`); err != nil {
 			return fmt.Errorf("add is_admin column: %w", err)
+		}
+	}
+	// Admin console teams: a free-text tag per account (migration for
+	// pre-existing accounts tables; new ones get the column from the schema).
+	if !s.hasColumn(ctx, "accounts", "team") {
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE accounts ADD COLUMN team TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add team column: %w", err)
 		}
 	}
 	if _, err := s.db.ExecContext(ctx, createdAtIndexes); err != nil {
@@ -668,6 +679,7 @@ type Account struct {
 	DisabledAt         *time.Time
 	MustChangePassword bool
 	IsAdmin            bool
+	Team               string // free-text tag set in the admin console; "" = none
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
@@ -724,7 +736,7 @@ func (s *Store) CreatePasswordAccount(ctx context.Context, email, passwordHash s
 func (s *Store) PasswordAccountByEmail(ctx context.Context, email string) (Account, error) {
 	return scanAccount(s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
-		       a.must_change_password, a.is_admin, a.created_at, a.updated_at
+		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.normalized_email = ?`, normalizeAccountEmail(email)))
 }
@@ -732,7 +744,7 @@ func (s *Store) PasswordAccountByEmail(ctx context.Context, email string) (Accou
 func (s *Store) PasswordAccountByID(ctx context.Context, id string) (Account, error) {
 	return scanAccount(s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
-		       a.must_change_password, a.is_admin, a.created_at, a.updated_at
+		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.id = ?`, id))
 }
@@ -745,7 +757,7 @@ func scanAccount(row rowScanner) (Account, error) {
 	var mustChange, isAdmin int
 	var created, updated int64
 	if err := row.Scan(&a.ID, &a.Email, &a.NormalizedEmail, &a.PasswordHash, &disabled,
-		&mustChange, &isAdmin, &created, &updated); err != nil {
+		&mustChange, &isAdmin, &a.Team, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Account{}, ErrAccountNotFound
 		}
@@ -875,7 +887,7 @@ func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled b
 func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
-		       a.must_change_password, a.is_admin, a.created_at, a.updated_at
+		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		ORDER BY a.normalized_email`)
 	if err != nil {
@@ -926,6 +938,54 @@ func (s *Store) SetAccountAdmin(ctx context.Context, email string, admin bool, n
 		return ErrLastAdmin
 	}
 	if err := insertAudit(ctx, tx, event, a.ID, now, `{}`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// MaxTeamLength bounds the free-text team tag.
+const MaxTeamLength = 40
+
+// ErrInvalidTeam reports a team tag that is too long or carries control
+// characters; the console shows it as a message.
+var ErrInvalidTeam = errors.New("team must be at most 40 characters with no control characters")
+
+// NormalizeTeam trims a team tag and validates it; "" clears the tag. The
+// bound is MaxTeamLength characters (runes), not bytes, and control
+// characters of any script are refused.
+func NormalizeTeam(raw string) (string, error) {
+	team := strings.TrimSpace(raw)
+	if utf8.RuneCountInString(team) > MaxTeamLength {
+		return "", ErrInvalidTeam
+	}
+	for _, r := range team {
+		if unicode.IsControl(r) {
+			return "", ErrInvalidTeam
+		}
+	}
+	return team, nil
+}
+
+// SetAccountTeam sets or clears an account's team tag and audits it.
+func (s *Store) SetAccountTeam(ctx context.Context, email, team string, now int64) error {
+	team, err := NormalizeTeam(team)
+	if err != nil {
+		return err
+	}
+	a, err := s.PasswordAccountByEmail(ctx, email)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET team = ?, updated_at = ? WHERE id = ?`, team, now, a.ID); err != nil {
+		return err
+	}
+	metadata, _ := json.Marshal(map[string]string{"team": team})
+	if err := insertAudit(ctx, tx, "account.team_set", a.ID, now, string(metadata)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1210,7 +1270,7 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 	var created, updated, sessionCreated, lastSeen, idleExpires, absoluteExpires int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, a.disabled_at,
-		       a.must_change_password, a.is_admin, a.created_at, a.updated_at,
+		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
 		       s.token_hash, s.created_at, s.last_seen_at, s.idle_expires_at,
 		       s.absolute_expires_at, s.revoked_at, COALESCE(s.revocation_reason, '')
 		FROM auth_sessions s
@@ -1218,7 +1278,7 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 		JOIN password_credentials p ON p.user_id = a.id
 		WHERE s.token_hash = ?`, tokenHash).Scan(
 		&a.ID, &a.Email, &a.NormalizedEmail, &disabled,
-		&mustChange, &isAdmin, &created, &updated, &sess.TokenHash, &sessionCreated,
+		&mustChange, &isAdmin, &a.Team, &created, &updated, &sess.TokenHash, &sessionCreated,
 		&lastSeen, &idleExpires, &absoluteExpires, &revoked, &sess.RevocationReason)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
