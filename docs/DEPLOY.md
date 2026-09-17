@@ -316,8 +316,9 @@ Tabs:
   suggested), a temporary password you type or fill with **Generate** (blank
   means a strong one is generated and shown once; a typed one must meet the
   same 12-character policy), and the applications to grant. Administrators
-  cannot reset, sign out, disable or demote themselves from a row (the
-  console's own "Change your password" link and Sign out cover that), and the
+  cannot reset, sign out, disable or demote themselves from a row (their own
+  row's Settings links to the change-password form, and the corner Sign out
+  covers sessions), and the
   last enabled administrator can never be demoted or disabled, from the
   console or the CLI. Passwords are managed by administrators: a non-admin has
   no self-service change (the `/change-password` page admits only a forced
@@ -327,8 +328,9 @@ Tabs:
   grouping people in the table; they carry no permissions. `auth user team
   <email> <team|->` sets or clears one from the box.
 - **Page controls.** Top right: the theme toggle and an **×** back to your
-  apps. Bottom left: **Sign out** and **Change your password**. They sit
-  outside the console content so the table is only accounts.
+  apps. Bottom left: **Sign out**. An administrator's own password is changed
+  from their own row: Settings → Reset password → Change, which opens the
+  change-password form (current password required; sessions stay signed in).
 
 - **One tab per registered application.** Its status with Enable / Disable,
   the registered endpoints, how many accounts have access, **who signs in

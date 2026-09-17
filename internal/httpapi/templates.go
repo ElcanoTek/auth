@@ -270,8 +270,7 @@ a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .corner-actions .theme-toggle { position: static; }
 .corner-bottom { position: fixed; left: var(--space-5); bottom: var(--space-5); display: flex; gap: var(--space-3); align-items: center; z-index: 3; }
 .corner-bottom form { margin: 0; }
-.corner-bottom a { color: var(--color-text-muted); font-size: var(--font-size-caption); }
-.corner-bottom a:hover { color: var(--color-text-primary); }
+a.btn-ghost { text-decoration: none; }
 .icon-btn {
   width: 2.5rem; height: 2.5rem; display: inline-flex; align-items: center; justify-content: center;
   font-size: 1.25rem; line-height: 1; text-decoration: none;
@@ -682,7 +681,6 @@ const adminHTML = `<!doctype html>
       <input type="hidden" name="redirect_to" value="/?notice=signed_out">
       <button class="btn-ghost" type="submit">Sign out</button>
     </form>
-    <a href="/change-password?return_to=/admin">Change your password</a>
   </div>
   <main class="card admin">
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
@@ -794,7 +792,13 @@ const adminHTML = `<!doctype html>
               {{end}}
             </div>
             {{else}}
-            <p class="hint">Your own password and sessions are managed from the corner controls: Change your password, and Sign out.</p>
+            <div class="setting">
+              <div><strong>Reset password</strong><p class="muted">Your own password: change it with your current one; your sessions stay signed in.</p></div>
+              <a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>
+            </div>
+            <div class="setting">
+              <div><strong>Sign out</strong><p class="muted">Your own sessions end from the Sign out control at the bottom left.</p></div>
+            </div>
             {{end}}
           </div></td>
         </tr>{{end}}

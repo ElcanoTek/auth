@@ -566,7 +566,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		`popovertarget="access-0"`, `id="access-0" class="modal" popover`,
 		`popovertarget="settings-0"`, `id="settings-0" class="modal" popover`,
 		`<a class="icon-btn" href="/account" aria-label="Back to your apps"`,
-		`<div class="corner-bottom">`, `action="/logout"`, `href="/change-password?return_to=/admin">Change your password</a>`,
+		`<div class="corner-bottom">`, `action="/logout"`, `<a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>`,
 		`data-generate="new-password"`, `name="password" type="text"`, `name="team" type="text" list="teams"`, `<datalist id="teams">`,
 	} {
 		if !strings.Contains(body, want) {

@@ -386,7 +386,10 @@ func TestVoluntaryPasswordChangeIsForAdministratorsOnly(t *testing.T) {
 	}
 	consoleBody, _ := io.ReadAll(console.Body)
 	_ = console.Body.Close()
-	if !strings.Contains(string(consoleBody), `href="/change-password?return_to=/admin">Change your password</a>`) {
-		t.Fatalf("admin console lacks the change-password link:\n%s", consoleBody)
+	if !strings.Contains(string(consoleBody), `<a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>`) {
+		t.Fatalf("admin console's own-row Settings lacks the change-password entry:\n%s", consoleBody)
+	}
+	if strings.Contains(string(consoleBody), "Change your password") {
+		t.Fatal("corner still offers Change your password")
 	}
 }
