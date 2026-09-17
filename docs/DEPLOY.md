@@ -349,7 +349,7 @@ Every console action is audited on the target account with the acting
 administrator in the metadata (`admin.user_created`, `admin.password_reset`,
 `admin.sessions_revoked`, `admin.account_disabled` / `_enabled`,
 `admin.admin_granted` / `_revoked`, `admin.access_granted` / `_revoked`,
-`admin.application_disabled` / `_enabled`); `auth audit list <email>` shows
+`admin.application_disabled` / `_enabled`, `admin.team_set`); `auth audit list <email>` shows
 them, with the administrator in the BY column, next to the `account.*` and
 `access.*` rows the store writes itself.
 

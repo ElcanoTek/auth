@@ -542,8 +542,28 @@ func TestTeamTagSetClearedValidatedAndMigrated(t *testing.T) {
 	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("x", 41), now); !errors.Is(err, ErrInvalidTeam) {
 		t.Fatalf("long team = %v", err)
 	}
+	// The bound is characters, not bytes: 40 CJK runes (120 bytes) fit, 41 do not.
+	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("交", 40), now); err != nil {
+		t.Fatalf("40 multibyte runes refused: %v", err)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("交", 41), now); !errors.Is(err, ErrInvalidTeam) {
+		t.Fatalf("41 runes accepted: %v", err)
+	}
 	if err := s.SetAccountTeam(ctx, "old@example.com", "bad\x00team", now); !errors.Is(err, ErrInvalidTeam) {
 		t.Fatalf("control char = %v", err)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", "bad\u0085team", now); !errors.Is(err, ErrInvalidTeam) {
+		t.Fatalf("C1 control accepted: %v", err)
+	}
+	// The session join carries the team too.
+	if err := s.CreateAuthSession(ctx, "sess-team", a.ID, "$argon2id$x", now, now+600, now+3600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", "Trading", now); err != nil {
+		t.Fatal(err)
+	}
+	if viaSession, _, err := s.ValidateAuthSession(ctx, "sess-team", now+1, time.Hour, time.Minute); err != nil || viaSession.Team != "Trading" {
+		t.Fatalf("session projection team = %q (%v)", viaSession.Team, err)
 	}
 	if err := s.SetAccountTeam(ctx, "old@example.com", "", now); err != nil {
 		t.Fatal(err)

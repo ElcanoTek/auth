@@ -22,6 +22,8 @@
 package store
 
 import (
+	"unicode"
+	"unicode/utf8"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -948,14 +950,16 @@ const MaxTeamLength = 40
 // characters; the console shows it as a message.
 var ErrInvalidTeam = errors.New("team must be at most 40 characters with no control characters")
 
-// NormalizeTeam trims a team tag and validates it; "" clears the tag.
+// NormalizeTeam trims a team tag and validates it; "" clears the tag. The
+// bound is MaxTeamLength characters (runes), not bytes, and control
+// characters of any script are refused.
 func NormalizeTeam(raw string) (string, error) {
 	team := strings.TrimSpace(raw)
-	if len(team) > MaxTeamLength {
+	if utf8.RuneCountInString(team) > MaxTeamLength {
 		return "", ErrInvalidTeam
 	}
 	for _, r := range team {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) {
 			return "", ErrInvalidTeam
 		}
 	}

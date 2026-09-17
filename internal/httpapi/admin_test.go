@@ -605,6 +605,40 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	if !strings.Contains(body, `<span class="tag">Trading</span>`) || !strings.Contains(body, `<option value="Trading">`) {
 		t.Fatalf("team tag / datalist missing:\n%s", body)
 	}
+	// A typed password is stored byte-for-byte: surrounding spaces are part of it.
+	_, body = alice.post(url.Values{"action": {"create"}, "email": {"gil@example.com"}, "password": {"  Quartz-Harbor-Lantern-4471  "}})
+	if !strings.Contains(body, "Created gil@example.com with the password you entered") {
+		t.Fatalf("spaced typed create:\n%s", body)
+	}
+	gil, _ := st.PasswordAccountByEmail(context.Background(), "gil@example.com")
+	if ok, _, _ := passwordauth.Verify(gil.PasswordHash, "  Quartz-Harbor-Lantern-4471  "); !ok {
+		t.Fatal("typed password with spaces was not stored as typed")
+	}
+	if ok, _, _ := passwordauth.Verify(gil.PasswordHash, "Quartz-Harbor-Lantern-4471"); ok {
+		t.Fatal("typed password was trimmed before hashing")
+	}
+	// Team text is untrusted and appears in three contexts: the tag, the
+	// quoted value attribute, and the datalist option.
+	hostile := `<b onmouseover="x">"Ops" & co</b>`
+	_, body = alice.post(url.Values{"action": {"set-team"}, "email": {"gil@example.com"}, "team": {hostile}})
+	if strings.Contains(body, hostile) || strings.Contains(body, `<b onmouseover`) {
+		t.Fatalf("team text rendered unescaped:\n%s", body)
+	}
+	for _, want := range []string{
+		`<span class="tag">&lt;b onmouseover=&#34;x&#34;&gt;&#34;Ops&#34; &amp; co&lt;/b&gt;</span>`,
+		`value="&lt;b onmouseover=&#34;x&#34;&gt;&#34;Ops&#34; &amp; co&lt;/b&gt;"`,
+		`<option value="&lt;b onmouseover=&#34;x&#34;&gt;&#34;Ops&#34; &amp; co&lt;/b&gt;">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("escaped team missing in one context: %s", want)
+		}
+	}
+	// Every row gets its own popover ids.
+	for _, want := range []string{`id="access-1"`, `id="settings-1"`, `id="access-2"`, `id="settings-2"`, `popovertarget="settings-2"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
 	// Blank password still generates one and shows it once.
 	_, body = alice.post(url.Values{"action": {"create"}, "email": {"eve@example.com"}})
 	if shownSecret(t, body) == "" || !strings.Contains(body, "Share the temporary password below") {

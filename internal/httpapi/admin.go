@@ -228,8 +228,10 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		// The administrator may type the temporary password or leave it blank
 		// to have one generated. Either way it is validated against the same
 		// policy the change-password form applies, with the new account's
-		// email as context, and set must-change.
-		plain, typed := strings.TrimSpace(r.FormValue("password")), false
+		// email as context, and set must-change. A typed value is used
+		// byte-for-byte (spaces included), exactly as the change-password form
+		// treats a password, so what the administrator shares is what works.
+		plain, typed := r.FormValue("password"), false
 		if plain != "" {
 			typed = true
 			if err := passwordauth.Validate(plain, s.passwordContext(email)...); err != nil {
