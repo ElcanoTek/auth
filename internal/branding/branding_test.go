@@ -201,3 +201,38 @@ func TestOneLineStripsControlCharactersAndBounds(t *testing.T) {
 		t.Fatalf("oneLine cut a multibyte name: %q", got)
 	}
 }
+
+// A bundle that supplies only the two gradient-input tokens still reaches
+// both the plain declaration and the derived gradients, in each mode.
+func TestSparseSecondaryAndSurface2ReachTokensAndGradients(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(`name: sparse
+branding:
+  colors:
+    dark:
+      secondary: "#123456"
+    light:
+      surface_2: "#ABCDEF"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"--color-secondary: #123456;",
+		"color-mix(in srgb, #123456 28%, transparent)", // dark second radial
+		"--color-surface-2: #ABCDEF;",
+		"color-mix(in srgb, #ABCDEF 34%, #fff) 0%", // light background linear
+		"--gradient-surface-card: linear-gradient(145deg, #ffffff, color-mix(in srgb, #ABCDEF 70%, #fff))",
+	} {
+		if !strings.Contains(b.CSS, want) {
+			t.Errorf("CSS lacks %s\n%s", want, b.CSS)
+		}
+	}
+	// The dark card still derives from the stock surface_1 and background.
+	if !strings.Contains(b.CSS, "color-mix(in srgb, color-mix(in srgb, #241b31 90%, #000) 92%, transparent)") {
+		t.Fatalf("dark card did not fall back to stock surface_1:\n%s", b.CSS)
+	}
+}
