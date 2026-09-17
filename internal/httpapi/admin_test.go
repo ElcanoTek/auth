@@ -673,3 +673,67 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		t.Fatalf("signed-out banner missing:\n%s", loginBody)
 	}
 }
+
+// The administrator flag is granted from the Access popup alongside the
+// applications: a ticked "Admin console" grants, an unticked one removes,
+// with the self and last-admin rules intact and the applications untouched
+// when the flag change is refused.
+func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	_, body := alice.get("/admin")
+	if !strings.Contains(body, `<input type="checkbox" checked disabled> Admin console</label><input type="hidden" name="admin" value="on">`) {
+		t.Fatalf("own row does not lock the admin checkbox:\n%s", body)
+	}
+	if !strings.Contains(body, `<input type="checkbox" name="admin" value="on"> Admin console`) {
+		t.Fatalf("bob's row lacks the admin checkbox:\n%s", body)
+	}
+	if strings.Contains(body, `value="grant-admin"`) || strings.Contains(body, `value="revoke-admin"`) {
+		t.Fatal("Settings still offers the old admin buttons")
+	}
+	// Grant bob through Access, keeping his apps.
+	_, body = alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"fleet"}, "admin": {"on"}})
+	if !strings.Contains(body, "No change to bob@example.com&#39;s applications. Admin console granted.") {
+		t.Fatalf("grant via access:\n%s", body)
+	}
+	bob, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com")
+	if !bob.IsAdmin {
+		t.Fatal("bob not admin")
+	}
+	// Remove it again while also changing apps: both applied, one notice.
+	_, body = alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}})
+	if !strings.Contains(body, "bob@example.com: added explorer; removed fleet (and signed out of it). Admin console removed.") {
+		t.Fatalf("revoke via access:\n%s", body)
+	}
+	bob, _ = st.PasswordAccountByEmail(context.Background(), "bob@example.com")
+	if bob.IsAdmin {
+		t.Fatal("bob still admin")
+	}
+	// Self: a forged post without the hidden field is refused and apps untouched.
+	before, _ := st.ApplicationAccess(context.Background(), func() string {
+		a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+		return a.ID
+	}())
+	_, body = alice.post(url.Values{"action": {"set-access"}, "email": {"alice@example.com"}, "apps": {"fleet"}})
+	if !strings.Contains(body, "You cannot remove your own administrator access.") {
+		t.Fatalf("self revoke via access:\n%s", body)
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	after, _ := st.ApplicationAccess(context.Background(), a.ID)
+	if !a.IsAdmin || strings.Join(after, ",") != strings.Join(before, ",") {
+		t.Fatalf("self refusal changed state: admin=%v apps %v → %v", a.IsAdmin, before, after)
+	}
+	// Last admin: bob (admin again) tries to remove alice while alice is the only other... make alice the last.
+	alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}, "admin": {"on"}})
+	bobClient := loginAdmin(t, ts, cfg, "bob@example.com", plain)
+	bobClient.post(url.Values{"action": {"set-access"}, "email": {"alice@example.com"}, "apps": {}})
+	// alice demoted by bob (allowed: bob remains). Now bob is last; alice cannot open the console any more,
+	// and bob removing himself is refused as self.
+	if resp, _ := alice.get("/admin"); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("alice still admin after bob removed her: %d", resp.StatusCode)
+	}
+	_, body = bobClient.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}})
+	if !strings.Contains(body, "You cannot remove your own administrator access.") {
+		t.Fatalf("last admin self revoke:\n%s", body)
+	}
+}

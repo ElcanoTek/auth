@@ -730,9 +730,18 @@ const adminHTML = `<!doctype html>
             <p class="who">{{$row.Email}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{$row.Email}}">
-              {{if $row.Apps}}<div class="checks">{{range $row.Apps}}<label><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</div>
-              <p class="hint">Unticking an application signs them out of it now.</p>
-              <button class="btn" type="submit">Save access</button>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
+              <div class="field"><label>Applications</label>
+                {{if $row.Apps}}<div class="checks">{{range $row.Apps}}<label><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</div>
+                <p class="hint">Unticking an application signs them out of it now.</p>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
+              </div>
+              <div class="field"><label>Console</label>
+                <div class="checks">
+                  {{if or $row.Self (and $row.IsAdmin (not $row.CanDemote))}}<label class="off"><input type="checkbox" checked disabled> Admin console</label><input type="hidden" name="admin" value="on">
+                  {{else}}<label><input type="checkbox" name="admin" value="on"{{if $row.IsAdmin}} checked{{end}}> Admin console</label>{{end}}
+                </div>
+                <p class="hint">{{if $row.Self}}You cannot remove your own administrator access.{{else if and $row.IsAdmin (not $row.CanDemote)}}The last enabled administrator cannot be removed.{{else}}Administrators can open this console and manage every account.{{end}}</p>
+              </div>
+              <button class="btn" type="submit">Save access</button>
             </form>
           </div>
           <div id="settings-{{$i}}" class="modal" popover aria-labelledby="settings-{{$i}}-title">
@@ -782,24 +791,6 @@ const adminHTML = `<!doctype html>
                   <button class="btn" type="submit">Confirm disable</button>
                 </form>
               </details>{{else}}<span class="badge off">Last admin</span>{{end}}
-              {{end}}
-            </div>
-            <div class="setting">
-              {{if $row.IsAdmin}}
-              <div><strong>Administrator</strong><p class="muted">Can open this console.</p></div>
-              {{if $row.CanDemote}}<details class="confirm danger"><summary aria-label="Remove admin: {{$row.Email}}">Remove admin</summary>
-                <form class="pane" method="post" action="/admin">
-                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-admin"><input type="hidden" name="email" value="{{$row.Email}}">
-                  <p class="muted">{{$row.Email}} keeps their account and applications but can no longer open this console.</p>
-                  <button class="btn" type="submit">Confirm remove</button>
-                </form>
-              </details>{{else}}<span class="badge off">Last admin</span>{{end}}
-              {{else}}
-              <div><strong>Administrator</strong><p class="muted">Not an administrator.</p></div>
-              <form method="post" action="/admin">
-                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="grant-admin"><input type="hidden" name="email" value="{{$row.Email}}">
-                <button class="btn-ghost" type="submit" aria-label="Make {{$row.Email}} an admin">Make admin</button>
-              </form>
               {{end}}
             </div>
             {{else}}
