@@ -314,6 +314,7 @@ a.btn-ghost { text-decoration: none; }
 .setting strong { display: block; color: var(--color-text-primary); font-size: var(--font-size-caption); }
 .setting .muted { margin: 0; font-size: var(--font-size-caption); }
 .setting .confirm .pane { left: auto; right: 0; border-radius: var(--radius-md) 0 var(--radius-md) var(--radius-md); }
+.setting .confirm > summary, .setting .btn-ghost { white-space: nowrap; }
 .modal .checks { margin-top: var(--space-2); }
 .tag { display: inline-block; padding: 0.1rem 0.5rem; border-radius: var(--radius-pill); font-size: 0.6875rem; font-weight: var(--font-weight-bold); letter-spacing: 0.04em; background: var(--color-bg); border: 1px solid var(--color-border-strong); color: var(--color-text-secondary); white-space: nowrap; }
 .card.admin { max-width: 68rem; }
