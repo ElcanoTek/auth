@@ -4,7 +4,7 @@
 //
 //	GET  /           — login form (HTML)
 //	POST /login      — password-mode login
-//	GET|POST /change-password — password-mode forced replacement
+//	GET|POST /change-password — password-mode forced replacement, or an administrator changing their own
 //	GET  /account    — password-mode signed-in page with the logout form
 //	GET  /authorize  — password-mode application authorization request
 //	POST /token      — confidential-client authorization-code exchange
@@ -622,6 +622,16 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	identity := s.currentPasswordSession(r)
 	if identity == nil {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	// Passwords are managed by administrators. This page exists for two
+	// people only: someone completing the forced change of a temporary
+	// password, and an administrator changing their own (the console refuses
+	// to reset its own operator). Everyone else is sent back to their apps
+	// without anything being read or processed; an administrator resets
+	// their password from the console when they need a new one.
+	if !identity.Account.MustChangePassword && !identity.Account.IsAdmin {
+		http.Redirect(w, r, "/account", http.StatusSeeOther)
 		return
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)

@@ -313,9 +313,13 @@ Tabs:
   from an email plus the applications it should have; the temporary password
   is generated (20 characters, meets the policy), shown once, and forced to
   change at first sign-in. Administrators cannot reset, sign out, disable or
-  demote themselves from here (Change password and Sign out already cover
-  that), and the last enabled administrator can never be demoted or disabled,
-  from the console or the CLI.
+  demote themselves from here (the console's own "Change your password" link
+  and Sign out cover that), and the last enabled administrator can never be
+  demoted or disabled, from the console or the CLI. Passwords are managed by
+  administrators: a non-admin has no self-service change (the `/change-password`
+  page admits only a forced first-login change and administrators); when they
+  need a new one, an administrator resets it and hands over the temporary
+  password.
 - **One tab per registered application.** Its status with Enable / Disable,
   the registered endpoints, how many accounts have access, **who signs in
   here** (every account that has completed a sign-in to it, with counts and
