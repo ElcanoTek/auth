@@ -326,7 +326,7 @@ a.btn-ghost { text-decoration: none; }
    for Admin) so the form posts without script; :has() paints the state. */
 .seg-label { display: block; margin-bottom: 0.3rem; font-size: 0.64rem; font-weight: var(--font-weight-bold); letter-spacing: 0.07em; text-transform: uppercase; color: var(--color-text-muted); }
 .seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--color-border); border-radius: var(--radius-pill); overflow: hidden; }
-.seg-opt { position: relative; display: inline-flex; align-items: center; padding: 0.18rem 0.6rem; font-size: 0.72rem; font-weight: 500; color: var(--color-text-muted); cursor: pointer; user-select: none; transition: color var(--transition-fast), background var(--transition-fast); }
+.seg-opt { position: relative; display: inline-flex; align-items: center; margin: 0; padding: 0.18rem 0.6rem; font-size: 0.72rem; font-weight: 500; color: var(--color-text-muted); cursor: pointer; user-select: none; transition: color var(--transition-fast), background var(--transition-fast); }
 .seg-opt + .seg-opt { border-left: 1px solid var(--color-border); }
 .seg-opt:hover { color: var(--color-text-primary); }
 .seg-opt input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
@@ -604,7 +604,6 @@ const accountHTML = `<!doctype html>
     <p class="muted">You are signed in as <strong>{{.Email}}</strong>.</p>
     <section class="apps" aria-labelledby="apps-heading">
       <h2 id="apps-heading">Your apps</h2>
-      <p class="muted">One sign-in for every {{.Brand}} app. Greyed tiles are not part of this deployment.</p>
       <div class="tiles">
         {{range .Links}}{{if .Available}}<a class="tile" href="{{.URL}}" rel="noreferrer">
           <p class="tile-kicker">{{.Kicker}}</p>
@@ -623,7 +622,7 @@ const accountHTML = `<!doctype html>
       <input type="hidden" name="redirect_to" value="/?notice=signed_out">
       <button class="btn" type="submit">Sign out</button>
     </form>
-    <div class="foot">Signing out ends your session in every {{.Brand}} app, on every device. Passwords are managed by your administrator.</div>
+    <div class="foot">Signing out ends your session in every {{.Brand}} app, on every device.</div>
   </main>
 </body>
 </html>`
