@@ -258,8 +258,65 @@ a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .tile-off .tile-kicker, .tile-off h3 { color: var(--color-text-muted); }
 .tile-off .tile-meta { color: var(--color-text-muted); font-style: italic; }
 @media (max-width: 30rem) { .tiles { grid-template-columns: 1fr; } }
+/* ── notices ── */
+.banner { padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); background: var(--color-surface-1); color: var(--color-text-secondary); font-size: var(--font-size-caption); margin-bottom: var(--space-5); }
+.banner strong { color: var(--color-text-primary); margin-right: 0.35em; }
+.banner.alert { color: var(--color-status-error-fg); background: var(--color-status-error-bg); border-color: var(--color-status-error-border); }
+.banner.alert strong { color: var(--color-status-error-fg); }
+.banner.warn { color: var(--color-status-warning-fg); background: var(--color-status-warning-bg); border-color: var(--color-status-warning-border); }
+.banner.warn strong { color: var(--color-status-warning-fg); }
 /* ── admin console ── */
-.card.admin { max-width: 60rem; }
+.corner-actions { position: fixed; top: var(--space-5); right: var(--space-5); display: flex; gap: var(--space-2); z-index: 3; }
+.corner-actions .theme-toggle { position: static; }
+.corner-bottom { position: fixed; left: var(--space-5); bottom: var(--space-5); display: flex; gap: var(--space-3); align-items: center; z-index: 3; }
+.corner-bottom form { margin: 0; }
+.corner-bottom a { color: var(--color-text-muted); font-size: var(--font-size-caption); }
+.corner-bottom a:hover { color: var(--color-text-primary); }
+.icon-btn {
+  width: 2.5rem; height: 2.5rem; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 1.25rem; line-height: 1; text-decoration: none;
+  color: var(--color-text-secondary); background: var(--color-surface-1); border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill); cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.icon-btn:hover { color: var(--color-text-primary); border-color: var(--color-border-strong); }
+.icon-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
+.section-head .muted { margin: 0; }
+.btn.inline { width: auto; margin: 0; min-height: 2.5rem; padding-inline: var(--space-5); font-size: var(--font-size-caption); }
+.row-actions { display: flex; gap: var(--space-2); justify-content: flex-end; white-space: nowrap; }
+.row-actions .btn-ghost { padding-inline: var(--space-3); }
+.modal[popover] {
+  position: fixed; inset: 0; margin: auto; width: min(30rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); overflow: auto;
+  padding: var(--space-6); border: 1px solid var(--color-border-strong); border-radius: var(--radius-xl);
+  background: var(--color-surface-1); color: var(--color-text-secondary); box-shadow: var(--shadow-lg);
+}
+.modal[popover]::backdrop { background: rgba(0, 0, 0, 0.55); }
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-2); }
+.modal-head h3 { margin: 0; font-family: var(--font-heading); font-size: 1.125rem; color: var(--color-text-primary); }
+.modal-head .icon-btn { width: 2rem; height: 2rem; font-size: 1.1rem; }
+.modal .who { color: var(--color-text-muted); font-size: var(--font-size-caption); margin: 0 0 var(--space-5); overflow-wrap: anywhere; }
+.modal .field { margin-bottom: var(--space-4); }
+.modal .field label { margin-bottom: var(--space-2); }
+.modal input[type=email], .modal input[type=text], .modal input[type=password] {
+  width: 100%; min-height: 2.5rem; padding: var(--space-2) var(--space-3);
+  font-family: var(--font-body); font-size: var(--font-size-body); color: var(--color-text-primary);
+  background: var(--color-bg); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); outline: none;
+}
+.modal input:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
+.modal .hint { margin: var(--space-2) 0 0; font-size: var(--font-size-caption); color: var(--color-text-muted); }
+.modal .with-btn { display: flex; gap: var(--space-2); }
+.modal .with-btn input { flex: 1; }
+.modal .with-btn .btn-ghost { min-height: 2.5rem; }
+.modal .btn { margin-top: var(--space-2); }
+.setting { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-3) 0; border-top: 1px solid var(--color-border); }
+.setting:first-of-type { border-top: 0; }
+.setting strong { display: block; color: var(--color-text-primary); font-size: var(--font-size-caption); }
+.setting .muted { margin: 0; font-size: var(--font-size-caption); }
+.setting .confirm .pane { left: auto; right: 0; border-radius: var(--radius-md) 0 var(--radius-md) var(--radius-md); }
+.modal .checks { margin-top: var(--space-2); }
+.tag { display: inline-block; padding: 0.1rem 0.5rem; border-radius: var(--radius-pill); font-size: 0.6875rem; font-weight: var(--font-weight-bold); letter-spacing: 0.04em; background: var(--color-bg); border: 1px solid var(--color-border-strong); color: var(--color-text-secondary); white-space: nowrap; }
+.card.admin { max-width: 68rem; }
 .topline { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
 .topline .muted { margin: 0; }
 .tabs { display: flex; gap: var(--space-2); flex-wrap: wrap; margin: var(--space-5) 0 var(--space-5); border-bottom: 1px solid var(--color-border); }
@@ -295,7 +352,7 @@ table.list { width: 100%; border-collapse: collapse; font-size: var(--font-size-
 table.list th, table.list td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-border); vertical-align: top; }
 table.list th { color: var(--color-text-muted); font-weight: var(--font-weight-bold); letter-spacing: 0.08em; text-transform: uppercase; font-size: 0.6875rem; }
 table.list td { color: var(--color-text-secondary); }
-table.list td.who { color: var(--color-text-primary); font-weight: var(--font-weight-bold); white-space: nowrap; }
+table.list td.who { color: var(--color-text-primary); font-weight: var(--font-weight-bold); overflow-wrap: anywhere; }
 table.list td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.list tr:last-child td { border-bottom: 0; }
 table.list td.date { white-space: nowrap; }
@@ -352,13 +409,14 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .kv dd { margin: 0; color: var(--color-text-secondary); word-break: break-all; }
 .kv dd code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8125rem; }
 .empty { margin: 0; padding: var(--space-4); border: 1px dashed var(--color-border); border-radius: var(--radius-md); color: var(--color-text-muted); font-size: var(--font-size-caption); text-align: center; }
-.footer-actions { margin-top: var(--space-8); display: flex; gap: var(--space-4); align-items: center; justify-content: space-between; flex-wrap: wrap; }
-.footer-actions .btn { width: auto; margin: 0; padding-inline: var(--space-6); min-height: 2.5rem; }
-.footer-actions a { color: var(--color-accent); font-size: var(--font-size-caption); }
-.footer-links { color: var(--color-text-muted); font-size: var(--font-size-caption); }
+@media (max-width: 64rem) { table.list .date { display: none; } }
 @media (max-width: 40rem) {
-  .add { grid-template-columns: 1fr; } .add .btn { width: 100%; }
-  table.list .num, table.list .date { display: none; }
+  table.list .num { display: none; }
+  /* The corner controls would float over a long table on a phone; let them
+     end the page instead: body is a flex row for centring the card, so they
+     wrap onto their own full-width line below it. */
+  body { flex-wrap: wrap; }
+  .corner-bottom { position: static; flex: 0 0 100%; margin-top: var(--space-4); justify-content: center; }
 }
 .theme-toggle {
   position: fixed; top: var(--space-5); right: var(--space-5);
@@ -453,7 +511,7 @@ const loginHTML = `<!doctype html>
     <div class="brand">{{.Wordmark}}</div>
     <h1>{{if .LoginTitle}}{{.LoginTitle}}{{else}}Sign in{{end}}</h1>
     {{if .LoginTagline}}<p class="muted">{{.LoginTagline}}</p>{{else if .PasswordMode}}<p class="muted">Enter your work email and password.</p>{{else}}<p class="muted">Enter your work email. We'll send you a one-time link.</p>{{end}}
-    {{if .Notice}}<p class="muted">{{.Notice}}</p>{{end}}
+    {{if .Notice}}<div class="banner {{.NoticeClass}}" role="status"><strong>{{.NoticeTitle}}</strong> {{.Notice}}</div>{{end}}
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
     <form method="post" action="{{if .PasswordMode}}/login{{else}}/magic{{end}}">
       <label for="email">Email</label>
@@ -573,6 +631,35 @@ const noAccessHTML = `<!doctype html>
 </body>
 </html>`
 
+// adminScript is the console's only script, inlined under the page nonce:
+// the Generate button fills the temporary-password field client-side (the
+// server generates one anyway when the field is blank), and a form the
+// server rejected reopens its popover so the input is not hidden behind a
+// closed dialog. The console works without it.
+const adminScript = `
+(function () {
+  var alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_.!@*=~";
+  document.querySelectorAll("[data-generate]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var field = document.getElementById(button.getAttribute("data-generate"));
+      if (!field) return;
+      var bytes = new Uint8Array(20);
+      crypto.getRandomValues(bytes);
+      var out = "";
+      for (var i = 0; i < bytes.length; i++) out += alphabet[bytes[i] % 64];
+      field.type = "text";
+      field.value = out;
+      field.focus();
+    });
+  });
+  var reopen = document.body.getAttribute("data-reopen");
+  if (reopen) {
+    var popover = document.getElementById(reopen);
+    if (popover && popover.showPopover) { try { popover.showPopover(); } catch (e) {} }
+  }
+})();
+`
+
 const adminHTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -584,8 +671,19 @@ const adminHTML = `<!doctype html>
 <style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
 <script nonce="{{.Nonce}}">` + themeScript + `</script>
 </head>
-<body>
-  ` + themeToggle + `
+<body{{if .Reopen}} data-reopen="{{.Reopen}}"{{end}}>
+  <div class="corner-actions">
+    ` + themeToggle + `
+    <a class="icon-btn" href="/account" aria-label="Back to your apps" title="Back to your apps">&times;</a>
+  </div>
+  <div class="corner-bottom">
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="redirect_to" value="/?notice=signed_out">
+      <button class="btn-ghost" type="submit">Sign out</button>
+    </form>
+    <a href="/change-password?return_to=/admin">Change your password</a>
+  </div>
   <main class="card admin">
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
@@ -606,90 +704,133 @@ const adminHTML = `<!doctype html>
 
     {{if eq .Tab "accounts"}}
     <section class="section" aria-labelledby="accounts-heading">
-      <h2 id="accounts-heading">Accounts</h2>
-      <p class="muted">Who can sign in, to which applications, and whether they can open this console.</p>
+      <div class="section-head">
+        <div>
+          <h2 id="accounts-heading">Accounts</h2>
+          <p class="muted">Who can sign in, to which applications, and whether they can open this console.</p>
+        </div>
+        <button class="btn inline" type="button" popovertarget="add-user">Add user</button>
+      </div>
       {{if .Accounts}}<div class="table-wrap"><table class="list">
-        <thead><tr><th>Account</th><th>Status</th><th>Applications</th><th class="num">Sessions</th><th>Created</th></tr></thead>
+        <thead><tr><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th class="num">Sessions</th><th>Created</th><th></th></tr></thead>
         <tbody>
-        {{range .Accounts}}<tr class="account">
-          <td class="who">{{.Email}}{{if .IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if .Self}} <span class="badge">You</span>{{end}}</td>
-          <td><span class="badge {{.StatusClass}}">{{.Status}}</span></td>
-          <td><div class="chips">{{range .Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq .GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
-          <td class="num">{{.Sessions}}</td>
-          <td class="date">{{.Created}}</td>
-        </tr><tr class="manage">
-          <td colspan="5"><div class="actions">
-            <details class="confirm"><summary aria-label="Access: {{.Email}}">Access</summary>
-              <form class="pane" method="post" action="/admin">
-                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{.Email}}">
-                <div class="checks">{{range .Apps}}<label><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</div>
-                {{if .Apps}}<p class="muted">Unticking an application signs them out of it now.</p><button class="btn" type="submit">Save access</button>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
-              </form>
-            </details>
-            {{if not .Self}}
-            <details class="confirm danger"><summary aria-label="Reset password: {{.Email}}">Reset password</summary>
-              <form class="pane" method="post" action="/admin">
-                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{.Email}}">
-                <p class="muted">Signs {{.Email}} out everywhere and shows a new temporary password.</p>
-                <button class="btn" type="submit">Confirm reset</button>
-              </form>
-            </details>
-            <details class="confirm danger"><summary aria-label="Sign out: {{.Email}}">Sign out</summary>
-              <form class="pane" method="post" action="/admin">
-                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-sessions"><input type="hidden" name="email" value="{{.Email}}">
-                <p class="muted">Ends every session of {{.Email}}, in every application, on every device.</p>
-                <button class="btn" type="submit">Confirm sign out</button>
-              </form>
-            </details>
-            {{if eq .StatusClass "off"}}
+        {{range $i, $row := .Accounts}}<tr>
+          <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
+          <td><span class="badge {{$row.StatusClass}}">{{$row.Status}}</span></td>
+          <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
+          <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
+          <td class="num">{{$row.Sessions}}</td>
+          <td class="date">{{$row.Created}}</td>
+          <td><div class="row-actions">
+            <button class="btn-ghost" type="button" popovertarget="access-{{$i}}" aria-label="Access: {{$row.Email}}">Access</button>
+            <button class="btn-ghost" type="button" popovertarget="settings-{{$i}}" aria-label="Settings: {{$row.Email}}">Settings</button>
+          </div>
+          <div id="access-{{$i}}" class="modal" popover aria-labelledby="access-{{$i}}-title">
+            <div class="modal-head"><h3 id="access-{{$i}}-title">Access</h3><button class="icon-btn" type="button" popovertarget="access-{{$i}}" popovertargetaction="hide" aria-label="Close">&times;</button></div>
+            <p class="who">{{$row.Email}}</p>
             <form method="post" action="/admin">
-              <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="enable"><input type="hidden" name="email" value="{{.Email}}">
-              <button class="btn-ghost" type="submit" aria-label="Enable {{.Email}}">Enable</button>
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{$row.Email}}">
+              {{if $row.Apps}}<div class="checks">{{range $row.Apps}}<label><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</div>
+              <p class="hint">Unticking an application signs them out of it now.</p>
+              <button class="btn" type="submit">Save access</button>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
             </form>
-            {{else if .CanDisable}}
-            <details class="confirm danger"><summary aria-label="Disable: {{.Email}}">Disable</summary>
-              <form class="pane" method="post" action="/admin">
-                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="disable"><input type="hidden" name="email" value="{{.Email}}">
-                <p class="muted">{{.Email}} is signed out everywhere and cannot sign in until enabled again.</p>
-                <button class="btn" type="submit">Confirm disable</button>
-              </form>
-            </details>
-            {{end}}
-            {{if .IsAdmin}}{{if .CanDemote}}
-            <details class="confirm danger"><summary aria-label="Remove admin: {{.Email}}">Remove admin</summary>
-              <form class="pane" method="post" action="/admin">
-                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-admin"><input type="hidden" name="email" value="{{.Email}}">
-                <p class="muted">{{.Email}} keeps their account and applications but can no longer open this console.</p>
-                <button class="btn" type="submit">Confirm remove</button>
-              </form>
-            </details>
-            {{end}}{{else}}
+          </div>
+          <div id="settings-{{$i}}" class="modal" popover aria-labelledby="settings-{{$i}}-title">
+            <div class="modal-head"><h3 id="settings-{{$i}}-title">Settings</h3><button class="icon-btn" type="button" popovertarget="settings-{{$i}}" popovertargetaction="hide" aria-label="Close">&times;</button></div>
+            <p class="who">{{$row.Email}}</p>
             <form method="post" action="/admin">
-              <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="grant-admin"><input type="hidden" name="email" value="{{.Email}}">
-              <button class="btn-ghost" type="submit" aria-label="Make {{.Email}} an admin">Make admin</button>
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-team"><input type="hidden" name="email" value="{{$row.Email}}">
+              <div class="field"><label for="team-{{$i}}">Team</label>
+                <div class="with-btn"><input id="team-{{$i}}" name="team" type="text" list="teams" maxlength="40" value="{{$row.Team}}" placeholder="e.g. Trading"><button class="btn-ghost" type="submit">Save</button></div>
+                <p class="hint">A tag for grouping accounts. Leave blank to remove it.</p>
+              </div>
             </form>
-            {{end}}
+            {{if not $row.Self}}
+            <div class="setting">
+              <div><strong>Reset password</strong><p class="muted">Signs them out everywhere; shows a new temporary password.</p></div>
+              <details class="confirm danger"><summary aria-label="Reset password: {{$row.Email}}">Reset</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">{{$row.Email}} is signed out everywhere and gets a new temporary password.</p>
+                  <button class="btn" type="submit">Confirm reset</button>
+                </form>
+              </details>
+            </div>
+            <div class="setting">
+              <div><strong>Sign out everywhere</strong><p class="muted">Ends every session, in every application, on every device.</p></div>
+              <details class="confirm danger"><summary aria-label="Sign out: {{$row.Email}}">Sign out</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-sessions"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">Ends every session of {{$row.Email}}.</p>
+                  <button class="btn" type="submit">Confirm sign out</button>
+                </form>
+              </details>
+            </div>
+            <div class="setting">
+              {{if eq $row.StatusClass "off"}}
+              <div><strong>Enable account</strong><p class="muted">Lets {{$row.Email}} sign in again.</p></div>
+              <form method="post" action="/admin">
+                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="enable"><input type="hidden" name="email" value="{{$row.Email}}">
+                <button class="btn-ghost" type="submit" aria-label="Enable {{$row.Email}}">Enable</button>
+              </form>
+              {{else}}
+              <div><strong>Disable account</strong><p class="muted">Signs them out everywhere; they cannot sign in until enabled again.</p></div>
+              {{if $row.CanDisable}}<details class="confirm danger"><summary aria-label="Disable: {{$row.Email}}">Disable</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="disable"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">{{$row.Email}} is signed out everywhere and cannot sign in until enabled again.</p>
+                  <button class="btn" type="submit">Confirm disable</button>
+                </form>
+              </details>{{else}}<span class="badge off">Last admin</span>{{end}}
+              {{end}}
+            </div>
+            <div class="setting">
+              {{if $row.IsAdmin}}
+              <div><strong>Administrator</strong><p class="muted">Can open this console.</p></div>
+              {{if $row.CanDemote}}<details class="confirm danger"><summary aria-label="Remove admin: {{$row.Email}}">Remove admin</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-admin"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">{{$row.Email}} keeps their account and applications but can no longer open this console.</p>
+                  <button class="btn" type="submit">Confirm remove</button>
+                </form>
+              </details>{{else}}<span class="badge off">Last admin</span>{{end}}
+              {{else}}
+              <div><strong>Administrator</strong><p class="muted">Not an administrator.</p></div>
+              <form method="post" action="/admin">
+                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="grant-admin"><input type="hidden" name="email" value="{{$row.Email}}">
+                <button class="btn-ghost" type="submit" aria-label="Make {{$row.Email}} an admin">Make admin</button>
+              </form>
+              {{end}}
+            </div>
+            {{else}}
+            <p class="hint">Your own password and sessions are managed from the corner controls: Change your password, and Sign out.</p>
             {{end}}
           </div></td>
         </tr>{{end}}
         </tbody>
-      </table></div>{{else}}<p class="empty">No accounts yet. Add the first one below.</p>{{end}}
+      </table></div>{{else}}<p class="empty">No accounts yet. Add the first one with the button above.</p>{{end}}
+      <datalist id="teams">{{range .Teams}}<option value="{{.}}">{{end}}</datalist>
     </section>
 
-    <section class="section" aria-labelledby="add-heading">
-      <h2 id="add-heading">Add user</h2>
-      <p class="muted">A temporary password is generated for you and shown once. They choose their own at first sign-in.</p>
-      <form class="add" method="post" action="/admin">
+    <div id="add-user" class="modal" popover aria-labelledby="add-user-title">
+      <div class="modal-head"><h3 id="add-user-title">Add user</h3><button class="icon-btn" type="button" popovertarget="add-user" popovertargetaction="hide" aria-label="Close">&times;</button></div>
+      <p class="who">A temporary password is shown once; they choose their own at first sign-in.</p>
+      <form method="post" action="/admin">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="create">
-        <div><label for="new-email">Work email</label>
-        <input id="new-email" name="email" type="email" required autocomplete="off" placeholder="name@company.com"></div>
-        <button class="btn" type="submit">Add user</button>
-        <div class="wide-field"><label>Applications</label>
+        <div class="field"><label for="new-email">Work email</label>
+          <input id="new-email" name="email" type="email" required autocomplete="off" placeholder="name@company.com"></div>
+        <div class="field"><label for="new-team">Team <span class="muted">(optional)</span></label>
+          <input id="new-team" name="team" type="text" list="teams" maxlength="40" placeholder="e.g. Trading"></div>
+        <div class="field"><label for="new-password">Temporary password</label>
+          <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="Leave blank to generate one"><button class="btn-ghost" type="button" data-generate="new-password">Generate</button></div>
+          <p class="hint">At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>
+        <div class="field"><label>Applications</label>
           {{if .AppChoices}}<div class="checks">{{range .AppChoices}}<label{{if not .Granted}} class="off"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}{{if not .Granted}} (disabled){{end}}</label>{{end}}</div>
           {{else}}<p class="muted">No applications are registered yet; register them with <code>auth app create</code> on the server.</p>{{end}}
         </div>
+        <button class="btn" type="submit">Create account</button>
       </form>
-    </section>
+    </div>
     {{else}}{{with .App}}
     <section class="section" aria-labelledby="app-heading">
       <div class="topline">
@@ -736,15 +877,8 @@ const adminHTML = `<!doctype html>
     </section>
     {{end}}{{end}}
 
-    <div class="footer-actions">
-      <span class="footer-links"><a href="/account">Back to your apps</a> · <a href="/change-password?return_to=/admin">Change your password</a></span>
-      <form method="post" action="/logout">
-        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-        <input type="hidden" name="redirect_to" value="/?notice=signed_out">
-        <button class="btn" type="submit">Sign out</button>
-      </form>
-    </div>
   </main>
+  <script nonce="{{.Nonce}}">` + adminScript + `</script>
 </body>
 </html>`
 

@@ -234,7 +234,7 @@ func domainCmd(dataDir string, args []string) {
 
 func userCmd(dataDir string, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|set-password|disable|enable|admin|access|show|revoke-sessions|list|del> [email]")
+		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|set-password|disable|enable|admin|access|team|show|revoke-sessions|list|del> [email]")
 		os.Exit(2)
 	}
 	st, ctx := openStore(dataDir)
@@ -306,8 +306,12 @@ func userCmd(dataDir string, args []string) {
 		if len(apps) > 0 {
 			appList = strings.Join(apps, ", ")
 		}
-		fmt.Printf("email: %s\nid: %s\nstatus: %s\nadmin: %t\nmust change password: %t\nactive sessions: %d\napplications: %s\n",
-			a.Email, a.ID, status, a.IsAdmin, a.MustChangePassword, active, appList)
+		team := a.Team
+		if team == "" {
+			team = "(none)"
+		}
+		fmt.Printf("email: %s\nid: %s\nstatus: %s\nadmin: %t\nteam: %s\nmust change password: %t\nactive sessions: %d\napplications: %s\n",
+			a.Email, a.ID, status, a.IsAdmin, team, a.MustChangePassword, active, appList)
 	case "admin":
 		if len(args) != 3 || (args[2] != "on" && args[2] != "off") {
 			fatalf("usage: auth-admin user admin <email> on|off")
@@ -324,6 +328,23 @@ func userCmd(dataDir string, args []string) {
 			fmt.Printf("✓ %s can open the admin console\n", email)
 		} else {
 			fmt.Printf("✓ %s is no longer an administrator\n", email)
+		}
+	case "team":
+		if len(args) != 3 {
+			fatalf("usage: auth-admin user team <email> <team|->   (- clears the tag)")
+		}
+		email := validateAccountEmail(args[1])
+		team := args[2]
+		if team == "-" {
+			team = ""
+		}
+		if err := st.SetAccountTeam(ctx, email, team, time.Now().Unix()); err != nil {
+			fatalf("team: %v", err)
+		}
+		if team == "" {
+			fmt.Printf("✓ %s has no team tag\n", email)
+		} else {
+			fmt.Printf("✓ %s tagged %q\n", email, team)
 		}
 	case "access":
 		if len(args) != 4 || (args[3] != "on" && args[3] != "off") {
@@ -379,13 +400,17 @@ func userCmd(dataDir string, args []string) {
 		if len(accounts) > 0 {
 			fmt.Println("PASSWORD ACCOUNTS")
 			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			_, _ = fmt.Fprintln(tw, "EMAIL\tSTATUS\tADMIN\tMUST CHANGE\tCREATED")
+			_, _ = fmt.Fprintln(tw, "EMAIL\tSTATUS\tADMIN\tTEAM\tMUST CHANGE\tCREATED")
 			for _, a := range accounts {
 				status := "enabled"
 				if a.DisabledAt != nil {
 					status = "disabled"
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%t\t%t\t%s\n", a.Email, status, a.IsAdmin, a.MustChangePassword, a.CreatedAt.Format("2006-01-02"))
+				team := a.Team
+				if team == "" {
+					team = "-"
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%t\t%s\t%t\t%s\n", a.Email, status, a.IsAdmin, team, a.MustChangePassword, a.CreatedAt.Format("2006-01-02"))
 			}
 			_ = tw.Flush()
 		}

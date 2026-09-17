@@ -42,6 +42,7 @@ type adminAccountRow struct {
 	Status      string // Active | Disabled | Must change password
 	StatusClass string // ok | off | warn
 	IsAdmin     bool
+	Team        string
 	Created     string
 	Sessions    int
 	Apps        []adminAppChoice
@@ -83,7 +84,9 @@ type adminAppView struct {
 // adminResult is what one POST leaves for the re-rendered page. Status is
 // non-zero when the action must not render the page at all: an unexpected
 // failure (500, so an uncertain outcome is never dressed up as "nothing
-// changed") or a request the UI never sends (400).
+// changed") or a request the UI never sends (400). Reopen names the popover
+// the page should show again (the Add user form after a rejected entry) so
+// the administrator's input is not lost behind a closed dialog.
 type adminResult struct {
 	Notice   string
 	Error    string
@@ -91,6 +94,7 @@ type adminResult struct {
 	ForEmail string
 	Tab      string
 	Status   int
+	Reopen   string
 }
 
 // failed logs an unexpected error and marks the result as a 500.
@@ -215,9 +219,28 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 	res.ForEmail = email
 
 	if action == "create" {
-		plain, err := passwordauth.Generate(s.passwordContext(email)...)
+		res.Reopen = "add-user"
+		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
-			return res.failed("generate password", err)
+			res.Error = "Team must be at most 40 characters."
+			return res
+		}
+		// The administrator may type the temporary password or leave it blank
+		// to have one generated. Either way it is validated against the same
+		// policy the change-password form applies, with the new account's
+		// email as context, and set must-change.
+		plain, typed := strings.TrimSpace(r.FormValue("password")), false
+		if plain != "" {
+			typed = true
+			if err := passwordauth.Validate(plain, s.passwordContext(email)...); err != nil {
+				res.Error = "Temporary password: " + passwordauth.UserMessage(err)
+				return res
+			}
+		} else {
+			plain, err = passwordauth.Generate(s.passwordContext(email)...)
+			if err != nil {
+				return res.failed("generate password", err)
+			}
 		}
 		encoded, err := s.hashPassword(ctx, plain)
 		if err != nil {
@@ -231,7 +254,14 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		if err != nil {
 			return res.failed("create account", err)
 		}
+		res.Reopen = ""
 		audit("admin.user_created", account.ID, "")
+		if team != "" {
+			if err := s.store.SetAccountTeam(ctx, account.Email, team, now.Unix()); err != nil {
+				logUnlessCancelled("admin initial team", err)
+				res.Error = "The account was created, but its team could not be saved. Set it from Settings."
+			}
+		}
 		if _, _, err := s.store.SetApplicationAccess(ctx, account.ID, r.Form["apps"], now.Unix()); err != nil {
 			// The account exists and its password is in hand, so this is
 			// reported on the page rather than as a 500 that would hide
@@ -242,9 +272,15 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			for _, id := range r.Form["apps"] {
 				audit("admin.access_granted", account.ID, strings.TrimSpace(id))
 			}
-			res.Notice = fmt.Sprintf("Created %s. Share the temporary password below; they must change it at first sign-in.", account.Email)
+			if typed {
+				res.Notice = fmt.Sprintf("Created %s with the password you entered; they must change it at first sign-in.", account.Email)
+			} else {
+				res.Notice = fmt.Sprintf("Created %s. Share the temporary password below; they must change it at first sign-in.", account.Email)
+			}
 		}
-		res.Secret = plain
+		if !typed {
+			res.Secret = plain
+		}
 		return res
 	}
 
@@ -330,6 +366,21 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			audit("admin.admin_revoked", target.ID, "")
 			res.Notice = fmt.Sprintf("%s is no longer an administrator.", target.Email)
 		}
+	case "set-team":
+		team, err := store.NormalizeTeam(r.FormValue("team"))
+		if err != nil {
+			res.Error = "Team must be at most 40 characters."
+			return res
+		}
+		if err := s.store.SetAccountTeam(ctx, target.Email, team, now.Unix()); err != nil {
+			return res.failed("set team", err)
+		}
+		audit("admin.team_set", target.ID, "")
+		if team == "" {
+			res.Notice = fmt.Sprintf("Removed %s's team tag.", target.Email)
+		} else {
+			res.Notice = fmt.Sprintf("%s is tagged %s.", target.Email, team)
+		}
 	case "set-access":
 		added, removed, err := s.store.SetApplicationAccess(ctx, target.ID, r.Form["apps"], now.Unix())
 		if errors.Is(err, store.ErrApplicationNotFound) {
@@ -389,7 +440,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, actor store
 	data := map[string]any{
 		"Brand": s.cfg.BrandName, "Email": actor.Email, "CSRF": csrf,
 		"Tabs": tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
-		"Secret": result.Secret, "SecretFor": result.ForEmail,
+		"Secret": result.Secret, "SecretFor": result.ForEmail, "Reopen": result.Reopen,
 	}
 
 	if tab == adminAccountsTab {
@@ -417,7 +468,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, actor store
 		rows := make([]adminAccountRow, 0, len(accounts))
 		for _, a := range accounts {
 			row := adminAccountRow{
-				Email: a.Email, IsAdmin: a.IsAdmin, Created: a.CreatedAt.UTC().Format("2006-01-02"),
+				Email: a.Email, IsAdmin: a.IsAdmin, Team: a.Team, Created: a.CreatedAt.UTC().Format("2006-01-02"),
 				Sessions: sessions[a.ID], Self: a.ID == actor.ID,
 			}
 			switch {
@@ -444,8 +495,18 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, actor store
 		for _, app := range apps {
 			choices = append(choices, adminAppChoice{ID: app.ID, Name: app.Name, Granted: app.DisabledAt == nil})
 		}
+		teamSet := map[string]bool{}
+		var teams []string
+		for _, a := range accounts {
+			if a.Team != "" && !teamSet[a.Team] {
+				teamSet[a.Team] = true
+				teams = append(teams, a.Team)
+			}
+		}
+		sort.Strings(teams)
 		data["Accounts"] = rows
 		data["AppChoices"] = choices
+		data["Teams"] = teams
 	} else {
 		app := appByID[tab]
 		view := adminAppView{

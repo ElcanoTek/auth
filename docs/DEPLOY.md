@@ -303,23 +303,32 @@ route does not exist for them at all.
 Tabs:
 
 - **Accounts.** Every password account with status (Active / Disabled / Must
-  change password), the Admin badge, the applications it may sign in to, its
-  live central sessions and creation date. Per account: **Access** (tick the
-  applications; unticking one signs them out of it now), **Reset password**
-  (generates a new temporary password, shown once, signs them out
-  everywhere), **Sign out** (every session, every application, every
-  device), **Disable / Enable**, **Make admin / Remove admin**. Destructive
-  actions open a small confirm step first. **Add user** creates an account
-  from an email plus the applications it should have; the temporary password
-  is generated (20 characters, meets the policy), shown once, and forced to
-  change at first sign-in. Administrators cannot reset, sign out, disable or
-  demote themselves from here (the console's own "Change your password" link
-  and Sign out cover that), and the last enabled administrator can never be
-  demoted or disabled, from the console or the CLI. Passwords are managed by
-  administrators: a non-admin has no self-service change (the `/change-password`
-  page admits only a forced first-login change and administrators); when they
-  need a new one, an administrator resets it and hands over the temporary
-  password.
+  change password), the Admin badge, its team tag, the applications it may
+  sign in to, its live central sessions and creation date. Each row has two
+  buttons: **Access** opens a popup with one checkbox per application
+  (unticking one signs them out of it now), **Settings** opens a popup with
+  the team tag and the account actions: Reset password (generates a new
+  temporary password, shown once, signs them out everywhere), Sign out
+  everywhere, Disable / Enable, Make admin / Remove admin. Destructive actions
+  ask for confirmation inside the popup. **Add user** (top right of the
+  table) opens a popup: email, an optional team tag (existing tags are
+  suggested), a temporary password you type or fill with **Generate** (blank
+  means a strong one is generated and shown once; a typed one must meet the
+  same 12-character policy), and the applications to grant. Administrators
+  cannot reset, sign out, disable or demote themselves from a row (the
+  console's own "Change your password" link and Sign out cover that), and the
+  last enabled administrator can never be demoted or disabled, from the
+  console or the CLI. Passwords are managed by administrators: a non-admin has
+  no self-service change (the `/change-password` page admits only a forced
+  first-login change and administrators); when they need a new one, an
+  administrator resets it and hands over the temporary password.
+- **Team tags** are free text (at most 40 characters), one per account, for
+  grouping people in the table; they carry no permissions. `auth user team
+  <email> <team|->` sets or clears one from the box.
+- **Page controls.** Top right: the theme toggle and an **×** back to your
+  apps. Bottom left: **Sign out** and **Change your password**. They sit
+  outside the console content so the table is only accounts.
+
 - **One tab per registered application.** Its status with Enable / Disable,
   the registered endpoints, how many accounts have access, **who signs in
   here** (every account that has completed a sign-in to it, with counts and
