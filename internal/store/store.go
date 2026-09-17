@@ -22,8 +22,6 @@
 package store
 
 import (
-	"unicode"
-	"unicode/utf8"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -35,6 +33,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 )
