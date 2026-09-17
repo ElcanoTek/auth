@@ -306,17 +306,18 @@ Tabs:
   change password), the Admin badge, its team tag, the applications it may
   sign in to and its live central sessions (the creation date sits in the
   Settings popup beside the email). Each row has two
-  buttons: **Access** opens a popup with one checkbox per application
-  (unticking one signs them out of it now) plus an **Admin console** checkbox
-  (the administrator flag; your own and the last enabled administrator's are
-  locked), **Settings** opens a popup with the team tag and the account
+  buttons: **Access** opens a popup with selectable pills, one per
+  application (deselecting one signs them out of it now) and, in its own
+  Admin section, an **Admin** pill (the administrator flag; your own and the
+  last enabled administrator's are locked), **Settings** opens a popup with the team tag and the account
   actions: Reset password (generates a new temporary password, shown once,
   signs them out everywhere), Sign out everywhere, Disable / Enable. Destructive actions
   ask for confirmation inside the popup. **Add user** (top right of the
   table) opens a popup: email, an optional team tag (existing tags are
   suggested), a temporary password you type or fill with **Generate** (blank
   means a strong one is generated and shown once; a typed one must meet the
-  same 12-character policy), and the applications to grant. Administrators
+  same 12-character policy), the applications to grant as pills, and an
+  Admin pill. Administrators
   cannot reset, disable or demote themselves from a row (their own row's
   Settings links to the change-password form instead, which signs out every
   other device and app while this browser stays signed in, and its Sign out
