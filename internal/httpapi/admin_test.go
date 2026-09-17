@@ -445,7 +445,7 @@ func TestAdminApplicationTabToggleAndSignIns(t *testing.T) {
 	// The add-user form lists the applications with disabled ones unticked.
 	_ = st.SetApplicationDisabled(ctx, "explorer", true, time.Now().Unix())
 	_, page := alice.get("/admin")
-	if !strings.Contains(page, `<input type="checkbox" name="apps" value="fleet" checked> Fleet`) || !strings.Contains(page, `<input type="checkbox" name="apps" value="explorer"> Explorer (disabled)`) {
+	if !strings.Contains(page, `<label class="seg-opt"><input type="checkbox" name="apps" value="fleet" checked> Fleet</label>`) || !strings.Contains(page, `<label class="seg-opt off" title="Application disabled"><input type="checkbox" name="apps" value="explorer"> Explorer</label>`) {
 		t.Fatalf("add-user choices:\n%s", page)
 	}
 }
@@ -564,7 +564,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		`popovertarget="add-user"`, `id="add-user" class="modal" popover`,
 		`popovertarget="access-0"`, `id="access-0" class="modal" popover`,
 		`popovertarget="settings-0"`, `id="settings-0" class="modal" popover`,
-		`<a class="icon-btn" href="/account" aria-label="Back to your apps"`,
+		`<a class="icon-btn close" href="/account" aria-label="Back to your apps"`,
 		`<div class="corner-bottom">`, `action="/logout"`, `<a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>`,
 		`data-generate="new-password"`, `name="password" type="text"`, `name="team" type="text" list="teams"`, `<datalist id="teams">`,
 	} {
@@ -681,11 +681,14 @@ func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
 	_, body := alice.get("/admin")
-	if !strings.Contains(body, `<input type="checkbox" checked disabled> Admin console</label><input type="hidden" name="admin" value="on">`) {
-		t.Fatalf("own row does not lock the admin checkbox:\n%s", body)
+	if !strings.Contains(body, `<label class="seg-opt locked"><input type="checkbox" checked disabled> Admin</label><input type="hidden" name="admin" value="on">`) {
+		t.Fatalf("own row does not lock the admin pill:\n%s", body)
 	}
-	if !strings.Contains(body, `<input type="checkbox" name="admin" value="on"> Admin console`) {
-		t.Fatalf("bob's row lacks the admin checkbox:\n%s", body)
+	if !strings.Contains(body, `<label class="seg-opt"><input type="checkbox" name="admin" value="on"> Admin</label>`) {
+		t.Fatalf("bob's row lacks the admin pill:\n%s", body)
+	}
+	if !strings.Contains(body, `<span class="seg-label">Applications</span>`) || !strings.Contains(body, `<span class="seg-label">Admin</span>`) {
+		t.Fatal("Access popup lacks the two pill sections")
 	}
 	if strings.Contains(body, `value="grant-admin"`) || strings.Contains(body, `value="revoke-admin"`) {
 		t.Fatal("Settings still offers the old admin buttons")
@@ -761,5 +764,33 @@ func TestAdminOwnRowSignsOutEverywhereAndShowsCreated(t *testing.T) {
 	}
 	if r, _ := alice.get("/admin"); r.StatusCode != http.StatusSeeOther {
 		t.Fatalf("stale session still opens the console: %d", r.StatusCode)
+	}
+}
+
+// Add user can grant the Admin permission at creation, from its own pill
+// section, and a member created without it is a plain account.
+func TestAddUserAdminPill(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	_, body := alice.post(url.Values{"action": {"create"}, "email": {"hana@example.com"}, "apps": {"fleet"}, "admin": {"on"}})
+	if !strings.Contains(body, "Created hana@example.com") {
+		t.Fatalf("create:\n%s", body)
+	}
+	hana, _ := st.PasswordAccountByEmail(context.Background(), "hana@example.com")
+	if !hana.IsAdmin {
+		t.Fatal("Admin pill at creation did not grant the flag")
+	}
+	_, _ = alice.post(url.Values{"action": {"create"}, "email": {"ivy@example.com"}, "apps": {"fleet"}})
+	ivy, _ := st.PasswordAccountByEmail(context.Background(), "ivy@example.com")
+	if ivy.IsAdmin {
+		t.Fatal("member created as admin")
+	}
+	events, _ := st.RecentAuditEvents(context.Background(), hana.ID, 10)
+	var types []string
+	for _, e := range events {
+		types = append(types, e.EventType)
+	}
+	if !strings.Contains(strings.Join(types, " "), "admin.admin_granted") {
+		t.Fatalf("admin grant at creation not audited: %v", types)
 	}
 }

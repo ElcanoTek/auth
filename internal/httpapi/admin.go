@@ -264,6 +264,14 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		}
 		res.Reopen = ""
 		audit("admin.user_created", account.ID, "")
+		if r.FormValue("admin") == "on" {
+			if err := s.store.SetAccountAdmin(ctx, account.Email, true, now.Unix()); err != nil {
+				logUnlessCancelled("admin initial admin", err)
+				res.Error = "The account was created, but its Admin permission could not be saved. Set it from Access."
+			} else {
+				audit("admin.admin_granted", account.ID, "")
+			}
+		}
 		if team != "" {
 			if err := s.store.SetAccountTeam(ctx, account.Email, team, now.Unix()); err != nil {
 				logUnlessCancelled("admin initial team", err)
@@ -396,7 +404,7 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		// sits in the Access popup with the applications. The checkbox is
 		// absent from the form when unticked; the self and last-admin rules
 		// still apply and are reported without touching the applications.
-		_, wantAdmin := r.Form["admin"]
+		wantAdmin := r.FormValue("admin") == "on"
 		if wantAdmin != target.IsAdmin {
 			if self && !wantAdmin {
 				res.Error = "You cannot remove your own administrator access."

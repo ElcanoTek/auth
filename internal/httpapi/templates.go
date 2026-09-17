@@ -279,6 +279,10 @@ a.btn-ghost { text-decoration: none; }
   transition: color var(--transition-fast), border-color var(--transition-fast);
 }
 .icon-btn:hover { color: var(--color-text-primary); border-color: var(--color-border-strong); }
+/* The top-right X (back to your apps) reads as "leave": red, darker on hover. */
+.corner-actions .close { color: var(--color-status-error-fg); background: var(--color-status-error-bg); border-color: var(--color-status-error-border); }
+.corner-actions .close:hover { color: #fff; background: #b91c1c; border-color: #991b1b; }
+:root[data-theme="dark"] .corner-actions .close:hover { background: #991b1b; border-color: #7f1d1d; }
 .icon-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
 .section-head .muted { margin: 0; }
@@ -316,6 +320,23 @@ a.btn-ghost { text-decoration: none; }
 .setting .confirm .pane { left: auto; right: 0; border-radius: var(--radius-md) 0 var(--radius-md) var(--radius-md); }
 .setting .confirm > summary, .setting .btn-ghost { white-space: nowrap; }
 .modal .checks { margin-top: var(--space-2); }
+/* Segmented pills, copied from Fleet's Segmented control: a hairline-bordered
+   pill group whose selected options fill with the primary colour. Here each
+   option is a real checkbox (multi-select for applications, a single toggle
+   for Admin) so the form posts without script; :has() paints the state. */
+.seg-label { display: block; margin-bottom: 0.3rem; font-size: 0.64rem; font-weight: var(--font-weight-bold); letter-spacing: 0.07em; text-transform: uppercase; color: var(--color-text-muted); }
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--color-border); border-radius: var(--radius-pill); overflow: hidden; }
+.seg-opt { position: relative; display: inline-flex; align-items: center; padding: 0.18rem 0.6rem; font-size: 0.72rem; font-weight: 500; color: var(--color-text-muted); cursor: pointer; user-select: none; transition: color var(--transition-fast), background var(--transition-fast); }
+.seg-opt + .seg-opt { border-left: 1px solid var(--color-border); }
+.seg-opt:hover { color: var(--color-text-primary); }
+.seg-opt input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.seg-opt:has(input:checked) { background: var(--color-primary); color: var(--color-on-primary); }
+.seg-opt:has(input:focus-visible) { box-shadow: inset 0 0 0 2px var(--color-accent); }
+.seg-opt.off { opacity: 0.55; }
+.seg-opt.locked { cursor: not-allowed; }
+.seg-opt.locked input { cursor: not-allowed; }
+.seg-group { margin-bottom: var(--space-4); }
+.seg-group .hint { margin-top: var(--space-2); }
 .tag { display: inline-block; padding: 0.1rem 0.5rem; border-radius: var(--radius-pill); font-size: 0.6875rem; font-weight: var(--font-weight-bold); letter-spacing: 0.04em; background: var(--color-bg); border: 1px solid var(--color-border-strong); color: var(--color-text-secondary); white-space: nowrap; }
 .card.admin { max-width: 68rem; }
 .topline { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
@@ -673,7 +694,7 @@ const adminHTML = `<!doctype html>
 <body{{if .Reopen}} data-reopen="{{.Reopen}}"{{end}}>
   <div class="corner-actions">
     ` + themeToggle + `
-    <a class="icon-btn" href="/account" aria-label="Back to your apps" title="Back to your apps">&times;</a>
+    <a class="icon-btn close" href="/account" aria-label="Back to your apps" title="Back to your apps">&times;</a>
   </div>
   <div class="corner-bottom">
     <form method="post" action="/logout">
@@ -727,16 +748,16 @@ const adminHTML = `<!doctype html>
             <p class="who">{{$row.Email}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{$row.Email}}">
-              <div class="field"><label>Applications</label>
-                {{if $row.Apps}}<div class="checks">{{range $row.Apps}}<label><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</div>
-                <p class="hint">Unticking an application signs them out of it now.</p>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
+              <div class="seg-group"><span class="seg-label">Admin</span>
+                <span class="seg" role="group" aria-label="Admin permissions for {{$row.Email}}">
+                  {{if or $row.Self (and $row.IsAdmin (not $row.CanDemote))}}<label class="seg-opt locked"><input type="checkbox" checked disabled> Admin</label><input type="hidden" name="admin" value="on">
+                  {{else}}<label class="seg-opt"><input type="checkbox" name="admin" value="on"{{if $row.IsAdmin}} checked{{end}}> Admin</label>{{end}}
+                </span>
+                <p class="hint">{{if $row.Self}}You cannot remove your own administrator access.{{else if and $row.IsAdmin (not $row.CanDemote)}}The last enabled administrator cannot be removed.{{else}}Full permissions: opens this console and manages every account.{{end}}</p>
               </div>
-              <div class="field"><label>Console</label>
-                <div class="checks">
-                  {{if or $row.Self (and $row.IsAdmin (not $row.CanDemote))}}<label class="off"><input type="checkbox" checked disabled> Admin console</label><input type="hidden" name="admin" value="on">
-                  {{else}}<label><input type="checkbox" name="admin" value="on"{{if $row.IsAdmin}} checked{{end}}> Admin console</label>{{end}}
-                </div>
-                <p class="hint">{{if $row.Self}}You cannot remove your own administrator access.{{else if and $row.IsAdmin (not $row.CanDemote)}}The last enabled administrator cannot be removed.{{else}}Administrators can open this console and manage every account.{{end}}</p>
+              <div class="seg-group"><span class="seg-label">Applications</span>
+                {{if $row.Apps}}<span class="seg" role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}<label class="seg-opt"><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
+                <p class="hint">Selected applications sign in through {{$.Brand}}; deselecting one signs them out of it now.</p>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
               </div>
               <button class="btn" type="submit">Save access</button>
             </form>
@@ -825,8 +846,13 @@ const adminHTML = `<!doctype html>
         <div class="field"><label for="new-password">Temporary password</label>
           <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="Leave blank to generate one"><button class="btn-ghost" type="button" data-generate="new-password">Generate</button></div>
           <p class="hint">At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>
-        <div class="field"><label>Applications</label>
-          {{if .AppChoices}}<div class="checks">{{range .AppChoices}}<label{{if not .Granted}} class="off"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}{{if not .Granted}} (disabled){{end}}</label>{{end}}</div>
+        <div class="seg-group"><span class="seg-label">Admin</span>
+          <span class="seg" role="group" aria-label="Admin permissions"><label class="seg-opt"><input type="checkbox" name="admin" value="on"> Admin</label></span>
+          <p class="hint">Full permissions: opens this console and manages every account.</p>
+        </div>
+        <div class="seg-group"><span class="seg-label">Applications</span>
+          {{if .AppChoices}}<span class="seg" role="group" aria-label="Applications">{{range .AppChoices}}<label class="seg-opt{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
+          <p class="hint">Which applications they may sign in to.</p>
           {{else}}<p class="muted">No applications are registered yet; register them with <code>auth app create</code> on the server.</p>{{end}}
         </div>
         <button class="btn" type="submit">Create account</button>
