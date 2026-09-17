@@ -318,7 +318,8 @@ Tabs:
   means a strong one is generated and shown once; a typed one must meet the
   same 12-character policy), and the applications to grant. Administrators
   cannot reset, disable or demote themselves from a row (their own row's
-  Settings links to the change-password form instead, and its Sign out
+  Settings links to the change-password form instead, which signs out every
+  other device and app while this browser stays signed in, and its Sign out
   everywhere ends their own session too, returning them to the sign-in page),
   and the
   last enabled administrator can never be demoted or disabled, from the

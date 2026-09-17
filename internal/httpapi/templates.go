@@ -753,7 +753,7 @@ const adminHTML = `<!doctype html>
             </form>
             {{if not $row.Self}}
             <div class="setting">
-              <div><strong>Reset password</strong><p class="muted">Signs them out everywhere; shows a new temporary password.</p></div>
+              <div><strong>Reset password</strong><p class="muted">Signs them out of every app and device; shows a new temporary password they must change.</p></div>
               <details class="confirm danger"><summary aria-label="Reset password: {{$row.Email}}">Reset</summary>
                 <form class="pane" method="post" action="/admin">
                   <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{$row.Email}}">
@@ -792,7 +792,7 @@ const adminHTML = `<!doctype html>
             </div>
             {{else}}
             <div class="setting">
-              <div><strong>Reset password</strong><p class="muted">Your own password: change it with your current one; your sessions stay signed in.</p></div>
+              <div><strong>Reset password</strong><p class="muted">Your own password: change it with your current one. Every other device and app is signed out; this browser stays signed in.</p></div>
               <a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>
             </div>
             <div class="setting">
