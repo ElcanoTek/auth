@@ -52,7 +52,13 @@ should too.
    `/token` with `client_secret_basic`. The response carries the standard
    identity claims directly and as an EdDSA-signed `id_token`; verify it
    against `/jwks.json` (exact `iss` and `aud`, live `exp`, matching
-   `nonce`). There is no `access_token`: Auth has no resource server.
+   `nonce`). There is no `access_token`: Auth has no resource server. `amr`
+   lists how the session was authenticated (`pwd`; plus `otp` for an
+   authenticator code or `mfa` for a recovery code) and `acr` is
+   `urn:elcanotek:loa:2` when a second factor was proven, `loa:1` otherwise;
+   an application that wants to insist on a factor checks them, Auth itself
+   already refuses to hand out a code for a session the account's policy
+   deems insufficient.
 
 4. **Local membership, then a local session.** Auth answers "who is this" and
    "may they sign in to this application". Whether they may do anything

@@ -293,12 +293,43 @@ form on `/account` does the same. Scope and timing, stated plainly:
   that costs the user a login, not access, and is accepted in exchange for a
   click-free flow. Any registered client id is honoured (ids are public).
 
-## Second factor (2FA): server configuration
+## Second factor (2FA)
 
 Password mode can require an authenticator-app code (TOTP) after the
-password. The enrolment and sign-in screens, the account **Security** page
-and the console controls arrive in the next releases; this one adds the
-server side they depend on, so a box configured now needs no further change.
+password. What people see:
+
+- **Setting it up.** Signed in, a person opens **Security** from the
+  signed-in page (`/account/security`), presses **Set up authenticator**,
+  scans the QR code with any authenticator app (or types the key shown next
+  to it), enters the six-digit code once, and is shown ten recovery codes,
+  once. Every other session of that account is signed out at that moment;
+  the one that enrolled stays. Changes on the Security page ask for the
+  password (and current code) again when the sign-in is older than five
+  minutes.
+- **Signing in.** After the password, an enrolled account is asked for the
+  current code (`/login/verify`); a recovery code works instead, once, and
+  the signed-in page then says so. Five wrong codes end that sign-in attempt.
+  No session exists until the code is accepted: the password alone never
+  signs an enrolled account in.
+- **Required accounts.** When the deployment policy (or a per-user setting,
+  both in the console in the next release; today `auth user` on the box)
+  requires a factor the account lacks, sign-in continues straight into
+  enrolment; a forced first-login password change happens after an existing
+  factor is proven and before enrolment. Existing sessions of an account that
+  becomes required, and has no factor, are signed out immediately.
+- **Turning it off.** Under the Optional policy a person may turn their own
+  factor off from the Security page (password and code required). A required
+  account cannot; it can only replace the authenticator. A lost authenticator
+  is an administrator reset (next release; today `auth user` on the box),
+  after which the account must enrol again before it can sign in.
+- **What applications see.** The identity claims report how the session was
+  authenticated: `amr` is `["pwd"]`, `["pwd","otp"]` (authenticator) or
+  `["pwd","mfa"]` (recovery code), and `acr` is `urn:elcanotek:loa:1` for a
+  password alone or `urn:elcanotek:loa:2` with a second factor. An
+  application that needs the factor can check them; none of the existing
+  ones do.
+
+Server configuration:
 
 - `AUTH_MFA_KEY` is a base64 32-byte AES-256 key that seals every
   authenticator secret at rest. It lives only in `.env.local`, separate from

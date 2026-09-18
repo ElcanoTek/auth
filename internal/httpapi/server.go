@@ -121,7 +121,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/magic", s.handleMagic)
 	mux.HandleFunc("/login", s.handlePasswordLogin)
 	mux.HandleFunc("/change-password", s.handleChangePassword)
+	mux.HandleFunc("/login/verify", s.handleLoginVerify)
+	mux.HandleFunc("/login/enroll", s.handleLoginEnroll)
+	mux.HandleFunc("/login/cancel", s.handleLoginCancel)
 	mux.HandleFunc("/account", s.handleAccount)
+	mux.HandleFunc("/account/security", s.handleAccountSecurity)
+	mux.HandleFunc("/account/security/verify", s.handleAccountSecurityVerify)
 	mux.HandleFunc("/admin", s.handleAdmin)
 	mux.HandleFunc("/authorize", s.handleAuthorize)
 	mux.HandleFunc("/token", s.handleToken)
@@ -176,21 +181,33 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePasswordRoot(w http.ResponseWriter, r *http.Request) {
 	if identity := s.currentPasswordSession(r); identity != nil {
-		if identity.Account.MustChangePassword {
-			dest := s.resolveReturnTo(r.URL.Query().Get("return_to"))
+		dest := s.resolveReturnTo(r.URL.Query().Get("return_to"))
+		switch store.Assess(identity.Account, identity.Session, s.mfaPolicy(r).Mode) {
+		case store.AssuranceMustChangePassword:
 			location := "/change-password"
 			if dest != "" {
 				location += "?return_to=" + url.QueryEscape(dest)
 			}
 			http.Redirect(w, r, location, http.StatusSeeOther)
 			return
+		case store.AssuranceEnrollmentRequired:
+			location := "/account/security"
+			if dest != "" {
+				location += "?return_to=" + url.QueryEscape(dest)
+			}
+			http.Redirect(w, r, location, http.StatusSeeOther)
+			return
+		case store.AssuranceFactorUnverified:
+			// A session that never proved a factor the account now has is
+			// not a sign-in; show the form.
+			s.clearPasswordCookies(w)
+		default:
+			if dest == "" {
+				dest = s.defaultDest()
+			}
+			http.Redirect(w, r, dest, http.StatusSeeOther)
+			return
 		}
-		dest := s.resolveReturnTo(r.URL.Query().Get("return_to"))
-		if dest == "" {
-			dest = s.defaultDest()
-		}
-		http.Redirect(w, r, dest, http.StatusSeeOther)
-		return
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
@@ -397,6 +414,8 @@ var errorMessages = map[string]string{
 	errExpiredLink:        "That link expired. Request a fresh one.",
 	errUsedLink:           "That link has already been used. Request a fresh one.",
 	errInvalidCredentials: "Invalid email or password.",
+	errMFALocked:          "Too many incorrect codes. Sign in again to get a fresh attempt.",
+	errMFAExpired:         "That sign-in expired. Please sign in again.",
 }
 
 // errorMessage maps an ?err= code to its display text; unknown codes render
@@ -507,6 +526,17 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !valid {
 		s.passwordLoginFailure(w, r)
+		return
+	}
+	// A password alone is enough only for an account with no factor that
+	// nothing requires one from. Everyone else continues through the login
+	// transaction: no session exists until the remaining steps are done.
+	if policy := s.mfaPolicy(r); factorNeeded(account, policy.Mode) {
+		dest := s.resolveReturnTo(r.FormValue("return_to"))
+		if err := s.beginLoginTransaction(w, r, account, policy, dest, now); err != nil {
+			logUnlessCancelled("begin login transaction", err)
+			s.passwordLoginFailure(w, r)
+		}
 		return
 	}
 	if err := s.issuePasswordSession(w, r, account, now); err != nil {
@@ -646,6 +676,12 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	identity := s.currentPasswordSession(r)
 	if identity == nil {
+		// No session, but perhaps an incomplete login whose next step is the
+		// forced password change (the account has, or must get, a factor).
+		if tr, account, ok := s.currentLoginTransaction(r); ok && tr.Stage == stagePasswordChange {
+			s.changePasswordUnderTransaction(w, r, tr, account)
+			return
+		}
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
@@ -657,6 +693,13 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// their password from the console when they need a new one.
 	if !identity.Account.MustChangePassword && !identity.Account.IsAdmin {
 		http.Redirect(w, r, "/account", http.StatusSeeOther)
+		return
+	}
+	// An administrator whose session never proved their factor is not
+	// signed in enough to change anything.
+	if !identity.Account.MustChangePassword && store.Assess(identity.Account, identity.Session, s.mfaPolicy(r).Mode) != store.AssuranceOK {
+		s.clearPasswordCookies(w)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)
@@ -785,12 +828,19 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identity := s.currentPasswordSession(r)
+	// The session must carry the evidence the account's policy demands
+	// (forced change done, factor enrolled and proven) before it is worth
+	// anything here. level is what remains to be done, if anything.
+	level := store.AssuranceOK
+	if identity != nil {
+		level = store.Assess(identity.Account, identity.Session, s.mfaPolicy(r).Mode)
+	}
 	// Per-application access: an account may only be handed to applications
 	// an administrator granted. Checked before any redirect so a silent
 	// check learns access_denied (OIDC Core 3.1.2.6) and an interactive one
 	// gets Auth's own explanation instead of an error the app cannot word.
 	hasAccess := false
-	if identity != nil && !identity.Account.MustChangePassword {
+	if identity != nil && level == store.AssuranceOK {
 		ok, err := s.store.HasApplicationAccess(r.Context(), identity.Account.ID, clientID)
 		if err != nil {
 			logUnlessCancelled("authorize access check", err)
@@ -799,16 +849,17 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 		hasAccess = ok
 	}
-	if prompt == "none" && identity != nil && !identity.Account.MustChangePassword && !hasAccess {
+	if prompt == "none" && identity != nil && level == store.AssuranceOK && !hasAccess {
 		s.redirectAuthorizeError(w, r, redirectURI, state, "access_denied")
 		return
 	}
-	if prompt == "none" && (identity == nil || identity.Account.MustChangePassword) {
+	if prompt == "none" && (identity == nil || level != store.AssuranceOK) {
 		// The redirect target was validated against the registration above,
 		// so an error response may go back to it (OIDC Core 3.1.2.6). No
 		// code, no identity: only the fact that a silent sign-in is not
 		// possible right now. interaction_required means "signed in, but
-		// must finish the forced password change first".
+		// something (the forced password change, enrolment, the second
+		// factor) has to happen at Auth first".
 		code := "login_required"
 		if identity != nil {
 			code = "interaction_required"
@@ -820,8 +871,16 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 		return
 	}
-	if identity.Account.MustChangePassword {
+	switch level {
+	case store.AssuranceMustChangePassword:
 		http.Redirect(w, r, "/change-password?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+		return
+	case store.AssuranceEnrollmentRequired:
+		http.Redirect(w, r, "/account/security?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+		return
+	case store.AssuranceFactorUnverified:
+		s.clearPasswordCookies(w)
+		http.Redirect(w, r, "/?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 		return
 	}
 	if !hasAccess {
@@ -959,7 +1018,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	claims := token.IdentityClaims{
 		Issuer: s.issuerURL(), Subject: grant.UserID, Audience: grant.ClientID, Email: grant.Email,
 		IssuedAt: now.Unix(), ExpiresAt: now.Add(assertionTTL).Unix(), Nonce: grant.Nonce,
-		AuthTime: grant.AuthTime, AMR: []string{"pwd"}, ACR: "urn:elcanotek:loa:1",
+		AuthTime: grant.AuthTime, AMR: amrClaims(grant.AMR), ACR: acrFor(grant.MFAVerifiedAt),
 	}
 	idToken, err := token.SignIdentity(s.cfg.SigningKey, claims)
 	if err != nil {
@@ -1130,13 +1189,8 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	identity := s.currentPasswordSession(r)
+	identity := s.assuredIdentity(w, r, false)
 	if identity == nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
-	if identity.Account.MustChangePassword {
-		http.Redirect(w, r, "/change-password", http.StatusSeeOther)
 		return
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)
@@ -1159,7 +1213,8 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.render(w, "account.html", map[string]any{
 		"Brand": s.cfg.BrandName, "Email": identity.Account.Email, "CSRF": csrf,
-		"Links": quickLinksFor(apps, accessSet(granted), identity.Account.IsAdmin),
+		"Links":        quickLinksFor(apps, accessSet(granted), identity.Account.IsAdmin),
+		"UsedRecovery": hasMethod(identity.Session.AMR, "mfa"),
 	}); err != nil {
 		log.Printf("render account: %v", err)
 	}
@@ -1383,7 +1438,7 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	if s.passwordMode() {
 		identity := s.currentPasswordSession(r)
-		if identity == nil || identity.Account.MustChangePassword {
+		if identity == nil || store.Assess(identity.Account, identity.Session, s.mfaPolicy(r).Mode) != store.AssuranceOK {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -1415,12 +1470,19 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false})
 			return
 		}
+		// An incomplete account (forced change, enrolment pending, factor
+		// not proven) is not authenticated for any caller's purposes; the
+		// state is named so a client can route the person correctly.
+		if level := store.Assess(identity.Account, identity.Session, s.mfaPolicy(r).Mode); level != store.AssuranceOK {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false, "state": level.String()})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"authenticated":        true,
-			"sub":                  identity.Account.ID,
-			"email":                identity.Account.Email,
-			"must_change_password": identity.Account.MustChangePassword,
-			"exp":                  identity.Session.AbsoluteExpiresAt.Unix(),
+			"authenticated": true,
+			"sub":           identity.Account.ID,
+			"email":         identity.Account.Email,
+			"amr":           identity.Session.AMR,
+			"exp":           identity.Session.AbsoluteExpiresAt.Unix(),
 		})
 		return
 	}

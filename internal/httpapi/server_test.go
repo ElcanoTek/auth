@@ -21,6 +21,7 @@ import (
 
 	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/email"
+	"github.com/elcanotek/auth/internal/mfa"
 	passwordauth "github.com/elcanotek/auth/internal/password"
 	"github.com/elcanotek/auth/internal/store"
 	"github.com/elcanotek/auth/internal/token"
@@ -47,6 +48,7 @@ func newPasswordTestServer(t *testing.T, mustChange bool) (*httptest.Server, *st
 		PasswordCookieName: "auth_session", PasswordAbsoluteTTL: 12 * time.Hour,
 		PasswordIdleTTL: time.Hour, PasswordRatePerEmail: 10, PasswordRatePerIP: 50,
 		BrandName: "Test", ReturnToHosts: []string{".example.com"},
+		MFAKeyring: testKeyring(t), MFAIssuer: "Test",
 	}
 	const plain = "correct horse battery staple"
 	encoded, err := passwordauth.HashWithParams(plain, passwordauth.Params{
@@ -1561,7 +1563,7 @@ func TestAccountPageOffersFormLogoutThatRevokes(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = anon.Body.Close()
-	if anon.StatusCode != http.StatusSeeOther || anon.Header.Get("Location") != "/" {
+	if anon.StatusCode != http.StatusSeeOther || anon.Header.Get("Location") != "/?return_to=%2Faccount" {
 		t.Fatalf("anonymous /account = %d %q", anon.StatusCode, anon.Header.Get("Location"))
 	}
 }
@@ -1780,7 +1782,7 @@ func TestMeReturnsValidJSON(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("/me is not valid JSON: %v", err)
 	}
-	if out["authenticated"] != true || out["email"] != "Alice@Example.com" || out["must_change_password"] != false {
+	if out["authenticated"] != true || out["email"] != "Alice@Example.com" || out["amr"] == nil {
 		t.Fatalf("/me body = %v", out)
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
@@ -1814,4 +1816,19 @@ func TestFontsAreCacheableDespiteNoStoreDefault(t *testing.T) {
 	if p := resp.Header.Get("Pragma"); p != "" {
 		t.Fatalf("font response still carries Pragma %q", p)
 	}
+}
+
+// testKeyring is a fresh AES key per test server, so sealed secrets never
+// cross tests.
+func testKeyring(t *testing.T) *mfa.Keyring {
+	t.Helper()
+	key, err := mfa.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring, err := mfa.ParseKeyring(key, "test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ring
 }
