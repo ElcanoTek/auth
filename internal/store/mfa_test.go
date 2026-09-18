@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -388,8 +389,38 @@ func TestDisableAndResetClearFactorStateAndRevoke(t *testing.T) {
 	if _, err := s.ActiveAuthenticator(ctx, a.ID); !errors.Is(err, ErrNoAuthenticator) {
 		t.Fatal("reset left the factor")
 	}
-	if err := s.ResetMFA(ctx, "nobody", "admin-1", "x", now); !errors.Is(err, ErrAccountNotFound) {
+	// Without an active factor there is nothing to reset: an unknown
+	// account and an unenrolled one both read as "no authenticator".
+	if err := s.ResetMFA(ctx, "nobody", "admin-1", "x", now); !errors.Is(err, ErrNoAuthenticator) {
 		t.Fatalf("reset of unknown account: %v", err)
+	}
+	if err := s.ResetMFA(ctx, a.ID, "admin-1", "again", now+10); !errors.Is(err, ErrNoAuthenticator) {
+		t.Fatalf("reset of an account already without a factor: %v", err)
+	}
+	// Promotion under "admins" signs an unenrolled new administrator out.
+	if _, _, err := s.SetMFAPolicy(ctx, mfa.ModeAdmins, "admin-1", now+11); err != nil {
+		t.Fatal(err)
+	}
+	grace, _ := s.CreatePasswordAccount(ctx, "grace@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Z3Jh", false, now)
+	session(t, s, grace, "grace-1", now+11)
+	if err := s.SetAccountAdmin(ctx, grace.Email, true, now+12); err != nil {
+		t.Fatal(err)
+	}
+	if liveSessions(t, s, grace.ID, now+13) != 0 {
+		t.Fatal("promotion under the admins policy left an unenrolled administrator signed in")
+	}
+	// Counts are relative to the current policy: admins already required
+	// do not count again, everyone adds the rest.
+	if n, _ := s.CountNewlyRequiredWithoutFactor(ctx, mfa.ModeAdmins); n != 0 {
+		t.Fatalf("admins under admins = %d, want 0", n)
+	}
+	// Stale-revision guard.
+	current, _ := s.MFAPolicy(ctx)
+	if _, _, err := s.SetMFAPolicyIfRevision(ctx, mfa.ModeEveryone, current.Revision-1, "admin-1", now+14); !errors.Is(err, ErrStalePolicy) {
+		t.Fatalf("stale revision: %v", err)
+	}
+	if _, _, err := s.SetMFAPolicyIfRevision(ctx, mfa.ModeOptional, current.Revision, "admin-1", now+15); err != nil {
+		t.Fatal(err)
 	}
 	types := auditTypes(t, s, a.ID)
 	if !contains(types, "mfa.disabled") || !contains(types, "mfa.reset") {
@@ -896,5 +927,140 @@ func TestReplacePasswordUnderTransactionRefusesAStaleVersion(t *testing.T) {
 	tr, err := s.AuthTransactionByState(ctx, "st2", now+6)
 	if err != nil || tr.Stage != "complete" || tr.CredentialHash != "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3" {
 		t.Fatalf("transaction after replace: %+v %v", tr, err)
+	}
+}
+
+// Console writes re-check the acting administrator inside the transaction:
+// a revoked session, a demoted actor, a stale proof, or (for resets) a proof
+// without the authenticator all refuse the write.
+func TestActorProofIsCheckedInsideTheTransaction(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, now)
+	enrol(t, s, bob, "", now)
+	session(t, s, alice, "alice-pwd", now) // password-only, fresh
+	proof := &ActorProof{SessionHash: "alice-pwd", FreshAfter: now - 60}
+	// Fresh password-only proof is enough for a requirement change...
+	if _, err := s.SetAccountMFARequiredBy(ctx, bob.Email, true, alice.ID, proof, now+1); err != nil {
+		t.Fatalf("fresh proof refused: %v", err)
+	}
+	// ...but not for a reset, which needs the authenticator in the proof.
+	strict := &ActorProof{SessionHash: "alice-pwd", FreshAfter: now - 60, RequireFactor: true}
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", strict, now+2); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("password-only proof accepted for a reset: %v", err)
+	}
+	if b, _ := s.PasswordAccountByEmail(ctx, bob.Email); !b.MFAEnrolled {
+		t.Fatal("reset happened despite the refused proof")
+	}
+	// Too old.
+	old := &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30}
+	if _, _, err := s.SetMFAPolicyBy(ctx, mfa.ModeEveryone, -1, alice.ID, old, now+3); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("stale proof accepted: %v", err)
+	}
+	// A password-only re-verification does not make a factor proof; a
+	// step-up that proved the authenticator does (it upgrades the evidence).
+	if err := s.StampSessionReauth(ctx, "alice-pwd", now+40); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30, RequireFactor: true}, now+41); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("password-only re-verification accepted for a reset: %v", err)
+	}
+	// A factor-backed step-up needs an active authenticator of alice's own;
+	// then the proof is accepted and the session evidence upgraded.
+	if err := s.VerifyFactorAndStampReauth(ctx, "alice-pwd", "nope", 5, nil, "", now+40); !errors.Is(err, ErrInvalidProof) {
+		t.Fatalf("step-up without an authenticator: %v", err)
+	}
+	fa := enrol(t, s, alice, "alice-pwd", now+40)
+	if err := s.VerifyFactorAndStampReauth(ctx, "alice-pwd", fa.ID, fa.LastAcceptedStep+1, nil, "", now+42); err != nil {
+		t.Fatalf("step-up: %v", err)
+	}
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30, RequireFactor: true}, now+43); err != nil {
+		t.Fatalf("factor-backed re-verification refused: %v", err)
+	}
+	if _, sess, err := s.ValidateAuthSession(ctx, "alice-pwd", now+43, time.Hour, time.Minute); err != nil || !hasMethodIn(strings.Join(sess.AMR, " "), "otp") || sess.MFAVerifiedAt == nil {
+		t.Fatalf("step-up did not upgrade the session evidence: %+v %v", sess, err)
+	}
+	// Disable between "code verified" and "stamp": the atomic step-up
+	// refuses, the session keeps password-only evidence, and a reset proof
+	// is refused even though the session is fresh.
+	if err := s.DisableAuthenticator(ctx, alice.ID, "alice-pwd", now+44); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyFactorAndStampReauth(ctx, "alice-pwd", fa.ID, fa.LastAcceptedStep+2, nil, "", now+45); !errors.Is(err, ErrInvalidProof) {
+		t.Fatalf("step-up on a disabled factor: %v", err)
+	}
+	if _, sess, _ := s.ValidateAuthSession(ctx, "alice-pwd", now+45, time.Hour, time.Minute); hasMethodIn(strings.Join(sess.AMR, " "), "otp") {
+		t.Fatal("disabled factor left otp evidence on the session")
+	}
+	enrol(t, s, bob, "", now+46) // give bob a factor again to be reset
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30, RequireFactor: true}, now+47); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("reset with a fresh but factorless actor: %v", err)
+	}
+	// Revoked session: nothing.
+	if _, err := s.RevokeAuthSession(ctx, "alice-pwd", now+42, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SetMFAPolicyBy(ctx, mfa.ModeEveryone, -1, alice.ID, &ActorProof{SessionHash: "alice-pwd", FreshAfter: now}, now+43); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("revoked session accepted: %v", err)
+	}
+	// Same-mode save is a no-op: no revision bump, no sign-outs.
+	before, _ := s.MFAPolicy(ctx)
+	after, signedOut, err := s.SetMFAPolicy(ctx, before.Mode, alice.ID, now+44)
+	if err != nil || after.Revision != before.Revision || signedOut != 0 {
+		t.Fatalf("same-mode save: %+v %d %v", after, signedOut, err)
+	}
+	// Reason bounds.
+	for _, bad := range []string{"", "   ", strings.Repeat("x", 201), "line\nbreak"} {
+		if _, err := NormalizeReason(bad); !errors.Is(err, ErrInvalidReason) {
+			t.Fatalf("NormalizeReason(%q) accepted", bad)
+		}
+	}
+	if r, err := NormalizeReason("  lost phone  "); err != nil || r != "lost phone" {
+		t.Fatalf("NormalizeReason trims: %q %v", r, err)
+	}
+}
+
+// The Access popup's save is all or nothing: an unknown application, or a
+// refused demotion, leaves the flags and grants exactly as they were.
+func TestSaveAccountAccessIsAtomic(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, now)
+	if _, err := s.CreateApplication(ctx, "fleet", "Fleet", "https://fleet.example.com/cb", "", "h", now); err != nil {
+		t.Fatal(err)
+	}
+	session(t, s, bob, "bob-1", now)
+	yes := true
+	_, err := s.SaveAccountAccess(ctx, bob.Email, AccessSave{Applications: []string{"fleet", "ghost"}, Admin: &yes, MFARequired: &yes}, alice.ID, nil, now+1)
+	if !errors.Is(err, ErrApplicationNotFound) {
+		t.Fatalf("ghost app: %v", err)
+	}
+	b, _ := s.PasswordAccountByEmail(ctx, bob.Email)
+	apps, _ := s.ApplicationAccess(ctx, b.ID)
+	if b.IsAdmin || b.MFARequired || len(apps) != 0 || liveSessions(t, s, b.ID, now+2) != 1 {
+		t.Fatalf("partial write: admin=%v required=%v apps=%v sessions=%d", b.IsAdmin, b.MFARequired, apps, liveSessions(t, s, b.ID, now+2))
+	}
+	// Demoting the last administrator refuses the whole save too.
+	no := false
+	if _, err := s.SaveAccountAccess(ctx, alice.Email, AccessSave{Applications: []string{"fleet"}, Admin: &no}, alice.ID, nil, now+3); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("last admin: %v", err)
+	}
+	if apps, _ := s.ApplicationAccess(ctx, alice.ID); len(apps) != 0 {
+		t.Fatal("applications granted although the demotion was refused")
+	}
+	// A valid save applies everything and signs bob out (newly required).
+	out, err := s.SaveAccountAccess(ctx, bob.Email, AccessSave{Applications: []string{"fleet"}, Admin: &yes, MFARequired: &yes}, alice.ID, nil, now+4)
+	if err != nil || len(out.Added) != 1 || !out.AdminChanged || !out.MFAChanged || !out.SignedOut {
+		t.Fatalf("save: %+v %v", out, err)
+	}
+	b, _ = s.PasswordAccountByEmail(ctx, bob.Email)
+	if !b.IsAdmin || !b.MFARequired || liveSessions(t, s, b.ID, now+5) != 0 {
+		t.Fatalf("after save: admin=%v required=%v sessions=%d", b.IsAdmin, b.MFARequired, liveSessions(t, s, b.ID, now+5))
 	}
 }

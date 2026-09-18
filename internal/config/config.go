@@ -157,6 +157,7 @@ type Config struct {
 	PasswordBlockedTerms []string      // deployment words a password must not be built from (client name, products)
 	MFAKeyring           *mfa.Keyring  // nil when AUTH_MFA_KEY is unset: 2FA unavailable
 	MFAIssuer            string        // label shown in authenticator apps
+	MFAReauthWindow      time.Duration // how long a fresh password/factor check is honoured (default 5m)
 	AuditRetention       time.Duration // 0 = never sweep audit_events
 
 	AllowedDomains []string

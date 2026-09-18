@@ -239,6 +239,9 @@ case "$cmd" in
     # shellcheck disable=SC1090
     [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
     export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    # Sourcing does not export: pass the two-factor key through explicitly so
+    # auth-admin can tell whether requiring a factor is safe on this box.
+    export AUTH_MFA_KEY="${AUTH_MFA_KEY:-}"
     # Password policy context: `auth user create|set-password` refuse passwords
     # built from the brand, hostname, issuer, or the operator's blocked terms.
     export AUTH_BRAND_NAME AUTH_HOSTNAME AUTH_ISSUER_URL AUTH_PASSWORD_BLOCKED_TERMS
@@ -267,9 +270,14 @@ case "$cmd" in
     exec "$ADMIN_BIN" keygen "$@"
     ;;
   mfa)
-    # `auth mfa keygen` — print a fresh AUTH_MFA_KEY (encrypts authenticator
-    # secrets at rest). Doesn't touch config; paste the lines into .env.local
-    # and `auth restart`. No env/data needed.
+    # `auth mfa keygen` prints a fresh AUTH_MFA_KEY (encrypts authenticator
+    # secrets at rest; paste into .env.local and `auth restart`).
+    # `auth mfa policy [mode]` shows or sets who must use two-factor sign-in,
+    # so it needs the data directory like the user commands.
+    # shellcheck disable=SC1090
+    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
+    export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    export AUTH_MFA_KEY="${AUTH_MFA_KEY:-}"
     exec "$ADMIN_BIN" mfa "$@"
     ;;
   pubkey)
@@ -346,6 +354,8 @@ USERS
   auth user team <email> <team|->   set or clear the account's team tag
   auth user show <email>            show account state and active sessions
   auth user revoke-sessions <email> revoke all sessions for one account
+  auth user mfa-required <email> on|off  require two-factor sign-in for one account
+  auth user mfa-reset <email> --reason "<text>"  remove a lost authenticator (they enrol again)
   auth user list                    password accounts + magic-link audit
   auth user del <email>             remove a user from magic-link audit
 
@@ -363,6 +373,8 @@ CRYPTO
   auth pubkey                       print AUTH_SIGNING_PUBKEY for the current
                                     signing key (to hand to verifying services)
   auth mfa keygen                   print a fresh AUTH_MFA_KEY for 2FA secrets
+  auth mfa policy [mode]            show or set the two-factor policy
+                                    (optional | admins | everyone)
 
 UPDATES
   auth update                       git pull + rebuild + restart

@@ -31,6 +31,7 @@ import (
 	"net/mail"
 	"net/url"
 	"os"
+	"os/user"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -65,7 +66,7 @@ func main() {
 	case "keygen":
 		keygenCmd()
 	case "mfa":
-		mfaCmd(os.Args[2:])
+		mfaCmd(dataDir, os.Args[2:])
 	case "pubkey":
 		pubkeyCmd()
 	case "help", "-h", "--help":
@@ -93,6 +94,8 @@ USERS
   auth-admin user show <email>            show account state
   auth-admin user revoke-sessions <email> revoke every central session
   auth-admin user list                    show password accounts + legacy login audit
+  auth-admin user mfa-required <email> on|off  require (or stop requiring) two-factor sign-in for one account
+  auth-admin user mfa-reset <email> --reason "<text>"  remove a lost authenticator; they enrol again at next sign-in
   auth-admin user del <email>             remove a user from the audit log
 
 AUDIT
@@ -111,6 +114,7 @@ CRYPTO
   auth-admin keygen                       generate a fresh Ed25519 signing keypair
   auth-admin pubkey                       print AUTH_SIGNING_PUBKEY for the current AUTH_SIGNING_KEY
   auth-admin mfa keygen                   generate AUTH_MFA_KEY (encrypts authenticator secrets at rest)
+  auth-admin mfa policy [optional|admins|everyone]  show or set who must use two-factor sign-in
 
 Reads AUTH_DATA_DIR from the env (default /opt/auth/data).
 The 'auth' shell wrapper sources .env.local before calling us.`)
@@ -139,9 +143,17 @@ func keygenCmd() {
 // rest and lives only on the auth host, separate from the signing key.
 // Losing it makes every enrolled factor unverifiable (people fall back to
 // administrator resets), so it belongs in the same backup as .env.local.
-func mfaCmd(args []string) {
-	if len(args) < 1 || args[0] != "keygen" {
-		fmt.Fprintln(os.Stderr, "usage: auth-admin mfa keygen")
+func mfaCmd(dataDir string, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: auth-admin mfa keygen | auth-admin mfa policy [optional|admins|everyone]")
+		os.Exit(2)
+	}
+	if args[0] == "policy" {
+		mfaPolicyCmd(dataDir, args[1:])
+		return
+	}
+	if args[0] != "keygen" {
+		fmt.Fprintln(os.Stderr, "usage: auth-admin mfa keygen | auth-admin mfa policy [optional|admins|everyone]")
 		os.Exit(2)
 	}
 	key, err := mfa.NewKey()
@@ -260,7 +272,7 @@ func domainCmd(dataDir string, args []string) {
 
 func userCmd(dataDir string, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|set-password|disable|enable|admin|access|team|show|revoke-sessions|list|del> [email]")
+		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|set-password|disable|enable|admin|access|team|mfa-required|mfa-reset|show|revoke-sessions|list|del> [email]")
 		os.Exit(2)
 	}
 	st, ctx := openStore(dataDir)
@@ -336,14 +348,39 @@ func userCmd(dataDir string, args []string) {
 		if team == "" {
 			team = "(none)"
 		}
-		fmt.Printf("email: %s\nid: %s\nstatus: %s\nadmin: %t\nteam: %s\nmust change password: %t\nactive sessions: %d\napplications: %s\n",
-			a.Email, a.ID, status, a.IsAdmin, team, a.MustChangePassword, active, appList)
+		policy, err := st.MFAPolicy(ctx)
+		if err != nil {
+			fatalf("show policy: %v", err)
+		}
+		twoFactor := string(mfa.StatusFor(mfa.Required(policy.Mode, a.IsAdmin, a.MFARequired), a.MFAEnrolled))
+		if a.MFARequired {
+			twoFactor += " (required for this account)"
+		}
+		fmt.Printf("email: %s\nid: %s\nstatus: %s\nadmin: %t\nteam: %s\nmust change password: %t\ntwo-factor: %s\nactive sessions: %d\napplications: %s\n",
+			a.Email, a.ID, status, a.IsAdmin, team, a.MustChangePassword, twoFactor, active, appList)
 	case "admin":
 		if len(args) != 3 || (args[2] != "on" && args[2] != "off") {
 			fatalf("usage: auth-admin user admin <email> on|off")
 		}
 		email := validateAccountEmail(args[1])
 		grant := args[2] == "on"
+		if grant {
+			// Under "Required for administrators" promotion requires a factor
+			// of the new administrator; without a key nobody could enrol.
+			policy, err := st.MFAPolicy(ctx)
+			if err != nil {
+				fatalf("admin on: read two-factor policy: %v", err)
+			}
+			if policy.Mode == mfa.ModeAdmins {
+				a, err := st.PasswordAccountByEmail(ctx, email)
+				if err != nil {
+					fatalf("admin on: %v", err)
+				}
+				if !a.MFAEnrolled {
+					requireMFAKeyConfigured("promoting an account that must then enrol")
+				}
+			}
+		}
 		if err := st.SetAccountAdmin(ctx, email, grant, time.Now().Unix()); err != nil {
 			if errors.Is(err, store.ErrLastAdmin) {
 				fatalf("admin off: %s is the last enabled administrator; grant another account first", email)
@@ -407,6 +444,47 @@ func userCmd(dataDir string, args []string) {
 		default:
 			fmt.Printf("✓ no change for %s on %s\n", a.Email, appID)
 		}
+	case "mfa-required":
+		if len(args) != 3 || (args[2] != "on" && args[2] != "off") {
+			fatalf("usage: auth-admin user mfa-required <email> on|off")
+		}
+		email := validateAccountEmail(args[1])
+		if args[2] == "on" {
+			requireMFAKeyConfigured("requiring two-factor sign-in")
+		}
+		signedOut, err := st.SetAccountMFARequired(ctx, email, args[2] == "on", cliActor(), time.Now().Unix())
+		if err != nil {
+			fatalf("mfa-required: %v", err)
+		}
+		switch {
+		case args[2] == "off":
+			fmt.Printf("✓ two-factor sign-in is no longer required for %s (an enrolled authenticator stays)\n", email)
+		case signedOut > 0:
+			fmt.Printf("✓ two-factor sign-in required for %s; they were signed out and enrol at their next sign-in\n", email)
+		default:
+			fmt.Printf("✓ two-factor sign-in required for %s\n", email)
+		}
+	case "mfa-reset":
+		// The box operator's emergency path (a locked-out administrator, or
+		// nobody else enrolled to reset from the console): removes the
+		// authenticator, recovery codes and incomplete logins, signs the
+		// account out everywhere, and leaves it required to enrol again.
+		// A reason is mandatory and lands in the audit log.
+		if len(args) != 4 || args[2] != "--reason" || strings.TrimSpace(args[3]) == "" {
+			fatalf("usage: auth-admin user mfa-reset <email> --reason \"<how you verified it was them>\"")
+		}
+		email := validateAccountEmail(args[1])
+		a, err := st.PasswordAccountByEmail(ctx, email)
+		if err != nil {
+			fatalf("mfa-reset: %v", err)
+		}
+		if err := st.ResetMFA(ctx, a.ID, cliActor(), args[3], time.Now().Unix()); err != nil {
+			if errors.Is(err, store.ErrNoAuthenticator) {
+				fatalf("mfa-reset: %s has no authenticator; use `user mfa-required %s on` if they should set one up", a.Email, a.Email)
+			}
+			fatalf("mfa-reset: %v", err)
+		}
+		fmt.Printf("✓ removed the authenticator for %s and signed them out everywhere; they set up a new one at their next sign-in\n", a.Email)
 	case "revoke-sessions":
 		requireUserEmailArg(args, "revoke-sessions")
 		a, err := st.PasswordAccountByEmail(ctx, args[1])
@@ -424,9 +502,13 @@ func userCmd(dataDir string, args []string) {
 			fatalf("list password accounts: %v", err)
 		}
 		if len(accounts) > 0 {
-			fmt.Println("PASSWORD ACCOUNTS")
+			policy, err := st.MFAPolicy(ctx)
+			if err != nil {
+				fatalf("list policy: %v", err)
+			}
+			fmt.Printf("PASSWORD ACCOUNTS (two-factor policy: %s)\n", policy.Mode.Label())
 			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			_, _ = fmt.Fprintln(tw, "EMAIL\tSTATUS\tADMIN\tTEAM\tMUST CHANGE\tCREATED")
+			_, _ = fmt.Fprintln(tw, "EMAIL\tSTATUS\tADMIN\tTEAM\tMUST CHANGE\tTWO-FACTOR\tCREATED")
 			for _, a := range accounts {
 				status := "enabled"
 				if a.DisabledAt != nil {
@@ -436,7 +518,8 @@ func userCmd(dataDir string, args []string) {
 				if team == "" {
 					team = "-"
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%t\t%s\t%t\t%s\n", a.Email, status, a.IsAdmin, team, a.MustChangePassword, a.CreatedAt.Format("2006-01-02"))
+				twoFactor := string(mfa.StatusFor(mfa.Required(policy.Mode, a.IsAdmin, a.MFARequired), a.MFAEnrolled))
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%t\t%s\t%t\t%s\t%s\n", a.Email, status, a.IsAdmin, team, a.MustChangePassword, twoFactor, a.CreatedAt.Format("2006-01-02"))
 			}
 			_ = tw.Flush()
 		}
@@ -837,5 +920,62 @@ func humanTime(t time.Time) string {
 		return fmt.Sprintf("%dh ago", int(d.Hours()))
 	default:
 		return t.Format("2006-01-02 15:04")
+	}
+}
+
+// mfaPolicyCmd shows or sets the deployment-wide two-factor policy. Setting
+// a stricter mode signs out every enabled account it newly requires a factor
+// from; the count is printed first so the operator sees the effect.
+func mfaPolicyCmd(dataDir string, args []string) {
+	st, ctx := openStore(dataDir)
+	defer func() { _ = st.Close() }()
+	current, err := st.MFAPolicy(ctx)
+	if err != nil {
+		fatalf("mfa policy: %v", err)
+	}
+	if len(args) == 0 {
+		fmt.Printf("two-factor policy: %s (%s)\n", current.Mode, current.Mode.Label())
+		for _, mode := range []mfa.Mode{mfa.ModeOptional, mfa.ModeAdmins, mfa.ModeEveryone} {
+			n, err := st.CountNewlyRequiredWithoutFactor(ctx, mode)
+			if err != nil {
+				fatalf("mfa policy: %v", err)
+			}
+			fmt.Printf("  %-9s %-28s %d account(s) would have to enrol\n", mode, mode.Label(), n)
+		}
+		return
+	}
+	mode, err := mfa.ParseMode(args[0])
+	if err != nil {
+		fatalf("usage: auth-admin mfa policy [optional|admins|everyone]")
+	}
+	if mode != mfa.ModeOptional {
+		requireMFAKeyConfigured("a policy that requires two-factor sign-in")
+	}
+	policy, signedOut, err := st.SetMFAPolicy(ctx, mode, cliActor(), time.Now().Unix())
+	if err != nil {
+		fatalf("mfa policy: %v", err)
+	}
+	fmt.Printf("✓ two-factor policy is now %s (%s); %d account(s) without an authenticator signed out, they enrol at their next sign-in\n", policy.Mode, policy.Mode.Label(), signedOut)
+}
+
+// cliActor names the operator in audit metadata: the sudo caller when the
+// wrapper ran under sudo, else the process user. Never an account id, so the
+// console can tell a box-side emergency action from its own.
+func cliActor() string {
+	if u := os.Getenv("SUDO_USER"); u != "" {
+		return "cli:" + u
+	}
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return "cli:" + u.Username
+	}
+	return "cli"
+}
+
+// requireMFAKeyConfigured refuses a change that would lock people out on a
+// server that cannot store authenticator secrets. The `auth` wrapper sources
+// .env.local, so AUTH_MFA_KEY is in the environment when configured.
+func requireMFAKeyConfigured(what string) {
+	if strings.TrimSpace(os.Getenv("AUTH_MFA_KEY")) == "" {
+		fatalf("%s needs AUTH_MFA_KEY in .env.local first (generate one with `auth mfa keygen`, then `auth restart`); otherwise the affected accounts could not enrol and would be locked out", what)
 	}
 }

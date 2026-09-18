@@ -9,9 +9,11 @@ import (
 	"net/mail"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/elcanotek/auth/internal/mfa"
 	passwordauth "github.com/elcanotek/auth/internal/password"
 	"github.com/elcanotek/auth/internal/store"
 )
@@ -50,6 +52,21 @@ type adminAccountRow struct {
 	Self        bool
 	CanDisable  bool // not self and not the last enabled admin
 	CanDemote   bool
+	// Second factor: the console shows the status the issue names and lets
+	// an administrator require it per account or reset a lost one.
+	MFAStatus      string // Enabled | Enrollment required | Not enrolled
+	MFAClass       string // ok | warn | off
+	MFAEnrolled    bool
+	MFARequired    bool // the per-user flag
+	MFAPolicyBound bool // the deployment policy already requires it (pill locked)
+}
+
+// adminMFAOption is one deployment-policy choice with what it would do.
+type adminMFAOption struct {
+	Mode    string
+	Label   string
+	Current bool
+	ToEnrol int64 // enabled accounts that would have to enrol
 }
 
 type adminSignInRow struct {
@@ -96,6 +113,9 @@ type adminResult struct {
 	Status   int
 	Reopen   string
 	Redirect string // send the browser here instead of rendering (own sign-out)
+	// NeedVerify: the action is sensitive and the administrator's sign-in is
+	// older than the re-verification window; the page offers the step-up.
+	NeedVerify bool
 }
 
 // failed logs an unexpected error and marks the result as a 500.
@@ -109,6 +129,15 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	if !s.passwordMode() {
 		http.NotFound(w, r)
 		return
+	}
+	// The request body is read before the session is judged, so a slow
+	// upload cannot pass the gate and land after the session was revoked.
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
 	}
 	// The console needs a fully assured session: forced change done, and the
 	// factor proven when the account has or must have one.
@@ -131,18 +160,13 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		result.Tab = r.URL.Query().Get("tab")
 	case http.MethodPost:
-		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
-		}
 		if !s.validCSRF(r) {
 			// Stale console page (left open across a re-login): nothing
 			// runs; the page re-renders with the live token and says so.
 			result = adminResult{Error: staleFormMessage, Tab: r.FormValue("tab")}
 			break
 		}
-		result = s.adminAction(r, identity.Account)
+		result = s.adminAction(r, identity)
 		if result.Redirect != "" {
 			s.clearPasswordCookies(w)
 			http.Redirect(w, r, result.Redirect, http.StatusSeeOther)
@@ -161,20 +185,36 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	s.renderAdmin(w, r, identity.Account, csrf, result)
+	s.renderAdmin(w, r, identity, csrf, result)
 }
 
 // adminAction performs one console action and reports the outcome for the
 // page. Expected conflicts (unknown email, duplicate account, last admin,
 // self-target) are inline messages the administrator can act on; unexpected
 // failures are a 500 and requests the UI never sends are a 400, via Status.
-func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
+func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminResult {
+	actor := identity.Account
 	ctx := r.Context()
 	now := time.Now()
 	action := r.FormValue("action")
 	tab := r.FormValue("tab")
 	res := adminResult{Tab: tab}
 	ipHash := s.rateKey("ip", clientIP(r))
+	// Second-factor changes are sensitive: they need a sign-in or step-up
+	// less than the re-verification window old (for an enrolled
+	// administrator the step-up includes their own code).
+	// For an enrolled administrator the fresh proof must include their
+	// authenticator: a recent sign-in that used a recovery code, or a
+	// pre-enrolment session, does not count; the step-up page does.
+	fresh := recentlyVerified(identity.Session, now, s.reauthWindow()) && (!actor.MFAEnrolled || hasMethod(identity.Session.AMR, "otp"))
+	// The same facts, re-checked inside the store transaction that writes.
+	proof := &store.ActorProof{SessionHash: identity.Session.TokenHash, FreshAfter: now.Add(-s.reauthWindow()).Unix(), RequireFactor: actor.MFAEnrolled}
+	needVerify := func() adminResult {
+		res.Tab = adminAccountsTab
+		res.NeedVerify = true
+		res.Error = "Confirm it is you before changing two-factor settings."
+		return res
+	}
 	// Attribution is written after the mutation commits, on a context that
 	// survives the client hanging up, so a disconnect right after a
 	// successful change does not lose who made it.
@@ -209,6 +249,58 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 		} else {
 			audit("admin.application_enabled", "", app.ID)
 			res.Notice = fmt.Sprintf("%s is enabled.", app.Name)
+		}
+		return res
+	}
+
+	if action == "set-policy" {
+		res.Tab = adminAccountsTab
+		mode, err := mfa.ParseMode(r.FormValue("mode"))
+		if err != nil {
+			res.Status = http.StatusBadRequest
+			return res
+		}
+		if !s.mfaAvailable() {
+			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset)."
+			return res
+		}
+		if !fresh {
+			return needVerify()
+		}
+		revision, err := strconv.ParseInt(r.FormValue("revision"), 10, 64)
+		if err != nil || revision < 0 {
+			// The form always carries the revision it was rendered from; a
+			// missing one is not a request the console sends.
+			res.Status = http.StatusBadRequest
+			return res
+		}
+		policy, signedOut, err := s.store.SetMFAPolicyBy(ctx, mode, revision, actor.ID, proof, now.Unix())
+		if errors.Is(err, store.ErrActorNotFresh) {
+			return needVerify()
+		}
+		if errors.Is(err, store.ErrStalePolicy) {
+			res.Error = "The two-factor policy was changed by someone else meanwhile. Review it and try again."
+			return res
+		}
+		if err != nil {
+			return res.failed("set mfa policy", err)
+		}
+		audit("admin.mfa_policy_changed", "", "")
+		// The acting administrator may have just required a factor of
+		// themself without having one: their session is gone, so say so and
+		// send them to sign in (and enrol) rather than render a page that
+		// bounces on the next click.
+		if mfa.Required(policy.Mode, actor.IsAdmin, actor.MFARequired) && !actor.MFAEnrolled {
+			res.Redirect = "/?notice=mfa_required"
+			return res
+		}
+		switch signedOut {
+		case 0:
+			res.Notice = fmt.Sprintf("Two-factor policy is now %s.", strings.ToLower(policy.Mode.Label()))
+		case 1:
+			res.Notice = fmt.Sprintf("Two-factor policy is now %s. One account without an authenticator was signed out and will enrol at its next sign-in.", strings.ToLower(policy.Mode.Label()))
+		default:
+			res.Notice = fmt.Sprintf("Two-factor policy is now %s. %d accounts without an authenticator were signed out and will enrol at their next sign-in.", strings.ToLower(policy.Mode.Label()), signedOut)
 		}
 		return res
 	}
@@ -381,6 +473,48 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			audit("admin.admin_revoked", target.ID, "")
 			res.Notice = fmt.Sprintf("%s is no longer an administrator.", target.Email)
 		}
+	case "reset-mfa":
+		// A lost authenticator. The issue's rules: not for one's own row
+		// (Security replaces it), the acting administrator proves their own
+		// factor freshly, a reason is recorded, and the account lands in
+		// "enrollment required" rather than back at password-only.
+		if self {
+			res.Error = "Replace your own authenticator from Security."
+			return res
+		}
+		if !s.mfaAvailable() {
+			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset)."
+			return res
+		}
+		if !actor.MFAEnrolled {
+			res.Error = "Set up your own authenticator (Security) before resetting someone else's."
+			return res
+		}
+		if !fresh {
+			return needVerify()
+		}
+		reason, err := store.NormalizeReason(r.FormValue("reason"))
+		if err != nil {
+			res.Error = "Give a short reason for the reset (how you verified it was them), up to 200 characters."
+			return res
+		}
+		resetProof := *proof
+		resetProof.RequireFactor = true
+		err = s.store.ResetMFABy(ctx, target.ID, actor.ID, reason, &resetProof, now.Unix())
+		if errors.Is(err, store.ErrActorNotFresh) {
+			return needVerify()
+		}
+		if errors.Is(err, store.ErrNoAuthenticator) {
+			res.Error = fmt.Sprintf("%s has no authenticator to reset. Use Require 2FA in Access if they should set one up.", target.Email)
+			return res
+		}
+		if err != nil {
+			return res.failed("reset mfa", err)
+		}
+		audit("admin.mfa_reset", target.ID, "")
+		s.notify(target.Email, "Two-factor sign-in was reset on your account",
+			"An administrator reset the authenticator on your "+s.cfg.BrandName+" account. You were signed out everywhere and will set up a new authenticator at your next sign-in. If you did not expect this, contact your administrator.")
+		res.Notice = fmt.Sprintf("Reset two-factor for %s and signed them out everywhere. They set up a new authenticator at their next sign-in.", target.Email)
 	case "set-team":
 		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
@@ -397,61 +531,104 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 			res.Notice = fmt.Sprintf("%s is tagged %s.", target.Email, team)
 		}
 	case "set-access":
-		// The admin console is one more thing an account may be granted, so it
-		// sits in the Access popup with the applications. The checkbox is
-		// absent from the form when unticked; the self and last-admin rules
-		// still apply and are reported without touching the applications.
+		// The Access popup saves three things (applications, the Admin flag,
+		// the per-account two-factor requirement) in one store transaction:
+		// a refusal of any part changes nothing. Console-level rules that the
+		// store does not know (self-demotion, a server without an MFA key,
+		// freshness) are checked first, so no write is even attempted.
 		wantAdmin := r.FormValue("admin") == "on"
-		if wantAdmin != target.IsAdmin {
-			if self && !wantAdmin {
-				res.Error = "You cannot remove your own administrator access."
-				return res
-			}
-			err := s.store.SetAccountAdmin(ctx, target.Email, wantAdmin, now.Unix())
-			if errors.Is(err, store.ErrLastAdmin) {
-				res.Error = "That is the last enabled administrator. Make someone else an admin first."
-				return res
-			}
-			if err != nil {
-				return res.failed("set-access admin", err)
-			}
-			if wantAdmin {
-				audit("admin.admin_granted", target.ID, "")
-			} else {
-				audit("admin.admin_revoked", target.ID, "")
-			}
-		}
-		added, removed, err := s.store.SetApplicationAccess(ctx, target.ID, r.Form["apps"], now.Unix())
-		if errors.Is(err, store.ErrApplicationNotFound) {
-			res.Error = "One of those applications is not registered."
+		wantMFA := r.FormValue("mfa_required") == "on"
+		adminChange := wantAdmin != target.IsAdmin
+		mfaChange := wantMFA != target.MFARequired
+		policy := s.mfaPolicy(r)
+		promotionNeedsFactor := adminChange && wantAdmin && !target.MFAEnrolled && policy.Mode == mfa.ModeAdmins
+		if adminChange && self && !wantAdmin {
+			res.Error = "You cannot remove your own administrator access."
 			return res
 		}
-		if err != nil {
-			return res.failed("set access", err)
+		if ((mfaChange && wantMFA) || promotionNeedsFactor) && !s.mfaAvailable() {
+			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset), so nothing can be required of anyone yet."
+			return res
 		}
-		for _, id := range added {
+		if mfaChange && !fresh {
+			return needVerify()
+		}
+		// An empty selection is a real instruction ("no applications"), not
+		// "leave as is": the popup always posts the full set.
+		apps := r.Form["apps"]
+		if apps == nil {
+			apps = []string{}
+		}
+		save := store.AccessSave{Applications: apps}
+		if adminChange {
+			save.Admin = &wantAdmin
+		}
+		if mfaChange {
+			save.MFARequired = &wantMFA
+		}
+		var saveProof *store.ActorProof
+		if mfaChange {
+			saveProof = proof
+		}
+		outcome, err := s.store.SaveAccountAccess(ctx, target.Email, save, actor.ID, saveProof, now.Unix())
+		switch {
+		case errors.Is(err, store.ErrApplicationNotFound):
+			res.Error = "One of those applications is not registered."
+			return res
+		case errors.Is(err, store.ErrLastAdmin):
+			res.Error = "That is the last enabled administrator. Make someone else an admin first."
+			return res
+		case errors.Is(err, store.ErrActorNotFresh):
+			return needVerify()
+		case err != nil:
+			return res.failed("save access", err)
+		}
+		for _, id := range outcome.Added {
 			audit("admin.access_granted", target.ID, id)
 		}
-		for _, id := range removed {
+		for _, id := range outcome.Removed {
 			audit("admin.access_revoked", target.ID, id)
 		}
-		adminNote := ""
-		if wantAdmin != target.IsAdmin {
+		adminNote, mfaNote := "", ""
+		if outcome.AdminChanged {
 			if wantAdmin {
+				audit("admin.admin_granted", target.ID, "")
 				adminNote = " Admin console granted."
 			} else {
+				audit("admin.admin_revoked", target.ID, "")
 				adminNote = " Admin console removed."
 			}
+			if promotionNeedsFactor {
+				mfaNote = " Administrators must use two-factor sign-in here, so they were signed out and set up an authenticator at their next sign-in."
+			}
 		}
+		if outcome.MFAChanged {
+			if wantMFA {
+				audit("admin.mfa_required_set", target.ID, "")
+				mfaNote = " Two-factor sign-in is now required for them."
+				if !target.MFAEnrolled {
+					mfaNote += " They were signed out and will enrol at their next sign-in."
+				}
+			} else {
+				audit("admin.mfa_required_cleared", target.ID, "")
+				mfaNote = " Two-factor sign-in is no longer required for them."
+			}
+			if self && wantMFA && !actor.MFAEnrolled {
+				// Requiring it of oneself without a factor ended this session.
+				res.Redirect = "/?notice=mfa_required"
+				return res
+			}
+		}
+		added, removed := outcome.Added, outcome.Removed
 		switch {
 		case len(added) == 0 && len(removed) == 0:
-			res.Notice = fmt.Sprintf("No change to %s's applications.%s", target.Email, adminNote)
+			res.Notice = fmt.Sprintf("No change to %s's applications.%s%s", target.Email, adminNote, mfaNote)
 		case len(removed) == 0:
-			res.Notice = fmt.Sprintf("%s can now sign in to %s.%s", target.Email, strings.Join(added, ", "), adminNote)
+			res.Notice = fmt.Sprintf("%s can now sign in to %s.%s%s", target.Email, strings.Join(added, ", "), adminNote, mfaNote)
 		case len(added) == 0:
-			res.Notice = fmt.Sprintf("%s was signed out of and can no longer sign in to %s.%s", target.Email, strings.Join(removed, ", "), adminNote)
+			res.Notice = fmt.Sprintf("%s was signed out of and can no longer sign in to %s.%s%s", target.Email, strings.Join(removed, ", "), adminNote, mfaNote)
 		default:
-			res.Notice = fmt.Sprintf("%s: added %s; removed %s (and signed out of it).%s", target.Email, strings.Join(added, ", "), strings.Join(removed, ", "), adminNote)
+			res.Notice = fmt.Sprintf("%s: added %s; removed %s (and signed out of it).%s%s", target.Email, strings.Join(added, ", "), strings.Join(removed, ", "), adminNote, mfaNote)
 		}
 	default:
 		res.Status = http.StatusBadRequest
@@ -462,9 +639,11 @@ func (s *Server) adminAction(r *http.Request, actor store.Account) adminResult {
 // renderAdmin builds the whole page for the chosen tab. Read failures fall
 // back to a visible error line with whatever did load, since the page is
 // where an administrator would go to fix things.
-func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, actor store.Account, csrf string, result adminResult) {
+func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *passwordIdentity, csrf string, result adminResult) {
+	actor := identity.Account
 	ctx := r.Context()
 	now := time.Now()
+	policy := s.mfaPolicy(r)
 	apps, err := s.store.ListApplications(ctx)
 	if err != nil {
 		logUnlessCancelled("admin list applications", err)
@@ -488,6 +667,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, actor store
 		"Brand": s.cfg.BrandName, "Email": actor.Email, "CSRF": csrf,
 		"Tabs": tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
 		"Secret": result.Secret, "SecretFor": result.ForEmail, "Reopen": result.Reopen,
+		"NeedVerify": result.NeedVerify, "MFAAvailable": s.mfaAvailable(),
+		"ActorEnrolled": actor.MFAEnrolled, "ActorFresh": recentlyVerified(identity.Session, now, s.reauthWindow()),
+		"MFAPolicy": policy.Mode.Label(), "MFARevision": policy.Revision,
 	}
 
 	if tab == adminAccountsTab {
@@ -529,6 +711,16 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, actor store
 			lastAdmin := a.IsAdmin && a.DisabledAt == nil && enabledAdmins == 1
 			row.CanDisable = !row.Self && !lastAdmin
 			row.CanDemote = !row.Self && !lastAdmin
+			row.MFAEnrolled, row.MFARequired = a.MFAEnrolled, a.MFARequired
+			row.MFAPolicyBound = mfa.Required(policy.Mode, a.IsAdmin, false)
+			switch mfa.StatusFor(mfa.Required(policy.Mode, a.IsAdmin, a.MFARequired), a.MFAEnrolled) {
+			case mfa.StatusEnabled:
+				row.MFAStatus, row.MFAClass = string(mfa.StatusEnabled), "ok"
+			case mfa.StatusEnrollmentRequired:
+				row.MFAStatus, row.MFAClass = string(mfa.StatusEnrollmentRequired), "warn"
+			default:
+				row.MFAStatus, row.MFAClass = string(mfa.StatusNotEnrolled), "off"
+			}
 			granted := accessSet(access[a.ID])
 			for _, app := range apps {
 				row.Apps = append(row.Apps, adminAppChoice{ID: app.ID, Name: app.Name, Granted: granted[app.ID]})
@@ -554,6 +746,20 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, actor store
 		data["Accounts"] = rows
 		data["AppChoices"] = choices
 		data["Teams"] = teams
+		// The policy popup shows, for each choice, how many enabled accounts
+		// would have to enrol (and be signed out now) if it were chosen.
+		var options []adminMFAOption
+		for _, mode := range []mfa.Mode{mfa.ModeOptional, mfa.ModeAdmins, mfa.ModeEveryone} {
+			n, err := s.store.CountNewlyRequiredWithoutFactor(ctx, mode)
+			if err != nil {
+				logUnlessCancelled("admin mfa counts", err)
+				// Never show "nobody is affected" for a count that failed:
+				// the popup says so and withholds Save.
+				data["MFACountError"] = true
+			}
+			options = append(options, adminMFAOption{Mode: string(mode), Label: mode.Label(), Current: mode == policy.Mode, ToEnrol: n})
+		}
+		data["MFAOptions"] = options
 	} else {
 		app := appByID[tab]
 		view := adminAppView{

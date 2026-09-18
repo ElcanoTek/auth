@@ -337,6 +337,9 @@ a.btn-ghost { text-decoration: none; }
 .seg-opt:hover { color: var(--color-text-primary); }
 .seg-opt input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 .seg-opt:has(input:checked) { background: var(--color-primary); color: var(--color-on-primary); }
+ul.plain { margin: 0 0 var(--space-4); padding-left: 1.1rem; font-size: var(--font-size-caption); color: var(--color-text-secondary); }
+ul.plain li { margin: 0.2rem 0; }
+.modal label[for^="reason-"] { display: block; margin: var(--space-2) 0; }
 .seg-opt:has(input:focus-visible) { box-shadow: inset 0 0 0 2px var(--color-accent); }
 .seg-opt.off { opacity: 0.55; }
 .seg-opt.locked { cursor: not-allowed; }
@@ -732,7 +735,8 @@ const adminHTML = `<!doctype html>
     <nav class="tabs" aria-label="Admin sections">
       {{range .Tabs}}<a class="tab{{if .Active}} active{{end}}" href="{{.URL}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}
     </nav>
-    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+    {{if .NeedVerify}}<div class="banner warn" role="alert"><strong>Confirm it is you.</strong> Two-factor changes need a sign-in less than five minutes old. <a href="/account/security/verify?return_to=%2Fadmin">Verify now</a> and then repeat the change.</div>
+    {{else if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     {{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
     {{if .Secret}}<div class="secret" role="status">
       <p class="muted">Temporary password for <strong>{{.SecretFor}}</strong>. It is shown once and not stored: copy it now.</p>
@@ -745,16 +749,19 @@ const adminHTML = `<!doctype html>
       <div class="section-head">
         <div>
           <h2 id="accounts-heading">Accounts</h2>
-          <p class="muted">Who can sign in, to which applications, and whether they can open this console.</p>
+          <p class="muted">Who can sign in, to which applications, and whether they can open this console. Two-factor policy: <strong>{{.MFAPolicy}}</strong>.</p>
         </div>
-        <button class="btn inline" type="button" popovertarget="add-user">Add user</button>
+        <div class="row-actions">
+          <button class="btn-ghost" type="button" popovertarget="mfa-policy">Two-factor policy</button>
+          <button class="btn inline" type="button" popovertarget="add-user">Add user</button>
+        </div>
       </div>
       {{if .Accounts}}<div class="table-wrap"><table class="list">
         <thead><tr><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th class="num">Sessions</th><th></th></tr></thead>
         <tbody>
         {{range $i, $row := .Accounts}}<tr>
           <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
-          <td><span class="badge {{$row.StatusClass}}">{{$row.Status}}</span></td>
+          <td><div class="chips"><span class="badge {{$row.StatusClass}}">{{$row.Status}}</span><span class="badge {{$row.MFAClass}}" title="Two-factor sign-in">2FA: {{$row.MFAStatus}}</span></div></td>
           <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
           <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
           <td class="num">{{$row.Sessions}}</td>
@@ -773,6 +780,13 @@ const adminHTML = `<!doctype html>
                   {{else}}<label class="seg-opt"><input type="checkbox" name="admin" value="on"{{if $row.IsAdmin}} checked{{end}}> Admin</label>{{end}}
                 </span>
                 <p class="hint">{{if $row.Self}}You cannot remove your own administrator access.{{else if and $row.IsAdmin (not $row.CanDemote)}}The last enabled administrator cannot be removed.{{else}}Full permissions: opens this console and manages every account.{{end}}</p>
+              </div>
+              <div class="seg-group"><span class="seg-label">Two-factor</span>
+                <span class="seg" role="group" aria-label="Two-factor requirement for {{$row.Email}}">
+                  {{if or $row.MFAPolicyBound (not $.MFAAvailable)}}<label class="seg-opt locked"><input type="checkbox"{{if or $row.MFAPolicyBound $row.MFARequired}} checked{{end}} disabled> Require 2FA</label><input type="hidden" name="mfa_required" value="{{if $row.MFARequired}}on{{else}}off{{end}}">
+                  {{else}}<label class="seg-opt"><input type="checkbox" name="mfa_required" value="on"{{if $row.MFARequired}} checked{{end}}> Require 2FA</label>{{end}}
+                </span>
+                <p class="hint">{{if not $.MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY).{{else if $row.MFAPolicyBound}}The deployment policy already requires it for this account.{{else if $row.MFAEnrolled}}Enrolled ({{$row.MFAStatus}}). Requiring it means they cannot turn it off.{{else}}Not enrolled. Requiring it signs them out now; they set up an authenticator at their next sign-in.{{end}}</p>
               </div>
               <div class="seg-group"><span class="seg-label">Applications</span>
                 {{if $row.Apps}}<span class="seg" role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}<label class="seg-opt"><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
@@ -801,6 +815,18 @@ const adminHTML = `<!doctype html>
                   <button class="btn" type="submit">Confirm reset</button>
                 </form>
               </details>
+            </div>
+            <div class="setting">
+              <div><strong>Reset two-factor</strong><p class="muted">{{if $row.MFAEnrolled}}Lost authenticator: removes it and the recovery codes, signs them out everywhere; they set up a new one at their next sign-in.{{else}}No authenticator is set up ({{$row.MFAStatus}}).{{end}}</p></div>
+              {{if $row.MFAEnrolled}}{{if $.ActorEnrolled}}<details class="confirm danger"><summary aria-label="Reset two-factor: {{$row.Email}}">Reset</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-mfa"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">Confirm you verified it is really {{$row.Email}} (for example by phone or in person) and say how.</p>
+                  <label for="reason-{{$i}}">Reason</label>
+                  <input id="reason-{{$i}}" name="reason" type="text" required maxlength="200" placeholder="e.g. lost phone, verified by call">
+                  <button class="btn" type="submit">Confirm reset</button>
+                </form>
+              </details>{{else}}<a class="btn-ghost" href="/account/security" title="Set up your own authenticator first">Set up yours first</a>{{end}}{{end}}
             </div>
             <div class="setting">
               <div><strong>Sign out everywhere</strong><p class="muted">Ends every session, in every application, on every device.</p></div>
@@ -876,6 +902,23 @@ const adminHTML = `<!doctype html>
         </div>
         <button class="btn" type="submit">Create account</button>
       </form>
+    </div>
+
+    <div id="mfa-policy" class="modal" popover aria-labelledby="mfa-policy-title">
+      <div class="modal-head"><h3 id="mfa-policy-title">Two-factor policy</h3><button class="icon-btn" type="button" popovertarget="mfa-policy" popovertargetaction="hide" aria-label="Close">&times;</button></div>
+      <p class="who">Who must sign in with an authenticator app. A person who sets one up voluntarily always has to use it. The strongest rule wins: a per-user requirement (Access) adds to this.</p>
+      {{if not .MFAAvailable}}<div class="err">Two-factor sign-in is not set up on this server: set AUTH_MFA_KEY (see <code>auth mfa keygen</code>) and restart.</div>{{else}}
+      <form method="post" action="/admin">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="set-policy"><input type="hidden" name="revision" value="{{.MFARevision}}">
+        <div class="seg-group"><span class="seg-label">Policy</span>
+          <span class="seg" role="radiogroup" aria-label="Two-factor policy">{{range .MFAOptions}}<label class="seg-opt"><input type="radio" name="mode" value="{{.Mode}}"{{if .Current}} checked{{end}}> {{.Label}}</label>{{end}}</span>
+          <p class="hint">{{range .MFAOptions}}{{if .Current}}Current: {{.Label}}.{{end}}{{end}}</p>
+        </div>
+        {{if .MFACountError}}<div class="err">The affected-account counts could not be loaded, so the policy cannot be changed from here right now. Reload and try again.</div>{{else}}
+        <ul class="plain">{{range .MFAOptions}}<li><strong>{{.Label}}</strong>: {{if eq .ToEnrol 0}}nobody new has to enrol.{{else if eq .ToEnrol 1}}1 account without an authenticator is signed out now and enrols at its next sign-in.{{else}}{{.ToEnrol}} accounts without an authenticator are signed out now and enrol at their next sign-in.{{end}}</li>{{end}}</ul>
+        <p class="hint">Relaxing the policy never removes anyone's authenticator. Changes take effect immediately{{if not .ActorFresh}} and need a sign-in less than five minutes old{{end}}.</p>
+        <button class="btn" type="submit">Save policy</button>{{end}}
+      </form>{{end}}
     </div>
     {{else}}{{with .App}}
     <section class="section" aria-labelledby="app-heading">
