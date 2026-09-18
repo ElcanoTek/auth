@@ -456,3 +456,96 @@ func TestMagicModeHasNoSecondFactorRoutes(t *testing.T) {
 	}
 	_ = otpauthSecretRe
 }
+
+func TestEnrolmentAttemptCapCancelCSRFAndLogoutClearTheTransaction(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	if _, _, err := st.SetMFAPolicy(context.Background(), mfa.ModeAdmins, "test", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	alice := newBrowser(t, ts)
+	alice.login("alice@example.com", plain)
+	alice.get("/login/enroll")
+	for i := 1; i <= 4; i++ {
+		if resp, page := alice.post("/login/enroll", url.Values{"code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not match") {
+			t.Fatalf("enrol attempt %d: %d", i, resp.StatusCode)
+		}
+	}
+	if resp, _ := alice.post("/login/enroll", url.Values{"code": {"000000"}}); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?err=mfa_locked" || alice.has("auth_login") {
+		t.Fatalf("fifth enrol failure: %d %q tx=%v", resp.StatusCode, resp.Header.Get("Location"), alice.has("auth_login"))
+	}
+	// Cancel without a valid CSRF token changes nothing.
+	alice.login("alice@example.com", plain)
+	if resp, _ := alice.post("/login/cancel", url.Values{"csrf_token": {"forged"}}); resp.StatusCode != http.StatusSeeOther || !alice.has("auth_login") {
+		t.Fatalf("forged cancel: %d tx=%v", resp.StatusCode, alice.has("auth_login"))
+	}
+	if resp, _ := alice.get("/login/enroll"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("transaction gone after a forged cancel: %d", resp.StatusCode)
+	}
+	// A sign-out (GET /logout?client_id) clears the incomplete login too.
+	if resp, _ := alice.get("/logout?client_id=fleet"); resp.StatusCode != http.StatusSeeOther || alice.has("auth_login") {
+		t.Fatalf("logout: %d tx=%v", resp.StatusCode, alice.has("auth_login"))
+	}
+	_ = cfg
+}
+
+func TestStepUpCodeGuessesAreRateLimited(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	_, seeded := enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	alice := newBrowser(t, ts)
+	alice.login("alice@example.com", plain)
+	alice.post("/login/verify", url.Values{"recovery_code": {seeded[0]}})
+	// PasswordRatePerEmail is 10 in the fixture: the eleventh guess with a
+	// valid password is refused before any code is checked.
+	for i := 1; i <= 10; i++ {
+		if resp, page := alice.post("/account/security/verify", url.Values{"action": {"regenerate"}, "password": {plain}, "code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not work") {
+			t.Fatalf("guess %d: %d\n%s", i, resp.StatusCode, page)
+		}
+	}
+	if resp, page := alice.post("/account/security/verify", url.Values{"action": {"regenerate"}, "password": {plain}, "code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Too many attempts") {
+		t.Fatalf("eleventh guess: %d\n%s", resp.StatusCode, page)
+	}
+}
+
+func TestForcedChangeSessionForAnEnrolledAccountStartsOver(t *testing.T) {
+	// A session with the forced-change flag that predates the factor (or the
+	// requirement) cannot carry the change: it is discarded so the login
+	// runs through the transaction where the factor comes first.
+	ts, st, cfg, plain := newPasswordTestServer(t, true)
+	alice := newBrowser(t, ts)
+	if resp, _ := alice.login("alice@example.com", plain); resp.Header.Get("Location") != "/change-password" || !alice.has(cfg.PasswordCookieName) {
+		t.Fatalf("pre-factor forced-change login: %q", resp.Header.Get("Location"))
+	}
+	if _, err := st.SetAccountMFARequired(context.Background(), "alice@example.com", true, "admin", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	// Requiring a factor revoked that session already; a stale cookie must
+	// not reach the form.
+	resp, _ := alice.get("/change-password")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
+		t.Fatalf("stale forced-change session: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	// The revoked cookie may linger in the jar; what matters is that the
+	// login opened a transaction and no live session exists.
+	resp, _ = alice.login("alice@example.com", plain)
+	if resp.Header.Get("Location") != "/change-password" || !alice.has("auth_login") {
+		t.Fatalf("required + must-change login: %q tx=%v", resp.Header.Get("Location"), alice.has("auth_login"))
+	}
+	if resp, _ := alice.get("/account"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("a session exists before the factor steps: %d", resp.StatusCode)
+	}
+	resp, _ = alice.post("/change-password", url.Values{"current_password": {plain}, "new_password": {"a brand new passphrase"}, "confirm_password": {"a brand new passphrase"}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login/enroll" {
+		t.Fatalf("after forced change: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp, _ := alice.get("/account"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("a session exists before enrolment: %d", resp.StatusCode)
+	}
+	_, page := alice.get("/login/enroll")
+	secret := extractSecret(t, page)
+	if resp, _ := alice.post("/login/enroll", url.Values{"code": {codeFor(t, secret, time.Now())}}); resp.StatusCode != http.StatusOK || !alice.has(cfg.PasswordCookieName) {
+		t.Fatalf("enrol after forced change: %d session=%v", resp.StatusCode, alice.has(cfg.PasswordCookieName))
+	}
+	if _, me := alice.get("/me"); !strings.Contains(me, `"amr":["pwd","otp"]`) {
+		t.Fatalf("/me: %s", me)
+	}
+}

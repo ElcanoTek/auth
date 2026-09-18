@@ -110,13 +110,10 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	identity := s.currentPasswordSession(r)
+	// The console needs a fully assured session: forced change done, and the
+	// factor proven when the account has or must have one.
+	identity := s.assuredIdentity(w, r, false)
 	if identity == nil {
-		http.Redirect(w, r, "/?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
-		return
-	}
-	if identity.Account.MustChangePassword {
-		http.Redirect(w, r, "/change-password", http.StatusSeeOther)
 		return
 	}
 	if !identity.Account.IsAdmin {

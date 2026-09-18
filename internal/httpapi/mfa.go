@@ -615,7 +615,8 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 		s.restartLogin(w, r, tr, "")
 		return
 	}
-	if _, err := s.store.RecordTransactionAttempt(r.Context(), tr.ID); err != nil {
+	left, err := s.store.RecordTransactionAttempt(r.Context(), tr.ID)
+	if err != nil {
 		if errors.Is(err, store.ErrTooManyAttempts) {
 			s.restartLogin(w, r, tr, errMFALocked)
 			return
@@ -623,11 +624,28 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "something went wrong", http.StatusInternalServerError)
 		return
 	}
+	ids, ipKey, limited, err := s.mfaAttempt(r, account.ID, now)
+	if err != nil {
+		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		return
+	}
+	if limited {
+		_, _ = s.store.RecordAuditIfAbsent(r.Context(), "login.mfa_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
+		render("Too many attempts. Wait a few minutes and try again.")
+		return
+	}
 	pending, step, verified := s.confirmEnrolment(r, account, r.FormValue("code"), now)
 	if !verified {
+		_ = s.store.RecordAudit(r.Context(), "login.mfa_failed", account.ID, ipKey, now.Unix())
+		if left <= 0 {
+			_ = s.store.AbandonAuthTransaction(r.Context(), tr.ID)
+			s.restartLogin(w, r, store.AuthTransaction{}, errMFALocked)
+			return
+		}
 		render("That code did not match. Scan the QR code again if you need to, then enter the current code.")
 		return
 	}
+	_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
 	codes, hashes, setID, err := newRecoverySet()
 	if err != nil {
 		http.Error(w, "something went wrong", http.StatusInternalServerError)
@@ -664,6 +682,11 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLoginCancel(w http.ResponseWriter, r *http.Request) {
 	if !s.passwordMode() || r.Method != http.MethodPost {
 		http.NotFound(w, r)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	if err := r.ParseForm(); err != nil || !s.validCSRF(r) {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 	tr, _, _ := s.currentLoginTransaction(r)
@@ -954,6 +977,18 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if account.MFAEnrolled {
+		// The same persistent limits as a login: a valid password must not
+		// buy unlimited code guesses.
+		ids, _, limited, err := s.mfaAttempt(r, account.ID, now)
+		if err != nil {
+			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			return
+		}
+		if limited {
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "reauth.mfa_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
+			render("Too many attempts. Wait a few minutes and try again.")
+			return
+		}
 		proof, ok := s.factorProof(r, account, r.FormValue("code"), "", now)
 		if !ok || proof.Kind != store.ProofTOTP {
 			_ = s.store.RecordAudit(r.Context(), "reauth.mfa_failed", account.ID, ipKey, now.Unix())
@@ -965,6 +1000,7 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 			render("That code was already used. Wait for the next one.")
 			return
 		}
+		_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
 	}
 	if err := s.store.StampSessionReauth(r.Context(), identity.Session.TokenHash, now.Unix()); err != nil {
 		s.clearPasswordCookies(w)

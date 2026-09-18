@@ -79,7 +79,9 @@ func (s *Store) migrateMFA(ctx context.Context) error {
 		return fmt.Errorf("claim mfa schema version: %w", err)
 	}
 	if n, _ := claim.RowsAffected(); n == 0 {
-		return nil
+		// v6 already applied; later versions still run their own claims.
+		_ = tx.Rollback()
+		return s.migrateMFAv7(ctx)
 	}
 	for _, c := range mfaColumns {
 		if hasColumnQ(ctx, tx, c.table, c.column) {
@@ -1368,6 +1370,26 @@ func (s *Store) ReplacePasswordUnderTransaction(ctx context.Context, transaction
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// The transaction must still describe the account as it is: same
+	// credential and same security version (a factor replaced or reset
+	// since the password step voids it), live, at the expected stage.
+	var txVersion, version int64
+	var txCredential string
+	var disabled sql.NullInt64
+	err = tx.QueryRowContext(ctx, `
+		SELECT t.security_version, t.credential_hash, a.security_version, a.disabled_at
+		FROM authentication_transactions t JOIN accounts a ON a.id = t.user_id
+		WHERE t.id = ? AND t.user_id = ? AND t.stage = ? AND t.consumed_at IS NULL AND t.expires_at > ?`,
+		transactionID, userID, fromStage, now).Scan(&txVersion, &txCredential, &version, &disabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrTransactionNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if disabled.Valid || txVersion != version || txCredential != expectedHash {
+		return ErrStaleTransaction
+	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE password_credentials SET password_hash = ?, changed_at = ?
 		WHERE user_id = ? AND password_hash = ?

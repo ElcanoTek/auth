@@ -539,6 +539,7 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.clearLoginTxCookie(w)
 	if err := s.issuePasswordSession(w, r, account, now); err != nil {
 		// Includes the credential having been replaced between verify and
 		// issue: the password was right a moment ago, but no session exists,
@@ -695,9 +696,14 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account", http.StatusSeeOther)
 		return
 	}
-	// An administrator whose session never proved their factor is not
-	// signed in enough to change anything.
-	if !identity.Account.MustChangePassword && store.Assess(identity.Account, identity.Session, s.mfaPolicy(r).Mode) != store.AssuranceOK {
+	// A session may only carry a password change when it is otherwise
+	// assured. Two cases fail that: an administrator whose session never
+	// proved their factor, and a forced-change session for an account that
+	// now has, or must get, a factor (such a login belongs in the
+	// transaction flow, where the factor comes first). Both start over.
+	policy := s.mfaPolicy(r)
+	if identity.Account.MustChangePassword && factorNeeded(identity.Account, policy.Mode) ||
+		!identity.Account.MustChangePassword && store.Assess(identity.Account, identity.Session, policy.Mode) != store.AssuranceOK {
 		s.clearPasswordCookies(w)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
@@ -1420,6 +1426,10 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 			_ = s.store.RecordAudit(r.Context(), "session.logged_out", userID, s.rateKey("ip", clientIP(r)), now.Unix())
 		}
 	}
+	// An incomplete login in this browser ends with the sign-out as well.
+	if tr, _, ok := s.currentLoginTransaction(r); ok {
+		_ = s.store.AbandonAuthTransaction(r.Context(), tr.ID)
+	}
 	s.clearPasswordCookies(w)
 	if redirectTo == "" {
 		// API-style callers omit redirect_to and get the bare 204.
@@ -1650,9 +1660,12 @@ func (s *Server) validCSRF(r *http.Request) bool {
 }
 
 func (s *Server) clearPasswordCookies(w http.ResponseWriter) {
+	// The incomplete-login cookie goes too: a sign-out (or a sign-in that
+	// starts over) leaves no half-finished login behind in the browser.
 	for _, cookie := range []http.Cookie{
 		{Name: s.cfg.PasswordCookieName, HttpOnly: true},
 		{Name: s.effectiveCSRFCookieName(), HttpOnly: true},
+		{Name: s.loginTxCookieName(), HttpOnly: true},
 	} {
 		cookie.Value = ""
 		cookie.Path = "/"
