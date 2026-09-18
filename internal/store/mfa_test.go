@@ -960,12 +960,22 @@ func TestActorProofIsCheckedInsideTheTransaction(t *testing.T) {
 	if _, _, err := s.SetMFAPolicyBy(ctx, mfa.ModeEveryone, -1, alice.ID, old, now+3); !errors.Is(err, ErrActorNotFresh) {
 		t.Fatalf("stale proof accepted: %v", err)
 	}
-	// Re-verified recently counts, factor or not.
+	// A password-only re-verification does not make a factor proof; a
+	// step-up that proved the authenticator does (it upgrades the evidence).
 	if err := s.StampSessionReauth(ctx, "alice-pwd", now+40); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30, RequireFactor: true}, now+41); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("password-only re-verification accepted for a reset: %v", err)
+	}
+	if err := s.StampSessionReauthWithFactor(ctx, "alice-pwd", now+40); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30, RequireFactor: true}, now+41); err != nil {
-		t.Fatalf("re-verified proof refused: %v", err)
+		t.Fatalf("factor-backed re-verification refused: %v", err)
+	}
+	if _, sess, err := s.ValidateAuthSession(ctx, "alice-pwd", now+41, time.Hour, time.Minute); err != nil || !hasMethodIn(strings.Join(sess.AMR, " "), "otp") || sess.MFAVerifiedAt == nil {
+		t.Fatalf("step-up did not upgrade the session evidence: %+v %v", sess, err)
 	}
 	// Revoked session: nothing.
 	if _, err := s.RevokeAuthSession(ctx, "alice-pwd", now+42, "test"); err != nil {
@@ -988,5 +998,47 @@ func TestActorProofIsCheckedInsideTheTransaction(t *testing.T) {
 	}
 	if r, err := NormalizeReason("  lost phone  "); err != nil || r != "lost phone" {
 		t.Fatalf("NormalizeReason trims: %q %v", r, err)
+	}
+}
+
+// The Access popup's save is all or nothing: an unknown application, or a
+// refused demotion, leaves the flags and grants exactly as they were.
+func TestSaveAccountAccessIsAtomic(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, now)
+	if _, err := s.CreateApplication(ctx, "fleet", "Fleet", "https://fleet.example.com/cb", "", "h", now); err != nil {
+		t.Fatal(err)
+	}
+	session(t, s, bob, "bob-1", now)
+	yes := true
+	_, err := s.SaveAccountAccess(ctx, bob.Email, AccessSave{Applications: []string{"fleet", "ghost"}, Admin: &yes, MFARequired: &yes}, alice.ID, nil, now+1)
+	if !errors.Is(err, ErrApplicationNotFound) {
+		t.Fatalf("ghost app: %v", err)
+	}
+	b, _ := s.PasswordAccountByEmail(ctx, bob.Email)
+	apps, _ := s.ApplicationAccess(ctx, b.ID)
+	if b.IsAdmin || b.MFARequired || len(apps) != 0 || liveSessions(t, s, b.ID, now+2) != 1 {
+		t.Fatalf("partial write: admin=%v required=%v apps=%v sessions=%d", b.IsAdmin, b.MFARequired, apps, liveSessions(t, s, b.ID, now+2))
+	}
+	// Demoting the last administrator refuses the whole save too.
+	no := false
+	if _, err := s.SaveAccountAccess(ctx, alice.Email, AccessSave{Applications: []string{"fleet"}, Admin: &no}, alice.ID, nil, now+3); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("last admin: %v", err)
+	}
+	if apps, _ := s.ApplicationAccess(ctx, alice.ID); len(apps) != 0 {
+		t.Fatal("applications granted although the demotion was refused")
+	}
+	// A valid save applies everything and signs bob out (newly required).
+	out, err := s.SaveAccountAccess(ctx, bob.Email, AccessSave{Applications: []string{"fleet"}, Admin: &yes, MFARequired: &yes}, alice.ID, nil, now+4)
+	if err != nil || len(out.Added) != 1 || !out.AdminChanged || !out.MFAChanged || !out.SignedOut {
+		t.Fatalf("save: %+v %v", out, err)
+	}
+	b, _ = s.PasswordAccountByEmail(ctx, bob.Email)
+	if !b.IsAdmin || !b.MFARequired || liveSessions(t, s, b.ID, now+5) != 0 {
+		t.Fatalf("after save: admin=%v required=%v sessions=%d", b.IsAdmin, b.MFARequired, liveSessions(t, s, b.ID, now+5))
 	}
 }

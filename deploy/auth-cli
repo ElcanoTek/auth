@@ -239,6 +239,9 @@ case "$cmd" in
     # shellcheck disable=SC1090
     [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
     export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    # Sourcing does not export: pass the two-factor key through explicitly so
+    # auth-admin can tell whether requiring a factor is safe on this box.
+    export AUTH_MFA_KEY="${AUTH_MFA_KEY:-}"
     # Password policy context: `auth user create|set-password` refuse passwords
     # built from the brand, hostname, issuer, or the operator's blocked terms.
     export AUTH_BRAND_NAME AUTH_HOSTNAME AUTH_ISSUER_URL AUTH_PASSWORD_BLOCKED_TERMS
@@ -274,6 +277,7 @@ case "$cmd" in
     # shellcheck disable=SC1090
     [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
     export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    export AUTH_MFA_KEY="${AUTH_MFA_KEY:-}"
     exec "$ADMIN_BIN" mfa "$@"
     ;;
   pubkey)

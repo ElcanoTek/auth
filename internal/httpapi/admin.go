@@ -206,9 +206,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	// For an enrolled administrator the fresh proof must include their
 	// authenticator: a recent sign-in that used a recovery code, or a
 	// pre-enrolment session, does not count; the step-up page does.
-	fresh := recentlyVerified(identity.Session, now, s.reauthWindow()) &&
-		(!actor.MFAEnrolled || hasMethod(identity.Session.AMR, "otp") ||
-			(identity.Session.ReauthAt != nil && now.Sub(*identity.Session.ReauthAt) <= s.reauthWindow()))
+	fresh := recentlyVerified(identity.Session, now, s.reauthWindow()) && (!actor.MFAEnrolled || hasMethod(identity.Session.AMR, "otp"))
 	// The same facts, re-checked inside the store transaction that writes.
 	proof := &store.ActorProof{SessionHash: identity.Session.TokenHash, FreshAfter: now.Add(-s.reauthWindow()).Unix(), RequireFactor: actor.MFAEnrolled}
 	needVerify := func() adminResult {
@@ -533,27 +531,17 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Notice = fmt.Sprintf("%s is tagged %s.", target.Email, team)
 		}
 	case "set-access":
-		// The Access popup saves three things: applications, the Admin flag
-		// and the per-account two-factor requirement. Every precondition is
-		// checked before anything is written, so a refusal never leaves a
-		// half-applied popup; the writes then run in an order whose only
-		// self-affecting step (requiring a factor of oneself, which ends this
-		// session) comes last.
+		// The Access popup saves three things (applications, the Admin flag,
+		// the per-account two-factor requirement) in one store transaction:
+		// a refusal of any part changes nothing. Console-level rules that the
+		// store does not know (self-demotion, a server without an MFA key,
+		// freshness) are checked first, so no write is even attempted.
 		wantAdmin := r.FormValue("admin") == "on"
 		wantMFA := r.FormValue("mfa_required") == "on"
 		adminChange := wantAdmin != target.IsAdmin
 		mfaChange := wantMFA != target.MFARequired
 		policy := s.mfaPolicy(r)
 		promotionNeedsFactor := adminChange && wantAdmin && !target.MFAEnrolled && policy.Mode == mfa.ModeAdmins
-		for _, id := range r.Form["apps"] {
-			if _, err := s.store.ApplicationByID(ctx, strings.TrimSpace(id)); err != nil {
-				if errors.Is(err, store.ErrApplicationNotFound) {
-					res.Error = "One of those applications is not registered."
-					return res
-				}
-				return res.failed("application lookup", err)
-			}
-		}
 		if adminChange && self && !wantAdmin {
 			res.Error = "You cannot remove your own administrator access."
 			return res
@@ -565,26 +553,44 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		if mfaChange && !fresh {
 			return needVerify()
 		}
-		added, removed, err := s.store.SetApplicationAccess(ctx, target.ID, r.Form["apps"], now.Unix())
-		if err != nil {
-			return res.failed("set access", err)
+		// An empty selection is a real instruction ("no applications"), not
+		// "leave as is": the popup always posts the full set.
+		apps := r.Form["apps"]
+		if apps == nil {
+			apps = []string{}
 		}
-		for _, id := range added {
+		save := store.AccessSave{Applications: apps}
+		if adminChange {
+			save.Admin = &wantAdmin
+		}
+		if mfaChange {
+			save.MFARequired = &wantMFA
+		}
+		var saveProof *store.ActorProof
+		if mfaChange {
+			saveProof = proof
+		}
+		outcome, err := s.store.SaveAccountAccess(ctx, target.Email, save, actor.ID, saveProof, now.Unix())
+		switch {
+		case errors.Is(err, store.ErrApplicationNotFound):
+			res.Error = "One of those applications is not registered."
+			return res
+		case errors.Is(err, store.ErrLastAdmin):
+			res.Error = "That is the last enabled administrator. Make someone else an admin first."
+			return res
+		case errors.Is(err, store.ErrActorNotFresh):
+			return needVerify()
+		case err != nil:
+			return res.failed("save access", err)
+		}
+		for _, id := range outcome.Added {
 			audit("admin.access_granted", target.ID, id)
 		}
-		for _, id := range removed {
+		for _, id := range outcome.Removed {
 			audit("admin.access_revoked", target.ID, id)
 		}
 		adminNote, mfaNote := "", ""
-		if adminChange {
-			err := s.store.SetAccountAdmin(ctx, target.Email, wantAdmin, now.Unix())
-			if errors.Is(err, store.ErrLastAdmin) {
-				res.Error = "That is the last enabled administrator. Make someone else an admin first."
-				return res
-			}
-			if err != nil {
-				return res.failed("set-access admin", err)
-			}
+		if outcome.AdminChanged {
 			if wantAdmin {
 				audit("admin.admin_granted", target.ID, "")
 				adminNote = " Admin console granted."
@@ -596,14 +602,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 				mfaNote = " Administrators must use two-factor sign-in here, so they were signed out and set up an authenticator at their next sign-in."
 			}
 		}
-		if mfaChange {
-			_, err := s.store.SetAccountMFARequiredBy(ctx, target.Email, wantMFA, actor.ID, proof, now.Unix())
-			if errors.Is(err, store.ErrActorNotFresh) {
-				return needVerify()
-			}
-			if err != nil {
-				return res.failed("set mfa requirement", err)
-			}
+		if outcome.MFAChanged {
 			if wantMFA {
 				audit("admin.mfa_required_set", target.ID, "")
 				mfaNote = " Two-factor sign-in is now required for them."
@@ -620,6 +619,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 				return res
 			}
 		}
+		added, removed := outcome.Added, outcome.Removed
 		switch {
 		case len(added) == 0 && len(removed) == 0:
 			res.Notice = fmt.Sprintf("No change to %s's applications.%s%s", target.Email, adminNote, mfaNote)

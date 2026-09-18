@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/elcanotek/auth/internal/mfa"
 )
@@ -216,12 +217,25 @@ func requireActorTx(ctx context.Context, tx *sql.Tx, actorID string, proof *Acto
 	if isAdmin == 0 || disabled.Valid || revoked.Valid || now >= idle || now >= absolute {
 		return ErrActorNotFresh
 	}
-	freshLogin := created >= proof.FreshAfter && (!proof.RequireFactor || hasSecondFactorMethod(strings.Fields(amr)))
-	freshReauth := reauthAt.Valid && reauthAt.Int64 >= proof.FreshAfter
-	if !freshLogin && !freshReauth {
+	// Fresh: signed in, or re-verified, at or after FreshAfter. With
+	// RequireFactor the session's evidence must carry an authenticator code
+	// ("otp"): a recovery-code sign-in does not qualify, and a step-up that
+	// proved the code upgrades the evidence (StampSessionReauth), so a
+	// concurrent disable, which downgrades it, is seen here.
+	fresh := created >= proof.FreshAfter || (reauthAt.Valid && reauthAt.Int64 >= proof.FreshAfter)
+	if !fresh || (proof.RequireFactor && !hasMethodIn(amr, "otp")) {
 		return ErrActorNotFresh
 	}
 	return nil
+}
+
+func hasMethodIn(amr, method string) bool {
+	for _, m := range strings.Fields(amr) {
+		if m == method {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeReason bounds a reset reason for the audit log: trimmed, at most
@@ -232,7 +246,7 @@ func NormalizeReason(reason string) (string, error) {
 		return "", ErrInvalidReason
 	}
 	for _, r := range reason {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) {
 			return "", ErrInvalidReason
 		}
 	}
@@ -1287,9 +1301,30 @@ func createSessionTx(ctx context.Context, tx execer, tokenHash, userID string, s
 }
 
 // StampSessionReauth records that the session's owner just re-entered their
-// password (and factor, when enrolled); sensitive actions honour it briefly.
+// password; sensitive actions honour it briefly.
 func (s *Store) StampSessionReauth(ctx context.Context, tokenHash string, now int64) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = ? WHERE token_hash = ? AND revoked_at IS NULL`, now, tokenHash)
+	return s.stampReauth(ctx, tokenHash, now, false)
+}
+
+// StampSessionReauthWithFactor is StampSessionReauth for a step-up that also
+// proved the authenticator: the session's evidence becomes "pwd otp" with
+// the verification time, so a session that began with a recovery code (or
+// before enrolment) now carries the proof that resets and other
+// factor-gated actions demand.
+func (s *Store) StampSessionReauthWithFactor(ctx context.Context, tokenHash string, now int64) error {
+	return s.stampReauth(ctx, tokenHash, now, true)
+}
+
+func (s *Store) stampReauth(ctx context.Context, tokenHash string, now int64, withFactor bool) error {
+	var res sql.Result
+	var err error
+	if withFactor {
+		res, err = s.db.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = ?, amr = 'pwd otp', mfa_verified_at = ?,
+			security_version = (SELECT a.security_version FROM accounts a WHERE a.id = auth_sessions.user_id)
+			WHERE token_hash = ? AND revoked_at IS NULL`, now, now, tokenHash)
+	} else {
+		res, err = s.db.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = ? WHERE token_hash = ? AND revoked_at IS NULL`, now, tokenHash)
+	}
 	if err != nil {
 		return err
 	}
@@ -1545,4 +1580,82 @@ func (s *Store) ReplacePasswordUnderTransaction(ctx context.Context, transaction
 		return ErrTransactionNotFound
 	}
 	return tx.Commit()
+}
+
+// AccessSave is what the console's Access popup wants to save for one
+// account; nil pointers mean "leave as is".
+type AccessSave struct {
+	Applications []string
+	Admin        *bool
+	MFARequired  *bool
+}
+
+// AccessSaveResult reports what changed.
+type AccessSaveResult struct {
+	Added, Removed []string
+	AdminChanged   bool
+	MFAChanged     bool
+	SignedOut      bool // the target's sessions were revoked (newly required without a factor, or promoted under "admins")
+}
+
+// SaveAccountAccess applies the Access popup in ONE transaction: the acting
+// administrator is re-checked (proof), the administrator flag changes under
+// the last-admin rule, the applications are set (revoked ones get their
+// back-channel logout), and the two-factor requirement is set last (with
+// its sign-out). Any refusal (unknown application, last admin, stale
+// proof) leaves every field as it was.
+func (s *Store) SaveAccountAccess(ctx context.Context, email string, save AccessSave, actorID string, proof *ActorProof, now int64) (AccessSaveResult, error) {
+	var out AccessSaveResult
+	a, err := s.PasswordAccountByEmail(ctx, email)
+	if err != nil {
+		return out, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return out, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
+		return out, err
+	}
+	policy, err := mfaPolicyQ(ctx, tx)
+	if err != nil {
+		return out, err
+	}
+	if save.Admin != nil && *save.Admin != a.IsAdmin {
+		if err := setAccountAdminTx(ctx, tx, a, *save.Admin, now); err != nil {
+			return AccessSaveResult{}, err
+		}
+		out.AdminChanged = true
+		if *save.Admin && !a.MFAEnrolled && policy.Mode == mfa.ModeAdmins {
+			out.SignedOut = true
+		}
+		a.IsAdmin = *save.Admin
+	}
+	if save.Applications != nil {
+		out.Added, out.Removed, err = setApplicationAccessTx(ctx, tx, a.ID, save.Applications, now)
+		if err != nil {
+			return AccessSaveResult{}, err
+		}
+	}
+	if save.MFARequired != nil && *save.MFARequired != a.MFARequired {
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET mfa_required = ?, updated_at = ? WHERE id = ?`, boolInt(*save.MFARequired), now, a.ID); err != nil {
+			return AccessSaveResult{}, err
+		}
+		event := "mfa.required_cleared"
+		if *save.MFARequired {
+			event = "mfa.required_set"
+			n, err := signOutUnenrolledRequiredTx(ctx, tx, policy.Mode, a.ID, now)
+			if err != nil {
+				return AccessSaveResult{}, err
+			}
+			out.SignedOut = out.SignedOut || n > 0
+		}
+		meta, _ := json.Marshal(map[string]any{"actor": actorID})
+		if err := insertAudit(ctx, tx, event, a.ID, now, string(meta)); err != nil {
+			return AccessSaveResult{}, err
+		}
+		out.MFAChanged = true
+	}
+	return out, tx.Commit()
 }

@@ -1040,7 +1040,11 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 		}
 		_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
 	}
-	if err := s.store.StampSessionReauth(r.Context(), identity.Session.TokenHash, now.Unix()); err != nil {
+	stamp := s.store.StampSessionReauth
+	if account.MFAEnrolled {
+		stamp = s.store.StampSessionReauthWithFactor
+	}
+	if err := stamp(r.Context(), identity.Session.TokenHash, now.Unix()); err != nil {
 		s.clearPasswordCookies(w)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return

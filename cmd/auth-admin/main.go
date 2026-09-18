@@ -367,8 +367,16 @@ func userCmd(dataDir string, args []string) {
 		if grant {
 			// Under "Required for administrators" promotion requires a factor
 			// of the new administrator; without a key nobody could enrol.
-			if policy, err := st.MFAPolicy(ctx); err == nil && policy.Mode == mfa.ModeAdmins {
-				if a, err := st.PasswordAccountByEmail(ctx, email); err == nil && !a.MFAEnrolled {
+			policy, err := st.MFAPolicy(ctx)
+			if err != nil {
+				fatalf("admin on: read two-factor policy: %v", err)
+			}
+			if policy.Mode == mfa.ModeAdmins {
+				a, err := st.PasswordAccountByEmail(ctx, email)
+				if err != nil {
+					fatalf("admin on: %v", err)
+				}
+				if !a.MFAEnrolled {
 					requireMFAKeyConfigured("promoting an account that must then enrol")
 				}
 			}

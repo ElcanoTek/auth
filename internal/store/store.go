@@ -933,6 +933,14 @@ func (s *Store) SetAccountAdmin(ctx context.Context, email string, admin bool, n
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := setAccountAdminTx(ctx, tx, a, admin, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// setAccountAdminTx is SetAccountAdmin inside a caller's transaction.
+func setAccountAdminTx(ctx context.Context, tx *sql.Tx, a Account, admin bool, now int64) error {
 	event := "account.admin_granted"
 	if !admin {
 		event = "account.admin_revoked"
@@ -965,7 +973,7 @@ func (s *Store) SetAccountAdmin(ctx context.Context, email string, admin bool, n
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // MaxTeamLength bounds the free-text team tag.
@@ -1155,6 +1163,22 @@ func (s *Store) AllApplicationAccess(ctx context.Context) (map[string][]string, 
 // removed gets a back-channel logout for this account so its session there
 // ends now rather than at expiry. It returns what was added and removed.
 func (s *Store) SetApplicationAccess(ctx context.Context, userID string, applicationIDs []string, now int64) (added, removed []string, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	added, removed, err = setApplicationAccessTx(ctx, tx, userID, applicationIDs, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	return added, removed, tx.Commit()
+}
+
+// setApplicationAccessTx is SetApplicationAccess inside a caller's
+// transaction, so the console's Access popup can save it together with the
+// administrator flag and the two-factor requirement.
+func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, applicationIDs []string, now int64) (added, removed []string, err error) {
 	if userID == "" {
 		return nil, nil, errors.New("user id is required")
 	}
@@ -1164,11 +1188,6 @@ func (s *Store) SetApplicationAccess(ctx context.Context, userID string, applica
 			want[id] = true
 		}
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer func() { _ = tx.Rollback() }()
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE id = ?`, userID).Scan(&exists); err != nil {
 		return nil, nil, err
@@ -1241,7 +1260,7 @@ func (s *Store) SetApplicationAccess(ctx context.Context, userID string, applica
 			return nil, nil, err
 		}
 	}
-	return added, removed, tx.Commit()
+	return added, removed, nil
 }
 
 // ── opaque central sessions ─────────────────────────────────────────
