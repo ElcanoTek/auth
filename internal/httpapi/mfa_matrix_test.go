@@ -143,3 +143,47 @@ func TestAdministratorResetsAreCapped(t *testing.T) {
 		t.Fatal("eleventh reset went through")
 	}
 }
+
+// A request refused by its own account limit must not advance the
+// deployment-wide counter, or one throttled person could deny factor
+// checks to everyone.
+func TestLocallyLimitedAttemptsDoNotConsumeTheGlobalBudget(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	_, seeded := enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	srv := New(cfg, st, &captureSender{})
+	alice := newBrowser(t, ts)
+	alice.login("alice@example.com", plain)
+	alice.post("/login/verify", url.Values{"recovery_code": {seeded[0]}})
+	globalKey := srv.rateKey("mfa-global", "all")
+	since := time.Now().Add(-passwordRateWindow).Unix()
+	// Ten wrong step-up codes exhaust the per-account limit (10 in the fixture).
+	for i := 0; i < 10; i++ {
+		alice.post("/account/security/verify", url.Values{"action": {"regenerate"}, "password": {plain}, "code": {"000000"}})
+	}
+	// The recovery-code sign-in counted one global attempt too, so eleven.
+	before, _ := st.CountFailedLoginAttempts(context.Background(), globalKey, since)
+	if before != 11 {
+		t.Fatalf("global count after the sign-in and ten attempts = %d", before)
+	}
+	for i := 0; i < 5; i++ {
+		if _, page := alice.post("/account/security/verify", url.Values{"action": {"regenerate"}, "password": {plain}, "code": {"000000"}}); !strings.Contains(page, "Too many attempts") {
+			t.Fatalf("attempt %d not limited", 11+i)
+		}
+	}
+	after, _ := st.CountFailedLoginAttempts(context.Background(), globalKey, since)
+	if after != before {
+		t.Fatalf("locally limited requests advanced the global counter: %d -> %d", before, after)
+	}
+	// The throttle is audited.
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	events, _ := st.RecentAuditEvents(context.Background(), a.ID, 50)
+	found := false
+	for _, e := range events {
+		if e.EventType == "reauth.mfa_rate_limited" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("rate limit not audited")
+	}
+}

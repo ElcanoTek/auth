@@ -1193,3 +1193,72 @@ func TestMFAThrottleSurvivesReopen(t *testing.T) {
 		t.Fatalf("attempts after reopen = %d, want 3", n)
 	}
 }
+
+// Two browsers confirming the same pending enrolment (same code, same
+// instant) activate it exactly once; the loser sees the pending row gone.
+func TestConcurrentActivationOfOnePendingAuthenticator(t *testing.T) {
+	s, a, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.CreatePendingAuthenticator(ctx, "pend", a.ID, "", []byte("sealed"), "1", now, now+600); err != nil {
+		t.Fatal(err)
+	}
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := s.ActivateAuthenticator(ctx, "pend", a.ID, 42, []string{fmt.Sprintf("h-%d", i)}, fmt.Sprintf("set-%d", i), "", nil, now+1)
+			if err == nil {
+				wins.Add(1)
+			} else if !errors.Is(err, ErrPendingNotFound) {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if wins.Load() != 1 {
+		t.Fatalf("%d activations of one pending factor", wins.Load())
+	}
+	f, err := s.ActiveAuthenticator(ctx, a.ID)
+	if err != nil || f.LastAcceptedStep != 42 {
+		t.Fatalf("active factor after race: %+v %v", f, err)
+	}
+	if n, _ := s.RecoveryCodesRemaining(ctx, a.ID); n != 1 {
+		t.Fatalf("recovery codes after race = %d, want the winner's single set", n)
+	}
+}
+
+// The per-transaction attempt count is a row, so a restart between wrong
+// codes does not hand out fresh attempts.
+func TestTransactionAttemptsSurviveReopen(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now().Unix()
+	a, err := s.CreatePasswordAccount(ctx, "alice@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA", false, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newLoginTx(t, s, a, "t1", "st1", "factor", now)
+	for i := 0; i < 4; i++ {
+		if _, err := s.RecordTransactionAttempt(ctx, "t1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.Close()
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if left, err := s.RecordTransactionAttempt(ctx, "t1"); err != nil || left != 0 {
+		t.Fatalf("fifth attempt after reopen: left=%d err=%v", left, err)
+	}
+	if _, err := s.RecordTransactionAttempt(ctx, "t1"); !errors.Is(err, ErrTooManyAttempts) {
+		t.Fatalf("sixth attempt after reopen: %v", err)
+	}
+}

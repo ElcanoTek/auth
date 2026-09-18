@@ -501,6 +501,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		if limited, err := s.reserveCounted(ctx, s.rateKey("mfa-reset", actor.ID), mfaResetLimit, now); err != nil {
 			return res.failed("reset limiter", err)
 		} else if limited {
+			_, _ = s.store.RecordAuditIfAbsent(ctx, "admin.mfa_reset_rate_limited", actor.ID, ipHash, now.Unix(), now.Add(-passwordRateWindow).Unix())
 			res.Error = "Too many resets in a short time. Wait a few minutes and try again."
 			return res
 		}

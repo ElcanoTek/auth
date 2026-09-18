@@ -337,15 +337,34 @@ func (s *Server) factorProof(r *http.Request, account store.Account, code, recov
 // reservation ids to settle on success. limited means the caller must refuse
 // without checking anything.
 func (s *Server) mfaAttempt(r *http.Request, userID string, now time.Time) (ids []int64, ipKey string, limited bool, err error) {
+	ctx := r.Context()
 	ipKey = s.rateKey("ip", clientIP(r))
-	// The deployment-wide ceiling is checked first and never settled, so
-	// every attempt counts toward it whatever its outcome.
-	globalLimited, err := s.reserveCounted(r.Context(), s.rateKey("mfa-global", "all"), mfaGlobalLimit, now)
-	if err != nil || globalLimited {
-		return nil, ipKey, globalLimited, err
+	userKey := s.rateKey("mfa-user", userID)
+	globalKey := s.rateKey("mfa-global", "all")
+	// All three limits are checked, then all three rows reserved, under one
+	// gate: a request that is already refused by its own account or address
+	// limit must not advance the deployment-wide counter, or one locally
+	// throttled person could deny factor checks to everyone.
+	if err := acquire(ctx, s.attemptGate); err != nil {
+		return nil, ipKey, false, err
 	}
-	ids, limited, err = s.reserveLoginAttempt(r.Context(), s.rateKey("mfa-user", userID), ipKey, now)
-	return ids, ipKey, limited, err
+	defer release(s.attemptGate)
+	if limited, err = s.passwordRateLimited(ctx, userKey, ipKey, now); err != nil || limited {
+		return nil, ipKey, limited, err
+	}
+	since := now.Add(-passwordRateWindow).Unix()
+	n, err := s.store.CountFailedLoginAttempts(ctx, globalKey, since)
+	if err != nil {
+		return nil, ipKey, false, err
+	}
+	if n >= mfaGlobalLimit {
+		return nil, ipKey, true, nil
+	}
+	// ids[0] and ids[1] (account, address) are settled on success like a
+	// password attempt; the global row is kept so the ceiling counts every
+	// attempt whatever its outcome.
+	ids, err = s.store.ReserveLoginAttempts(ctx, now.Unix(), userKey, ipKey, globalKey)
+	return ids, ipKey, false, err
 }
 
 // reserveCounted is a plain counter on the login_attempts table for the
@@ -637,6 +656,7 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 	render := func(errText string) {
 		view, err := s.enrolmentView(r, account, now)
 		if errors.Is(err, errEnrolLimited) {
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enrol_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
 			s.restartLogin(w, r, tr, errMFALocked)
 			return
 		}
@@ -911,6 +931,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 	case "start":
 		view, err := s.enrolmentView(r, account, now)
 		if errors.Is(err, errEnrolLimited) {
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enrol_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
 			renderPage("", "Too many set-up attempts. Wait a few minutes and try again.")
 			return
 		}

@@ -267,10 +267,10 @@ wrong, or a `Secure` cookie is being set over plain HTTP.
   What alice can do inside the application is that application's business.
   The only role Auth itself knows is its administrator flag, which gates its
   own console at `/admin`.
-- **Step-up or MFA.** Magic links are themselves an inbox-possession factor,
-  and password mode has none yet. The account model leaves room for TOTP,
-  passkeys and recovery codes, and an upstream identity provider could sit
-  behind the login step later.
+- **Step-up beyond TOTP.** Magic links are themselves an inbox-possession
+  factor. Password mode has authenticator-app (TOTP) two-factor sign-in,
+  optional or required by policy, with recovery codes; passkeys and an
+  upstream identity provider could sit behind the login step later.
 - **Per-user blocking in magic mode.** The allowlist is domain-grain. To block
   one person without their whole domain you need a denylist or a per-service
   gate. Password mode has per-account `auth user disable`.
