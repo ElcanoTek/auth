@@ -199,15 +199,16 @@ func requireActorTx(ctx context.Context, tx *sql.Tx, actorID string, proof *Acto
 	if proof == nil {
 		return nil
 	}
-	var isAdmin int
+	var isAdmin, enrolled int
 	var disabled, revoked, reauthAt sql.NullInt64
 	var idle, absolute, created int64
 	var amr string
 	err := tx.QueryRowContext(ctx, `
-		SELECT a.is_admin, a.disabled_at, s.revoked_at, s.idle_expires_at, s.absolute_expires_at, s.created_at, s.amr, s.reauth_at
+		SELECT a.is_admin, a.disabled_at, s.revoked_at, s.idle_expires_at, s.absolute_expires_at, s.created_at, s.amr, s.reauth_at,
+		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
 		FROM auth_sessions s JOIN accounts a ON a.id = s.user_id
 		WHERE s.token_hash = ? AND s.user_id = ?`, proof.SessionHash, actorID).
-		Scan(&isAdmin, &disabled, &revoked, &idle, &absolute, &created, &amr, &reauthAt)
+		Scan(&isAdmin, &disabled, &revoked, &idle, &absolute, &created, &amr, &reauthAt, &enrolled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrActorNotFresh
 	}
@@ -223,7 +224,7 @@ func requireActorTx(ctx context.Context, tx *sql.Tx, actorID string, proof *Acto
 	// proved the code upgrades the evidence (StampSessionReauth), so a
 	// concurrent disable, which downgrades it, is seen here.
 	fresh := created >= proof.FreshAfter || (reauthAt.Valid && reauthAt.Int64 >= proof.FreshAfter)
-	if !fresh || (proof.RequireFactor && !hasMethodIn(amr, "otp")) {
+	if !fresh || (proof.RequireFactor && (!hasMethodIn(amr, "otp") || enrolled == 0)) {
 		return ErrActorNotFresh
 	}
 	return nil
@@ -1306,25 +1307,50 @@ func (s *Store) StampSessionReauth(ctx context.Context, tokenHash string, now in
 	return s.stampReauth(ctx, tokenHash, now, false)
 }
 
-// StampSessionReauthWithFactor is StampSessionReauth for a step-up that also
-// proved the authenticator: the session's evidence becomes "pwd otp" with
-// the verification time, so a session that began with a recovery code (or
-// before enrolment) now carries the proof that resets and other
-// factor-gated actions demand.
-func (s *Store) StampSessionReauthWithFactor(ctx context.Context, tokenHash string, now int64) error {
-	return s.stampReauth(ctx, tokenHash, now, true)
+// VerifyFactorAndStampReauth is the step-up for an enrolled account, in one
+// transaction: the accepted TOTP step is recorded under the replay guard on
+// the account's ACTIVE authenticator (so a factor disabled meanwhile refuses
+// the proof), and only then the session's evidence becomes "pwd otp" with
+// the verification time and the account's current security version. A
+// session that began with a recovery code, or before enrolment, thereby
+// gains the proof that resets and other factor-gated actions demand.
+func (s *Store) VerifyFactorAndStampReauth(ctx context.Context, tokenHash, authenticatorID string, step int64, rewrapped []byte, keyID string, now int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var userID string
+	if err := tx.QueryRowContext(ctx, `SELECT user_id FROM auth_sessions WHERE token_hash = ? AND revoked_at IS NULL`, tokenHash).Scan(&userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalidSession
+		}
+		return err
+	}
+	ok, err := recordAcceptedStepTx(ctx, tx, authenticatorID, userID, step, rewrapped, keyID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrInvalidProof
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = ?, amr = 'pwd otp', mfa_verified_at = ?,
+		security_version = (SELECT a.security_version FROM accounts a WHERE a.id = auth_sessions.user_id)
+		WHERE token_hash = ? AND user_id = ? AND revoked_at IS NULL`, now, now, tokenHash, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrInvalidSession
+	}
+	return tx.Commit()
 }
 
 func (s *Store) stampReauth(ctx context.Context, tokenHash string, now int64, withFactor bool) error {
-	var res sql.Result
-	var err error
 	if withFactor {
-		res, err = s.db.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = ?, amr = 'pwd otp', mfa_verified_at = ?,
-			security_version = (SELECT a.security_version FROM accounts a WHERE a.id = auth_sessions.user_id)
-			WHERE token_hash = ? AND revoked_at IS NULL`, now, now, tokenHash)
-	} else {
-		res, err = s.db.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = ? WHERE token_hash = ? AND revoked_at IS NULL`, now, tokenHash)
+		return errors.New("use VerifyFactorAndStampReauth")
 	}
+	res, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = ? WHERE token_hash = ? AND revoked_at IS NULL`, now, tokenHash)
 	if err != nil {
 		return err
 	}

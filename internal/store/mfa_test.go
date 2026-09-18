@@ -968,14 +968,36 @@ func TestActorProofIsCheckedInsideTheTransaction(t *testing.T) {
 	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30, RequireFactor: true}, now+41); !errors.Is(err, ErrActorNotFresh) {
 		t.Fatalf("password-only re-verification accepted for a reset: %v", err)
 	}
-	if err := s.StampSessionReauthWithFactor(ctx, "alice-pwd", now+40); err != nil {
-		t.Fatal(err)
+	// A factor-backed step-up needs an active authenticator of alice's own;
+	// then the proof is accepted and the session evidence upgraded.
+	if err := s.VerifyFactorAndStampReauth(ctx, "alice-pwd", "nope", 5, nil, "", now+40); !errors.Is(err, ErrInvalidProof) {
+		t.Fatalf("step-up without an authenticator: %v", err)
 	}
-	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30, RequireFactor: true}, now+41); err != nil {
+	fa := enrol(t, s, alice, "alice-pwd", now+40)
+	if err := s.VerifyFactorAndStampReauth(ctx, "alice-pwd", fa.ID, fa.LastAcceptedStep+1, nil, "", now+42); err != nil {
+		t.Fatalf("step-up: %v", err)
+	}
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30, RequireFactor: true}, now+43); err != nil {
 		t.Fatalf("factor-backed re-verification refused: %v", err)
 	}
-	if _, sess, err := s.ValidateAuthSession(ctx, "alice-pwd", now+41, time.Hour, time.Minute); err != nil || !hasMethodIn(strings.Join(sess.AMR, " "), "otp") || sess.MFAVerifiedAt == nil {
+	if _, sess, err := s.ValidateAuthSession(ctx, "alice-pwd", now+43, time.Hour, time.Minute); err != nil || !hasMethodIn(strings.Join(sess.AMR, " "), "otp") || sess.MFAVerifiedAt == nil {
 		t.Fatalf("step-up did not upgrade the session evidence: %+v %v", sess, err)
+	}
+	// Disable between "code verified" and "stamp": the atomic step-up
+	// refuses, the session keeps password-only evidence, and a reset proof
+	// is refused even though the session is fresh.
+	if err := s.DisableAuthenticator(ctx, alice.ID, "alice-pwd", now+44); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyFactorAndStampReauth(ctx, "alice-pwd", fa.ID, fa.LastAcceptedStep+2, nil, "", now+45); !errors.Is(err, ErrInvalidProof) {
+		t.Fatalf("step-up on a disabled factor: %v", err)
+	}
+	if _, sess, _ := s.ValidateAuthSession(ctx, "alice-pwd", now+45, time.Hour, time.Minute); hasMethodIn(strings.Join(sess.AMR, " "), "otp") {
+		t.Fatal("disabled factor left otp evidence on the session")
+	}
+	enrol(t, s, bob, "", now+46) // give bob a factor again to be reset
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30, RequireFactor: true}, now+47); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("reset with a fresh but factorless actor: %v", err)
 	}
 	// Revoked session: nothing.
 	if _, err := s.RevokeAuthSession(ctx, "alice-pwd", now+42, "test"); err != nil {

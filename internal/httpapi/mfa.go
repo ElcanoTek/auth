@@ -1033,18 +1033,25 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 			render("That code did not work. Enter the current code from your authenticator app.")
 			return
 		}
-		recorded, err := s.store.RecordAcceptedStep(r.Context(), proof.AuthenticatorID, proof.Step, proof.Rewrapped, proof.KeyID)
-		if err != nil || !recorded {
+		// Replay guard and evidence upgrade in one store transaction, on the
+		// account's active authenticator: a factor disabled meanwhile
+		// refuses the proof instead of being papered over.
+		err = s.store.VerifyFactorAndStampReauth(r.Context(), identity.Session.TokenHash, proof.AuthenticatorID, proof.Step, proof.Rewrapped, proof.KeyID, now.Unix())
+		switch {
+		case errors.Is(err, store.ErrInvalidProof):
 			render("That code was already used. Wait for the next one.")
+			return
+		case errors.Is(err, store.ErrInvalidSession):
+			s.clearPasswordCookies(w)
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		case err != nil:
+			logUnlessCancelled("step-up", err)
+			http.Error(w, "something went wrong", http.StatusInternalServerError)
 			return
 		}
 		_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
-	}
-	stamp := s.store.StampSessionReauth
-	if account.MFAEnrolled {
-		stamp = s.store.StampSessionReauthWithFactor
-	}
-	if err := stamp(r.Context(), identity.Session.TokenHash, now.Unix()); err != nil {
+	} else if err := s.store.StampSessionReauth(r.Context(), identity.Session.TokenHash, now.Unix()); err != nil {
 		s.clearPasswordCookies(w)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
