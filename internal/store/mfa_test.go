@@ -447,10 +447,11 @@ func TestDisableAndResetClearFactorStateAndRevoke(t *testing.T) {
 func TestRecoveryCodesConsumeOnceAndRegenerate(t *testing.T) {
 	s, a, now := mfaFixture(t)
 	ctx := context.Background()
-	if err := s.ReplaceRecoveryCodes(ctx, a.ID, []string{"h1"}, "set", now); !errors.Is(err, ErrNoAuthenticator) {
+	session(t, s, a, "regen", now)
+	if err := s.ReplaceRecoveryCodes(ctx, a.ID, "regen", []string{"h1"}, "set", now); !errors.Is(err, ErrNoAuthenticator) {
 		t.Fatalf("regenerating without a factor: %v", err)
 	}
-	enrol(t, s, a, "", now)
+	enrol(t, s, a, "regen", now)
 	h := mfa.HashRecoveryCode(a.ID + "-CODE03")
 	var wins atomic.Int32
 	var wg sync.WaitGroup
@@ -478,7 +479,7 @@ func TestRecoveryCodesConsumeOnceAndRegenerate(t *testing.T) {
 	if ok, _ := s.ConsumeRecoveryCode(ctx, "someone-else", mfa.HashRecoveryCode(a.ID+"-CODE04"), now+1); ok {
 		t.Fatal("another account consumed alice's code")
 	}
-	if err := s.ReplaceRecoveryCodes(ctx, a.ID, []string{"n1", "n2", "n3"}, "set-2", now+2); err != nil {
+	if err := s.ReplaceRecoveryCodes(ctx, a.ID, "regen", []string{"n1", "n2", "n3"}, "set-2", now+2); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _ := s.ConsumeRecoveryCode(ctx, a.ID, mfa.HashRecoveryCode(a.ID+"-CODE05"), now+3); ok {
@@ -1407,5 +1408,115 @@ func TestSaveAccountAccessSignsOutOnce(t *testing.T) {
 	}
 	if events != 1 {
 		t.Fatalf("logout events queued for one save: %d", events)
+	}
+}
+
+// Regenerating recovery codes is bound to the session that asked: a request
+// that lost the race with a factor replacement (which revoked that session
+// and bumped the security version) hands out nothing.
+func TestReplaceRecoveryCodesRefusesAStaleSession(t *testing.T) {
+	s, a, now := mfaFixture(t)
+	ctx := context.Background()
+	session(t, s, a, "victim", now)
+	enrol(t, s, a, "victim", now)
+	pwdOnlySession(t, s, a, "thief", now+1) // a stolen, still-live session
+	// The victim replaces the factor from their own browser: every other
+	// session goes, and the version moves on.
+	enrol(t, s, a, "victim", now+2)
+	if err := s.ReplaceRecoveryCodes(ctx, a.ID, "thief", []string{"x1"}, "set-thief", now+3); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("stale session regenerated codes: %v", err)
+	}
+	if n, _ := s.RecoveryCodesRemaining(ctx, a.ID); n != mfa.RecoveryCodeCount {
+		t.Fatalf("codes after refused regeneration: %d", n)
+	}
+	if err := s.ReplaceRecoveryCodes(ctx, a.ID, "victim", []string{"v1", "v2"}, "set-victim", now+4); err != nil {
+		t.Fatalf("live session refused: %v", err)
+	}
+	if n, _ := s.RecoveryCodesRemaining(ctx, a.ID); n != 2 {
+		t.Fatalf("codes after regeneration: %d", n)
+	}
+}
+
+// Removing or rotating an application's back-channel endpoint applies to
+// what is still queued for it, not only to future events.
+func TestBackchannelEndpointChangeRebindsQueuedDeliveries(t *testing.T) {
+	s, a, now := mfaFixture(t)
+	ctx := context.Background()
+	if _, err := s.CreateApplication(ctx, "fleet", "Fleet", "https://fleet.example/cb", "", "h", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetApplicationBackchannelLogoutURI(ctx, "fleet", "https://old.example/logout", now); err != nil {
+		t.Fatal(err)
+	}
+	session(t, s, a, "s1", now)
+	if _, err := s.RevokeAllAuthSessions(ctx, a.ID, now+1, "test"); err != nil {
+		t.Fatal(err)
+	}
+	var endpoint string
+	if err := s.db.QueryRowContext(ctx, `SELECT endpoint FROM logout_deliveries WHERE client_id = 'fleet' AND delivered_at IS NULL`).Scan(&endpoint); err != nil || endpoint != "https://old.example/logout" {
+		t.Fatalf("queued delivery: %q %v", endpoint, err)
+	}
+	if err := s.SetApplicationBackchannelLogoutURI(ctx, "fleet", "https://new.example/logout", now+2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT endpoint FROM logout_deliveries WHERE client_id = 'fleet' AND delivered_at IS NULL`).Scan(&endpoint); err != nil || endpoint != "https://new.example/logout" {
+		t.Fatalf("rotated delivery: %q %v", endpoint, err)
+	}
+	if err := s.SetApplicationBackchannelLogoutURI(ctx, "fleet", "", now+3); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM logout_deliveries WHERE client_id = 'fleet' AND delivered_at IS NULL`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("deliveries after the endpoint was removed: %d %v", left, err)
+	}
+}
+
+// The start-time key check names every state that needs AUTH_MFA_KEY, and a
+// read-only open of the same file sees the same answer without migrating.
+func TestMFAKeyRequiredReasonAndReadOnlyOpen(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	now := time.Now().Unix()
+	a, err := s.CreatePasswordAccount(ctx, "Alice@Example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA", false, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason, err := s.MFAKeyRequiredReason(ctx); err != nil || reason != "" {
+		t.Fatalf("fresh database: %q %v", reason, err)
+	}
+	if _, err := s.SetAccountMFARequired(ctx, a.Email, true, "admin", now); err != nil {
+		t.Fatal(err)
+	}
+	if reason, err := s.MFAKeyRequiredReason(ctx); err != nil || !strings.Contains(reason, "required") {
+		t.Fatalf("required account: %q %v", reason, err)
+	}
+	if _, err := s.SetAccountMFARequired(ctx, a.Email, false, "admin", now+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SetMFAPolicy(ctx, mfa.ModeAdmins, "test", now+2); err != nil {
+		t.Fatal(err)
+	}
+	if reason, err := s.MFAKeyRequiredReason(ctx); err != nil || !strings.Contains(reason, "policy") {
+		t.Fatalf("policy: %q %v", reason, err)
+	}
+	enrol(t, s, a, "", now+3)
+	if reason, err := s.MFAKeyRequiredReason(ctx); err != nil || !strings.Contains(reason, "authenticators") {
+		t.Fatalf("enrolled: %q %v", reason, err)
+	}
+	ro, err := OpenReadOnly(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ro.Close() }()
+	if reason, err := ro.MFAKeyRequiredReason(ctx); err != nil || !strings.Contains(reason, "authenticators") {
+		t.Fatalf("read-only: %q %v", reason, err)
+	}
+	if _, err := ro.db.ExecContext(ctx, `INSERT INTO domains(name, added_at) VALUES ('x.example', 1)`); err == nil {
+		t.Fatal("read-only store accepted a write")
 	}
 }

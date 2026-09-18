@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -71,7 +72,49 @@ func Open(dataDir string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	restrictDataFiles(dataDir)
 	return s, nil
+}
+
+// OpenReadOnly opens an existing database without migrating or writing it,
+// for pre-flight checks (auth-server -check-config) that must not touch
+// the live database a running server owns. The file must exist.
+func OpenReadOnly(dataDir string) (*Store, error) {
+	path := filepath.Join(dataDir, "state.db")
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	// A file: URI so mode=ro is honoured, plus query_only on the connection
+	// so any write attempt fails even where the file itself is writable.
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	return &Store{db: db}, nil
+}
+
+// restrictDataFiles narrows the database files to their owner: the file
+// holds password hashes, sealed authenticator secrets and every email. The
+// service unit sets a umask that already does this; a first run from a
+// shell (or the CLI as root) does not. Best effort: a file owned by someone
+// else cannot be changed and is left alone.
+func restrictDataFiles(dataDir string) {
+	for _, name := range []string{"state.db", "state.db-wal", "state.db-shm"} {
+		p := filepath.Join(dataDir, name)
+		if info, err := os.Stat(p); err == nil && info.Mode().Perm() != 0o600 {
+			_ = os.Chmod(p, 0o600)
+		}
+	}
+}
+
+// tableExists reports whether a table is present, so a read-only check can
+// look at an older database without failing on a table a later migration
+// would have created.
+func (s *Store) tableExists(ctx context.Context, name string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&n)
+	return n > 0, err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -1617,15 +1660,32 @@ func (s *Store) ListApplications(ctx context.Context) ([]Application, error) {
 }
 
 func (s *Store) SetApplicationBackchannelLogoutURI(ctx context.Context, id, endpoint string, now int64) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE applications SET backchannel_logout_uri = NULLIF(?, ''), updated_at = ? WHERE id = ?`,
-		strings.TrimSpace(endpoint), now, strings.TrimSpace(id))
+	id, endpoint = strings.TrimSpace(id), strings.TrimSpace(endpoint)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `UPDATE applications SET backchannel_logout_uri = NULLIF(?, ''), updated_at = ? WHERE id = ?`, endpoint, now, id)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrApplicationNotFound
 	}
-	return nil
+	// Queued deliveries snapshot the endpoint. An endpoint that was removed
+	// (found compromised, or misregistered) must not keep receiving signed
+	// events naming users for the rest of the retry week, and a rotated one
+	// should get what is still owed to the application.
+	if endpoint == "" {
+		_, err = tx.ExecContext(ctx, `DELETE FROM logout_deliveries WHERE client_id = ? AND delivered_at IS NULL`, id)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE logout_deliveries SET endpoint = ? WHERE client_id = ? AND delivered_at IS NULL`, endpoint, id)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 type LogoutDelivery struct {

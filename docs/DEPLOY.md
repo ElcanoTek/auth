@@ -371,7 +371,8 @@ password. What people see:
   log is the record). If the policy requires a factor of every administrator
   and none can enrol because the key is gone, restore `AUTH_MFA_KEY` from
   the `.env.local` backup first; without it the server refuses to start once
-  factors exist.
+  factors exist, once the policy is anything but Optional, or once any
+  account is individually required to use one (the refusal names which).
 - **Notifications.** When the deployment has an email driver other than
   `stdout`, the account is emailed (never with codes or secrets) when an
   authenticator is set up, replaced or turned off, when an administrator
@@ -393,7 +394,8 @@ Server configuration:
   factor can be verified. `bootstrap.sh` generates it for password-mode
   installs; on an existing box run `auth mfa keygen`, paste the two lines
   into `.env.local` and `auth restart`. Unset, 2FA is simply unavailable; once
-  any account holds a factor the server refuses to start without it.
+  any account holds a factor, the policy requires one, or an account is
+  individually required to enrol, the server refuses to start without it.
 - `AUTH_MFA_KEY_ID` (default `1`) labels the key. To rotate, generate a new
   key, give it a new id, move the old pair to `AUTH_MFA_PREVIOUS_KEYS` as
   `id:key`, restart, and keep it there until every factor has been re-sealed
@@ -507,7 +509,9 @@ the bundle (bootstrap asks for a git URL or path and clones URLs to
 `/opt/auth-client`, a sibling of `/opt/auth` so the source sync never touches
 it; `auth update` fast-forwards a git checkout, validates the result with
 `auth-server -check-config` before touching the service, and puts the bundle
-back on any failure). Auth reads only the `branding:` block of
+back on any failure; the pre-flight also opens the live database read-only
+and runs the start-time checks, such as the `AUTH_MFA_KEY` requirement,
+against it without migrating it). Auth reads only the `branding:` block of
 `manifest.yaml` and ignores every other key, so Fleet's schema can grow
 without affecting Auth.
 

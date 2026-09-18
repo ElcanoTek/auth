@@ -921,15 +921,29 @@ func replaceRecoveryCodesTx(ctx context.Context, tx *sql.Tx, userID string, hash
 // not touch sessions: the factor itself is unchanged, so every session that
 // proved it remains legitimate; "sign out everywhere" exists for the case
 // where the person suspects the old codes were taken.
-func (s *Store) ReplaceRecoveryCodes(ctx context.Context, userID string, hashes []string, setID string, now int64) error {
-	if len(hashes) == 0 || setID == "" {
-		return errors.New("recovery codes are required")
+func (s *Store) ReplaceRecoveryCodes(ctx context.Context, userID, sessionHash string, hashes []string, setID string, now int64) error {
+	if len(hashes) == 0 || setID == "" || sessionHash == "" {
+		return errors.New("recovery codes and the requesting session are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// The write is bound to the session that proved itself a moment ago:
+	// it must still be live and issued under the account's current
+	// security version. A factor replaced meanwhile (which revokes the
+	// other sessions and bumps the version) makes this request stale, so
+	// it cannot hand out codes that recover the newly secured account.
+	var live int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_sessions s JOIN accounts a ON a.id = s.user_id
+		WHERE s.token_hash = ? AND s.user_id = ? AND s.revoked_at IS NULL AND s.idle_expires_at > ? AND s.absolute_expires_at > ?
+		  AND s.security_version = a.security_version AND a.disabled_at IS NULL`, sessionHash, userID, now, now).Scan(&live); err != nil {
+		return err
+	}
+	if live != 1 {
+		return ErrInvalidSession
+	}
 	if _, err := activeAuthenticatorQ(ctx, tx, userID); err != nil {
 		return err
 	}
@@ -1471,6 +1485,42 @@ func (s *Store) HasAuthenticators(ctx context.Context) (bool, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM authenticators WHERE kind = 'totp' AND disabled_at IS NULL`).Scan(&n)
 	return n > 0, err
+}
+
+// MFAKeyRequiredReason says why this database cannot be served without
+// AUTH_MFA_KEY, or "" when it can. Enrolled authenticators need the key to
+// be verified; a non-optional policy or a per-account requirement needs it
+// so the people it covers can enrol at all (without it they would be sent
+// to an enrolment that cannot work, and an administrators policy would
+// lock the console). Works on a database that predates the MFA tables.
+func (s *Store) MFAKeyRequiredReason(ctx context.Context) (string, error) {
+	if ok, err := s.tableExists(ctx, "authenticators"); err != nil || !ok {
+		return "", err
+	}
+	if has, err := s.HasAuthenticators(ctx); err != nil || has {
+		if err != nil {
+			return "", err
+		}
+		return "accounts hold authenticators", nil
+	}
+	if ok, err := s.tableExists(ctx, "authentication_policies"); err != nil || !ok {
+		return "", err
+	}
+	policy, err := mfaPolicyQ(ctx, s.db)
+	if err != nil {
+		return "", err
+	}
+	if policy.Mode != mfa.ModeOptional {
+		return fmt.Sprintf("the two-factor policy is %q", policy.Mode), nil
+	}
+	var required int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE mfa_required = 1 AND disabled_at IS NULL`).Scan(&required); err != nil {
+		return "", err
+	}
+	if required > 0 {
+		return fmt.Sprintf("%d account(s) are required to use a second factor", required), nil
+	}
+	return "", nil
 }
 
 // RecordFactorForTransaction settles a factor proof for a login that still

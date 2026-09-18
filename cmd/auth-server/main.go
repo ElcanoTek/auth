@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -55,34 +56,39 @@ func main() {
 		log.Printf("client branding from %s (wordmark=%q logo=%v palette=%v)",
 			brand.Dir, brand.AppName, len(brand.Logo) > 0, brand.CSS != "")
 	}
-	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+	if cfg.LoginMode == "magic" && cfg.EmailDriver == "stdout" && cfg.CookieSecure {
+		// Every sign-in link goes to the journal, where anyone who can read
+		// it can sign in as the recipient. Loud, because the default is
+		// this and a production box must not run on it.
+		log.Printf("WARNING: AUTH_EMAIL_DRIVER=stdout on a secure magic-link deployment prints live sign-in links to the journal; set sendgrid or smtp")
+	}
+	if checkOnly {
+		// update.sh runs this as the service user before swapping binaries,
+		// while the current build is still serving. The live database is
+		// opened read-only, never migrated: the start-time checks that
+		// depend on its state run against it as it is.
+		if ro, err := store.OpenReadOnly(cfg.DataDir); err == nil {
+			if err := mfaKeyStartCheck(cfg, ro); err != nil {
+				log.Fatalf("%v", err)
+			}
+			_ = ro.Close()
+		} else if !os.IsNotExist(err) {
+			log.Fatalf("open store read-only: %v", err)
+		}
+		log.Printf("configuration OK (hostname=%s, login_mode=%s, branding=%v)", cfg.Hostname, cfg.LoginMode, brand != nil)
+		return
+	}
+	// Owner-only: the database holds password hashes, sealed authenticator
+	// secrets and every email address.
+	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		log.Fatalf("mkdir data dir: %v", err)
 	}
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
-	// Second factor: the encryption key for authenticator secrets is
-	// optional until someone enrols. After that its absence is a
-	// misconfiguration, not a downgrade: refuse to start rather than run a
-	// deployment whose enrolled factors cannot be verified.
-	if cfg.LoginMode == "password" && cfg.MFAKeyring == nil {
-		has, err := st.HasAuthenticators(context.Background())
-		if err != nil {
-			log.Fatalf("mfa: %v", err)
-		}
-		if has {
-			log.Fatalf("AUTH_MFA_KEY is unset but accounts hold authenticators; restore the key from the .env.local backup (or reset their factors with the CLI) before starting")
-		}
-		log.Printf("2FA unavailable: AUTH_MFA_KEY is not set (generate one with `auth mfa keygen`)")
-	}
-	if checkOnly {
-		// update.sh runs this before swapping binaries: the store opened
-		// (and migrated) and the start-time checks above passed, so the new
-		// build will actually come up on this database and configuration.
-		_ = st.Close()
-		log.Printf("configuration OK (hostname=%s, login_mode=%s, branding=%v)", cfg.Hostname, cfg.LoginMode, brand != nil)
-		return
+	if err := mfaKeyStartCheck(cfg, st); err != nil {
+		log.Fatalf("%v", err)
 	}
 	defer func() { _ = st.Close() }()
 
@@ -206,4 +212,24 @@ func pickSender(cfg *config.Config) email.Sender {
 	default:
 		return email.Stdout{}
 	}
+}
+
+// mfaKeyStartCheck refuses to serve a password-mode database that needs
+// AUTH_MFA_KEY without it: enrolled factors could not be verified, and
+// accounts a policy requires to enrol could not. That is a misconfiguration,
+// not a downgrade, and running would sign people out into a flow that
+// cannot complete (an administrators policy would lock the console).
+func mfaKeyStartCheck(cfg *config.Config, st *store.Store) error {
+	if cfg.LoginMode != "password" || cfg.MFAKeyring != nil {
+		return nil
+	}
+	reason, err := st.MFAKeyRequiredReason(context.Background())
+	if err != nil {
+		return fmt.Errorf("mfa: %w", err)
+	}
+	if reason != "" {
+		return fmt.Errorf("AUTH_MFA_KEY is unset but %s; restore the key from the .env.local backup (or reset the factors and relax the policy with the CLI) before starting", reason)
+	}
+	log.Printf("2FA unavailable: AUTH_MFA_KEY is not set (generate one with `auth mfa keygen`)")
+	return nil
 }

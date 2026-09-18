@@ -1011,9 +1011,16 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "something went wrong", http.StatusInternalServerError)
 			return
 		}
-		if err := s.store.ReplaceRecoveryCodes(r.Context(), account.ID, hashes, setID, now.Unix()); err != nil {
+		if err := s.store.ReplaceRecoveryCodes(r.Context(), account.ID, identity.Session.TokenHash, hashes, setID, now.Unix()); err != nil {
 			if errors.Is(err, store.ErrNoAuthenticator) {
 				renderPage("", "Set up an authenticator first.")
+				return
+			}
+			if errors.Is(err, store.ErrInvalidSession) {
+				// The factor was replaced while this request was in flight
+				// and this session no longer speaks for the account.
+				s.clearPasswordCookies(w)
+				http.Redirect(w, r, "/", http.StatusSeeOther)
 				return
 			}
 			logUnlessCancelled("regenerate recovery codes", err)

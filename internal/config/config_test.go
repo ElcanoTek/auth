@@ -530,3 +530,27 @@ func TestValidateChecksEmailDriverInPasswordMode(t *testing.T) {
 		t.Fatalf("password mode skipped the email driver check: %v", err)
 	}
 }
+
+func TestValidateMagicModeRangesAndHostname(t *testing.T) {
+	base := func() *Config {
+		return &Config{SigningKey: testSigningKey(), LoginMode: "magic", Hostname: "auth.example.com",
+			MagicTTL: 15 * time.Minute, SessionTTL: 24 * time.Hour, MagicRatePerEmail: 10, MagicGlobalLimit: 500, CookieSecure: true}
+	}
+	if err := base().Validate(); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	c := base()
+	c.MagicGlobalLimit = -1
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Fatalf("negative limit: %v", err)
+	}
+	c = base()
+	c.Hostname = "localhost"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_HOSTNAME") {
+		t.Fatalf("secure magic on localhost: %v", err)
+	}
+	c.CookieSecure = false // plain-HTTP local development stays allowed
+	if err := c.Validate(); err != nil {
+		t.Fatalf("insecure localhost: %v", err)
+	}
+}

@@ -66,6 +66,7 @@ say()  { printf '%s\n' "$*"; }
 step() { printf '\n%s▸ %s%s\n' "$c_bold" "$*" "$c_reset"; }
 ok()   { printf '%s✓ %s%s\n' "$c_green" "$*" "$c_reset"; }
 warn() { printf '%s! %s%s\n' "$c_yellow" "$*" "$c_reset" >&2; }
+info() { printf '%s» %s%s\n' "$c_dim" "$*" "$c_reset"; }
 die()  { printf '%s✗ %s%s\n' "$c_red" "$*" "$c_reset" >&2; exit 1; }
 
 # wait_healthy polls /healthz for ~10s. 0 = the server answered, 1 = never did.
@@ -286,6 +287,22 @@ cp -p "$APP_DIR/bin/auth-admin"          "$BACKUP/auth-admin"
 cp -p "$SYSTEMD_DIR/auth-server.service" "$BACKUP/auth-server.service"
 cp -p "$SYSTEMD_DIR/auth.target"         "$BACKUP/auth.target"
 cp -p "$CLI_BIN"                         "$BACKUP/auth-cli"
+# A consistent snapshot of the database from just before the swap. It is not
+# restored automatically (the previous build reads a newer additive schema
+# fine, and an automatic restore would drop whatever happened in between);
+# the rollback message names it so an operator can choose.
+DB_SNAPSHOT=""
+if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$APP_DIR/data/state.db" ]]; then
+  mkdir -p "$APP_DIR/data/backups"
+  DB_SNAPSHOT="$APP_DIR/data/backups/pre-update-$(date +%Y%m%d%H%M%S).db"
+  if sqlite3 "$APP_DIR/data/state.db" ".backup '$DB_SNAPSHOT'" 2>/dev/null; then
+    chmod 0600 "$DB_SNAPSHOT"; chown "$APP_USER:$APP_USER" "$DB_SNAPSHOT" 2>/dev/null || true
+    info "database snapshot: $DB_SNAPSHOT"
+  else
+    warn "could not snapshot the database before the swap (continuing)"
+    DB_SNAPSHOT=""
+  fi
+fi
 
 # rollback_and_die restores the snapshotted binaries + unit/CLI files, restarts,
 # and exits non-zero. Used for BOTH a failed mid-swap and a started-but-unhealthy
@@ -304,7 +321,7 @@ rollback_and_die() {
   systemctl daemon-reload || true
   systemctl start auth-server.service || true
   if wait_healthy; then
-    die "update aborted — the new build didn't come up; rolled back to the previous binary + units (${before_sha:0:12}) and the service is healthy on them. Investigate: journalctl -u auth-server -n 50"
+    die "update aborted — the new build didn't come up; rolled back to the previous binary + units (${before_sha:0:12}) and the service is healthy on them. Investigate: journalctl -u auth-server -n 50${DB_SNAPSHOT:+; pre-update database snapshot: $DB_SNAPSHOT}"
   fi
   die "update FAILED and the rollback ALSO failed /healthz — manual recovery needed: journalctl -u auth-server -n 50"
 }

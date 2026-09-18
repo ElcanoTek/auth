@@ -390,6 +390,16 @@ func (c *Config) Validate() error {
 		}
 		return nil
 	}
+	// Magic mode. A negative limit would switch a throttle off, and links
+	// are built from the configured hostname: a secure deployment left at
+	// the default would build them from the request's Host header instead,
+	// which a proxy may pass through from the client.
+	if c.MagicRatePerEmail < 0 || c.MagicGlobalLimit < 0 {
+		return fmt.Errorf("magic-link rate limits must not be negative")
+	}
+	if c.CookieSecure && (c.Hostname == "" || c.Hostname == "localhost") {
+		return fmt.Errorf("AUTH_HOSTNAME must name the public host when secure cookies are enabled")
+	}
 	return nil
 }
 
