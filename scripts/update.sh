@@ -69,9 +69,16 @@ warn() { printf '%s! %s%s\n' "$c_yellow" "$*" "$c_reset" >&2; }
 die()  { printf '%s✗ %s%s\n' "$c_red" "$*" "$c_reset" >&2; exit 1; }
 
 # wait_healthy polls /healthz for ~10s. 0 = the server answered, 1 = never did.
+# The listen address comes from .env.local (default 127.0.0.1:9000); a box
+# on another port must not be judged unhealthy and rolled back for it.
+health_addr() {
+  local addr
+  addr="$(grep -E '^AUTH_ADDR=' "$APP_DIR/.env.local" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'"' )"
+  printf '%s' "${addr:-127.0.0.1:9000}"
+}
 wait_healthy() {
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -fsS http://127.0.0.1:9000/healthz >/dev/null 2>&1; then
+    if curl -fsS "http://$(health_addr)/healthz" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1

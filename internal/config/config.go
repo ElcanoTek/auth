@@ -208,6 +208,7 @@ func Load(envFile string) (*Config, error) {
 		_ = os.Setenv(k, v)
 	}
 
+	envErrors = nil
 	cfg := &Config{
 		Addr:               envOr("AUTH_ADDR", "127.0.0.1:9000"),
 		Hostname:           envOr("AUTH_HOSTNAME", "localhost"),
@@ -284,6 +285,10 @@ func Load(envFile string) (*Config, error) {
 		cfg.PreviousPublicKeys = append(cfg.PreviousPublicKeys, ed25519.PublicKey(raw))
 	}
 
+	if len(envErrors) > 0 {
+		return nil, fmt.Errorf("configuration: %s", strings.Join(envErrors, "; "))
+	}
+
 	if cfg.IssuerURL == "" {
 		scheme := "https"
 		if !cfg.CookieSecure {
@@ -333,6 +338,23 @@ func (c *Config) Validate() error {
 	if mode != "magic" && mode != "password" {
 		return fmt.Errorf("unknown AUTH_LOGIN_MODE %q (want magic|password)", c.LoginMode)
 	}
+	// The email driver is checked in both modes: password mode uses it for
+	// security notices, and a misspelt driver must not silently fall back to
+	// printing mail in the journal.
+	switch c.EmailDriver {
+	case "", "stdout":
+		// fine
+	case "sendgrid":
+		if c.SendGridAPIKey == "" {
+			return fmt.Errorf("AUTH_EMAIL_DRIVER=sendgrid requires SENDGRID_API_KEY")
+		}
+	case "smtp":
+		if c.SMTPHost == "" {
+			return fmt.Errorf("AUTH_EMAIL_DRIVER=smtp requires AUTH_SMTP_HOST")
+		}
+	default:
+		return fmt.Errorf("unknown AUTH_EMAIL_DRIVER %q (want stdout|sendgrid|smtp)", c.EmailDriver)
+	}
 	if mode == "password" {
 		if c.PasswordAbsoluteTTL <= 0 || c.PasswordIdleTTL <= 0 || c.PasswordIdleTTL > c.PasswordAbsoluteTTL {
 			return fmt.Errorf("password session TTLs must be positive and idle must not exceed absolute")
@@ -367,20 +389,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("AUTH_MFA_ISSUER (or AUTH_BRAND_NAME) %q: must be non-empty and contain no ':'", c.MFAIssuer)
 		}
 		return nil
-	}
-	switch c.EmailDriver {
-	case "stdout":
-		// fine
-	case "sendgrid":
-		if c.SendGridAPIKey == "" {
-			return fmt.Errorf("AUTH_EMAIL_DRIVER=sendgrid requires SENDGRID_API_KEY")
-		}
-	case "smtp":
-		if c.SMTPHost == "" {
-			return fmt.Errorf("AUTH_EMAIL_DRIVER=smtp requires AUTH_SMTP_HOST")
-		}
-	default:
-		return fmt.Errorf("unknown AUTH_EMAIL_DRIVER %q (want stdout|sendgrid|smtp)", c.EmailDriver)
 	}
 	return nil
 }
@@ -467,24 +475,36 @@ func envOr(k, def string) string {
 	return def
 }
 
+// envInt and envBool fail loud on a value they cannot read: a typo in a
+// security setting ("ture", "7d") must stop the start, not silently pick a
+// weaker default. Errors are collected in envErrors and reported by Load.
+var envErrors []string
+
 func envInt(k string, def int) int {
-	if v := os.Getenv(k); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		return def
 	}
-	return def
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		envErrors = append(envErrors, k+"="+strconv.Quote(v)+" is not a whole number")
+		return def
+	}
+	return n
 }
 
 func envBool(k string, def bool) bool {
-	v := strings.ToLower(os.Getenv(k))
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(k)))
 	switch v {
 	case "":
 		return def
 	case "true", "1", "yes", "y", "on":
 		return true
-	default:
+	case "false", "0", "no", "n", "off":
 		return false
+	default:
+		envErrors = append(envErrors, k+"="+strconv.Quote(v)+" is not true/false")
+		return def
 	}
 }
 

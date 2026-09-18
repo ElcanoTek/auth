@@ -799,7 +799,7 @@ func (s *Store) SetPassword(ctx context.Context, email, passwordHash string, mus
 	if err != nil {
 		return err
 	}
-	return s.replacePassword(ctx, a.ID, "", passwordHash, mustChange, now)
+	return s.replacePassword(ctx, a.ID, "", passwordHash, mustChange, "", now)
 }
 
 // ReplacePasswordIfCurrent is the user path: a compare-and-swap that only
@@ -811,10 +811,24 @@ func (s *Store) ReplacePasswordIfCurrent(ctx context.Context, userID, expectedHa
 	if expectedHash == "" {
 		return errors.New("expected hash is required")
 	}
-	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, now)
+	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, "", now)
 }
 
-func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passwordHash string, mustChange bool, now int64) error {
+// ReplacePasswordKeepingSession is ReplacePasswordIfCurrent for the person
+// changing their own password from a signed-in browser: every other session
+// is revoked and applications are told, but the session that made the
+// change (keepSessionHash) stays, with the evidence it already carries. A
+// replacement password-only session would rate an enrolled account as
+// factor-unverified and sign the person out right after a successful
+// change.
+func (s *Store) ReplacePasswordKeepingSession(ctx context.Context, userID, expectedHash, passwordHash, keepSessionHash string, now int64) error {
+	if expectedHash == "" || keepSessionHash == "" {
+		return errors.New("expected hash and session are required")
+	}
+	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, keepSessionHash, now)
+}
+
+func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passwordHash string, mustChange bool, keepSessionHash string, now int64) error {
 	if userID == "" || passwordHash == "" {
 		return errors.New("user id and password hash are required")
 	}
@@ -847,7 +861,21 @@ func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passw
 		boolInt(mustChange), now, userID); err != nil {
 		return err
 	}
-	if _, err := revokeSessionsTx(ctx, tx, userID, now, "password_replaced"); err != nil {
+	if keepSessionHash != "" {
+		// The kept session must be this user's and live; otherwise the
+		// caller's view of who is signed in is stale and nothing is kept.
+		var live int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_sessions WHERE token_hash = ? AND user_id = ? AND revoked_at IS NULL
+			AND idle_expires_at > ? AND absolute_expires_at > ?`, keepSessionHash, userID, now, now).Scan(&live); err != nil {
+			return err
+		}
+		if live != 1 {
+			return ErrInvalidSession
+		}
+		if _, err := revokeOtherSessionsTx(ctx, tx, userID, keepSessionHash, now, "password_replaced"); err != nil {
+			return err
+		}
+	} else if _, err := revokeSessionsTx(ctx, tx, userID, now, "password_replaced"); err != nil {
 		return err
 	}
 	if err := enqueueLogoutEventTx(ctx, tx, userID, "password_replaced", now); err != nil {
@@ -1299,12 +1327,17 @@ func (s *Store) CreateAuthSession(ctx context.Context, tokenHash, userID, verifi
 	}
 	// Password-only evidence, issued under the account's current security
 	// version. Logins that proved a second factor go through CompleteLogin
-	// (or ActivateAuthenticator with a completion) instead.
+	// (or ActivateAuthenticator with a completion) instead, and an account
+	// that has an active authenticator never gets a password-only session
+	// from here, whatever the caller decided a moment earlier: the row is
+	// refused (ErrInvalidSession) so the handler falls into the factor
+	// flow rather than minting a session Assess would reject anyway.
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at, amr, security_version)
 		SELECT ?, a.id, ?, ?, ?, ?, 'pwd', a.security_version
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
-		WHERE a.id = ? AND a.disabled_at IS NULL AND p.password_hash = ?`,
+		WHERE a.id = ? AND a.disabled_at IS NULL AND p.password_hash = ?
+		  AND NOT EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)`,
 		tokenHash, createdAt, createdAt, idleExpiresAt, absoluteExpiresAt, userID, verifiedHash)
 	if err != nil {
 		return err
@@ -1868,10 +1901,22 @@ func (s *Store) ConsumeAuthorizationCode(ctx context.Context, codeHash, clientID
 		return AuthorizationGrant{}, err
 	}
 	// Re-check the evidence at exchange time: a factor enrolled, reset or
-	// policy tightened between /authorize and /token makes the code void,
-	// and the rollback leaves it unconsumed for nobody (it expires).
+	// policy tightened between /authorize and /token makes the code void.
+	// Void means gone: the row is deleted and that commits, so a retry
+	// after the account's evidence recovers cannot cash the old code (it
+	// would otherwise stay live for the rest of its minute), and, being
+	// deleted rather than consumed, the retry is not misread as a replay.
 	if level, err := assuranceTx(ctx, tx, grant.UserID, grant.SessionTokenHash); err != nil || level != AssuranceOK {
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return AuthorizationGrant{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM authorization_codes WHERE code_hash = ?`, codeHash); err != nil {
+			return AuthorizationGrant{}, err
+		}
+		if err := insertApplicationAudit(ctx, tx, "authorization.code_refused", grant.ClientID, grant.UserID, now); err != nil {
+			return AuthorizationGrant{}, err
+		}
+		if err := tx.Commit(); err != nil {
 			return AuthorizationGrant{}, err
 		}
 		return AuthorizationGrant{}, ErrInvalidGrant
@@ -1997,6 +2042,10 @@ func (s *Store) PendingLogoutDeliveries(ctx context.Context, clientID string, no
 	return out, rows.Err()
 }
 
+// replayRetention is how long an exchanged authorization code is remembered
+// so that a second presentation reads as a replay.
+const replayRetention = 10 * time.Minute
+
 // SweepPasswordState deletes expired/consumed authorization codes, expired
 // sessions, stale login attempts, and audit events older than auditRetention
 // (0 keeps audit events forever).
@@ -2006,7 +2055,11 @@ func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetent
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `DELETE FROM authorization_codes WHERE expires_at <= ? OR consumed_at IS NOT NULL`, now)
+	// Exchanged codes stay ten minutes so a late second presentation is
+	// still recognised as a replay (ReplayedAuthorizationCode) rather than
+	// as a code that never existed; unexchanged ones go as they expire.
+	res, err := tx.ExecContext(ctx, `DELETE FROM authorization_codes
+		WHERE (consumed_at IS NULL AND expires_at <= ?) OR (consumed_at IS NOT NULL AND consumed_at <= ?)`, now, now-int64(replayRetention.Seconds()))
 	if err != nil {
 		return 0, err
 	}

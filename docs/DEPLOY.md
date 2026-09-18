@@ -60,12 +60,18 @@ sudo env \
   AUTH_BOOTSTRAP_ALLOWED_DOMAINS="example.com,partner.example" \
   AUTH_BOOTSTRAP_EMAIL_DRIVER="sendgrid" \
   AUTH_BOOTSTRAP_EMAIL_FROM="Sign in <login@example.com>" \
-  AUTH_BOOTSTRAP_SENDGRID_API_KEY="SG.xxx" \
   AUTH_BOOTSTRAP_SETUP_CADDY=y \
   AUTH_BOOTSTRAP_USE_LETSENCRYPT=y \
   AUTH_BOOTSTRAP_LE_EMAIL="ops@example.com" \
+  AUTH_BOOTSTRAP_SENDGRID_API_KEY="$SENDGRID_KEY" \
   bash /opt/auth-src/scripts/bootstrap.sh
 ```
+
+Read the SendGrid key into `SENDGRID_KEY` first with `read -rs SENDGRID_KEY`
+(silent, so it stays out of the terminal and the shell history). It still
+travels to the script through `env`'s argument list, which other processes on
+the box can read for the moment the command starts; on a shared box, prefer
+the interactive prompt, which never puts the key in an argument.
 
 For a new password-mode client, omit all magic-link settings:
 
@@ -262,8 +268,10 @@ An application may add `prompt=none` to its `/authorize` request to ask
 "sign this browser in only if it already has a central session". With a live
 session Auth issues the code as usual; without one it never shows a form and
 redirects back to the registered callback with `error=login_required` (or
-`error=interaction_required` when the account still has to complete a forced
-password change), plus the caller's `state` and `iss`. Fleet uses this to try
+`error=interaction_required` when the account is signed in but has to do
+something at Auth first: a forced password change, a required enrolment, or
+a second factor its session has not proven), plus the caller's `state` and
+`iss`. Fleet uses this to try
 SSO automatically on an anonymous visit and fall back to its own login page
 when the answer is no. Other `prompt` values are rejected (400) until they are
 implemented (auth#29 covers `prompt=login`).
@@ -318,7 +326,9 @@ password. What people see:
   factor is proven and before enrolment. Existing sessions of an account that
   becomes required, and has no factor, are signed out immediately.
 - **Turning it off.** Under the Optional policy a person may turn their own
-  factor off from the Security page (password and code required). A required
+  factor off from the Security page (a sign-in or step-up less than five
+  minutes old is required; the step-up asks for the password and, for an
+  enrolled account, the current code). A required
   account cannot; it can only replace the authenticator. A lost authenticator
   is an administrator reset (Settings → Reset two-factor in the console, or
   `auth user mfa-reset <email> --reason "..."` on the box), after which the
@@ -604,10 +614,19 @@ sudo chmod +x /etc/cron.daily/auth-backup
 
 ```bash
 auth stop
+# Drop the write-ahead log and shared-memory files of the database being
+# replaced: left in place, SQLite would replay the old WAL over the restored
+# snapshot at the next open.
+sudo rm -f /opt/auth/data/state.db-wal /opt/auth/data/state.db-shm
 sudo cp /opt/auth/data/backups/auth-2026-04-01.db /opt/auth/data/state.db
 sudo chown auth:auth /opt/auth/data/state.db
 auth start
 ```
+
+`auth backup` snapshots only the database. Keep a root-only copy of
+`/opt/auth/.env.local` as well (it holds the signing seed and `AUTH_MFA_KEY`;
+a database restored without the matching `AUTH_MFA_KEY` cannot decrypt any
+enrolled authenticator).
 
 > In legacy magic-link mode, restoring an old DB does not invalidate the
 > Ed25519-signed cookies already in browsers. In password mode, the database
@@ -838,15 +857,17 @@ verify cookies but never mint them.
 # Rotate the signing keypair — invalidates EVERY active session across
 # EVERY service that verifies this cookie. Generate a fresh keypair:
 auth keygen                       # prints AUTH_SIGNING_KEY + AUTH_SIGNING_PUBKEY
-# Put the new private seed on the auth host:
-sudo sed -i "s|^AUTH_SIGNING_KEY=.*|AUTH_SIGNING_KEY=\"<new seed>\"|" /opt/auth/.env.local
+# Put the new private seed on the auth host. Edit the file rather than
+# passing the seed on a command line: argv is visible to every process on
+# the box and lands in the shell history.
+sudo auth env edit                # set AUTH_SIGNING_KEY="<new seed>"
 auth restart
 # Then update AUTH_SIGNING_PUBKEY on EVERY verifying service
 # to the new public key and restart each. Until you do, those services
 # reject all cookies (they verify against the old public key).
 
 # Rotate the SendGrid API key (after issuing a new key in the SendGrid console)
-sudo sed -i "s|^SENDGRID_API_KEY=.*|SENDGRID_API_KEY=\"SG.new_key_here\"|" /opt/auth/.env.local
+sudo auth env edit                # set SENDGRID_API_KEY="SG.new_key_here"
 auth restart
 ```
 

@@ -550,3 +550,73 @@ func TestForcedChangeSessionForAnEnrolledAccountStartsOver(t *testing.T) {
 		t.Fatalf("/me: %s", me)
 	}
 }
+
+// An enrolled person changing their own password stays signed in on that
+// browser, with the factor still proven; every other session is signed out.
+func TestEnrolledPasswordChangeKeepsTheSession(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	// The page serves administrators changing their own password (and
+	// forced changes); alice is one, enrolled.
+	if err := st.SetAccountAdmin(context.Background(), "alice@example.com", true, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	secret, _ := enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	laptop := newBrowser(t, ts)
+	laptop.login("alice@example.com", plain)
+	if resp, _ := laptop.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now())}}); resp.StatusCode != http.StatusSeeOther || !laptop.has(cfg.PasswordCookieName) {
+		t.Fatalf("laptop sign-in: %d", resp.StatusCode)
+	}
+	phone := newBrowser(t, ts)
+	phone.login("alice@example.com", plain)
+	if resp, _ := phone.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))}}); resp.StatusCode != http.StatusSeeOther || !phone.has(cfg.PasswordCookieName) {
+		t.Fatalf("phone sign-in: %d", resp.StatusCode)
+	}
+	before := laptop.cookies[cfg.PasswordCookieName].Value
+	const next = "a completely different passphrase"
+	resp, page := laptop.post("/change-password", url.Values{"current_password": {plain}, "new_password": {next}, "confirm_password": {next}, "return_to": {"/account"}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account" {
+		t.Fatalf("change: %d %q\n%s", resp.StatusCode, resp.Header.Get("Location"), page)
+	}
+	if laptop.cookies[cfg.PasswordCookieName] == nil || laptop.cookies[cfg.PasswordCookieName].Value != before {
+		t.Fatal("the changing browser's session was replaced or dropped")
+	}
+	if resp, _ := laptop.get("/account"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("laptop after change: %d (an enrolled account must not be bounced to step-up)", resp.StatusCode)
+	}
+	if resp, _ := laptop.get("/admin"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("laptop lost the console after its own password change: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp, _ := phone.get("/account"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("phone survived the password change: %d", resp.StatusCode)
+	}
+	// The new password (and the factor) sign in; the old one does not.
+	tablet := newBrowser(t, ts)
+	if resp, _ := tablet.login("alice@example.com", plain); resp.Header.Get("Location") == "/login/verify" {
+		t.Fatal("old password still accepted")
+	}
+	if resp, _ := tablet.login("alice@example.com", next); resp.Header.Get("Location") != "/login/verify" {
+		t.Fatalf("new password: %q", resp.Header.Get("Location"))
+	}
+}
+
+// Confirming an enrolment from the Security page is a code check like any
+// other: it is metered per account, and the eleventh wrong code is refused
+// before it is compared.
+func TestSecurityPageEnrolmentConfirmIsRateLimited(t *testing.T) {
+	ts, _, cfg, plain := newPasswordTestServer(t, false)
+	alice := newBrowser(t, ts)
+	if resp, _ := alice.login("alice@example.com", plain); !alice.has(cfg.PasswordCookieName) {
+		t.Fatalf("login: %q", resp.Header.Get("Location"))
+	}
+	if resp, _ := alice.post("/account/security", url.Values{"action": {"start"}}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("start: %d", resp.StatusCode)
+	}
+	for i := 1; i <= 10; i++ {
+		if resp, page := alice.post("/account/security", url.Values{"action": {"confirm"}, "code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not match") {
+			t.Fatalf("guess %d: %d\n%s", i, resp.StatusCode, page)
+		}
+	}
+	if resp, page := alice.post("/account/security", url.Values{"action": {"confirm"}, "code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Too many attempts") {
+		t.Fatalf("eleventh guess: %d\n%s", resp.StatusCode, page)
+	}
+}

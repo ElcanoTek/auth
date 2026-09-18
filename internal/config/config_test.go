@@ -492,3 +492,41 @@ func TestMFAConfiguration(t *testing.T) {
 		t.Fatalf("explicit issuer: %q %v", cfg.MFAIssuer, err)
 	}
 }
+
+// A security setting that cannot be read stops the start; it never falls
+// back to a default the operator did not choose.
+func TestLoadRejectsMalformedNumbersAndBooleans(t *testing.T) {
+	cases := map[string]string{
+		"AUTH_SESSION_TTL_DAYS": "7d",
+		"AUTH_COOKIE_SECURE":    "ture",
+	}
+	for key, value := range cases {
+		t.Run(key, func(t *testing.T) {
+			clearAllAuthEnv(t)
+			t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+			t.Setenv(key, value)
+			_, err := Load("")
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("Load with %s=%q: want an error naming the variable, got %v", key, value, err)
+			}
+		})
+	}
+	clearAllAuthEnv(t)
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+	t.Setenv("AUTH_COOKIE_SECURE", " off ")
+	cfg, err := Load("")
+	if err != nil || cfg.CookieSecure {
+		t.Fatalf("explicit off: %v %v", cfg, err)
+	}
+}
+
+func TestValidateChecksEmailDriverInPasswordMode(t *testing.T) {
+	cfg := &Config{
+		SigningKey: testSigningKey(), LoginMode: "password", EmailDriver: "carrier-pigeon",
+		PasswordAbsoluteTTL: 2 * time.Hour, PasswordIdleTTL: time.Hour, CodeTTL: time.Minute, AssertionTTL: 5 * time.Minute,
+		IssuerURL: "http://auth.example.test", PasswordCookieName: "auth_session",
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "unknown AUTH_EMAIL_DRIVER") {
+		t.Fatalf("password mode skipped the email driver check: %v", err)
+	}
+}

@@ -200,15 +200,15 @@ func requireActorTx(ctx context.Context, tx *sql.Tx, actorID string, proof *Acto
 		return nil
 	}
 	var isAdmin, enrolled int
-	var disabled, revoked, reauthAt sql.NullInt64
+	var disabled, revoked, reauthAt, mfaAt sql.NullInt64
 	var idle, absolute, created int64
 	var amr string
 	err := tx.QueryRowContext(ctx, `
-		SELECT a.is_admin, a.disabled_at, s.revoked_at, s.idle_expires_at, s.absolute_expires_at, s.created_at, s.amr, s.reauth_at,
+		SELECT a.is_admin, a.disabled_at, s.revoked_at, s.idle_expires_at, s.absolute_expires_at, s.created_at, s.amr, s.reauth_at, s.mfa_verified_at,
 		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
 		FROM auth_sessions s JOIN accounts a ON a.id = s.user_id
 		WHERE s.token_hash = ? AND s.user_id = ?`, proof.SessionHash, actorID).
-		Scan(&isAdmin, &disabled, &revoked, &idle, &absolute, &created, &amr, &reauthAt, &enrolled)
+		Scan(&isAdmin, &disabled, &revoked, &idle, &absolute, &created, &amr, &reauthAt, &mfaAt, &enrolled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrActorNotFresh
 	}
@@ -219,12 +219,17 @@ func requireActorTx(ctx context.Context, tx *sql.Tx, actorID string, proof *Acto
 		return ErrActorNotFresh
 	}
 	// Fresh: signed in, or re-verified, at or after FreshAfter. With
-	// RequireFactor the session's evidence must carry an authenticator code
-	// ("otp"): a recovery-code sign-in does not qualify, and a step-up that
-	// proved the code upgrades the evidence (StampSessionReauth), so a
-	// concurrent disable, which downgrades it, is seen here.
+	// RequireFactor the authenticator code itself must have been accepted
+	// inside the window (mfa_verified_at, which a sign-in with the code and
+	// VerifyFactorAndStampReauth both write) and the evidence must still
+	// say "otp": a recovery-code sign-in does not qualify, a password-only
+	// re-verification (reauth_at alone) does not qualify, and a concurrent
+	// disable, which downgrades the evidence, is seen here.
 	fresh := created >= proof.FreshAfter || (reauthAt.Valid && reauthAt.Int64 >= proof.FreshAfter)
-	if !fresh || (proof.RequireFactor && (!hasMethodIn(amr, "otp") || enrolled == 0)) {
+	if !fresh {
+		return ErrActorNotFresh
+	}
+	if proof.RequireFactor && (!hasMethodIn(amr, "otp") || enrolled == 0 || !mfaAt.Valid || mfaAt.Int64 < proof.FreshAfter) {
 		return ErrActorNotFresh
 	}
 	return nil
@@ -626,6 +631,12 @@ func (s *Store) ActivateAuthenticator(ctx context.Context, pendingID, userID str
 	var previous int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM authenticators WHERE user_id = ? AND kind = 'totp' AND verified_at IS NOT NULL AND disabled_at IS NULL`, userID).Scan(&previous); err != nil {
 		return 0, err
+	}
+	// A sign-in-time enrolment proves the password and the new secret, not
+	// the factor the account already has; only a signed-in session that
+	// proved the existing factor (keepSessionHash) may replace it.
+	if completion != nil && previous > 0 {
+		return 0, ErrStaleTransaction
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE authenticators SET disabled_at = ? WHERE user_id = ? AND kind = 'totp' AND verified_at IS NOT NULL AND disabled_at IS NULL`, now, userID); err != nil {
 		return 0, err
@@ -1081,9 +1092,9 @@ func (s *Store) AuthTransactionByState(ctx context.Context, stateHash string, no
 // five), and resets the attempt counter for the new stage. The stage
 // precondition makes concurrent advances race for one update; the loser
 // gets ErrTransactionNotFound.
-func (s *Store) AdvanceAuthTransaction(ctx context.Context, id, fromStage, toStage string, expiresAt int64) error {
+func (s *Store) AdvanceAuthTransaction(ctx context.Context, id, fromStage, toStage string, now, expiresAt int64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE authentication_transactions SET stage = ?, expires_at = CASE WHEN ? > expires_at THEN ? ELSE expires_at END, attempts = 0
-		WHERE id = ? AND stage = ? AND consumed_at IS NULL`, toStage, expiresAt, expiresAt, id, fromStage)
+		WHERE id = ? AND stage = ? AND consumed_at IS NULL AND expires_at > ?`, toStage, expiresAt, expiresAt, id, fromStage, now)
 	if err != nil {
 		return err
 	}
@@ -1671,11 +1682,15 @@ func (s *Store) SaveAccountAccess(ctx context.Context, email string, save Access
 		event := "mfa.required_cleared"
 		if *save.MFARequired {
 			event = "mfa.required_set"
-			n, err := signOutUnenrolledRequiredTx(ctx, tx, policy.Mode, a.ID, now)
-			if err != nil {
-				return AccessSaveResult{}, err
+			// The promotion above may already have signed the account out
+			// (and told every application once); do not queue it twice.
+			if !out.SignedOut {
+				n, err := signOutUnenrolledRequiredTx(ctx, tx, policy.Mode, a.ID, now)
+				if err != nil {
+					return AccessSaveResult{}, err
+				}
+				out.SignedOut = n > 0
 			}
-			out.SignedOut = out.SignedOut || n > 0
 		}
 		meta, _ := json.Marshal(map[string]any{"actor": actorID})
 		if err := insertAudit(ctx, tx, event, a.ID, now, string(meta)); err != nil {

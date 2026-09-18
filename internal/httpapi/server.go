@@ -775,8 +775,12 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// administrator replaced the password (or disabled the account) in the
 	// meantime, this must not overwrite their change. Their replacement
 	// already revoked this session, so send the user back to sign in.
-	err = s.store.ReplacePasswordIfCurrent(r.Context(), account.ID, account.PasswordHash, encoded, now.Unix())
-	if errors.Is(err, store.ErrCredentialChanged) {
+	// This browser's session stays, with the evidence it already carries
+	// (a proven factor included); every other session is signed out. A
+	// freshly minted password-only session would fail Assess for an
+	// enrolled account and sign the person out right after the change.
+	err = s.store.ReplacePasswordKeepingSession(r.Context(), account.ID, account.PasswordHash, encoded, identity.Session.TokenHash, now.Unix())
+	if errors.Is(err, store.ErrCredentialChanged) || errors.Is(err, store.ErrInvalidSession) {
 		s.clearPasswordCookies(w)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
@@ -784,12 +788,6 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("replace password: %v", err)
 		s.renderChangePassword(w, "Something went wrong. Try again.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
-		return
-	}
-	updated, err := s.store.PasswordAccountByID(r.Context(), identity.Account.ID)
-	if err != nil || s.issuePasswordSession(w, r, updated, now) != nil {
-		s.clearPasswordCookies(w)
-		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 	dest := s.resolveReturnTo(r.FormValue("return_to"))
@@ -873,6 +871,11 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		code := "login_required"
 		if identity != nil {
 			code = "interaction_required"
+			if level == store.AssuranceFactorUnverified {
+				// Same as the interactive path: a session whose factor
+				// evidence no longer holds is not worth keeping.
+				s.clearPasswordCookies(w)
+			}
 		}
 		s.redirectAuthorizeError(w, r, redirectURI, state, code)
 		return
@@ -978,8 +981,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	auditRefusal := func(event string) {
 		_, _ = s.store.RecordAuditIfAbsent(r.Context(), event, "", ipRateKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
 	}
+	// RFC 6749 §2.3.1: with client_secret_basic the client is identified by
+	// the Authorization header; a client_id in the body is allowed but must
+	// then agree with it.
 	clientID, clientSecret, ok := r.BasicAuth()
-	if !ok || clientID == "" || clientID != r.FormValue("client_id") {
+	if bodyID := r.FormValue("client_id"); !ok || clientID == "" || (bodyID != "" && bodyID != clientID) {
 		auditRefusal("token.invalid_client")
 		writeInvalidClient(w)
 		return

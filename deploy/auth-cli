@@ -11,7 +11,14 @@
 
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/auth}"
+# The install root may be overridden by root (tests, alternate prefixes),
+# never by an unprivileged caller: several subcommands exec sudo on paths
+# under it.
+if [[ $EUID -eq 0 ]]; then
+  APP_DIR="${APP_DIR:-/opt/auth}"
+else
+  APP_DIR="/opt/auth"
+fi
 ADMIN_BIN="$APP_DIR/bin/auth-admin"
 ENV_LOCAL="$APP_DIR/.env.local"
 
@@ -34,7 +41,7 @@ else
       /^[[:space:]]*#/ { next } /^[[:space:]]*$/ { next }
       { eq = index($0, "="); if (eq == 0) { print; next }
         key = substr($0, 1, eq - 1); sub(/^[[:space:]]+/, "", key)
-        if (key ~ /TOKEN|KEY|SECRET|PASSWORD|PASSWD/) printf "%s=[REDACTED]\n", key; else print }
+        if (key ~ /TOKEN|KEY|SECRET|PASS/) printf "%s=[REDACTED]\n", key; else print }
     ' "$1"
   }
 fi

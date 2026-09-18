@@ -55,11 +55,6 @@ func main() {
 		log.Printf("client branding from %s (wordmark=%q logo=%v palette=%v)",
 			brand.Dir, brand.AppName, len(brand.Logo) > 0, brand.CSS != "")
 	}
-	if checkOnly {
-		log.Printf("configuration OK (hostname=%s, login_mode=%s, branding=%v)", cfg.Hostname, cfg.LoginMode, brand != nil)
-		return
-	}
-
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.Fatalf("mkdir data dir: %v", err)
 	}
@@ -80,6 +75,14 @@ func main() {
 			log.Fatalf("AUTH_MFA_KEY is unset but accounts hold authenticators; restore the key from the .env.local backup (or reset their factors with the CLI) before starting")
 		}
 		log.Printf("2FA unavailable: AUTH_MFA_KEY is not set (generate one with `auth mfa keygen`)")
+	}
+	if checkOnly {
+		// update.sh runs this before swapping binaries: the store opened
+		// (and migrated) and the start-time checks above passed, so the new
+		// build will actually come up on this database and configuration.
+		_ = st.Close()
+		log.Printf("configuration OK (hostname=%s, login_mode=%s, branding=%v)", cfg.Hostname, cfg.LoginMode, brand != nil)
+		return
 	}
 	defer func() { _ = st.Close() }()
 
