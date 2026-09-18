@@ -72,13 +72,25 @@ die()  { printf '%s✗ %s%s\n' "$c_red" "$*" "$c_reset" >&2; exit 1; }
 # wait_healthy polls /healthz for ~10s. 0 = the server answered, 1 = never did.
 # The listen address comes from .env.local (default 127.0.0.1:9000); a box
 # on another port must not be judged unhealthy and rolled back for it.
+# env_value KEY prints the effective value of a setting in .env.local: the
+# last occurrence wins, as it does for the server; whitespace around the key
+# and value, a quoted value and a trailing comment are all tolerated.
+env_value() {
+  local v
+  v="$(KEY="$1" awk '
+    index($0, "=") && $0 ~ ("^[[:space:]]*" ENVIRON["KEY"] "[[:space:]]*=") { v = $0; sub(/^[^=]*=/, "", v); last = v }
+    END { print last }' "$APP_DIR/.env.local" 2>/dev/null)"
+  v="${v%%#*}"
+  # Trim the ends, then one pair of quotes; inner spaces are part of the value.
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  v="${v#[\"\']}"
+  v="${v%[\"\']}"
+  printf '%s' "$v"
+}
 health_addr() {
   local addr host port
-  # Last occurrence wins, as it does for the server; whitespace around the
-  # key and value, a quoted value and a trailing comment are all tolerated.
-  addr="$(awk -F= '/^[[:space:]]*AUTH_ADDR[[:space:]]*=/ { v = $0; sub(/^[^=]*=/, "", v); last = v } END { print last }' "$APP_DIR/.env.local" 2>/dev/null)"
-  addr="${addr%%#*}"
-  addr="${addr//[\"\' ]/}"
+  addr="$(env_value AUTH_ADDR)"
   addr="${addr:-127.0.0.1:9000}"
   # A wildcard or empty listen host is probed on loopback, same port.
   port="${addr##*:}"
@@ -302,17 +314,22 @@ cp -p "$CLI_BIN"                         "$BACKUP/auth-cli"
 # restored automatically (the previous build reads a newer additive schema
 # fine, and an automatic restore would drop whatever happened in between);
 # the rollback message names it so an operator can choose.
+# The database lives where the server was told (AUTH_DATA_DIR, default
+# $APP_DIR/data; a relative value is relative to $APP_DIR). An existing
+# database that cannot be snapshotted stops the update here, before any
+# swap: the rollback aid the messages promise must exist.
+DATA_DIR="$(env_value AUTH_DATA_DIR)"
+DATA_DIR="${DATA_DIR:-$APP_DIR/data}"
+[[ "$DATA_DIR" == /* ]] || DATA_DIR="$APP_DIR/$DATA_DIR"
 DB_SNAPSHOT=""
-if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$APP_DIR/data/state.db" ]]; then
-  mkdir -p "$APP_DIR/data/backups"
-  DB_SNAPSHOT="$APP_DIR/data/backups/pre-update-$(date +%Y%m%d%H%M%S).db"
-  if sqlite3 "$APP_DIR/data/state.db" ".backup '$DB_SNAPSHOT'" 2>/dev/null; then
-    chmod 0600 "$DB_SNAPSHOT"; chown "$APP_USER:$APP_USER" "$DB_SNAPSHOT" 2>/dev/null || true
-    info "database snapshot: $DB_SNAPSHOT"
-  else
-    warn "could not snapshot the database before the swap (continuing)"
-    DB_SNAPSHOT=""
-  fi
+if [[ -f "$DATA_DIR/state.db" ]]; then
+  command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is needed to snapshot $DATA_DIR/state.db before the swap (dnf install sqlite); nothing was changed"
+  install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR/backups"
+  DB_SNAPSHOT="$DATA_DIR/backups/pre-update-$(date +%Y%m%d%H%M%S).db"
+  ( umask 077 && sqlite3 "$DATA_DIR/state.db" ".backup '$DB_SNAPSHOT'" ) \
+    || die "could not snapshot $DATA_DIR/state.db to $DB_SNAPSHOT; nothing was changed"
+  chmod 0600 "$DB_SNAPSHOT"; chown "$APP_USER:$APP_USER" "$DB_SNAPSHOT"
+  info "database snapshot: $DB_SNAPSHOT"
 fi
 
 # rollback_and_die restores the snapshotted binaries + unit/CLI files, restarts,

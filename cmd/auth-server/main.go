@@ -83,6 +83,9 @@ func main() {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		log.Fatalf("mkdir data dir: %v", err)
 	}
+	// MkdirAll leaves an existing directory's mode alone; narrow it too
+	// (best effort: a directory owned by someone else cannot be changed).
+	_ = os.Chmod(cfg.DataDir, 0o700)
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		log.Fatalf("open store: %v", err)

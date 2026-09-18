@@ -35,13 +35,13 @@ func (q *memoryQueue) ClaimDueLogoutDeliveries(context.Context, int64, int, time
 	}
 	return []store.LogoutDelivery{q.delivery}, nil
 }
-func (q *memoryQueue) MarkLogoutDeliveryDelivered(_ context.Context, _, _ string, _ int64) error {
+func (q *memoryQueue) MarkLogoutDeliveryDelivered(_ context.Context, _, _, _ string, _ int64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.delivered = true
 	return nil
 }
-func (q *memoryQueue) MarkLogoutDeliveryFailed(_ context.Context, _, _ string, _ int64, _ time.Duration, _ string) error {
+func (q *memoryQueue) MarkLogoutDeliveryFailed(_ context.Context, _, _, _ string, _ int64, _ time.Duration, _ string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.failed = true

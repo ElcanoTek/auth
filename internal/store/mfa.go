@@ -1494,17 +1494,18 @@ func (s *Store) HasAuthenticators(ctx context.Context) (bool, error) {
 // to an enrolment that cannot work, and an administrators policy would
 // lock the console). Works on a database that predates the MFA tables.
 func (s *Store) MFAKeyRequiredReason(ctx context.Context) (string, error) {
-	if ok, err := s.tableExists(ctx, "authenticators"); err != nil || !ok {
-		return "", err
+	// A pre-v6 database has the reserved tables but not the v6 columns
+	// (accounts.mfa_required, authentication_policies.revision), so the
+	// marker, not table existence, decides whether these queries can run.
+	// Without v6 nothing could have needed the key yet.
+	if !s.hasMigration(ctx, 6) {
+		return "", nil
 	}
 	if has, err := s.HasAuthenticators(ctx); err != nil || has {
 		if err != nil {
 			return "", err
 		}
 		return "accounts hold authenticators", nil
-	}
-	if ok, err := s.tableExists(ctx, "authentication_policies"); err != nil || !ok {
-		return "", err
 	}
 	policy, err := mfaPolicyQ(ctx, s.db)
 	if err != nil {

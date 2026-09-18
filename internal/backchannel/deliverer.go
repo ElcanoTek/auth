@@ -17,8 +17,8 @@ import (
 
 type Queue interface {
 	ClaimDueLogoutDeliveries(context.Context, int64, int, time.Duration) ([]store.LogoutDelivery, error)
-	MarkLogoutDeliveryDelivered(context.Context, string, string, int64) error
-	MarkLogoutDeliveryFailed(context.Context, string, string, int64, time.Duration, string) error
+	MarkLogoutDeliveryDelivered(ctx context.Context, eventID, clientID, endpoint string, now int64) error
+	MarkLogoutDeliveryFailed(ctx context.Context, eventID, clientID, endpoint string, now int64, retryAfter time.Duration, message string) error
 }
 
 type Deliverer struct {
@@ -88,7 +88,7 @@ func (d *Deliverer) RunOnce(ctx context.Context, now time.Time) error {
 			}
 			continue
 		}
-		if err := d.queue.MarkLogoutDeliveryDelivered(ctx, delivery.EventID, delivery.ClientID, now.Unix()); err != nil {
+		if err := d.queue.MarkLogoutDeliveryDelivered(ctx, delivery.EventID, delivery.ClientID, delivery.Endpoint, now.Unix()); err != nil {
 			return fmt.Errorf("mark logout delivery complete: %w", err)
 		}
 	}
@@ -103,7 +103,7 @@ func (d *Deliverer) fail(ctx context.Context, delivery store.LogoutDelivery, now
 	if delay > time.Hour {
 		delay = time.Hour
 	}
-	if err := d.queue.MarkLogoutDeliveryFailed(ctx, delivery.EventID, delivery.ClientID, now.Unix(), delay, message); err != nil {
+	if err := d.queue.MarkLogoutDeliveryFailed(ctx, delivery.EventID, delivery.ClientID, delivery.Endpoint, now.Unix(), delay, message); err != nil {
 		return fmt.Errorf("record logout delivery failure: %w", err)
 	}
 	return nil
