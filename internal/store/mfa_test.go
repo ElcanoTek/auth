@@ -1064,3 +1064,132 @@ func TestSaveAccountAccessIsAtomic(t *testing.T) {
 		t.Fatalf("after save: admin=%v required=%v sessions=%d", b.IsAdmin, b.MFARequired, liveSessions(t, s, b.ID, now+5))
 	}
 }
+
+// The forced password change inside a login transaction is a single
+// compare-and-swap: many identical submissions race for one commit, the
+// rest see the transaction gone or stale, and the credential changes once.
+func TestReplacePasswordUnderTransactionAdmitsExactlyOne(t *testing.T) {
+	s, a, now := mfaFixture(t)
+	ctx := context.Background()
+	enrol(t, s, a, "", now)
+	a, _ = s.PasswordAccountByEmail(ctx, a.Email)
+	newLoginTx(t, s, a, "t1", "st1", "password_change", now+1)
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			err := s.ReplacePasswordUnderTransaction(ctx, "t1", "password_change", "complete", a.ID, a.PasswordHash,
+				fmt.Sprintf("$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3%02d", i), now+2, now+300)
+			switch {
+			case err == nil:
+				wins.Add(1)
+			case errors.Is(err, ErrTransactionNotFound), errors.Is(err, ErrStaleTransaction), errors.Is(err, ErrCredentialChanged):
+			default:
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if wins.Load() != 1 {
+		t.Fatalf("%d password replacements committed, want 1", wins.Load())
+	}
+	after, _ := s.PasswordAccountByEmail(ctx, a.Email)
+	tr, err := s.AuthTransactionByState(ctx, "st1", now+3)
+	if err != nil || tr.Stage != "complete" || tr.CredentialHash != after.PasswordHash || after.PasswordHash == a.PasswordHash {
+		t.Fatalf("after race: tx=%+v err=%v hash changed=%v", tr, err, after.PasswordHash != a.PasswordHash)
+	}
+}
+
+// A factor login completing while an administrator resets the same
+// account's factor: whichever order the two commits take, no live session
+// remains and the factor is gone.
+func TestCompleteLoginRacingAnAdministratorReset(t *testing.T) {
+	for round := 0; round < 6; round++ {
+		s, a, now := mfaFixture(t)
+		ctx := context.Background()
+		f := enrol(t, s, a, "", now)
+		a, _ = s.PasswordAccountByEmail(ctx, a.Email)
+		newLoginTx(t, s, a, "t1", "st1", "factor", now+1)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, err := s.CompleteLogin(ctx, "t1", "factor", "sess", LoginProof{Kind: ProofTOTP, AuthenticatorID: f.ID, Step: 200 + int64(round)}, now+2, now+62, now+122)
+			if err != nil && !errors.Is(err, ErrInvalidProof) && !errors.Is(err, ErrStaleTransaction) && !errors.Is(err, ErrTransactionNotFound) && !errors.Is(err, ErrInvalidSession) {
+				t.Error(err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := s.ResetMFA(ctx, a.ID, "admin", "race", now+2); err != nil {
+				t.Error(err)
+			}
+		}()
+		wg.Wait()
+		if n := liveSessions(t, s, a.ID, now+3); n != 0 {
+			t.Fatalf("round %d: %d live sessions after a concurrent reset", round, n)
+		}
+		if _, err := s.ActiveAuthenticator(ctx, a.ID); !errors.Is(err, ErrNoAuthenticator) {
+			t.Fatalf("round %d: factor survived the reset", round)
+		}
+	}
+}
+
+// Recording the factor for a later step is a conditional update too: the
+// same code presented twice records once.
+func TestRecordFactorForTransactionAdmitsExactlyOne(t *testing.T) {
+	s, a, now := mfaFixture(t)
+	ctx := context.Background()
+	f := enrol(t, s, a, "", now)
+	a, _ = s.PasswordAccountByEmail(ctx, a.Email)
+	newLoginTx(t, s, a, "t1", "st1", "factor", now+1)
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := s.RecordFactorForTransaction(ctx, "t1", "factor", "password_change", LoginProof{Kind: ProofTOTP, AuthenticatorID: f.ID, Step: 300}, now+2, now+300)
+			if err == nil {
+				wins.Add(1)
+			} else if !errors.Is(err, ErrInvalidProof) && !errors.Is(err, ErrTransactionNotFound) {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins.Load() != 1 {
+		t.Fatalf("%d factor recordings, want 1", wins.Load())
+	}
+	tr, _ := s.AuthTransactionByState(ctx, "st1", now+3)
+	if tr.Stage != "password_change" || tr.FactorMethod != "otp" {
+		t.Fatalf("transaction after race: %+v", tr)
+	}
+}
+
+// Login-attempt counters are rows, so an MFA throttle survives a restart.
+func TestMFAThrottleSurvivesReopen(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now().Unix()
+	for i := 0; i < 3; i++ {
+		if _, err := s.ReserveLoginAttempts(ctx, now, "mfa-user:x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.Close()
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if n, _ := s.CountFailedLoginAttempts(ctx, "mfa-user:x", now-60); n != 3 {
+		t.Fatalf("attempts after reopen = %d, want 3", n)
+	}
+}

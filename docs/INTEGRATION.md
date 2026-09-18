@@ -80,7 +80,11 @@ should too.
      (EdDSA, `kid`, exact `iss` and `aud`, live `exp`, the back-channel event
      claim, no `nonce`), revokes every session for the subject, and records
      `jti` so retries are idempotent. Return 400 for an invalid token and 503
-     for a temporary failure so Auth's delivery worker retries. Read Auth's
+     for a temporary failure so Auth's delivery worker retries. The event's
+     reason (`password_replaced`, `account_disabled`, `access_revoked`,
+     `mfa_enrolled`, `mfa_disabled`, `mfa_reset`, `mfa_required`, ...) is
+     informational; treat every event the same way: end the subject's
+     sessions. Read Auth's
      `/jwks.json` at runtime (cache about ten minutes, refresh once when a
      token names an unknown `kid`, keep the cached set on a failed fetch) so a
      signing-key rotation is a one-sided change on Auth; a static

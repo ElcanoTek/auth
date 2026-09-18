@@ -1685,3 +1685,10 @@ func (s *Store) SaveAccountAccess(ctx context.Context, email string, save Access
 	}
 	return out, tx.Commit()
 }
+
+// AbandonPendingAuthenticator deletes an account's unconfirmed enrolment
+// (a cancelled sign-in, or a person leaving the set-up page).
+func (s *Store) AbandonPendingAuthenticator(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM authenticators WHERE user_id = ? AND kind = 'totp' AND verified_at IS NULL`, userID)
+	return err
+}

@@ -11,8 +11,10 @@ It runs in one of two modes, chosen per deployment:
   OpenID Connect style authorization-code handoff (`/authorize`, `/token`,
   discovery, JWKS) and, if they register a back-channel endpoint, receive a
   signed logout when a sign-out, password change or disablement revokes the
-  person's sessions. A web admin console at `/admin` manages accounts, per-application
-  access and sign-outs. See
+  person's sessions. Two-factor sign-in with an authenticator app (TOTP) can
+  be turned on by each person or required by policy. A web admin console at
+  `/admin` manages accounts, per-application access, two-factor policy and
+  sign-outs. See
   [`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md) for the
   design.
 - **Magic-link mode** (legacy). People type an email address and click a
