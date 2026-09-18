@@ -1301,10 +1301,11 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 //     send the browser here after ending their own session.
 //
 // Either way every central session of the signed-in account is revoked and a
-// back-channel logout is queued to every registered application in the same
-// transaction (RevokeAllAuthSessions), so an application session cannot
-// outlive the logout and an application that signs in silently (prompt=none)
-// cannot sign the user straight back in. The browser lands on this host's
+// back-channel logout is queued, in the same transaction
+// (RevokeAllAuthSessions), to every application that registered a receiver.
+// Delivery is asynchronous and retried, so application sessions end within
+// seconds rather than in the same instant, and an application that signs in
+// silently (prompt=none) cannot sign the user straight back in. The browser lands on this host's
 // login page with a notice.
 //
 // The GET form can be triggered by a hostile page navigating the browser

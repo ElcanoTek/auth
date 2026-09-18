@@ -322,7 +322,8 @@ Tabs:
   Admin pill. Administrators
   cannot reset, disable or demote themselves from a row (their own row's
   Settings links to the change-password form instead, which signs out every
-  other device and app while this browser stays signed in, and its Sign out
+  other device and every application with a back-channel receiver while this
+  browser stays signed in, and its Sign out
   everywhere ends their own session too, returning them to the sign-in page),
   and the
   last enabled administrator can never be demoted or disabled, from the
@@ -337,7 +338,8 @@ Tabs:
   apps. Bottom left: **Sign out**. An administrator's own password is changed
   from their own row: Settings → Reset password → Change, which opens the
   change-password form (current password required; every other device and
-  application is signed out, this browser stays signed in).
+  every application with a back-channel receiver is signed out, this browser
+  stays signed in).
 
 - **One tab per registered application.** Its status with Enable / Disable,
   the registered endpoints, how many accounts have access, **who signs in

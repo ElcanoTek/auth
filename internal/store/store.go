@@ -1339,7 +1339,7 @@ func (s *Store) RevokeAllAuthSessions(ctx context.Context, userID string, now in
 // RevokeAllAuthSessionsByToken is the user-facing logout: the presented
 // session must be live (a stale or forged cookie cannot force other devices
 // out), and then every session of its account is revoked and the back-channel
-// logout is queued to every application, all in one transaction. It returns
+// logout is queued to every application with a receiver, all in one transaction. It returns
 // the account id, or "" when the token named no live session. A database
 // error is returned so the caller can fail closed.
 func (s *Store) RevokeAllAuthSessionsByToken(ctx context.Context, tokenHash string, now int64, reason string) (string, error) {

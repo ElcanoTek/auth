@@ -269,8 +269,8 @@ wrong, or a `Secure` cookie is being set over plain HTTP.
   key is the global big red button. Password mode is different: central
   sessions are server-side rows, so `auth user disable`, `auth user
   set-password`, `auth user revoke-sessions` and every sign-out end them at
-  once and fan out a signed back-channel logout to every registered
-  application.
+  once and fan out a signed back-channel logout to every application that
+  registered a back-channel endpoint.
 - **Per-IP rate limiting or CAPTCHA on `/magic`.** `/magic` has per-email and
   global send caps (`AUTH_MAGIC_RATE_PER_EMAIL`, `AUTH_MAGIC_GLOBAL_LIMIT`), so
   it can't flood one inbox or burn the quota, but one client can still spend

@@ -156,8 +156,8 @@ the same shape, and any future service should too:
 - Logout is "sign out of every application": the application revokes its own
   session, clears its cookie, and redirects the browser to Auth's
   `GET /logout?client_id=<its id>`. Auth revokes every central session of
-  the account, fans the back-channel logout out to every application, and
-  lands on its login page. An application never ends only its own session
+  the account, fans the back-channel logout out to every application that
+  registered a receiver, and lands on its login page. An application never ends only its own session
   from a user-facing logout, because a silent SSO start would sign the user
   straight back in.
 - A `POST /auth/backchannel-logout` receiver that verifies Auth's signed
