@@ -2,7 +2,7 @@
 # scripts/bootstrap.sh — interactive one-shot installer for auth-server.
 #
 # Drops deploy complexity to three answers:
-#   1. The hostname (e.g. auth.elcanotek.com)
+#   1. The hostname (e.g. auth.example.com)
 #   2. The cookie domain (autoguessed from hostname; just confirm)
 #   3. SendGrid API key + verified sender (or "skip — use stdout for now")
 #
@@ -12,8 +12,7 @@
 # Usage:
 #   sudo bash scripts/bootstrap.sh
 #
-# Targets Fedora 39+ / RHEL 9+ / AlmaLinux 9+ (matches the rest of the
-# Elcano box images).
+# Targets Fedora 39+ / RHEL 9+ / AlmaLinux 9+.
 
 set -euo pipefail
 
@@ -261,7 +260,7 @@ say
 if [[ -n "$GUESSED_COOKIE_DOMAIN" ]]; then
   say "  Cookie domain — the SHARED parent of every service that will see this session."
   say "    From '${HOSTNAME_ANSWER}' we'd default to ${c_bold}${GUESSED_COOKIE_DOMAIN}${c_reset}"
-  say "    so the cookie rides to chat.${GUESSED_COOKIE_DOMAIN}, home.${GUESSED_COOKIE_DOMAIN}, etc."
+  say "    so the cookie rides to app.${GUESSED_COOKIE_DOMAIN}, home.${GUESSED_COOKIE_DOMAIN}, etc."
   COOKIE_DOMAIN_ANSWER="$(prompt AUTH_BOOTSTRAP_COOKIE_DOMAIN "Cookie domain" "${AUTH_COOKIE_DOMAIN:-$GUESSED_COOKIE_DOMAIN}")"
 else
   say "  Cookie domain — leave blank for localhost / single-host dev."
@@ -278,8 +277,7 @@ ALLOWED_DOMAINS_ANSWER="$(prompt AUTH_BOOTSTRAP_ALLOWED_DOMAINS "Allowed domains
 # 3e — email provider
 say
 say "  How should magic links be delivered?"
-say "    • ${c_dim}sendgrid${c_reset}  — POST to api.sendgrid.com (RECOMMENDED — same"
-say "                  provider chat-server uses, one key across the stack)"
+say "    • ${c_dim}sendgrid${c_reset}  — POST to api.sendgrid.com (RECOMMENDED)"
 say "    • ${c_dim}stdout${c_reset}    — print to the journal (DEV ONLY)"
 say "    • ${c_dim}smtp${c_reset}      — STARTTLS to your own relay"
 EMAIL_DRIVER_ANSWER="$(prompt AUTH_BOOTSTRAP_EMAIL_DRIVER "Email driver" "${AUTH_EMAIL_DRIVER:-sendgrid}")"
@@ -296,8 +294,6 @@ case "$EMAIL_DRIVER_ANSWER" in
     say
     say "  ${c_bold}SendGrid API key${c_reset} — create one at:"
     say "    ${c_dim}https://app.sendgrid.com/settings/api_keys${c_reset}"
-    say "  (chat-server uses the SAME env var name 'SENDGRID_API_KEY', so a"
-    say "  single key can be shared across the stack.)"
     SENDGRID_KEY_ANSWER="$(prompt_secret AUTH_BOOTSTRAP_SENDGRID_API_KEY "SendGrid API key")"
     [[ -n "$SENDGRID_KEY_ANSWER" || -n "${SENDGRID_API_KEY:-}" ]] || die "SendGrid key required (or pick a different driver)"
     [[ -z "$SENDGRID_KEY_ANSWER" ]] && SENDGRID_KEY_ANSWER="$SENDGRID_API_KEY"
@@ -311,7 +307,6 @@ case "$EMAIL_DRIVER_ANSWER" in
     fi
 
     # Live check — /v3/scopes returns 200 with a valid key, 401 otherwise.
-    # Same cheap auth-gated probe chat's bootstrap uses for OpenRouter.
     # Continues on transient network errors so a flaky box doesn't block
     # the install; the operator will see the warning either way.
     sg_status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
@@ -343,7 +338,7 @@ fi
 
 # 3f — Ed25519 signing keypair. auth holds the private seed and is the only
 # party that can mint tokens; the public key is handed to every verifying
-# service (home, chat, …) and can verify but never forge. Reuse an existing
+# service and can verify but never forge. Reuse an existing
 # seed if present (rotation logs everyone out AND means re-distributing the
 # new pubkey to those services).
 AUTH_SIGNING_KEY="${AUTH_SIGNING_KEY:-$(openssl genpkey -algorithm ed25519 -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n')}"
@@ -428,7 +423,7 @@ AUTH_ISSUER_URL="$ISSUER_SCHEME://$ISSUER_AUTHORITY"
 # Private signing seed — auth host only. AUTH_SIGNING_PUBKEY (below, in a
 # comment) is the public half: copy it to each verifying service.
 AUTH_SIGNING_KEY="$AUTH_SIGNING_KEY"
-# AUTH_SIGNING_PUBKEY (give this to home/chat): $AUTH_SIGNING_PUBKEY
+# AUTH_SIGNING_PUBKEY (give this to verifying services): $AUTH_SIGNING_PUBKEY
 
 # ── Cookie ───────────────────────────────────────────────────────
 AUTH_COOKIE_NAME="elcano_auth"
@@ -484,7 +479,7 @@ ok "env seeded"
 
 # Surface the public key so the operator can wire up verifying services.
 # Safe to display/copy — it cannot mint tokens, only verify them.
-info "Public signing key — set AUTH_SIGNING_PUBKEY to this on home/chat/etc:"
+info "Public signing key — set AUTH_SIGNING_PUBKEY to this on each verifying service:"
 printf '    AUTH_SIGNING_PUBKEY=%s\n' "$AUTH_SIGNING_PUBKEY"
 
 # ── 5. build + install ──────────────────────────────────────────────

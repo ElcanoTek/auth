@@ -1292,7 +1292,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// handlePasswordLogout is "sign out of every Elcano app". Two entry points
+// handlePasswordLogout is "sign out of every application". Two entry points
 // share it:
 //
 //   - POST with the CSRF token: the form on /account.
@@ -1533,8 +1533,8 @@ func (s *Server) currentPasswordSession(r *http.Request) *passwordIdentity {
 // timeout therefore behaves as "idle limit minus at most one interval", never
 // longer, and a burst of requests from one page load costs one write.
 //
-// Convention for every Elcano service that keeps its own sessions (Auth,
-// Explorer, Lens, and anything built later): one minute. It is short enough
+// Convention for every service that keeps its own sessions after the central
+// handoff (Auth and every application built so far): one minute. It is short enough
 // that the stated idle limit stays accurate to the minute, and long enough to
 // collapse a page's burst of requests into a single write. Do not make it
 // configurable; it is a property of the storage pattern, not a policy knob.
@@ -1695,7 +1695,7 @@ func (s *Server) resolveReturnTo(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.User != nil {
 		// Userinfo ("https://allowed.example.com@evil.com/") only exists to
-		// confuse allowlists; no Elcano service is addressed that way.
+		// confuse allowlists; no legitimate application is addressed that way.
 		return ""
 	}
 	if u.Scheme != "https" && u.Scheme != "http" {

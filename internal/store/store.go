@@ -2,9 +2,8 @@
 //
 // We use modernc.org/sqlite (pure-Go, no CGO) so the binary stays a
 // single self-contained drop-in — no system sqlite3 install required
-// on the deploy host. Chat uses Postgres because it has heavy multi-
-// connection workloads (per-turn agent state, SSE) and a Postgres
-// dependency is cheap on a box that already has one. This service has
+// on the deploy host. Postgres would suit a service with heavy multi-
+// connection workloads (per-turn agent state, SSE). This service has
 // neither — a single small file is the right primitive.
 //
 // Legacy schema:

@@ -269,7 +269,7 @@ case "$cmd" in
   pubkey)
     # `auth pubkey` — print AUTH_SIGNING_PUBKEY for the CURRENT signing key.
     # Sources .env.local so AUTH_SIGNING_KEY is in the env, then derives the
-    # public half. Use when wiring up a verifying service (home/chat/…) and
+    # public half. Use when wiring up a verifying service and
     # the bootstrap output is long gone — no keygen (that mints a NEW key)
     # and no openssl/python one-liner needed.
     # shellcheck disable=SC1090
@@ -355,7 +355,7 @@ APPLICATIONS
 CRYPTO
   auth keygen                       print a fresh Ed25519 signing keypair
   auth pubkey                       print AUTH_SIGNING_PUBKEY for the current
-                                    signing key (to hand to home/chat/etc.)
+                                    signing key (to hand to verifying services)
 
 UPDATES
   auth update                       git pull + rebuild + restart

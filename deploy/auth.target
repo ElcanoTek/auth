@@ -3,7 +3,7 @@
 #   systemctl start auth.target
 #   systemctl stop auth.target
 # Only one service today, but the target makes the operator UX
-# symmetric with chat.target / moc.target etc.
+# symmetric with the other services' targets on a shared box.
 Description=Elcano Auth
 Wants=auth-server.service
 After=auth-server.service

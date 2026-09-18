@@ -5,9 +5,8 @@
 // outside the binary. Config is loaded once at startup from the process
 // environment (or an .env file) and passed read-only to handlers.
 //
-// Mirrors the chat-server config conventions (allowlist + envfile load +
-// snapshot/restore) so operators familiar with `chat env edit` see the
-// same shape under `auth env edit`.
+// Conventions: an allow-list of keys, an envfile load, and snapshot/restore
+// behind `auth env edit`.
 package config
 
 import (
@@ -29,7 +28,7 @@ import (
 var allowedEnvVars = map[string]bool{
 	// Transport
 	"AUTH_ADDR":       true, // default 127.0.0.1:9000; Caddy talks here.
-	"AUTH_HOSTNAME":   true, // public hostname (e.g. auth.elcanotek.com).
+	"AUTH_HOSTNAME":   true, // public hostname (e.g. auth.example.com).
 	"AUTH_DATA_DIR":   true, // where state.db lives. Default /opt/auth/data.
 	"AUTH_LOGIN_MODE": true, // magic (legacy default) | password.
 	"AUTH_ISSUER_URL": true, // externally visible origin; derived from hostname when empty.
@@ -40,7 +39,7 @@ var allowedEnvVars = map[string]bool{
 	// auth derives it from the private key and doesn't read this var, but
 	// it's allowed here so the same .env can document the pair. Generate a
 	// fresh keypair with `auth-admin keygen`; distribute only the pubkey to
-	// verifying services (home, chat, …).
+	// verifying services.
 	"AUTH_SIGNING_KEY":              true,
 	"AUTH_SIGNING_PUBKEY":           true,
 	"AUTH_SIGNING_PREVIOUS_PUBKEYS": true, // comma-separated public keys kept in JWKS during rotation.
@@ -56,10 +55,10 @@ var allowedEnvVars = map[string]bool{
 	"AUTH_MAGIC_GLOBAL_LIMIT":   true, // default 500 (all emails / 60 min)
 
 	// Cookie. AUTH_COOKIE_DOMAIN controls Set-Cookie's Domain attr; this
-	// is what makes the cookie ride along to chat.elcanotek.com,
-	// home.elcanotek.com, etc. Empty = host-only cookie (only works for
-	// localhost / single-host dev).
-	"AUTH_COOKIE_NAME":             true, // default "elcano_auth" (deliberately distinct from chat's "elcano_session" — see docs/INTEGRATION.md)
+	// is what makes the cookie ride along to every subdomain of the shared
+	// parent. Empty = host-only cookie (only works for localhost /
+	// single-host dev).
+	"AUTH_COOKIE_NAME":             true, // default "elcano_auth"; keep it distinct from any downstream service's own session cookie
 	"AUTH_COOKIE_DOMAIN":           true,
 	"AUTH_COOKIE_SECURE":           true, // default "true" — set "false" for plain-HTTP local dev only.
 	"AUTH_PASSWORD_COOKIE_NAME":    true,
@@ -80,15 +79,14 @@ var allowedEnvVars = map[string]bool{
 
 	// Email delivery. AUTH_EMAIL_DRIVER picks the backend:
 	//   - "sendgrid": POST to api.sendgrid.com with SENDGRID_API_KEY
-	//                 (shares the key chat-server uses)
 	//   - "stdout":   print the magic link to stderr (dev only)
 	//   - "smtp":     STARTTLS to AUTH_SMTP_HOST:AUTH_SMTP_PORT with
 	//                 AUTH_SMTP_USER / AUTH_SMTP_PASS
 	// Default is "stdout" so a fresh install proves out end-to-end before
 	// the operator has to pick a provider.
 	"AUTH_EMAIL_DRIVER": true,
-	"AUTH_EMAIL_FROM":   true, // e.g. "Elcano Login <login@elcanotek.com>"
-	"SENDGRID_API_KEY":  true, // same name chat-server uses — one secret across the stack
+	"AUTH_EMAIL_FROM":   true, // e.g. "Sign in <login@example.com>"
+	"SENDGRID_API_KEY":  true, // conventional name, so one key can serve a whole stack
 	"AUTH_SMTP_HOST":    true,
 	"AUTH_SMTP_PORT":    true,
 	"AUTH_SMTP_USER":    true,
@@ -216,15 +214,11 @@ func Load(envFile string) (*Config, error) {
 		ClientConfigDir:    strings.TrimSpace(os.Getenv("AUTH_CLIENT_CONFIG_DIR")),
 	}
 
-	// PRODUCTION TODO (may or may not be needed, depending on deployment):
-	// before going live we likely want to (1) generate a FRESH keypair —
-	// the current dev seed has been exposed in plaintext (world-readable
-	// .env.local, logs, chat), so it must not become the prod signing key —
-	// and (2) better isolate the private key than a plaintext env var:
-	// tighten file perms (0600/0640, service-owned), keep it out of the repo
-	// tree, and ideally load it via a systemd credential / secrets manager
-	// rather than the process environment. Revisit this when promoting to
-	// prod; it's not required for local/dev to function.
+	// The signing seed is the one secret that can mint sessions. bootstrap.sh
+	// generates a fresh keypair per install and writes .env.local 0600,
+	// service-owned; never reuse a seed that has been in a test fixture, a
+	// log or a transcript. A systemd credential or secrets manager would be the
+	// next step up from the environment file.
 	keyB64 := strings.TrimSpace(os.Getenv("AUTH_SIGNING_KEY"))
 	if keyB64 == "" {
 		return nil, fmt.Errorf("AUTH_SIGNING_KEY is required (generate a keypair with: auth-admin keygen)")

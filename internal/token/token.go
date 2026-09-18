@@ -4,8 +4,8 @@
 // Format: base64url(payload_json) + "." + base64url(ed25519_signature).
 //
 // Signing is ASYMMETRIC. auth-server holds the 32-byte private seed and is
-// the only party that can MINT a token. Every verifying service (home,
-// chat, …) holds only the 32-byte PUBLIC key — enough to VERIFY a token,
+// the only party that can MINT a token. Every verifying service holds only
+// the 32-byte PUBLIC key — enough to VERIFY a token,
 // never to forge one. This is the whole point of the scheme: with the old
 // shared HMAC secret, any holder of the verify key could also sign, so a
 // single leaked verifier could impersonate any user. With Ed25519 the
@@ -13,8 +13,8 @@
 //
 // The signature covers the base64url-encoded body STRING (not the raw
 // JSON bytes), so a verifier reconstructs `body` exactly as received and
-// checks it against the detached signature. home/server.js mirrors this
-// byte-for-byte.
+// checks it against the detached signature. Ports in other languages mirror
+// this byte-for-byte.
 //
 // Why not a JWT-with-alg-header? The header serves nothing here — we own
 // both ends of the wire, only Ed25519 is supported, and skipping it saves
@@ -33,8 +33,8 @@ import (
 )
 
 // Session is the payload inside the cookie. JSON-encoded, signed, and
-// base64url'd. Add fields freely — chat's verifier reads only email and
-// exp, so extras are forward-compatible.
+// base64url'd. Add fields freely — verifiers read only email and exp, so
+// extras are forward-compatible.
 type Session struct {
 	Email  string `json:"email"`
 	Tenant string `json:"tenant,omitempty"`

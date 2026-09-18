@@ -94,7 +94,7 @@ func TestSendGridPayloadShape(t *testing.T) {
 
 	sg := &SendGrid{
 		APIKey: "SG.test_key_xxx",
-		From:   "Login <login@elcanotek.com>",
+		From:   "Login <login@example.com>",
 		HTTP:   srv.Client(),
 	}
 
@@ -121,7 +121,7 @@ func TestSendGridPayloadShape(t *testing.T) {
 	if captured.ctHeader != "application/json" {
 		t.Errorf("content-type = %q", captured.ctHeader)
 	}
-	if captured.body.From.Email != "login@elcanotek.com" || captured.body.From.Name != "Login" {
+	if captured.body.From.Email != "login@example.com" || captured.body.From.Name != "Login" {
 		t.Errorf("From parsed wrong: %+v", captured.body.From)
 	}
 	if len(captured.body.Personalizations) != 1 ||

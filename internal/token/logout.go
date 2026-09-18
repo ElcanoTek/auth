@@ -10,8 +10,8 @@ import (
 
 const BackchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
 
-// LogoutClaims follows OpenID Connect Back-Channel Logout 1.0. Email is an
-// Elcano extension used only for local allowlist/account correlation; sub is
+// LogoutClaims follows OpenID Connect Back-Channel Logout 1.0. Email is a
+// non-standard extension used only for local allowlist/account correlation; sub is
 // the durable identity key and jti is the consumer's replay-protection key.
 type LogoutClaims struct {
 	Issuer   string `json:"iss"`

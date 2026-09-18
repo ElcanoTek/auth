@@ -1,4 +1,4 @@
-# Top-level Makefile. Mirrors chat's shape (build / test / check / clean).
+# Top-level Makefile: build / test / check / clean.
 
 .PHONY: all build deps test check lint smoke clean tidy run
 
