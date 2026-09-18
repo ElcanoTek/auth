@@ -46,8 +46,8 @@ func TestValidatePasswordPolicy(t *testing.T) {
 }
 
 func TestValidateRejectsContextTerms(t *testing.T) {
-	context := ContextTerms("Alice.Smith@omnicom.com", "Elcano", "auth.omcvic.com", "https://auth.omcvic.com", "Omnicom,OMC")
-	want := []string{"alicesmith", "alice", "smith", "omnicom", "elcano", "auth", "omcvic", "omc"}
+	context := ContextTerms("Alice.Smith@northwind.com", "Elcano", "auth.nwtraders.com", "https://auth.nwtraders.com", "Northwind,NWT")
+	want := []string{"alicesmith", "alice", "smith", "northwind", "elcano", "auth", "nwtraders", "nwt"}
 	// "com" is a generic label and must not become a term.
 	got := strings.Join(context, ",")
 	for _, term := range want {
@@ -65,11 +65,11 @@ func TestValidateRejectsContextTerms(t *testing.T) {
 		in   string
 		want error
 	}{
-		{"organisation plus year", "Omnicom2026!", ErrContextual},
+		{"organisation plus year", "Northwind2026!", ErrContextual},
 		{"brand plus decoration", "elcano-rocks", ErrContextual},
 		{"email local part", "alice.smith99!", ErrContextual},
-		{"hostname label", "omcvic!!2026", ErrContextual},
-		{"term with enough of its own", "omnicom-rocks-2026", nil},
+		{"hostname label", "nwtraders!!2026", ErrContextual},
+		{"term with enough of its own", "northwind-rocks-2026", nil},
 		{"unrelated passphrase", "purple horse staple", nil},
 	}
 	for _, tc := range cases {
@@ -80,7 +80,7 @@ func TestValidateRejectsContextTerms(t *testing.T) {
 		})
 	}
 	// Without context the same passwords only hit the static rules.
-	if err := Validate("Omnicom2026!"); err != nil {
+	if err := Validate("Northwind2026!"); err != nil {
 		t.Fatalf("Validate without context = %v, want nil", err)
 	}
 }

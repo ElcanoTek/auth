@@ -92,7 +92,7 @@ func accessSet(ids []string) map[string]bool {
 // selectApplication picks the one enabled application that stands for a
 // kind, by ID only (the operator's choice at `auth app create`; names are
 // free text and must not steer a trusted link). The exact ID wins; otherwise
-// exactly one `<kind>-<suffix>` ID (DEPLOY.md's `explorer-omnicom` shape)
+// exactly one `<kind>-<suffix>` ID (DEPLOY.md's `explorer-northwind` shape)
 // does. Two or more suffixed candidates and no exact one is ambiguous: the
 // tile stays greyed out and the operator is told, because a wrong guess
 // would send every user to the wrong deployment under a trusted label.

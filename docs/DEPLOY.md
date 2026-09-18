@@ -160,7 +160,7 @@ one edit; nothing here is optional for the first sign-in to work.
    callback under a sub-path such as `/apps/fleet/...` would link to the
    wrong place). The family is read from the ID only: the exact ID (`fleet`,
    `explorer`, `lens`) wins; otherwise exactly one `<family>-<suffix>` ID
-   (`explorer-omnicom`) stands in. Two suffixed IDs and no exact one is
+   (`explorer-northwind`) stands in. Two suffixed IDs and no exact one is
    ambiguous, so that tile stays greyed and the server log says why. The
    Admin tile opens Auth's own console and is live for administrators only.
 
@@ -205,16 +205,16 @@ visitor shares one rate-limit bucket. DNS-only Cloudflare needs no change.
 ## Password-mode application setup
 
 Create each person centrally and register each deployment as its own
-confidential client. Do not reuse a client secret between Omnicom, Reklaim, or
+confidential client. Do not reuse a client secret between two clients, or
 between Explorer and another application:
 
 ```bash
 auth user create alice@example.com
-auth app create explorer-omnicom \
-  https://explorer.omnicom.example/auth/callback \
-  https://explorer.omnicom.example/signed-out
-auth app set-backchannel explorer-omnicom \
-  https://explorer.omnicom.example/auth/backchannel-logout
+auth app create explorer-northwind \
+  https://explorer.northwind.example/auth/callback \
+  https://explorer.northwind.example/signed-out
+auth app set-backchannel explorer-northwind \
+  https://explorer.northwind.example/auth/backchannel-logout
 ```
 
 Copy the displayed `AUTH_CLIENT_ID` and `AUTH_CLIENT_SECRET` to that Explorer
@@ -223,10 +223,10 @@ operations:
 
 ```bash
 auth app list
-auth app show explorer-omnicom
-auth app rotate-secret explorer-omnicom
-auth app clear-backchannel explorer-omnicom
-auth app disable explorer-omnicom
+auth app show explorer-northwind
+auth app rotate-secret explorer-northwind
+auth app clear-backchannel explorer-northwind
+auth app disable explorer-northwind
 ```
 
 The authorization request must use the exact registered callback and S256
@@ -393,7 +393,7 @@ without affecting Auth.
 
 | `branding:` field | What Auth does with it |
 |---|---|
-| `app_name` | The wordmark above each card and the tab title (Omnicom's is `OMNICOM`). Prose ("Your X sign-in link", "signed out of X") keeps `AUTH_BRAND_NAME`, so set that to the sentence form (`Omnicom`). |
+| `app_name` | The wordmark above each card and the tab title (a client whose wordmark is set in caps writes `NORTHWIND`). Prose ("Your X sign-in link", "signed out of X") keeps `AUTH_BRAND_NAME`, so set that to the sentence form (`Northwind`). |
 | `login_title`, `login_tagline` | The login card's heading and intro line. Absent: "Sign in" and the mode-specific hint. |
 | `logo` | Bundle-relative mark, shown above the wordmark and used as the favicon, served at `/brand/logo`. Fleet's path rules (relative, no `..`, must resolve inside the bundle after symlinks, regular file, `.svg .png .webp .jpg .jpeg .ico`) plus a 512 KB cap (Fleet allows 2 MB). The bytes are read once at startup and served from memory. |
 | `colors.dark`, `colors.light` | `primary`, `primary_hover`, `on_primary`, `secondary`, `accent`, `background`, `surface_1`, `surface_2`, `text_primary`, `text_secondary`, `text_muted`, `border`, `border_strong` map onto Auth's stylesheet tokens; the page and card gradients are re-derived with Fleet's own formulas from `primary`, `primary_hover`, `secondary`, `background`, `surface_1` and `surface_2`, so the sign-in page paints the same background as Fleet's. Values must be hex or `rgb()`/`rgba()`/`hsl()`/`hsla()` (Fleet's grammar); anything else, and any token Auth has no surface for (`text_disabled`, overlays, rail tokens), is dropped and that one token keeps its default. A partial palette still gets brand gradients (missing inputs come from Auth's defaults); the `color-mix()` ones are guarded by `@supports`. Light and dark are independent. Error colours are not themable. |
@@ -516,7 +516,7 @@ matched with digits and punctuation stripped (`Password2026!`, `p@ssw0rd!!`,
 `Welcome123456` all fail), passwords with no letters or only one or two
 distinct characters, and anything built from the user's email address, the
 brand name, this hostname, or the words in `AUTH_PASSWORD_BLOCKED_TERMS`
-(set it to the client's names, e.g. `"Omnicom,OMC"`). A password may contain
+(set it to the client's names, e.g. `"Northwind,NWT"`). A password may contain
 such a word only if it keeps at least eight characters of its own beyond it.
 The same rules apply to `auth user create` and `auth user set-password`,
 which read those settings from `.env.local` through the `auth` wrapper.

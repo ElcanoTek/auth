@@ -28,8 +28,8 @@ const (
 	MaxCharacters = 128
 	// minBeyondContext is how many characters a password must keep beyond a
 	// context term (the user's email, the service or organisation name) that
-	// it contains. "omnicom2026!" is the organisation plus five characters;
-	// "omnicom-rocks-2026" keeps eleven of its own and is allowed.
+	// it contains. "northwind2026!" is the organisation plus five characters;
+	// "northwind-rocks-2026" keeps eleven of its own and is allowed.
 	minBeyondContext = 8
 )
 
