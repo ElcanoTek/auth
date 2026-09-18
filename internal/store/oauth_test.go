@@ -20,13 +20,13 @@ func TestApplicationRegistrationStoresOnlyHashedSecret(t *testing.T) {
 	ctx := context.Background()
 	const secret = "a-256-bit-random-client-secret-never-store-raw"
 
-	app, err := s.CreateApplication(ctx, "explorer-omnicom", "Omnicom Explorer",
+	app, err := s.CreateApplication(ctx, "explorer-northwind", "Northwind Explorer",
 		"https://explorer.example.com/auth/callback", "https://explorer.example.com/signed-out",
 		secretHashForTest(secret), 1_000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if app.ID != "explorer-omnicom" || app.ClientSecretHash != "" {
+	if app.ID != "explorer-northwind" || app.ClientSecretHash != "" {
 		t.Fatalf("unsafe application returned: %+v", app)
 	}
 
@@ -42,7 +42,7 @@ func TestApplicationRegistrationStoresOnlyHashedSecret(t *testing.T) {
 func TestApplicationAuditEventsRetainApplicationID(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if _, err := s.CreateApplication(ctx, "explorer-omnicom", "Omnicom Explorer",
+	if _, err := s.CreateApplication(ctx, "explorer-northwind", "Northwind Explorer",
 		"https://explorer.example.com/auth/callback", "", secretHashForTest("client-secret"), 1_000); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestApplicationAuditEventsRetainApplicationID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].EventType != "application.created" || events[0].ApplicationID != "explorer-omnicom" {
+	if len(events) != 1 || events[0].EventType != "application.created" || events[0].ApplicationID != "explorer-northwind" {
 		t.Fatalf("application audit event = %+v", events)
 	}
 }

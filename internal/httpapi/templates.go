@@ -934,7 +934,7 @@ const sentHTML = `<!doctype html>
 
 // Email bodies are intentionally generic — no logos, no brand colors,
 // no marketing copy. Goal: a message that works unchanged for every
-// client (Elcano, Omnicom, John Deere, etc.) without per-tenant theming.
+// client deployment without per-tenant theming.
 // {{Brand}} only appears in the subject line; the body is plain text
 // wrapped in the most minimal HTML that still gets a clickable button.
 

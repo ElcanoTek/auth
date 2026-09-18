@@ -103,7 +103,7 @@ func TestPasswordModeDoesNotDeriveHomeLanding(t *testing.T) {
 	clearAllAuthEnv(t)
 	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
 	t.Setenv("AUTH_LOGIN_MODE", "password")
-	t.Setenv("AUTH_COOKIE_DOMAIN", "omcvic.com")
+	t.Setenv("AUTH_COOKIE_DOMAIN", "northwind.example")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatal(err)
@@ -111,12 +111,12 @@ func TestPasswordModeDoesNotDeriveHomeLanding(t *testing.T) {
 	if cfg.DefaultReturnTo != "" {
 		t.Fatalf("password mode derived DefaultReturnTo %q, want empty (→ /account)", cfg.DefaultReturnTo)
 	}
-	t.Setenv("AUTH_DEFAULT_RETURN_TO", "https://fleet.omcvic.com/")
+	t.Setenv("AUTH_DEFAULT_RETURN_TO", "https://fleet.northwind.example/")
 	cfg, err = Load("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultReturnTo != "https://fleet.omcvic.com/" {
+	if cfg.DefaultReturnTo != "https://fleet.northwind.example/" {
 		t.Fatalf("explicit AUTH_DEFAULT_RETURN_TO not kept: %q", cfg.DefaultReturnTo)
 	}
 }
@@ -278,13 +278,13 @@ func TestPasswordHandoffConfigDerivesIssuerAndLoadsRotationKeys(t *testing.T) {
 	previous := testSigningKey().Public().(ed25519.PublicKey)
 	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
 	t.Setenv("AUTH_LOGIN_MODE", "password")
-	t.Setenv("AUTH_HOSTNAME", "auth.omnicom.example")
+	t.Setenv("AUTH_HOSTNAME", "auth.northwind.example")
 	t.Setenv("AUTH_SIGNING_PREVIOUS_PUBKEYS", base64.StdEncoding.EncodeToString(previous))
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.IssuerURL != "https://auth.omnicom.example" || cfg.CodeTTL != 60*time.Second || cfg.AssertionTTL != 5*time.Minute {
+	if cfg.IssuerURL != "https://auth.northwind.example" || cfg.CodeTTL != 60*time.Second || cfg.AssertionTTL != 5*time.Minute {
 		t.Fatalf("handoff defaults: issuer=%q code=%v assertion=%v", cfg.IssuerURL, cfg.CodeTTL, cfg.AssertionTTL)
 	}
 	if len(cfg.PreviousPublicKeys) != 1 || !cfg.PreviousPublicKeys[0].Equal(previous) {

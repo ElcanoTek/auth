@@ -99,10 +99,10 @@ func TestQuickLinksSelectionRule(t *testing.T) {
 	})
 	t.Run("single suffixed", func(t *testing.T) {
 		links := linksByName([]store.Application{
-			{ID: "explorer-omnicom", RedirectURI: "https://explorer.omc.example/auth/callback"},
-			{ID: "Fleet-Omnicom", RedirectURI: "http://localhost:3000/api/auth/oidc/callback"},
+			{ID: "explorer-northwind", RedirectURI: "https://explorer.northwind.example/auth/callback"},
+			{ID: "Fleet-Northwind", RedirectURI: "http://localhost:3000/api/auth/oidc/callback"},
 		})
-		if links["Explorer"].URL != "https://explorer.omc.example/" {
+		if links["Explorer"].URL != "https://explorer.northwind.example/" {
 			t.Fatalf("Explorer = %+v", links["Explorer"])
 		}
 		if links["Fleet"].URL != "http://localhost:3000/" {

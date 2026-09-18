@@ -32,8 +32,9 @@ import (
 type Brand struct {
 	Dir string
 	// AppName is the wordmark: the small caps line above each card and the
-	// tab title. Prose keeps AUTH_BRAND_NAME (Omnicom writes "OMNICOM" as a
-	// wordmark and "Omnicom" in sentences; Fleet makes the same split).
+	// tab title. Prose keeps AUTH_BRAND_NAME (a client may set its wordmark in
+	// caps, "NORTHWIND", and write "Northwind" in sentences; Fleet makes the
+	// same split).
 	AppName      string
 	LoginTitle   string
 	LoginTagline string
