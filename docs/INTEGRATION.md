@@ -80,7 +80,11 @@ should too.
      (EdDSA, `kid`, exact `iss` and `aud`, live `exp`, the back-channel event
      claim, no `nonce`), revokes every session for the subject, and records
      `jti` so retries are idempotent. Return 400 for an invalid token and 503
-     for a temporary failure so Auth's delivery worker retries. Read Auth's
+     for a temporary failure so Auth's delivery worker retries. The event's
+     reason (`password_replaced`, `account_disabled`, `access_revoked`,
+     `mfa_enrolled`, `mfa_disabled`, `mfa_reset`, `mfa_required`, ...) is
+     informational; treat every event the same way: end the subject's
+     sessions. Read Auth's
      `/jwks.json` at runtime (cache about ten minutes, refresh once when a
      token names an unknown `kid`, keep the cached set on a failed fetch) so a
      signing-key rotation is a one-sided change on Auth; a static
@@ -263,10 +267,10 @@ wrong, or a `Secure` cookie is being set over plain HTTP.
   What alice can do inside the application is that application's business.
   The only role Auth itself knows is its administrator flag, which gates its
   own console at `/admin`.
-- **Step-up or MFA.** Magic links are themselves an inbox-possession factor,
-  and password mode has none yet. The account model leaves room for TOTP,
-  passkeys and recovery codes, and an upstream identity provider could sit
-  behind the login step later.
+- **Step-up beyond TOTP.** Magic links are themselves an inbox-possession
+  factor. Password mode has authenticator-app (TOTP) two-factor sign-in,
+  optional or required by policy, with recovery codes; passkeys and an
+  upstream identity provider could sit behind the login step later.
 - **Per-user blocking in magic mode.** The allowlist is domain-grain. To block
   one person without their whole domain you need a denylist or a per-service
   gate. Password mode has per-account `auth user disable`.

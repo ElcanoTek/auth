@@ -46,10 +46,17 @@ type Store struct {
 // to call concurrently from cmd/auth-server and cmd/auth-admin — SQLite
 // handles file-level locking and the workload is tiny.
 func Open(dataDir string) (*Store, error) {
+	// _txlock=immediate makes every BeginTx a BEGIN IMMEDIATE. Our
+	// transactions read first and write after (compare-and-swap is the
+	// house pattern), and in WAL mode a deferred transaction that upgrades
+	// to a write after another writer committed fails at once with
+	// SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot wait out. Taking the
+	// write lock up front serialises writers behind busy_timeout instead.
 	dsn := filepath.Join(dataDir, "state.db") +
 		"?_pragma=journal_mode(WAL)" +
 		"&_pragma=busy_timeout(5000)" +
-		"&_pragma=foreign_keys(on)"
+		"&_pragma=foreign_keys(on)" +
+		"&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)

@@ -50,7 +50,22 @@ const (
 	errMFALocked   = "mfa_locked"
 	errMFAExpired  = "mfa_expired"
 	noticeMFAReset = "mfa_reset"
+
+	// Separate ceilings (issue #48 §7), all on the shared 15-minute window
+	// and all temporary cooldowns, never permanent lockouts:
+	//   - mfaGlobalLimit: factor attempts across every account, so one
+	//     deployment-wide flood cannot spend everybody's per-account budget
+	//     unnoticed (the per-account and per-address limits still apply).
+	//   - mfaEnrolLimit: fresh enrolment secrets generated per account.
+	//   - mfaResetLimit: administrator resets per acting administrator.
+	mfaGlobalLimit = 1000
+	mfaEnrolLimit  = 5
+	mfaResetLimit  = 10
 )
+
+// errEnrolLimited: too many fresh enrolment secrets for one account in the
+// window; the person waits rather than being locked out.
+var errEnrolLimited = errors.New("too many enrolment attempts")
 
 type loginTxMeta struct {
 	ReturnTo string `json:"return_to,omitempty"`
@@ -322,9 +337,55 @@ func (s *Server) factorProof(r *http.Request, account store.Account, code, recov
 // reservation ids to settle on success. limited means the caller must refuse
 // without checking anything.
 func (s *Server) mfaAttempt(r *http.Request, userID string, now time.Time) (ids []int64, ipKey string, limited bool, err error) {
+	ctx := r.Context()
 	ipKey = s.rateKey("ip", clientIP(r))
-	ids, limited, err = s.reserveLoginAttempt(r.Context(), s.rateKey("mfa-user", userID), ipKey, now)
-	return ids, ipKey, limited, err
+	userKey := s.rateKey("mfa-user", userID)
+	globalKey := s.rateKey("mfa-global", "all")
+	// All three limits are checked, then all three rows reserved, under one
+	// gate: a request that is already refused by its own account or address
+	// limit must not advance the deployment-wide counter, or one locally
+	// throttled person could deny factor checks to everyone.
+	if err := acquire(ctx, s.attemptGate); err != nil {
+		return nil, ipKey, false, err
+	}
+	defer release(s.attemptGate)
+	if limited, err = s.passwordRateLimited(ctx, userKey, ipKey, now); err != nil || limited {
+		return nil, ipKey, limited, err
+	}
+	since := now.Add(-passwordRateWindow).Unix()
+	n, err := s.store.CountFailedLoginAttempts(ctx, globalKey, since)
+	if err != nil {
+		return nil, ipKey, false, err
+	}
+	if n >= mfaGlobalLimit {
+		return nil, ipKey, true, nil
+	}
+	// ids[0] and ids[1] (account, address) are settled on success like a
+	// password attempt; the global row is kept so the ceiling counts every
+	// attempt whatever its outcome.
+	ids, err = s.store.ReserveLoginAttempts(ctx, now.Unix(), userKey, ipKey, globalKey)
+	return ids, ipKey, false, err
+}
+
+// reserveCounted is a plain counter on the login_attempts table for the
+// separate MFA ceilings: it reports whether key has reached max in the
+// window and, if not, records one more occurrence. Rows are never settled,
+// so the count is of occurrences, not failures, and it persists across
+// restarts like every other limit here.
+func (s *Server) reserveCounted(ctx context.Context, key string, max int, now time.Time) (bool, error) {
+	if err := acquire(ctx, s.attemptGate); err != nil {
+		return false, err
+	}
+	defer release(s.attemptGate)
+	n, err := s.store.CountFailedLoginAttempts(ctx, key, now.Add(-passwordRateWindow).Unix())
+	if err != nil {
+		return false, err
+	}
+	if n >= max {
+		return true, nil
+	}
+	_, err = s.store.ReserveLoginAttempts(ctx, now.Unix(), key)
+	return false, err
 }
 
 // ── /login/verify ───────────────────────────────────────────────────
@@ -452,6 +513,15 @@ func (s *Server) enrolmentView(r *http.Request, account store.Account, now time.
 	pending, err := s.store.PendingAuthenticator(r.Context(), account.ID, now.Unix())
 	var secret []byte
 	if errors.Is(err, store.ErrPendingNotFound) {
+		// Generating a secret is cheap for us and free for an attacker to
+		// trigger, so fresh secrets per account are capped separately.
+		limited, err := s.reserveCounted(r.Context(), s.rateKey("mfa-enroll", account.ID), mfaEnrolLimit, now)
+		if err != nil {
+			return nil, err
+		}
+		if limited {
+			return nil, errEnrolLimited
+		}
 		secret, err = mfa.NewSecret()
 		if err != nil {
 			return nil, err
@@ -585,6 +655,11 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	render := func(errText string) {
 		view, err := s.enrolmentView(r, account, now)
+		if errors.Is(err, errEnrolLimited) {
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enrol_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
+			s.restartLogin(w, r, tr, errMFALocked)
+			return
+		}
 		if err != nil {
 			log.Printf("mfa enrolment view: %v", err)
 			http.Error(w, "something went wrong", http.StatusInternalServerError)
@@ -692,7 +767,11 @@ func (s *Server) handleLoginCancel(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	tr, _, _ := s.currentLoginTransaction(r)
+	tr, account, ok := s.currentLoginTransaction(r)
+	if ok {
+		// A cancelled enrolment leaves no half-generated secret behind.
+		_ = s.store.AbandonPendingAuthenticator(r.Context(), account.ID)
+	}
 	s.restartLogin(w, r, tr, "")
 }
 
@@ -851,6 +930,11 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "start":
 		view, err := s.enrolmentView(r, account, now)
+		if errors.Is(err, errEnrolLimited) {
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enrol_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
+			renderPage("", "Too many set-up attempts. Wait a few minutes and try again.")
+			return
+		}
 		if err != nil {
 			log.Printf("mfa enrolment view: %v", err)
 			http.Error(w, "something went wrong", http.StatusInternalServerError)

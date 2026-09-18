@@ -341,6 +341,27 @@ password. What people see:
   administrator to have one themselves. Recommended rollout: leave the policy
   Optional, have every administrator enrol from Security, then switch to
   Required for administrators.
+- **Limits.** Five wrong codes end a sign-in attempt; ten failed factor
+  attempts per account, and fifty per address, in fifteen minutes pause
+  further attempts (the same counters as passwords, and they survive a
+  restart); fresh enrolment secrets are capped at five per account, resets at
+  ten per administrator, and factor attempts at a thousand across the
+  deployment, all per fifteen minutes. Every limit is a cooldown, never a
+  permanent lockout.
+- **Emergency: the only administrator is locked out.** If the sole
+  administrator loses their authenticator and recovery codes, nobody can
+  reset them from the console. On the box, as root:
+  ```bash
+  auth user mfa-reset admin@<client> --reason "lost phone; identity verified by <how>"
+  ```
+  This is audited as `mfa.reset` by `cli:<your login>`, signs the account
+  out everywhere, and leaves it in **Enrollment required**: the next sign-in
+  goes straight to enrolment. Use it for identity recovery only; a password
+  reset never removes a factor, and the CLI sends no notification (the audit
+  log is the record). If the policy requires a factor of every administrator
+  and none can enrol because the key is gone, restore `AUTH_MFA_KEY` from
+  the `.env.local` backup first; without it the server refuses to start once
+  factors exist.
 - **Notifications.** When the deployment has an email driver other than
   `stdout`, the account is emailed (never with codes or secrets) when an
   authenticator is set up, replaced or turned off, when an administrator

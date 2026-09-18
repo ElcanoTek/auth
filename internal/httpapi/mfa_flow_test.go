@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base32"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -132,7 +133,7 @@ func enrolViaStore(t *testing.T, ts *httptest.Server, st *store.Store, ring *mfa
 		t.Fatal(err)
 	}
 	secret, _ := mfa.NewSecret()
-	id := "f-" + a.ID
+	id := fmt.Sprintf("f-%s-%d", a.ID, time.Now().UnixNano())
 	sealed, err := ring.Seal(secret, mfa.AAD(id, a.ID, store.AuthenticatorTOTP))
 	if err != nil {
 		t.Fatal(err)
