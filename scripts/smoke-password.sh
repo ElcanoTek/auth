@@ -79,11 +79,23 @@ headers="$(curl -sS -D - -o /dev/null -b "$JAR" -c "$JAR" \
   --data-urlencode "csrf_token=$csrf" "$BASE/login")"
 echo "$headers" | grep -qiE '^HTTP/[0-9.]+ 303' || fail "login did not return 303"
 echo "$headers" | grep -qi '^location: /change-password' || fail "first login did not require password replacement"
-old_session="$(cookie_value auth_session)"
-[[ -n "$old_session" ]] || fail "login did not set an opaque session"
+this_session="$(cookie_value auth_session)"
+[[ -n "$this_session" ]] || fail "login did not set an opaque session"
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/verify")"
 [[ "$code" == "401" ]] || fail "must-change session reached /verify (got $code)"
 pass "2. valid login creates a gated, must-change session"
+
+# A second browser, signed in with the same temporary password: the change
+# below must sign it out while the browser that made the change stays in.
+OTHER_JAR="$WORK/other.jar"
+curl -fsS -c "$OTHER_JAR" "$BASE/" >/dev/null
+other_csrf="$(awk '$6 == "auth_csrf" { print $7 }' "$OTHER_JAR")"
+curl -sS -o /dev/null -b "$OTHER_JAR" -c "$OTHER_JAR" \
+  --data-urlencode 'email=alice@example.com' \
+  --data-urlencode "password=$INITIAL" \
+  --data-urlencode "csrf_token=$other_csrf" "$BASE/login"
+other_session="$(awk '$6 == "auth_session" { print $7 }' "$OTHER_JAR")"
+[[ -n "$other_session" ]] || fail "second login did not set a session"
 
 csrf="$(cookie_value auth_csrf)"
 headers="$(curl -sS -D - -o /dev/null -b "$JAR" -c "$JAR" \
@@ -93,10 +105,11 @@ headers="$(curl -sS -D - -o /dev/null -b "$JAR" -c "$JAR" \
   --data-urlencode "csrf_token=$csrf" "$BASE/change-password")"
 echo "$headers" | grep -qiE '^HTTP/[0-9.]+ 303' || fail "password replacement did not return 303"
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/verify")"
-[[ "$code" == "200" ]] || fail "replacement session did not verify (got $code)"
-old_code="$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: auth_session=$old_session" "$BASE/verify")"
-[[ "$old_code" == "401" ]] || fail "old session survived password replacement (got $old_code)"
-pass "3. replacement revokes the old session and admits the new session"
+[[ "$code" == "200" ]] || fail "the changing browser's session did not verify after the change (got $code)"
+[[ "$(cookie_value auth_session)" == "$this_session" ]] || fail "the changing browser's session was replaced instead of kept"
+other_code="$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: auth_session=$other_session" "$BASE/verify")"
+[[ "$other_code" == "401" ]] || fail "other session survived password replacement (got $other_code)"
+pass "3. replacement keeps this browser's session and signs the other one out"
 
 verifier='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~'
 challenge="$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
