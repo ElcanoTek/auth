@@ -174,7 +174,70 @@ var (
 	ErrFactorRequired = errors.New("a second factor is required")
 	// ErrStalePolicy: the policy changed since the form was rendered.
 	ErrStalePolicy = errors.New("two-factor policy changed meanwhile")
+	// ErrActorNotFresh: the administrator's session is gone, no longer an
+	// administrator's, or its proof is older than the window the caller set.
+	ErrActorNotFresh = errors.New("administrator session is not fresh")
+	// ErrInvalidReason: a reset reason is empty, too long or has control
+	// characters.
+	ErrInvalidReason = errors.New("reason must be 1-200 printable characters")
 )
+
+// ActorProof lets a console action be re-checked inside the store
+// transaction that performs it, closing the gap between reading the request
+// and writing: the actor's session must still be live and an enabled
+// administrator's, created (with the factor, when RequireFactor) or
+// re-verified at or after FreshAfter. The CLI passes nil: the box operator
+// is trusted by virtue of being root on the host.
+type ActorProof struct {
+	SessionHash   string
+	FreshAfter    int64
+	RequireFactor bool // the fresh proof must include an authenticator code
+}
+
+func requireActorTx(ctx context.Context, tx *sql.Tx, actorID string, proof *ActorProof, now int64) error {
+	if proof == nil {
+		return nil
+	}
+	var isAdmin int
+	var disabled, revoked, reauthAt sql.NullInt64
+	var idle, absolute, created int64
+	var amr string
+	err := tx.QueryRowContext(ctx, `
+		SELECT a.is_admin, a.disabled_at, s.revoked_at, s.idle_expires_at, s.absolute_expires_at, s.created_at, s.amr, s.reauth_at
+		FROM auth_sessions s JOIN accounts a ON a.id = s.user_id
+		WHERE s.token_hash = ? AND s.user_id = ?`, proof.SessionHash, actorID).
+		Scan(&isAdmin, &disabled, &revoked, &idle, &absolute, &created, &amr, &reauthAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrActorNotFresh
+	}
+	if err != nil {
+		return err
+	}
+	if isAdmin == 0 || disabled.Valid || revoked.Valid || now >= idle || now >= absolute {
+		return ErrActorNotFresh
+	}
+	freshLogin := created >= proof.FreshAfter && (!proof.RequireFactor || hasSecondFactorMethod(strings.Fields(amr)))
+	freshReauth := reauthAt.Valid && reauthAt.Int64 >= proof.FreshAfter
+	if !freshLogin && !freshReauth {
+		return ErrActorNotFresh
+	}
+	return nil
+}
+
+// NormalizeReason bounds a reset reason for the audit log: trimmed, at most
+// 200 runes, no control characters.
+func NormalizeReason(reason string) (string, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" || len([]rune(reason)) > 200 {
+		return "", ErrInvalidReason
+	}
+	for _, r := range reason {
+		if r < 0x20 || r == 0x7f {
+			return "", ErrInvalidReason
+		}
+	}
+	return reason, nil
+}
 
 const (
 	AuthenticatorTOTP = "totp"
@@ -248,13 +311,20 @@ func (s *Store) CountNewlyRequiredWithoutFactor(ctx context.Context, mode mfa.Mo
 // application session may outlive its central one. Returns the new policy
 // and how many accounts were signed out.
 func (s *Store) SetMFAPolicy(ctx context.Context, mode mfa.Mode, actorID string, now int64) (MFAPolicy, int64, error) {
-	return s.SetMFAPolicyIfRevision(ctx, mode, -1, actorID, now)
+	return s.SetMFAPolicyBy(ctx, mode, -1, actorID, nil, now)
 }
 
 // SetMFAPolicyIfRevision is SetMFAPolicy that applies only while the policy
 // is still at expectedRevision (a form rendered from that revision); -1
 // skips the check. A mismatch is ErrStalePolicy and changes nothing.
 func (s *Store) SetMFAPolicyIfRevision(ctx context.Context, mode mfa.Mode, expectedRevision int64, actorID string, now int64) (MFAPolicy, int64, error) {
+	return s.SetMFAPolicyBy(ctx, mode, expectedRevision, actorID, nil, now)
+}
+
+// SetMFAPolicyBy adds the in-transaction actor check (ActorProof). Saving
+// the mode that is already in force is a no-op: no revision bump, no audit,
+// nobody signed out again.
+func (s *Store) SetMFAPolicyBy(ctx context.Context, mode mfa.Mode, expectedRevision int64, actorID string, proof *ActorProof, now int64) (MFAPolicy, int64, error) {
 	if _, err := mfa.ParseMode(string(mode)); err != nil {
 		return MFAPolicy{}, 0, err
 	}
@@ -263,12 +333,18 @@ func (s *Store) SetMFAPolicyIfRevision(ctx context.Context, mode mfa.Mode, expec
 		return MFAPolicy{}, 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
+		return MFAPolicy{}, 0, err
+	}
 	current, err := mfaPolicyQ(ctx, tx)
 	if err != nil {
 		return MFAPolicy{}, 0, err
 	}
 	if expectedRevision >= 0 && current.Revision != expectedRevision {
 		return current, 0, ErrStalePolicy
+	}
+	if current.Mode == mode {
+		return current, 0, nil
 	}
 	next := MFAPolicy{Mode: mode, Revision: current.Revision + 1, UpdatedAt: time.Unix(now, 0)}
 	if _, err := tx.ExecContext(ctx, `
@@ -334,6 +410,12 @@ func signOutUnenrolledRequiredTx(ctx context.Context, tx *sql.Tx, mode mfa.Mode,
 // account without a factor signs that account out everywhere, exactly as a
 // policy change would. Returns 1 when the account was signed out.
 func (s *Store) SetAccountMFARequired(ctx context.Context, email string, required bool, actorID string, now int64) (int64, error) {
+	return s.SetAccountMFARequiredBy(ctx, email, required, actorID, nil, now)
+}
+
+// SetAccountMFARequiredBy is SetAccountMFARequired with the in-transaction
+// actor check.
+func (s *Store) SetAccountMFARequiredBy(ctx context.Context, email string, required bool, actorID string, proof *ActorProof, now int64) (int64, error) {
 	a, err := s.PasswordAccountByEmail(ctx, email)
 	if err != nil {
 		return 0, err
@@ -343,6 +425,9 @@ func (s *Store) SetAccountMFARequired(ctx context.Context, email string, require
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
+		return 0, err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET mfa_required = ?, updated_at = ? WHERE id = ?`, boolInt(required), now, a.ID); err != nil {
 		return 0, err
 	}
@@ -704,14 +789,24 @@ func (s *Store) DisableAuthenticator(ctx context.Context, userID, keepSessionHas
 // must never quietly turn an account back into password-only access. It
 // needs an active factor (ErrNoAuthenticator otherwise).
 func (s *Store) ResetMFA(ctx context.Context, userID, actorID, reason string, now int64) error {
-	if strings.TrimSpace(reason) == "" {
-		return errors.New("a reason is required")
+	return s.ResetMFABy(ctx, userID, actorID, reason, nil, now)
+}
+
+// ResetMFABy is ResetMFA with the in-transaction actor check (the console
+// requires the acting administrator's fresh authenticator proof).
+func (s *Store) ResetMFABy(ctx context.Context, userID, actorID, reason string, proof *ActorProof, now int64) error {
+	reason, err := NormalizeReason(reason)
+	if err != nil {
+		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
+		return err
+	}
 	// A reset is for a lost authenticator: without one there is nothing to
 	// reset, and "Require 2FA" is the control for that case.
 	if _, err := activeAuthenticatorQ(ctx, tx, userID); err != nil {
@@ -740,7 +835,7 @@ func (s *Store) ResetMFA(ctx context.Context, userID, actorID, reason string, no
 	if err := enqueueLogoutEventTx(ctx, tx, userID, "mfa_reset", now); err != nil {
 		return err
 	}
-	meta, _ := json.Marshal(map[string]any{"actor": actorID, "reason": strings.TrimSpace(reason)})
+	meta, _ := json.Marshal(map[string]any{"actor": actorID, "reason": reason})
 	if err := insertAudit(ctx, tx, "mfa.reset", userID, now, string(meta)); err != nil {
 		return err
 	}

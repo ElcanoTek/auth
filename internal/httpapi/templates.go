@@ -783,10 +783,10 @@ const adminHTML = `<!doctype html>
               </div>
               <div class="seg-group"><span class="seg-label">Two-factor</span>
                 <span class="seg" role="group" aria-label="Two-factor requirement for {{$row.Email}}">
-                  {{if $row.MFAPolicyBound}}<label class="seg-opt locked"><input type="checkbox" checked disabled> Require 2FA</label><input type="hidden" name="mfa_required" value="{{if $row.MFARequired}}on{{else}}off{{end}}">
+                  {{if or $row.MFAPolicyBound (not $.MFAAvailable)}}<label class="seg-opt locked"><input type="checkbox"{{if or $row.MFAPolicyBound $row.MFARequired}} checked{{end}} disabled> Require 2FA</label><input type="hidden" name="mfa_required" value="{{if $row.MFARequired}}on{{else}}off{{end}}">
                   {{else}}<label class="seg-opt"><input type="checkbox" name="mfa_required" value="on"{{if $row.MFARequired}} checked{{end}}> Require 2FA</label>{{end}}
                 </span>
-                <p class="hint">{{if $row.MFAPolicyBound}}The deployment policy already requires it for this account.{{else if $row.MFAEnrolled}}Enrolled ({{$row.MFAStatus}}). Requiring it means they cannot turn it off.{{else}}Not enrolled. Requiring it signs them out now; they set up an authenticator at their next sign-in.{{end}}</p>
+                <p class="hint">{{if not $.MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY).{{else if $row.MFAPolicyBound}}The deployment policy already requires it for this account.{{else if $row.MFAEnrolled}}Enrolled ({{$row.MFAStatus}}). Requiring it means they cannot turn it off.{{else}}Not enrolled. Requiring it signs them out now; they set up an authenticator at their next sign-in.{{end}}</p>
               </div>
               <div class="seg-group"><span class="seg-label">Applications</span>
                 {{if $row.Apps}}<span class="seg" role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}<label class="seg-opt"><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
@@ -914,9 +914,10 @@ const adminHTML = `<!doctype html>
           <span class="seg" role="radiogroup" aria-label="Two-factor policy">{{range .MFAOptions}}<label class="seg-opt"><input type="radio" name="mode" value="{{.Mode}}"{{if .Current}} checked{{end}}> {{.Label}}</label>{{end}}</span>
           <p class="hint">{{range .MFAOptions}}{{if .Current}}Current: {{.Label}}.{{end}}{{end}}</p>
         </div>
+        {{if .MFACountError}}<div class="err">The affected-account counts could not be loaded, so the policy cannot be changed from here right now. Reload and try again.</div>{{else}}
         <ul class="plain">{{range .MFAOptions}}<li><strong>{{.Label}}</strong>: {{if eq .ToEnrol 0}}nobody new has to enrol.{{else if eq .ToEnrol 1}}1 account without an authenticator is signed out now and enrols at its next sign-in.{{else}}{{.ToEnrol}} accounts without an authenticator are signed out now and enrol at their next sign-in.{{end}}</li>{{end}}</ul>
         <p class="hint">Relaxing the policy never removes anyone's authenticator. Changes take effect immediately{{if not .ActorFresh}} and need a sign-in less than five minutes old{{end}}.</p>
-        <button class="btn" type="submit">Save policy</button>
+        <button class="btn" type="submit">Save policy</button>{{end}}
       </form>{{end}}
     </div>
     {{else}}{{with .App}}

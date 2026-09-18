@@ -203,3 +203,41 @@ func TestPromotingUnderAdminsPolicySignsTheNewAdminOut(t *testing.T) {
 		t.Fatalf("bob after promotion: %q", resp.Header.Get("Location"))
 	}
 }
+
+func TestConsoleRefusesWhatWouldLockPeopleOut(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice, _ := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
+	// A malformed revision is not a console request.
+	if resp, _ := alice.post("/admin", url.Values{"action": {"set-policy"}, "mode": {"admins"}, "revision": {"x"}}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed revision: %d", resp.StatusCode)
+	}
+	if resp, _ := alice.post("/admin", url.Values{"action": {"set-policy"}, "mode": {"admins"}}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing revision: %d", resp.StatusCode)
+	}
+	// An unregistered application refuses the whole Access save: bob keeps
+	// his flags.
+	if _, page := alice.post("/admin", url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"fleet", "ghost"}, "admin": {"on"}, "mfa_required": {"on"}}); !strings.Contains(page, "not registered") {
+		t.Fatalf("ghost app:\n%s", page)
+	}
+	bob, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com")
+	if bob.IsAdmin || bob.MFARequired {
+		t.Fatalf("partial write after a refused Access save: admin=%v required=%v", bob.IsAdmin, bob.MFARequired)
+	}
+	// Without a key on the server nothing can be required of anyone.
+	ring := cfg.MFAKeyring
+	cfg.MFAKeyring = nil
+	if _, page := alice.post("/admin", url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"fleet"}, "mfa_required": {"on"}}); !strings.Contains(page, "AUTH_MFA_KEY is unset") {
+		t.Fatalf("require without key:\n%s", page)
+	}
+	if _, page := alice.post("/admin", url.Values{"action": {"set-policy"}, "mode": {"everyone"}, "revision": {"0"}}); !strings.Contains(page, "AUTH_MFA_KEY is unset") {
+		t.Fatalf("policy without key:\n%s", page)
+	}
+	if _, page := alice.get("/admin"); !strings.Contains(page, `<input type="checkbox" disabled> Require 2FA`) {
+		t.Fatalf("Require pill not locked without a key:\n%s", page)
+	}
+	cfg.MFAKeyring = ring
+	// Saving the current policy again changes nothing (revision stays 0).
+	if _, page := alice.post("/admin", url.Values{"action": {"set-policy"}, "mode": {"optional"}, "revision": {"0"}}); !strings.Contains(page, `name="revision" value="0"`) {
+		t.Fatalf("same-mode save bumped the revision:\n%s", page)
+	}
+}

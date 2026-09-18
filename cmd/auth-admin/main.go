@@ -364,6 +364,15 @@ func userCmd(dataDir string, args []string) {
 		}
 		email := validateAccountEmail(args[1])
 		grant := args[2] == "on"
+		if grant {
+			// Under "Required for administrators" promotion requires a factor
+			// of the new administrator; without a key nobody could enrol.
+			if policy, err := st.MFAPolicy(ctx); err == nil && policy.Mode == mfa.ModeAdmins {
+				if a, err := st.PasswordAccountByEmail(ctx, email); err == nil && !a.MFAEnrolled {
+					requireMFAKeyConfigured("promoting an account that must then enrol")
+				}
+			}
+		}
 		if err := st.SetAccountAdmin(ctx, email, grant, time.Now().Unix()); err != nil {
 			if errors.Is(err, store.ErrLastAdmin) {
 				fatalf("admin off: %s is the last enabled administrator; grant another account first", email)
@@ -432,6 +441,9 @@ func userCmd(dataDir string, args []string) {
 			fatalf("usage: auth-admin user mfa-required <email> on|off")
 		}
 		email := validateAccountEmail(args[1])
+		if args[2] == "on" {
+			requireMFAKeyConfigured("requiring two-factor sign-in")
+		}
 		signedOut, err := st.SetAccountMFARequired(ctx, email, args[2] == "on", cliActor(), time.Now().Unix())
 		if err != nil {
 			fatalf("mfa-required: %v", err)
@@ -928,6 +940,9 @@ func mfaPolicyCmd(dataDir string, args []string) {
 	if err != nil {
 		fatalf("usage: auth-admin mfa policy [optional|admins|everyone]")
 	}
+	if mode != mfa.ModeOptional {
+		requireMFAKeyConfigured("a policy that requires two-factor sign-in")
+	}
 	policy, signedOut, err := st.SetMFAPolicy(ctx, mode, cliActor(), time.Now().Unix())
 	if err != nil {
 		fatalf("mfa policy: %v", err)
@@ -946,4 +961,13 @@ func cliActor() string {
 		return "cli:" + u.Username
 	}
 	return "cli"
+}
+
+// requireMFAKeyConfigured refuses a change that would lock people out on a
+// server that cannot store authenticator secrets. The `auth` wrapper sources
+// .env.local, so AUTH_MFA_KEY is in the environment when configured.
+func requireMFAKeyConfigured(what string) {
+	if strings.TrimSpace(os.Getenv("AUTH_MFA_KEY")) == "" {
+		fatalf("%s needs AUTH_MFA_KEY in .env.local first (generate one with `auth mfa keygen`, then `auth restart`); otherwise the affected accounts could not enrol and would be locked out", what)
+	}
 }

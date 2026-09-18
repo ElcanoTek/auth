@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -926,5 +927,66 @@ func TestReplacePasswordUnderTransactionRefusesAStaleVersion(t *testing.T) {
 	tr, err := s.AuthTransactionByState(ctx, "st2", now+6)
 	if err != nil || tr.Stage != "complete" || tr.CredentialHash != "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3" {
 		t.Fatalf("transaction after replace: %+v %v", tr, err)
+	}
+}
+
+// Console writes re-check the acting administrator inside the transaction:
+// a revoked session, a demoted actor, a stale proof, or (for resets) a proof
+// without the authenticator all refuse the write.
+func TestActorProofIsCheckedInsideTheTransaction(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, now)
+	enrol(t, s, bob, "", now)
+	session(t, s, alice, "alice-pwd", now) // password-only, fresh
+	proof := &ActorProof{SessionHash: "alice-pwd", FreshAfter: now - 60}
+	// Fresh password-only proof is enough for a requirement change...
+	if _, err := s.SetAccountMFARequiredBy(ctx, bob.Email, true, alice.ID, proof, now+1); err != nil {
+		t.Fatalf("fresh proof refused: %v", err)
+	}
+	// ...but not for a reset, which needs the authenticator in the proof.
+	strict := &ActorProof{SessionHash: "alice-pwd", FreshAfter: now - 60, RequireFactor: true}
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", strict, now+2); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("password-only proof accepted for a reset: %v", err)
+	}
+	if b, _ := s.PasswordAccountByEmail(ctx, bob.Email); !b.MFAEnrolled {
+		t.Fatal("reset happened despite the refused proof")
+	}
+	// Too old.
+	old := &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30}
+	if _, _, err := s.SetMFAPolicyBy(ctx, mfa.ModeEveryone, -1, alice.ID, old, now+3); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("stale proof accepted: %v", err)
+	}
+	// Re-verified recently counts, factor or not.
+	if err := s.StampSessionReauth(ctx, "alice-pwd", now+40); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", &ActorProof{SessionHash: "alice-pwd", FreshAfter: now + 30, RequireFactor: true}, now+41); err != nil {
+		t.Fatalf("re-verified proof refused: %v", err)
+	}
+	// Revoked session: nothing.
+	if _, err := s.RevokeAuthSession(ctx, "alice-pwd", now+42, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SetMFAPolicyBy(ctx, mfa.ModeEveryone, -1, alice.ID, &ActorProof{SessionHash: "alice-pwd", FreshAfter: now}, now+43); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("revoked session accepted: %v", err)
+	}
+	// Same-mode save is a no-op: no revision bump, no sign-outs.
+	before, _ := s.MFAPolicy(ctx)
+	after, signedOut, err := s.SetMFAPolicy(ctx, before.Mode, alice.ID, now+44)
+	if err != nil || after.Revision != before.Revision || signedOut != 0 {
+		t.Fatalf("same-mode save: %+v %d %v", after, signedOut, err)
+	}
+	// Reason bounds.
+	for _, bad := range []string{"", "   ", strings.Repeat("x", 201), "line\nbreak"} {
+		if _, err := NormalizeReason(bad); !errors.Is(err, ErrInvalidReason) {
+			t.Fatalf("NormalizeReason(%q) accepted", bad)
+		}
+	}
+	if r, err := NormalizeReason("  lost phone  "); err != nil || r != "lost phone" {
+		t.Fatalf("NormalizeReason trims: %q %v", r, err)
 	}
 }
