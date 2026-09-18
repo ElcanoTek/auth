@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"github.com/elcanotek/auth/internal/branding"
+	"github.com/elcanotek/auth/internal/mfa"
 	"net/url"
 	"os"
 	"strconv"
@@ -67,7 +68,19 @@ var allowedEnvVars = map[string]bool{
 	"AUTH_PASSWORD_RATE_PER_EMAIL": true,
 	"AUTH_PASSWORD_RATE_PER_IP":    true,
 	"AUTH_PASSWORD_BLOCKED_TERMS":  true, // CSV of organisation/product names a password may not be built from
-	"AUTH_AUDIT_RETENTION_DAYS":    true, // password-mode audit_events retention; 0 = keep forever
+	// Second factor (password mode). AUTH_MFA_KEY is the base64 32-byte key
+	// that encrypts authenticator secrets at rest (AES-256-GCM); it lives
+	// only on the auth host, separate from the signing key. AUTH_MFA_KEY_ID
+	// labels it (default "1"); AUTH_MFA_PREVIOUS_KEYS ("id:base64,...") keeps
+	// retired keys readable until every secret has been re-sealed. Without
+	// AUTH_MFA_KEY, 2FA is unavailable (and startup fails if any account has
+	// a factor). AUTH_MFA_ISSUER is the label authenticator apps show;
+	// default AUTH_BRAND_NAME.
+	"AUTH_MFA_KEY":              true,
+	"AUTH_MFA_KEY_ID":           true,
+	"AUTH_MFA_PREVIOUS_KEYS":    true,
+	"AUTH_MFA_ISSUER":           true,
+	"AUTH_AUDIT_RETENTION_DAYS": true, // password-mode audit_events retention; 0 = keep forever
 
 	// Tenancy. AUTH_ALLOWED_DOMAINS is a comma-separated list of email
 	// domains that may request a magic link. Empty list = "allow any
@@ -142,6 +155,8 @@ type Config struct {
 	PasswordRatePerEmail int
 	PasswordRatePerIP    int
 	PasswordBlockedTerms []string      // deployment words a password must not be built from (client name, products)
+	MFAKeyring           *mfa.Keyring  // nil when AUTH_MFA_KEY is unset: 2FA unavailable
+	MFAIssuer            string        // label shown in authenticator apps
 	AuditRetention       time.Duration // 0 = never sweep audit_events
 
 	AllowedDomains []string
@@ -248,6 +263,12 @@ func Load(envFile string) (*Config, error) {
 	cfg.PasswordRatePerEmail = envInt("AUTH_PASSWORD_RATE_PER_EMAIL", 10)
 	cfg.PasswordRatePerIP = envInt("AUTH_PASSWORD_RATE_PER_IP", 50)
 	cfg.PasswordBlockedTerms = splitCSV(os.Getenv("AUTH_PASSWORD_BLOCKED_TERMS"))
+	ring, err := mfa.ParseKeyring(os.Getenv("AUTH_MFA_KEY"), os.Getenv("AUTH_MFA_KEY_ID"), os.Getenv("AUTH_MFA_PREVIOUS_KEYS"))
+	if err != nil {
+		return nil, err
+	}
+	cfg.MFAKeyring = ring
+	cfg.MFAIssuer = strings.TrimSpace(envOr("AUTH_MFA_ISSUER", cfg.BrandName))
 	cfg.AuditRetention = time.Duration(envInt("AUTH_AUDIT_RETENTION_DAYS", 90)) * 24 * time.Hour
 	cfg.MagicRatePerEmail = envInt("AUTH_MAGIC_RATE_PER_EMAIL", 10)
 	cfg.MagicGlobalLimit = envInt("AUTH_MAGIC_GLOBAL_LIMIT", 500)
@@ -335,6 +356,14 @@ func (c *Config) Validate() error {
 		}
 		if !c.CookieSecure && strings.HasPrefix(c.PasswordCookieName, "__Host-") {
 			return fmt.Errorf("AUTH_PASSWORD_COOKIE_NAME must not use __Host- when Secure is disabled (use auth_session for local HTTP)")
+		}
+		if c.MFAIssuer == "" {
+			c.MFAIssuer = c.BrandName
+		}
+		// Only a deployment that can enrol factors needs a usable issuer
+		// label; a brand with a colon must not stop a box that has no key.
+		if err := mfa.ValidateIssuer(c.MFAIssuer); err != nil && c.MFAKeyring != nil {
+			return fmt.Errorf("AUTH_MFA_ISSUER (or AUTH_BRAND_NAME) %q: must be non-empty and contain no ':'", c.MFAIssuer)
 		}
 		return nil
 	}

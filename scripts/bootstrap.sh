@@ -351,6 +351,20 @@ AUTH_SIGNING_PUBKEY="$(
 )"
 unset _ed25519_pkcs8_prefix
 
+# 3f2 — second-factor encryption key (password mode). Authenticator (2FA)
+# secrets are sealed with AES-256-GCM under this key, which lives only in
+# .env.local next to the signing seed. Reuse an existing one if present:
+# losing it makes every enrolled factor unverifiable.
+# A re-run keeps the existing key, its id and the previous-key ring exactly
+# (they were sourced from .env.local above); only a fresh password-mode
+# install generates one.
+AUTH_MFA_KEY="${AUTH_MFA_KEY:-}"
+AUTH_MFA_KEY_ID="${AUTH_MFA_KEY_ID:-1}"
+AUTH_MFA_PREVIOUS_KEYS="${AUTH_MFA_PREVIOUS_KEYS:-}"
+if [[ "$LOGIN_MODE_ANSWER" == "password" && -z "$AUTH_MFA_KEY" ]]; then
+  AUTH_MFA_KEY="$(openssl rand -base64 32 | tr -d '\n')"
+fi
+
 # 3g — TLS plan (only relevant for real hostnames)
 SETUP_CADDY="n"
 USE_LETSENCRYPT="n"
@@ -434,6 +448,12 @@ AUTH_COOKIE_SECURE="$COOKIE_SECURE"
 AUTH_PASSWORD_COOKIE_NAME="$PASSWORD_COOKIE_NAME"
 AUTH_CODE_TTL_SECONDS="60"
 AUTH_ASSERTION_TTL_MINUTES="5"
+# Second factor: AES-256 key sealing authenticator secrets at rest (password
+# mode). Rotate with 'auth mfa keygen'; keep the old one under
+# AUTH_MFA_PREVIOUS_KEYS as id:key until every factor has been re-sealed.
+AUTH_MFA_KEY="$AUTH_MFA_KEY"
+AUTH_MFA_KEY_ID="$AUTH_MFA_KEY_ID"
+AUTH_MFA_PREVIOUS_KEYS="$AUTH_MFA_PREVIOUS_KEYS"
 
 # ── Tenancy / allowlist ──────────────────────────────────────────
 AUTH_ALLOWED_DOMAINS="$ALLOWED_DOMAINS_ANSWER"
