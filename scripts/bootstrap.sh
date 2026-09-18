@@ -166,6 +166,7 @@ if ! id -u "$APP_USER" >/dev/null 2>&1; then
   useradd --system --shell /usr/sbin/nologin --home-dir "$APP_DIR" --create-home "$APP_USER"
 fi
 mkdir -p "$APP_DIR/data" "$APP_DIR/bin"
+chmod 0700 "$APP_DIR/data" # password hashes and sealed secrets live here
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 ok "user '${APP_USER}' ready, ${APP_DIR} owned"
 
@@ -249,10 +250,13 @@ fi
 
 COOKIE_DOMAIN_ANSWER=""
 ALLOWED_DOMAINS_ANSWER=""
-EMAIL_DRIVER_ANSWER="stdout"
-EMAIL_FROM_ANSWER="Sign in <login@example.com>"
-SENDGRID_KEY_ANSWER=""
-SMTP_HOST=""; SMTP_PORT=""; SMTP_USER=""; SMTP_PASS=""
+# Password mode asks nothing about email (it only sends security notices),
+# so a re-run keeps whatever driver and credentials the previous file had
+# rather than silently moving notices to the journal.
+EMAIL_DRIVER_ANSWER="${AUTH_EMAIL_DRIVER:-stdout}"
+EMAIL_FROM_ANSWER="${AUTH_EMAIL_FROM:-Sign in <login@example.com>}"
+SENDGRID_KEY_ANSWER="${SENDGRID_API_KEY:-}"
+SMTP_HOST="${AUTH_SMTP_HOST:-}"; SMTP_PORT="${AUTH_SMTP_PORT:-}"; SMTP_USER="${AUTH_SMTP_USER:-}"; SMTP_PASS="${AUTH_SMTP_PASS:-}"
 
 if [[ "$LOGIN_MODE_ANSWER" == "magic" ]]; then
 # 3c — cookie domain (auto-guess; let operator override)
@@ -528,7 +532,7 @@ if [[ -n "$OLD_ENV_FILE" ]]; then
   # Settings the template writes with a fixed default but this run never
   # asked about keep their previous value.
   kept=0
-  for key in AUTH_ADDR AUTH_DATA_DIR AUTH_COOKIE_NAME AUTH_CODE_TTL_SECONDS AUTH_ASSERTION_TTL_MINUTES; do
+  for key in AUTH_ADDR AUTH_DATA_DIR AUTH_COOKIE_NAME AUTH_PASSWORD_COOKIE_NAME AUTH_CODE_TTL_SECONDS AUTH_ASSERTION_TTL_MINUTES; do
     [[ -n "${old_line[$key]:-}" ]] || continue
     grep -q "^${key}=" "$ENV_FILE" || continue
     REPL="${old_line[$key]}" KEY="$key" awk '

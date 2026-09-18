@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -53,11 +54,16 @@ func Open(dataDir string) (*Store, error) {
 	// to a write after another writer committed fails at once with
 	// SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot wait out. Taking the
 	// write lock up front serialises writers behind busy_timeout instead.
-	dsn := filepath.Join(dataDir, "state.db") +
-		"?_pragma=journal_mode(WAL)" +
+	path, err := filepath.Abs(filepath.Join(dataDir, "state.db"))
+	if err != nil {
+		return nil, err
+	}
+	// A file: URI built with url.URL so a ? or # in the path is escaped
+	// rather than read as the start of the query string.
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=journal_mode(WAL)" +
 		"&_pragma=busy_timeout(5000)" +
 		"&_pragma=foreign_keys(on)" +
-		"&_txlock=immediate"
+		"&_txlock=immediate"}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -80,17 +86,41 @@ func Open(dataDir string) (*Store, error) {
 // for pre-flight checks (auth-server -check-config) that must not touch
 // the live database a running server owns. The file must exist.
 func OpenReadOnly(dataDir string) (*Store, error) {
-	path := filepath.Join(dataDir, "state.db")
+	path, err := filepath.Abs(filepath.Join(dataDir, "state.db"))
+	if err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
 	// A file: URI so mode=ro is honoured, plus query_only on the connection
 	// so any write attempt fails even where the file itself is writable.
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)")
+	// url.URL escapes a ? or # in the path, which a raw concatenation would
+	// read as URI syntax and open the wrong file.
+	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"}).String()
+	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	// sql.Open is lazy: touch the file now so an unreadable or corrupt
+	// database is reported here, and confirm the connection is read-only.
+	var queryOnly int
+	if err := db.QueryRowContext(context.Background(), `PRAGMA query_only`).Scan(&queryOnly); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open sqlite read-only: %w", err)
+	}
+	if queryOnly != 1 {
+		_ = db.Close()
+		return nil, errors.New("open sqlite read-only: query_only was not applied")
+	}
+	// A pragma does not read the file body; a schema read does, so a file
+	// that is not a database is refused here rather than at the first check.
+	var tables int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM sqlite_master`).Scan(&tables); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open sqlite read-only: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 
@@ -106,15 +136,6 @@ func restrictDataFiles(dataDir string) {
 			_ = os.Chmod(p, 0o600)
 		}
 	}
-}
-
-// tableExists reports whether a table is present, so a read-only check can
-// look at an older database without failing on a table a later migration
-// would have created.
-func (s *Store) tableExists(ctx context.Context, name string) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&n)
-	return n > 0, err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -1689,10 +1710,14 @@ func (s *Store) SetApplicationBackchannelLogoutURI(ctx context.Context, id, endp
 	// (found compromised, or misregistered) must not keep receiving signed
 	// events naming users for the rest of the retry week, and a rotated one
 	// should get what is still owed to the application.
+	// A rotated row is due now at the new endpoint and its lease is dropped:
+	// a request already in flight to the old endpoint cannot be recalled,
+	// but its outcome no longer matches this row (see the Mark methods).
 	if endpoint == "" {
 		_, err = tx.ExecContext(ctx, `DELETE FROM logout_deliveries WHERE client_id = ? AND delivered_at IS NULL`, id)
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE logout_deliveries SET endpoint = ? WHERE client_id = ? AND delivered_at IS NULL`, endpoint, id)
+		_, err = tx.ExecContext(ctx, `UPDATE logout_deliveries SET endpoint = ?, lease_until = NULL, next_attempt_at = ?
+			WHERE client_id = ? AND delivered_at IS NULL AND endpoint != ?`, endpoint, now, id, endpoint)
 	}
 	if err != nil {
 		return err
@@ -1798,15 +1823,19 @@ func (s *Store) ClaimDueLogoutDeliveries(ctx context.Context, now int64, limit i
 	return claimed, nil
 }
 
-func (s *Store) MarkLogoutDeliveryDelivered(ctx context.Context, eventID, clientID string, now int64) error {
+// MarkLogoutDeliveryDelivered records a 2xx from endpoint. The endpoint is
+// part of the match: a row whose endpoint was rotated while this request was
+// in flight was answered by the old receiver, not the new one, and stays
+// owed (the rotation already made it due again).
+func (s *Store) MarkLogoutDeliveryDelivered(ctx context.Context, eventID, clientID, endpoint string, now int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE logout_deliveries SET delivered_at = ?, lease_until = NULL, last_error = NULL
-		WHERE event_id = ? AND client_id = ?`, now, eventID, clientID)
+		WHERE event_id = ? AND client_id = ? AND endpoint = ?`, now, eventID, clientID, endpoint)
 	return err
 }
 
-func (s *Store) MarkLogoutDeliveryFailed(ctx context.Context, eventID, clientID string, now int64, retryAfter time.Duration, message string) error {
+func (s *Store) MarkLogoutDeliveryFailed(ctx context.Context, eventID, clientID, endpoint string, now int64, retryAfter time.Duration, message string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE logout_deliveries SET next_attempt_at = ?, lease_until = NULL, last_error = ?
-		WHERE event_id = ? AND client_id = ? AND delivered_at IS NULL`, now+int64(retryAfter.Seconds()), message, eventID, clientID)
+		WHERE event_id = ? AND client_id = ? AND endpoint = ? AND delivered_at IS NULL`, now+int64(retryAfter.Seconds()), message, eventID, clientID, endpoint)
 	return err
 }
 

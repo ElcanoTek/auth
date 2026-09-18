@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1600,5 +1602,65 @@ func TestAuthorizationCodeTerminalStates(t *testing.T) {
 	var left int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM authorization_codes`).Scan(&left); err != nil || left != 0 {
 		t.Fatalf("codes after the sweep: %d %v", left, err)
+	}
+}
+
+// The read-only pre-flight must answer on a database a v5 binary wrote: it
+// has the reserved MFA tables but none of the v6 columns, and nothing in it
+// can have needed the key. A data directory with URI metacharacters in its
+// name opens the right file, and a corrupt file is reported at open.
+func TestOpenReadOnlyOnARealV5DatabaseAndOddPaths(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "odd?dir#1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.Join(dir, "state.db")}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []int{2, 3, 4, 5} {
+		if _, err := raw.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(?, 1)`, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = raw.Close()
+	if _, err := os.Stat(filepath.Join(dir, "state.db")); err != nil {
+		t.Fatalf("fixture landed elsewhere: %v", err)
+	}
+	ro, err := OpenReadOnly(dir)
+	if err != nil {
+		t.Fatalf("read-only open of a v5 database: %v", err)
+	}
+	ctx := context.Background()
+	if reason, err := ro.MFAKeyRequiredReason(ctx); err != nil || reason != "" {
+		t.Fatalf("v5 database: reason=%q err=%v", reason, err)
+	}
+	if ro.hasMigration(ctx, 6) {
+		t.Fatal("the read-only open migrated the database")
+	}
+	_ = ro.Close()
+	// The writable open on the same odd path finds and migrates that file.
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.hasMigration(ctx, 7) {
+		t.Fatal("writable open on the odd path did not migrate the fixture")
+	}
+	_ = s.Close()
+	// Corrupt file: reported at open, not later.
+	bad := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bad, "state.db"), []byte("this is not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenReadOnly(bad); err == nil {
+		t.Fatal("corrupt database opened read-only without error")
+	}
+	// Missing file: os.IsNotExist so the pre-flight can skip the check.
+	if _, err := OpenReadOnly(t.TempDir()); !os.IsNotExist(err) {
+		t.Fatalf("missing database: %v", err)
 	}
 }
