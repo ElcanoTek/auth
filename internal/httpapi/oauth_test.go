@@ -407,9 +407,15 @@ func TestForcedPasswordChangeReturnsToAuthorization(t *testing.T) {
 	if changed.StatusCode != http.StatusSeeOther || changed.Header.Get("Location") != authorizePath {
 		t.Fatalf("password replacement destination = %d %q", changed.StatusCode, changed.Header.Get("Location"))
 	}
-	// The browser keeps its session across the change; the pending
-	// authorization completes with it.
-	if authorizeCode(t, ts.URL, session, verifier) == "" {
+	// The browser continues under a rotated token; the pending authorization
+	// completes with it.
+	var rotated *http.Cookie
+	for _, c := range changed.Cookies() {
+		if c.Name == cfg.PasswordCookieName && c.Value != "" {
+			rotated = c
+		}
+	}
+	if rotated == nil || rotated.Value == session.Value || authorizeCode(t, ts.URL, rotated, verifier) == "" {
 		t.Fatal("authorization did not resume after forced password replacement")
 	}
 }

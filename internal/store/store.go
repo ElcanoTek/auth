@@ -842,7 +842,7 @@ func (s *Store) SetPassword(ctx context.Context, email, passwordHash string, mus
 	if err != nil {
 		return err
 	}
-	return s.replacePassword(ctx, a.ID, "", passwordHash, mustChange, "", now)
+	return s.replacePassword(ctx, a.ID, "", passwordHash, mustChange, nil, now)
 }
 
 // ReplacePasswordIfCurrent is the user path: a compare-and-swap that only
@@ -854,24 +854,30 @@ func (s *Store) ReplacePasswordIfCurrent(ctx context.Context, userID, expectedHa
 	if expectedHash == "" {
 		return errors.New("expected hash is required")
 	}
-	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, "", now)
+	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, nil, now)
 }
 
-// ReplacePasswordKeepingSession is ReplacePasswordIfCurrent for the person
-// changing their own password from a signed-in browser: every other session
-// is revoked and applications are told, but the session that made the
-// change (keepSessionHash) stays, with the evidence it already carries. A
-// replacement password-only session would rate an enrolled account as
-// factor-unverified and sign the person out right after a successful
-// change.
-func (s *Store) ReplacePasswordKeepingSession(ctx context.Context, userID, expectedHash, passwordHash, keepSessionHash string, now int64) error {
-	if expectedHash == "" || keepSessionHash == "" {
-		return errors.New("expected hash and session are required")
+// ReplacePasswordRotatingSession is ReplacePasswordIfCurrent for the person
+// changing their own password from a signed-in browser. Every session is
+// revoked, the one that made the change included (a copied cookie must not
+// survive the change it was probably the reason for), and applications are
+// told; the browser gets a new token (newSessionHash) that carries the old
+// session's evidence forward: its creation time, expiry, amr, proven
+// factor, security version and last re-verification. A fresh password-only
+// session would rate an enrolled account as factor-unverified and sign the
+// person out right after a successful change.
+func (s *Store) ReplacePasswordRotatingSession(ctx context.Context, userID, expectedHash, passwordHash, oldSessionHash, newSessionHash string, now int64) error {
+	if expectedHash == "" || oldSessionHash == "" || newSessionHash == "" || oldSessionHash == newSessionHash {
+		return errors.New("expected hash and distinct old and new sessions are required")
 	}
-	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, keepSessionHash, now)
+	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, &sessionRotation{old: oldSessionHash, next: newSessionHash}, now)
 }
 
-func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passwordHash string, mustChange bool, keepSessionHash string, now int64) error {
+// sessionRotation names the browser session a password change carries
+// forward under a new token.
+type sessionRotation struct{ old, next string }
+
+func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passwordHash string, mustChange bool, rotate *sessionRotation, now int64) error {
 	if userID == "" || passwordHash == "" {
 		return errors.New("user id and password hash are required")
 	}
@@ -904,18 +910,24 @@ func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passw
 		boolInt(mustChange), now, userID); err != nil {
 		return err
 	}
-	if keepSessionHash != "" {
-		// The kept session must be this user's and live; otherwise the
-		// caller's view of who is signed in is stale and nothing is kept.
-		var live int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_sessions WHERE token_hash = ? AND user_id = ? AND revoked_at IS NULL
-			AND idle_expires_at > ? AND absolute_expires_at > ?`, keepSessionHash, userID, now, now).Scan(&live); err != nil {
+	if rotate != nil {
+		// The new row is a copy of the old session's evidence under the new
+		// token; it exists only if the old session is this user's and live,
+		// otherwise the caller's view of who is signed in is stale and the
+		// change is refused before anything is written.
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at, amr, mfa_verified_at, security_version, reauth_at)
+			SELECT ?, user_id, created_at, ?, idle_expires_at, absolute_expires_at, amr, mfa_verified_at, security_version, reauth_at
+			FROM auth_sessions WHERE token_hash = ? AND user_id = ? AND revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?`,
+			rotate.next, now, rotate.old, userID, now, now)
+		if err != nil {
 			return err
 		}
-		if live != 1 {
+		if n, _ := res.RowsAffected(); n != 1 {
 			return ErrInvalidSession
 		}
-		if _, err := revokeOtherSessionsTx(ctx, tx, userID, keepSessionHash, now, "password_replaced"); err != nil {
+		// Everything but the new token goes, the old token included.
+		if _, err := revokeOtherSessionsTx(ctx, tx, userID, rotate.next, now, "password_replaced"); err != nil {
 			return err
 		}
 	} else if _, err := revokeSessionsTx(ctx, tx, userID, now, "password_replaced"); err != nil {

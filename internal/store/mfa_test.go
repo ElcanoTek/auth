@@ -1293,34 +1293,42 @@ func TestTransactionAttemptsSurviveReopen(t *testing.T) {
 	}
 }
 
-// A voluntary password change keeps the session that made it (with the
-// factor evidence it carries) and signs out every other one; a session that
-// is not the user's live one keeps nothing.
-func TestReplacePasswordKeepingSessionRevokesOnlyTheOthers(t *testing.T) {
+// A voluntary password change signs out every token, the changing
+// browser's included, and continues that browser under a new token with the
+// factor evidence it had; a session that is not the user's live one carries
+// nothing forward and changes nothing.
+func TestReplacePasswordRotatingSessionCarriesEvidenceAndRevokesEveryOldToken(t *testing.T) {
 	s, a, now := mfaFixture(t)
 	ctx := context.Background()
 	session(t, s, a, "laptop", now)
 	enrol(t, s, a, "laptop", now) // laptop now carries "pwd otp"
 	pwdOnlySession(t, s, a, "tablet", now+2)
-	if err := s.ReplacePasswordKeepingSession(ctx, a.ID, a.PasswordHash, "$argon2id$new", "laptop", now+3); err != nil {
+	if err := s.ReplacePasswordRotatingSession(ctx, a.ID, a.PasswordHash, "$argon2id$new", "laptop", "laptop-2", now+3); err != nil {
 		t.Fatal(err)
 	}
-	if _, sess, err := s.ValidateAuthSession(ctx, "laptop", now+4, time.Hour, time.Minute); err != nil || !hasMethodIn(strings.Join(sess.AMR, " "), "otp") {
-		t.Fatalf("kept session: %+v %v", sess, err)
+	if _, _, err := s.ValidateAuthSession(ctx, "laptop", now+4, time.Hour, time.Minute); err == nil {
+		t.Fatal("the old token survived the password change")
 	}
 	if _, _, err := s.ValidateAuthSession(ctx, "tablet", now+4, time.Hour, time.Minute); err == nil {
 		t.Fatal("other session survived the password change")
 	}
-	if acct, sess, err := s.ValidateAuthSession(ctx, "laptop", now+4, time.Hour, time.Minute); err != nil || Assess(acct, sess, mfa.ModeOptional) != AssuranceOK {
-		t.Fatalf("kept session after change: %+v %v", sess, err)
+	acct, sess, err := s.ValidateAuthSession(ctx, "laptop-2", now+4, time.Hour, time.Minute)
+	if err != nil || !hasMethodIn(strings.Join(sess.AMR, " "), "otp") || sess.MFAVerifiedAt == nil || sess.CreatedAt.Unix() != now {
+		t.Fatalf("rotated session: %+v %v", sess, err)
+	}
+	if Assess(acct, sess, mfa.ModeOptional) != AssuranceOK {
+		t.Fatalf("rotated session after change: %+v", sess)
 	}
 	// The credential CAS still holds.
-	if err := s.ReplacePasswordKeepingSession(ctx, a.ID, a.PasswordHash, "$argon2id$newer", "laptop", now+5); !errors.Is(err, ErrCredentialChanged) {
+	if err := s.ReplacePasswordRotatingSession(ctx, a.ID, a.PasswordHash, "$argon2id$newer", "laptop-2", "laptop-3", now+5); !errors.Is(err, ErrCredentialChanged) {
 		t.Fatalf("stale expected hash: %v", err)
 	}
-	// A revoked or foreign session keeps nothing and changes nothing.
-	if err := s.ReplacePasswordKeepingSession(ctx, a.ID, "$argon2id$new", "$argon2id$newest", "tablet", now+6); !errors.Is(err, ErrInvalidSession) {
-		t.Fatalf("revoked keep session: %v", err)
+	// A revoked or foreign session carries nothing and changes nothing.
+	if err := s.ReplacePasswordRotatingSession(ctx, a.ID, "$argon2id$new", "$argon2id$newest", "tablet", "tablet-2", now+6); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("revoked old session: %v", err)
+	}
+	if _, _, err := s.ValidateAuthSession(ctx, "tablet-2", now+7, time.Hour, time.Minute); err == nil {
+		t.Fatal("a session was minted by the refused rotation")
 	}
 	if got, _ := s.PasswordAccountByID(ctx, a.ID); got.PasswordHash != "$argon2id$new" {
 		t.Fatalf("password changed under a refused keep: %q", got.PasswordHash)
@@ -1518,5 +1526,79 @@ func TestMFAKeyRequiredReasonAndReadOnlyOpen(t *testing.T) {
 	}
 	if _, err := ro.db.ExecContext(ctx, `INSERT INTO domains(name, added_at) VALUES ('x.example', 1)`); err == nil {
 		t.Fatal("read-only store accepted a write")
+	}
+}
+
+// A code refused at exchange for insufficient evidence is gone: it cannot be
+// cashed later and is not misread as a replay; a genuinely exchanged code
+// stays replay-detectable for ten minutes and no longer.
+func TestAuthorizationCodeTerminalStates(t *testing.T) {
+	s, a, now := mfaFixture(t)
+	ctx := context.Background()
+	if _, err := s.CreateApplication(ctx, "explorer", "Explorer", "https://explorer.example.com/cb", "", secretHashForTest("secret"), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SetApplicationAccess(ctx, a.ID, []string{"explorer"}, now); err != nil {
+		t.Fatal(err)
+	}
+	session(t, s, a, "pwd-only", now)
+	grant := AuthorizationGrant{ClientID: "explorer", UserID: a.ID, SessionTokenHash: "pwd-only", RedirectURI: "https://explorer.example.com/cb",
+		Nonce: "n", CodeChallenge: "c", AuthTime: now}
+	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("void"), grant, now, now+60); err != nil {
+		t.Fatal(err)
+	}
+	// Live session, evidence no longer sufficient (a factor now exists and
+	// this session never proved it): the exchange is refused and the code
+	// deleted, whatever happens to the account afterwards.
+	enrol(t, s, a, "pwd-only", now+1) // keeps the session, upgrades its evidence
+	if _, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET amr = 'pwd', mfa_verified_at = NULL WHERE token_hash = 'pwd-only'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConsumeAuthorizationCode(ctx, secretHashForTest("void"), "explorer", grant.RedirectURI, "c", now+2); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("exchange without factor evidence: %v", err)
+	}
+	if _, _, replayed, err := s.ReplayedAuthorizationCode(ctx, secretHashForTest("void")); err != nil || replayed {
+		t.Fatalf("refused code read as a replay: %v %v", replayed, err)
+	}
+	// Evidence restored: the deleted code still cannot be cashed.
+	if _, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET amr = 'pwd otp', mfa_verified_at = ? WHERE token_hash = 'pwd-only'`, now+3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConsumeAuthorizationCode(ctx, secretHashForTest("void"), "explorer", grant.RedirectURI, "c", now+4); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("refused code cashed after the evidence recovered: %v", err)
+	}
+	var refused int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE event_type = 'authorization.code_refused' AND application_id = 'explorer'`).Scan(&refused); err != nil || refused != 1 {
+		t.Fatalf("refusal audit rows: %d %v", refused, err)
+	}
+	// A genuine exchange leaves a replay marker for ten minutes.
+	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("real"), grant, now+5, now+65); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConsumeAuthorizationCode(ctx, secretHashForTest("real"), "explorer", grant.RedirectURI, "c", now+6); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SweepPasswordState(ctx, now+6+599, time.Hour, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, replayed, _ := s.ReplayedAuthorizationCode(ctx, secretHashForTest("real")); !replayed {
+		t.Fatal("exchanged code forgotten before ten minutes")
+	}
+	if _, err := s.SweepPasswordState(ctx, now+6+600, time.Hour, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, replayed, _ := s.ReplayedAuthorizationCode(ctx, secretHashForTest("real")); replayed {
+		t.Fatal("exchanged code kept past ten minutes")
+	}
+	// An unexchanged code is swept as soon as it expires.
+	if err := s.IssueAuthorizationCode(ctx, secretHashForTest("unused"), grant, now+700, now+760); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SweepPasswordState(ctx, now+760, time.Hour, 0); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM authorization_codes`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("codes after the sweep: %d %v", left, err)
 	}
 }

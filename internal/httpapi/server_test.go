@@ -336,13 +336,14 @@ func TestPasswordChangeRevokesOtherSessionsAndClearsMustChange(t *testing.T) {
 		"confirm_password": {next}, "csrf_token": {csrf.Value},
 	}, session, csrf)
 	defer func() { _ = changed.Body.Close() }()
+	var rotated *http.Cookie
 	for _, c := range changed.Cookies() {
-		if c.Name == cfg.PasswordCookieName && c.Value != "" && c.Value != session.Value {
-			t.Fatalf("a replacement session was minted; the browser's own session should stay")
+		if c.Name == cfg.PasswordCookieName && c.Value != "" {
+			rotated = c
 		}
 	}
-	if changed.StatusCode != http.StatusSeeOther {
-		t.Fatalf("change response = %d location=%q", changed.StatusCode, changed.Header.Get("Location"))
+	if changed.StatusCode != http.StatusSeeOther || rotated == nil || rotated.Value == session.Value {
+		t.Fatalf("change response = %d location=%q rotated=%v", changed.StatusCode, changed.Header.Get("Location"), rotated)
 	}
 	otherReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
 	otherReq.AddCookie(otherSession)
@@ -351,12 +352,19 @@ func TestPasswordChangeRevokesOtherSessionsAndClearsMustChange(t *testing.T) {
 	if otherResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("other session survived password replacement: %d", otherResp.StatusCode)
 	}
-	sameReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
-	sameReq.AddCookie(session)
-	sameResp, _ := http.DefaultClient.Do(sameReq)
-	_ = sameResp.Body.Close()
-	if sameResp.StatusCode != http.StatusOK {
-		t.Fatalf("the changing browser's session did not survive: %d", sameResp.StatusCode)
+	oldReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
+	oldReq.AddCookie(session)
+	oldResp, _ := http.DefaultClient.Do(oldReq)
+	_ = oldResp.Body.Close()
+	if oldResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the pre-change token survived the change: %d", oldResp.StatusCode)
+	}
+	newReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
+	newReq.AddCookie(rotated)
+	newResp, _ := http.DefaultClient.Do(newReq)
+	_ = newResp.Body.Close()
+	if newResp.StatusCode != http.StatusOK {
+		t.Fatalf("the rotated session is not valid: %d", newResp.StatusCode)
 	}
 	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
 	ok, _, err := passwordauth.Verify(a.PasswordHash, next)

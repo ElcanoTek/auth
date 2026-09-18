@@ -571,14 +571,21 @@ func TestEnrolledPasswordChangeKeepsTheSession(t *testing.T) {
 	if resp, _ := phone.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))}}); resp.StatusCode != http.StatusSeeOther || !phone.has(cfg.PasswordCookieName) {
 		t.Fatalf("phone sign-in: %d", resp.StatusCode)
 	}
-	before := laptop.cookies[cfg.PasswordCookieName].Value
+	before := *laptop.cookies[cfg.PasswordCookieName]
 	const next = "a completely different passphrase"
 	resp, page := laptop.post("/change-password", url.Values{"current_password": {plain}, "new_password": {next}, "confirm_password": {next}, "return_to": {"/account"}})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account" {
 		t.Fatalf("change: %d %q\n%s", resp.StatusCode, resp.Header.Get("Location"), page)
 	}
-	if laptop.cookies[cfg.PasswordCookieName] == nil || laptop.cookies[cfg.PasswordCookieName].Value != before {
-		t.Fatal("the changing browser's session was replaced or dropped")
+	// The token rotated: a cookie copied before the change is dead, the
+	// browser continues on the new one with its factor still proven.
+	if laptop.cookies[cfg.PasswordCookieName] == nil || laptop.cookies[cfg.PasswordCookieName].Value == before.Value {
+		t.Fatal("the changing browser's token was not rotated")
+	}
+	copied := newBrowser(t, ts)
+	copied.cookies[cfg.PasswordCookieName] = &before
+	if resp, _ := copied.get("/account"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("a cookie copied before the change still works: %d", resp.StatusCode)
 	}
 	if resp, _ := laptop.get("/account"); resp.StatusCode != http.StatusOK {
 		t.Fatalf("laptop after change: %d (an enrolled account must not be bounced to step-up)", resp.StatusCode)

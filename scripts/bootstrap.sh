@@ -429,12 +429,15 @@ step "4/6  Writing ${ENV_FILE}"
 # set again (tuned TTLs, rate limits, blocked terms, return-to hosts, an
 # SMTP relay, previous public keys, ...) is appended back afterwards,
 # verbatim, so a re-run never silently drops a setting.
+# The backup lives under data/ (excluded from the source sync below, which
+# runs rsync --delete over the rest of $APP_DIR) so it survives this run.
 OLD_ENV_FILE=""
 if [[ -f "$ENV_FILE" ]]; then
-  OLD_ENV_FILE="$(mktemp "$APP_DIR/.env.local.old.XXXXXX")"
+  mkdir -p "$APP_DIR/data/backups"
+  chmod 0700 "$APP_DIR/data" 2>/dev/null || true
+  OLD_ENV_FILE="$APP_DIR/data/backups/env.local.bak-$(date +%Y%m%d%H%M%S)"
   cp -p "$ENV_FILE" "$OLD_ENV_FILE"
-  cp -p "$ENV_FILE" "$APP_DIR/.env.local.bak-$(date +%Y%m%d%H%M%S)"
-  chmod 0600 "$APP_DIR"/.env.local.bak-* 2>/dev/null || true
+  chmod 0600 "$OLD_ENV_FILE"
 fi
 OLD_UMASK="$(umask)"
 umask 077
@@ -515,19 +518,35 @@ AUTH_BRAND_NAME="$BRAND_ESCAPED"
 EOF
 
 if [[ -n "$OLD_ENV_FILE" ]]; then
-  carried=0
+  # The previous file's effective values: the last occurrence of a key is
+  # the one the server used.
+  declare -A old_line=()
   while IFS= read -r line; do
-    key="${line%%=*}"
-    [[ "$line" =~ ^[A-Z_][A-Z0-9_]*= ]] || continue
+    [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)= ]] || continue
+    old_line["${BASH_REMATCH[1]}"]="$line"
+  done < "$OLD_ENV_FILE"
+  # Settings the template writes with a fixed default but this run never
+  # asked about keep their previous value.
+  kept=0
+  for key in AUTH_ADDR AUTH_DATA_DIR AUTH_COOKIE_NAME AUTH_CODE_TTL_SECONDS AUTH_ASSERTION_TTL_MINUTES; do
+    [[ -n "${old_line[$key]:-}" ]] || continue
+    grep -q "^${key}=" "$ENV_FILE" || continue
+    REPL="${old_line[$key]}" KEY="$key" awk '
+      index($0, ENVIRON["KEY"] "=") == 1 && !done { print ENVIRON["REPL"]; done = 1; next } { print }
+    ' "$ENV_FILE" > "$ENV_FILE.tmp" && cat "$ENV_FILE.tmp" > "$ENV_FILE" && rm -f "$ENV_FILE.tmp"
+    kept=$((kept + 1))
+  done
+  # Everything else the template does not know about is appended verbatim.
+  carried=0
+  for key in $(printf '%s\n' "${!old_line[@]}" | sort); do
     grep -q "^${key}=" "$ENV_FILE" && continue
     if [[ $carried -eq 0 ]]; then
       printf '\n# ── Carried over from the previous .env.local (not set by this run) ──\n' >> "$ENV_FILE"
     fi
-    printf '%s\n' "$line" >> "$ENV_FILE"
+    printf '%s\n' "${old_line[$key]}" >> "$ENV_FILE"
     carried=$((carried + 1))
-  done < "$OLD_ENV_FILE"
-  rm -f "$OLD_ENV_FILE"
-  [[ $carried -gt 0 ]] && info "kept $carried setting(s) from the previous .env.local"
+  done
+  [[ $((kept + carried)) -gt 0 ]] && info "kept $((kept + carried)) setting(s) from the previous .env.local (backup: $OLD_ENV_FILE)"
 fi
 umask "$OLD_UMASK"
 

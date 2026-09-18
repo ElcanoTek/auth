@@ -776,11 +776,22 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// administrator replaced the password (or disabled the account) in the
 	// meantime, this must not overwrite their change. Their replacement
 	// already revoked this session, so send the user back to sign in.
-	// This browser's session stays, with the evidence it already carries
-	// (a proven factor included); every other session is signed out. A
-	// freshly minted password-only session would fail Assess for an
-	// enrolled account and sign the person out right after the change.
-	err = s.store.ReplacePasswordKeepingSession(r.Context(), account.ID, account.PasswordHash, encoded, identity.Session.TokenHash, now.Unix())
+	// Every session is signed out, this browser's token included (a copied
+	// cookie must not outlive the change), and this browser continues under
+	// a new token that carries its evidence forward: a proven factor stays
+	// proven, so an enrolled account is not bounced to step-up. The CSRF
+	// token rotates with it.
+	rawSession, err := randomSecret(32)
+	if err != nil {
+		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		return
+	}
+	newCSRF, err := randomSecret(32)
+	if err != nil {
+		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		return
+	}
+	err = s.store.ReplacePasswordRotatingSession(r.Context(), account.ID, account.PasswordHash, encoded, identity.Session.TokenHash, hashSecret(rawSession), now.Unix())
 	if errors.Is(err, store.ErrCredentialChanged) || errors.Is(err, store.ErrInvalidSession) {
 		s.clearPasswordCookies(w)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -791,6 +802,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.renderChangePassword(w, "Something went wrong. Try again.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
+	s.setSessionCookies(w, rawSession, newCSRF, identity.Session.AbsoluteExpiresAt)
 	dest := s.resolveReturnTo(r.FormValue("return_to"))
 	if dest == "" {
 		dest = s.defaultDest()

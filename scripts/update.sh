@@ -73,9 +73,20 @@ die()  { printf '%s✗ %s%s\n' "$c_red" "$*" "$c_reset" >&2; exit 1; }
 # The listen address comes from .env.local (default 127.0.0.1:9000); a box
 # on another port must not be judged unhealthy and rolled back for it.
 health_addr() {
-  local addr
-  addr="$(grep -E '^AUTH_ADDR=' "$APP_DIR/.env.local" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'"' )"
-  printf '%s' "${addr:-127.0.0.1:9000}"
+  local addr host port
+  # Last occurrence wins, as it does for the server; whitespace around the
+  # key and value, a quoted value and a trailing comment are all tolerated.
+  addr="$(awk -F= '/^[[:space:]]*AUTH_ADDR[[:space:]]*=/ { v = $0; sub(/^[^=]*=/, "", v); last = v } END { print last }' "$APP_DIR/.env.local" 2>/dev/null)"
+  addr="${addr%%#*}"
+  addr="${addr//[\"\' ]/}"
+  addr="${addr:-127.0.0.1:9000}"
+  # A wildcard or empty listen host is probed on loopback, same port.
+  port="${addr##*:}"
+  host="${addr%:*}"
+  case "$host" in
+    ""|"0.0.0.0"|"[::]"|"::"|"*") host="127.0.0.1" ;;
+  esac
+  printf '%s:%s' "$host" "$port"
 }
 wait_healthy() {
   for _ in 1 2 3 4 5 6 7 8 9 10; do

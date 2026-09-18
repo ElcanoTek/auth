@@ -105,11 +105,13 @@ headers="$(curl -sS -D - -o /dev/null -b "$JAR" -c "$JAR" \
   --data-urlencode "csrf_token=$csrf" "$BASE/change-password")"
 echo "$headers" | grep -qiE '^HTTP/[0-9.]+ 303' || fail "password replacement did not return 303"
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/verify")"
-[[ "$code" == "200" ]] || fail "the changing browser's session did not verify after the change (got $code)"
-[[ "$(cookie_value auth_session)" == "$this_session" ]] || fail "the changing browser's session was replaced instead of kept"
+[[ "$code" == "200" ]] || fail "the changing browser did not stay signed in after the change (got $code)"
+[[ "$(cookie_value auth_session)" != "$this_session" ]] || fail "the changing browser's token was not rotated"
+old_code="$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: auth_session=$this_session" "$BASE/verify")"
+[[ "$old_code" == "401" ]] || fail "the pre-change token survived the change (got $old_code)"
 other_code="$(curl -s -o /dev/null -w '%{http_code}' -H "Cookie: auth_session=$other_session" "$BASE/verify")"
 [[ "$other_code" == "401" ]] || fail "other session survived password replacement (got $other_code)"
-pass "3. replacement keeps this browser's session and signs the other one out"
+pass "3. replacement rotates this browser's token and signs every old one out"
 
 verifier='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~'
 challenge="$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')"

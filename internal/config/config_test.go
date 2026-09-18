@@ -554,3 +554,21 @@ func TestValidateMagicModeRangesAndHostname(t *testing.T) {
 		t.Fatalf("insecure localhost: %v", err)
 	}
 }
+
+func TestEnvFileValueStripsQuotesAndTrailingComments(t *testing.T) {
+	cases := map[string]string{
+		`"10"   # max links per email / 15 min`: "10",
+		`'15'	# tab before the comment`:         "15",
+		`500 # bare value with a comment`:       "500",
+		`"a # not a comment"`:                   "a # not a comment",
+		`"esc \" quote"`:                        `esc " quote`,
+		`plain`:                                 "plain",
+		`"unterminated`:                         `"unterminated`,
+		`""`:                                    "",
+	}
+	for in, want := range cases {
+		if got := envFileValue(in); got != want {
+			t.Errorf("envFileValue(%s) = %q, want %q", in, got, want)
+		}
+	}
+}

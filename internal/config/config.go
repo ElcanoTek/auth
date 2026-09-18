@@ -208,7 +208,7 @@ func Load(envFile string) (*Config, error) {
 		_ = os.Setenv(k, v)
 	}
 
-	envErrors = nil
+	env := &envReader{}
 	cfg := &Config{
 		Addr:               envOr("AUTH_ADDR", "127.0.0.1:9000"),
 		Hostname:           envOr("AUTH_HOSTNAME", "localhost"),
@@ -217,13 +217,13 @@ func Load(envFile string) (*Config, error) {
 		IssuerURL:          strings.TrimSpace(os.Getenv("AUTH_ISSUER_URL")),
 		CookieName:         envOr("AUTH_COOKIE_NAME", "elcano_auth"),
 		CookieDomain:       os.Getenv("AUTH_COOKIE_DOMAIN"),
-		CookieSecure:       envBool("AUTH_COOKIE_SECURE", true),
+		CookieSecure:       env.boolean("AUTH_COOKIE_SECURE", true),
 		PasswordCookieName: envOr("AUTH_PASSWORD_COOKIE_NAME", "__Host-auth_session"),
 		EmailDriver:        strings.ToLower(envOr("AUTH_EMAIL_DRIVER", "stdout")),
 		EmailFrom:          envOr("AUTH_EMAIL_FROM", "Sign in <login@example.com>"),
 		SendGridAPIKey:     os.Getenv("SENDGRID_API_KEY"),
 		SMTPHost:           os.Getenv("AUTH_SMTP_HOST"),
-		SMTPPort:           envInt("AUTH_SMTP_PORT", 587),
+		SMTPPort:           env.integer("AUTH_SMTP_PORT", 587),
 		SMTPUser:           os.Getenv("AUTH_SMTP_USER"),
 		SMTPPass:           os.Getenv("AUTH_SMTP_PASS"),
 		BrandName:          envOr("AUTH_BRAND_NAME", "Elcano"),
@@ -250,20 +250,20 @@ func Load(envFile string) (*Config, error) {
 	cfg.SigningKey = ed25519.NewKeyFromSeed(seed)
 	cfg.PublicKey = cfg.SigningKey.Public().(ed25519.PublicKey)
 
-	cfg.SessionTTL = time.Duration(envInt("AUTH_SESSION_TTL_DAYS", 30)) * 24 * time.Hour
-	cfg.MagicTTL = time.Duration(envInt("AUTH_MAGIC_TTL_MINUTES", 15)) * time.Minute
-	cfg.CodeTTL = time.Duration(envInt("AUTH_CODE_TTL_SECONDS", 60)) * time.Second
-	cfg.AssertionTTL = time.Duration(envInt("AUTH_ASSERTION_TTL_MINUTES", 5)) * time.Minute
+	cfg.SessionTTL = time.Duration(env.integer("AUTH_SESSION_TTL_DAYS", 30)) * 24 * time.Hour
+	cfg.MagicTTL = time.Duration(env.integer("AUTH_MAGIC_TTL_MINUTES", 15)) * time.Minute
+	cfg.CodeTTL = time.Duration(env.integer("AUTH_CODE_TTL_SECONDS", 60)) * time.Second
+	cfg.AssertionTTL = time.Duration(env.integer("AUTH_ASSERTION_TTL_MINUTES", 5)) * time.Minute
 	// Password sessions are the only login users feel: application sessions
 	// renew silently through the code handoff while this one is live. 30 days
 	// absolute matches the magic-link session; the 7-day idle limit closes
 	// abandoned devices. Application sessions are far shorter (one day) and
 	// re-check the account here on every renewal; see
 	// docs/AUTH_V2_IMPLEMENTATION.md "Application session conventions".
-	cfg.PasswordAbsoluteTTL = time.Duration(envInt("AUTH_PASSWORD_ABSOLUTE_HOURS", 30*24)) * time.Hour
-	cfg.PasswordIdleTTL = time.Duration(envInt("AUTH_PASSWORD_IDLE_MINUTES", 7*24*60)) * time.Minute
-	cfg.PasswordRatePerEmail = envInt("AUTH_PASSWORD_RATE_PER_EMAIL", 10)
-	cfg.PasswordRatePerIP = envInt("AUTH_PASSWORD_RATE_PER_IP", 50)
+	cfg.PasswordAbsoluteTTL = time.Duration(env.integer("AUTH_PASSWORD_ABSOLUTE_HOURS", 30*24)) * time.Hour
+	cfg.PasswordIdleTTL = time.Duration(env.integer("AUTH_PASSWORD_IDLE_MINUTES", 7*24*60)) * time.Minute
+	cfg.PasswordRatePerEmail = env.integer("AUTH_PASSWORD_RATE_PER_EMAIL", 10)
+	cfg.PasswordRatePerIP = env.integer("AUTH_PASSWORD_RATE_PER_IP", 50)
 	cfg.PasswordBlockedTerms = splitCSV(os.Getenv("AUTH_PASSWORD_BLOCKED_TERMS"))
 	ring, err := mfa.ParseKeyring(os.Getenv("AUTH_MFA_KEY"), os.Getenv("AUTH_MFA_KEY_ID"), os.Getenv("AUTH_MFA_PREVIOUS_KEYS"))
 	if err != nil {
@@ -271,9 +271,9 @@ func Load(envFile string) (*Config, error) {
 	}
 	cfg.MFAKeyring = ring
 	cfg.MFAIssuer = strings.TrimSpace(envOr("AUTH_MFA_ISSUER", cfg.BrandName))
-	cfg.AuditRetention = time.Duration(envInt("AUTH_AUDIT_RETENTION_DAYS", 90)) * 24 * time.Hour
-	cfg.MagicRatePerEmail = envInt("AUTH_MAGIC_RATE_PER_EMAIL", 10)
-	cfg.MagicGlobalLimit = envInt("AUTH_MAGIC_GLOBAL_LIMIT", 500)
+	cfg.AuditRetention = time.Duration(env.integer("AUTH_AUDIT_RETENTION_DAYS", 90)) * 24 * time.Hour
+	cfg.MagicRatePerEmail = env.integer("AUTH_MAGIC_RATE_PER_EMAIL", 10)
+	cfg.MagicGlobalLimit = env.integer("AUTH_MAGIC_GLOBAL_LIMIT", 500)
 
 	cfg.AllowedDomains = splitCSV(os.Getenv("AUTH_ALLOWED_DOMAINS"))
 	cfg.ReturnToHosts = splitCSV(os.Getenv("AUTH_RETURN_TO_HOSTS"))
@@ -285,8 +285,8 @@ func Load(envFile string) (*Config, error) {
 		cfg.PreviousPublicKeys = append(cfg.PreviousPublicKeys, ed25519.PublicKey(raw))
 	}
 
-	if len(envErrors) > 0 {
-		return nil, fmt.Errorf("configuration: %s", strings.Join(envErrors, "; "))
+	if len(env.errs) > 0 {
+		return nil, fmt.Errorf("configuration: %s", strings.Join(env.errs, "; "))
 	}
 
 	if cfg.IssuerURL == "" {
@@ -462,18 +462,7 @@ func loadEnvFile(path string) error {
 		if !allowedEnvVars[k] {
 			continue
 		}
-		// Strip a single matched pair of " or ' wrappers and unescape \" and \\.
-		if len(v) >= 2 {
-			if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
-				inner := v[1 : len(v)-1]
-				if v[0] == '"' {
-					inner = strings.ReplaceAll(inner, `\"`, `"`)
-					inner = strings.ReplaceAll(inner, `\\`, `\`)
-				}
-				v = inner
-			}
-		}
-		_ = os.Setenv(k, v)
+		_ = os.Setenv(k, envFileValue(v))
 	}
 	return s.Err()
 }
@@ -485,25 +474,26 @@ func envOr(k, def string) string {
 	return def
 }
 
-// envInt and envBool fail loud on a value they cannot read: a typo in a
-// security setting ("ture", "7d") must stop the start, not silently pick a
-// weaker default. Errors are collected in envErrors and reported by Load.
-var envErrors []string
+// envReader reads the integer and boolean settings and fails loud on a
+// value it cannot read: a typo in a security setting ("ture", "7d") must
+// stop the start, not silently pick a weaker default. Errors are collected
+// per Load, never in package state.
+type envReader struct{ errs []string }
 
-func envInt(k string, def int) int {
+func (e *envReader) integer(k string, def int) int {
 	v := strings.TrimSpace(os.Getenv(k))
 	if v == "" {
 		return def
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		envErrors = append(envErrors, k+"="+strconv.Quote(v)+" is not a whole number")
+		e.errs = append(e.errs, k+"="+strconv.Quote(v)+" is not a whole number")
 		return def
 	}
 	return n
 }
 
-func envBool(k string, def bool) bool {
+func (e *envReader) boolean(k string, def bool) bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv(k)))
 	switch v {
 	case "":
@@ -513,7 +503,7 @@ func envBool(k string, def bool) bool {
 	case "false", "0", "no", "n", "off":
 		return false
 	default:
-		envErrors = append(envErrors, k+"="+strconv.Quote(v)+" is not true/false")
+		e.errs = append(e.errs, k+"="+strconv.Quote(v)+" is not true/false")
 		return def
 	}
 }
@@ -545,4 +535,43 @@ func splitCSVPreserveCase(s string) []string {
 		}
 	}
 	return out
+}
+
+// envFileValue reads one value as written in .env.local: a single matched
+// pair of " or ' wrappers is stripped (with \" and \\ unescaped inside
+// double quotes), and a trailing comment after the value is dropped, so the
+// commented examples in .env.local.example can be uncommented as they are.
+// Inside quotes a # is part of the value.
+func envFileValue(v string) string {
+	if v == "" {
+		return v
+	}
+	if q := v[0]; q == '"' || q == '\'' {
+		for i := 1; i < len(v); i++ {
+			if q == '"' && v[i] == '\\' {
+				i++ // skip the escaped character
+				continue
+			}
+			if v[i] == q {
+				inner := v[1:i]
+				if q == '"' {
+					inner = strings.ReplaceAll(inner, `\"`, `"`)
+					inner = strings.ReplaceAll(inner, `\\`, `\`)
+				}
+				rest := strings.TrimSpace(v[i+1:])
+				if rest == "" || strings.HasPrefix(rest, "#") {
+					return inner
+				}
+				break // text after the closing quote: not a wrapped value, keep verbatim
+			}
+		}
+		return v
+	}
+	if i := strings.Index(v, " #"); i >= 0 {
+		return strings.TrimSpace(v[:i])
+	}
+	if i := strings.Index(v, "\t#"); i >= 0 {
+		return strings.TrimSpace(v[:i])
+	}
+	return v
 }
