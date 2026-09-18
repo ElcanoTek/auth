@@ -18,6 +18,12 @@ func parseTemplates() *template.Template {
 	template.Must(t.New("account.html").Parse(accountHTML))
 	template.Must(t.New("no-access.html").Parse(noAccessHTML))
 	template.Must(t.New("admin.html").Parse(adminHTML))
+	template.Must(t.New("mfa-verify.html").Parse(mfaVerifyHTML))
+	template.Must(t.New("mfa-enroll.html").Parse(mfaEnrollHTML))
+	template.Must(t.New("recovery-codes.html").Parse(recoveryCodesHTML))
+	template.Must(t.New("security.html").Parse(securityHTML))
+	template.Must(t.New("reauth.html").Parse(reauthHTML))
+	template.Must(t.New("status.html").Parse(statusHTML))
 	return t
 }
 
@@ -369,6 +375,19 @@ a.btn-ghost { text-decoration: none; }
   color: var(--color-text-primary); user-select: all; -webkit-user-select: all; word-break: break-all;
 }
 .secret .muted { margin: 0; font-size: var(--font-size-caption); }
+.qr { display: block; width: 220px; height: 220px; margin: 0 auto var(--space-4); border-radius: var(--radius-md); background: #fff; padding: var(--space-2); }
+.codes { display: grid; grid-template-columns: 1fr; gap: var(--space-2); margin: 0 0 var(--space-5); padding: 0; list-style: none; }
+.codes li { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9rem; letter-spacing: 0.03em; white-space: nowrap; color: var(--color-text-primary); padding: var(--space-2) var(--space-3); background: var(--color-surface-1); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); user-select: all; -webkit-user-select: all; }
+a.btn { text-decoration: none; }
+.actions .btn-ghost { width: 100%; min-height: 2.5rem; font-size: var(--font-size-caption); }
+.status-line { display: flex; align-items: center; gap: var(--space-3); margin: 0 0 var(--space-5); }
+.status-line .tag.on { color: var(--color-status-success-fg); background: var(--color-status-success-bg); border-color: var(--color-status-success-border); }
+.status-line .tag.need { color: var(--color-status-warning-fg); background: var(--color-status-warning-bg); border-color: var(--color-status-warning-border); }
+input.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 1.35rem; letter-spacing: 0.35em; text-align: center; }
+.actions { display: flex; flex-direction: column; gap: var(--space-2); }
+.actions form { margin: 0; }
+.link-row { display: flex; justify-content: space-between; gap: var(--space-4); margin-top: var(--space-4); font-size: var(--font-size-caption); }
+.link-row a, .link-row button.linkish { color: var(--color-accent); background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; }
 .table-wrap { overflow-x: auto; }
 table.list { width: 100%; border-collapse: collapse; font-size: var(--font-size-caption); }
 table.list th, table.list td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-border); vertical-align: top; }
@@ -602,6 +621,7 @@ const accountHTML = `<!doctype html>
     <div class="brand">{{.Wordmark}}</div>
     <h1>Signed in</h1>
     <p class="muted">You are signed in as <strong>{{.Email}}</strong>.</p>
+    {{if .UsedRecovery}}<div class="banner warn" role="status"><strong>Recovery code used.</strong> You signed in with a recovery code. <a href="/account/security">Set up a new authenticator</a> if you lost the old one.</div>{{end}}
     <section class="apps" aria-labelledby="apps-heading">
       <h2 id="apps-heading">Your apps</h2>
       <div class="tiles">
@@ -622,7 +642,7 @@ const accountHTML = `<!doctype html>
       <input type="hidden" name="redirect_to" value="/?notice=signed_out">
       <button class="btn" type="submit">Sign out</button>
     </form>
-    <div class="foot">Signing out ends your session in every {{.Brand}} app, on every device.</div>
+    <div class="foot">Signing out ends your session in every {{.Brand}} app, on every device. <a href="/account/security">Security settings</a></div>
   </main>
 </body>
 </html>`
@@ -956,3 +976,208 @@ func renderHTMLEmail(_, link string, ttl time.Duration) string {
   <p style="color:#888;font-size:.85em;margin-top:24px">If you didn't request this, you can ignore this email.</p>
 </body></html>`, int(ttl.Minutes()), link, link)
 }
+
+// ── second factor pages ─────────────────────────────────────────────
+
+const mfaVerifyHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — Two-factor sign-in</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
+<script nonce="{{.Nonce}}">` + themeScript + `</script>
+</head>
+<body>
+  ` + themeToggle + `
+  <main class="card">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>Enter your code</h1>
+    <p class="muted">Signing in as <strong>{{.Email}}</strong>. {{if .Recovery}}Enter one of your recovery codes.{{else}}Open your authenticator app and enter the six-digit code for {{.Brand}}.{{end}}</p>
+    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    <form method="post" action="/login/verify" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      {{if .Recovery}}
+      <input type="hidden" name="mode" value="recovery">
+      <label for="recovery_code">Recovery code</label>
+      <input id="recovery_code" name="recovery_code" type="text" required autofocus autocomplete="off" spellcheck="false" placeholder="xxxxx-xxxxx-xxxxx-xxxxx-xxxxx-x">
+      {{else}}
+      <label for="code">Authenticator code</label>
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000">
+      {{end}}
+      <button class="btn" type="submit">Continue</button>
+    </form>
+    <div class="link-row">
+      {{if .Recovery}}<a href="/login/verify">Use my authenticator app</a>{{else if .HasRecovery}}<a href="/login/verify?mode=recovery">Use a recovery code</a>{{else}}<span></span>{{end}}
+      <form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="linkish" type="submit">Cancel sign-in</button></form>
+    </div>
+  </main>
+</body>
+</html>`
+
+const mfaEnrollHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — Set up your authenticator</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
+<script nonce="{{.Nonce}}">` + themeScript + `</script>
+</head>
+<body>
+  ` + themeToggle + `
+  <main class="card">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>{{if .Replace}}Replace your authenticator{{else}}Set up your authenticator{{end}}</h1>
+    <p class="muted">{{if .Required}}Your account requires a second step at sign-in. {{end}}Scan this code with an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others all work), then enter the six-digit code it shows.</p>
+    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    <img class="qr" src="{{.QR}}" alt="QR code for {{.Issuer}}: {{.Email}}" width="220" height="220">
+    <div class="secret">
+      <p class="muted">Cannot scan? Enter this key by hand (time-based, six digits):</p>
+      <code id="manual-key">{{.ManualKey}}</code>
+      <p class="muted">Account: {{.Email}} · Issuer: {{.Issuer}}</p>
+    </div>
+    <form method="post" action="{{.Action}}" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="action" value="confirm">
+      {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
+      <label for="code">Code from the app</label>
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000">
+      <button class="btn" type="submit">{{if .Replace}}Replace authenticator{{else}}Turn on two-factor sign-in{{end}}</button>
+    </form>
+    {{if eq .Action "/login/enroll"}}<div class="link-row"><span></span><form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="linkish" type="submit">Cancel sign-in</button></form></div>
+    {{else}}<div class="link-row"><a href="/account/security">Back to security settings</a><span></span></div>{{end}}
+  </main>
+</body>
+</html>`
+
+const recoveryCodesHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — Recovery codes</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
+<script nonce="{{.Nonce}}">` + themeScript + `</script>
+</head>
+<body>
+  ` + themeToggle + `
+  <main class="card">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>{{.Title}}</h1>
+    <p class="muted">Save these recovery codes somewhere safe, such as a password manager. Each one signs you in once if you lose your authenticator. They are shown only now.</p>
+    <ol class="codes">{{range .Codes}}<li>{{.}}</li>{{end}}</ol>
+    <a class="btn" href="{{.ContinueTo}}">I have saved them, continue</a>
+  </main>
+</body>
+</html>`
+
+const securityHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — Security</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
+<script nonce="{{.Nonce}}">` + themeScript + `</script>
+</head>
+<body>
+  ` + themeToggle + `
+  <main class="card">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>Security</h1>
+    <p class="muted">Two-factor sign-in for <strong>{{.Email}}</strong>.</p>
+    {{if .Notice}}<div class="banner" role="status"><strong>Done.</strong> {{.Notice}}</div>{{end}}
+    {{if .UsedRecovery}}<div class="banner warn" role="status"><strong>Recovery code used.</strong> You signed in with a recovery code. If you lost your authenticator, replace it now.</div>{{end}}
+    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    <div class="status-line"><span class="tag {{if .Enrolled}}on{{else if .Required}}need{{end}}">{{.Status}}</span>{{if .Enrolled}}<span class="muted">{{.Remaining}} recovery codes left</span>{{else if .Required}}<span class="muted">Set up an authenticator to continue.</span>{{end}}</div>
+    {{if not .Available}}<div class="err">Two-factor sign-in is not set up on this server. Ask your administrator to configure AUTH_MFA_KEY.</div>{{else}}
+    <div class="actions">
+      <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="start">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
+        <button class="btn" type="submit">{{if .Enrolled}}Replace authenticator{{else}}Set up authenticator{{end}}</button></form>
+      {{if .Enrolled}}
+      <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="regenerate">
+        <button class="btn-ghost" type="submit">New recovery codes</button></form>
+      {{if not .Required}}
+      <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="disable">
+        <button class="btn-ghost" type="submit">Turn off two-factor sign-in</button></form>
+      {{end}}
+      {{end}}
+    </div>
+    <p class="hint muted">Changes ask for your password{{if .Enrolled}} and current code{{end}} again if you signed in more than five minutes ago.</p>
+    {{end}}
+    <div class="link-row"><a href="/account">Back to your apps</a>{{if .IsAdmin}}<a href="/admin">Admin</a>{{end}}</div>
+  </main>
+</body>
+</html>`
+
+const reauthHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — Confirm it is you</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
+<script nonce="{{.Nonce}}">` + themeScript + `</script>
+</head>
+<body>
+  ` + themeToggle + `
+  <main class="card">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>Confirm it is you</h1>
+    <p class="muted">Enter your password{{if .Enrolled}} and the current code from your authenticator app{{end}} to change security settings for <strong>{{.Email}}</strong>.</p>
+    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    <form method="post" action="/account/security/verify" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      {{if .Action}}<input type="hidden" name="action" value="{{.Action}}">{{end}}
+      {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required autofocus autocomplete="current-password">
+      {{if .Enrolled}}
+      <label for="code">Authenticator code</label>
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autocomplete="one-time-code" placeholder="000000">
+      {{end}}
+      <button class="btn" type="submit">Continue</button>
+    </form>
+    <div class="link-row"><a href="/account/security">Cancel</a><span></span></div>
+  </main>
+</body>
+</html>`
+
+const statusHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — {{.Title}}</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+<style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
+<script nonce="{{.Nonce}}">` + themeScript + `</script>
+</head>
+<body>
+  ` + themeToggle + `
+  <main class="card">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>{{.Title}}</h1>
+    <p class="muted">{{.Message}}</p>
+    <a class="btn" href="/">Back to sign-in</a>
+  </main>
+</body>
+</html>`

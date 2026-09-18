@@ -79,7 +79,9 @@ func (s *Store) migrateMFA(ctx context.Context) error {
 		return fmt.Errorf("claim mfa schema version: %w", err)
 	}
 	if n, _ := claim.RowsAffected(); n == 0 {
-		return nil
+		// v6 already applied; later versions still run their own claims.
+		_ = tx.Rollback()
+		return s.migrateMFAv7(ctx)
 	}
 	for _, c := range mfaColumns {
 		if hasColumnQ(ctx, tx, c.table, c.column) {
@@ -91,6 +93,43 @@ func (s *Store) migrateMFA(ctx context.Context) error {
 	}
 	if _, err := tx.ExecContext(ctx, mfaSchema); err != nil {
 		return fmt.Errorf("mfa indexes: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.migrateMFAv7(ctx)
+}
+
+// mfaV7Columns let a login transaction remember, in store-controlled
+// columns, that its factor step already succeeded: needed when a forced
+// password change (which itself replaces the credential) sits between the
+// factor step and completion.
+var mfaV7Columns = []struct{ table, column, ddl string }{
+	{"authentication_transactions", "factor_method", `ALTER TABLE authentication_transactions ADD COLUMN factor_method TEXT NOT NULL DEFAULT ''`},
+	{"authentication_transactions", "factor_at", `ALTER TABLE authentication_transactions ADD COLUMN factor_at INTEGER`},
+}
+
+func (s *Store) migrateMFAv7(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	claim, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES(7, ?) ON CONFLICT(version) DO NOTHING`, time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("claim schema version 7: %w", err)
+	}
+	if n, _ := claim.RowsAffected(); n == 0 {
+		return nil
+	}
+	for _, c := range mfaV7Columns {
+		if hasColumnQ(ctx, tx, c.table, c.column) {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, c.ddl); err != nil {
+			return fmt.Errorf("add %s.%s: %w", c.table, c.column, err)
+		}
 	}
 	return tx.Commit()
 }
@@ -808,6 +847,8 @@ type AuthTransaction struct {
 	PolicyRevision    int64
 	Attempts          int
 	MaxAttempts       int
+	FactorMethod      string // "" until the factor step succeeded; then "otp" or "mfa"
+	FactorAt          *time.Time
 	CreatedAt         time.Time
 	ExpiresAt         time.Time
 	ConsumedAt        *time.Time
@@ -818,21 +859,22 @@ type AuthTransaction struct {
 }
 
 const transactionColumns = `t.id, t.user_id, t.purpose, t.stage, t.state_hash, t.metadata, t.credential_hash, t.security_version,
-	t.policy_revision, t.attempts, t.max_attempts, t.created_at, t.expires_at, t.consumed_at,
+	t.policy_revision, t.attempts, t.max_attempts, t.factor_method, t.factor_at, t.created_at, t.expires_at, t.consumed_at,
 	a.security_version, p.password_hash, a.disabled_at, a.must_change_password`
 
 func scanTransaction(row rowScanner) (AuthTransaction, error) {
 	var t AuthTransaction
 	var created, expires int64
-	var consumed, disabled sql.NullInt64
+	var consumed, disabled, factorAt sql.NullInt64
 	var mustChange int
 	if err := row.Scan(&t.ID, &t.UserID, &t.Purpose, &t.Stage, &t.StateHash, &t.Metadata, &t.CredentialHash, &t.SecurityVersion,
-		&t.PolicyRevision, &t.Attempts, &t.MaxAttempts, &created, &expires, &consumed,
+		&t.PolicyRevision, &t.Attempts, &t.MaxAttempts, &t.FactorMethod, &factorAt, &created, &expires, &consumed,
 		&t.AccountSecurity, &t.AccountCredHash, &disabled, &mustChange); err != nil {
 		return AuthTransaction{}, err
 	}
 	t.CreatedAt, t.ExpiresAt = time.Unix(created, 0), time.Unix(expires, 0)
 	t.ConsumedAt = nullTime(consumed)
+	t.FactorAt = nullTime(factorAt)
 	t.AccountDisabled = disabled.Valid
 	t.AccountMustChange = mustChange != 0
 	return t, nil
@@ -984,6 +1026,11 @@ const (
 	ProofNone     = "none"
 	ProofTOTP     = "totp"
 	ProofRecovery = "recovery"
+	// ProofRecorded: the factor step already succeeded earlier in this same
+	// transaction (RecordFactorForTransaction) and a later step, such as the
+	// forced password change, came after it. Completion reads the method
+	// the store itself recorded.
+	ProofRecorded = "recorded"
 )
 
 // CompleteLogin is the completion gate for an incomplete login. In ONE
@@ -1012,15 +1059,15 @@ func (s *Store) CompleteLogin(ctx context.Context, transactionID, expectedStage,
 	// Live account state and policy, inside the transaction.
 	var isAdmin, required, enrolled, mustChange int
 	var version, txVersion int64
-	var disabled sql.NullInt64
-	var credential, txCredential string
+	var disabled, factorAt sql.NullInt64
+	var credential, txCredential, factorMethod string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT a.is_admin, a.mfa_required, a.must_change_password, a.security_version, a.disabled_at, p.password_hash,
 		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL),
-		       t.credential_hash, t.security_version
+		       t.credential_hash, t.security_version, t.factor_method, t.factor_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		JOIN authentication_transactions t ON t.id = ?
-		WHERE a.id = ?`, transactionID, userID).Scan(&isAdmin, &required, &mustChange, &version, &disabled, &credential, &enrolled, &txCredential, &txVersion); err != nil {
+		WHERE a.id = ?`, transactionID, userID).Scan(&isAdmin, &required, &mustChange, &version, &disabled, &credential, &enrolled, &txCredential, &txVersion, &factorMethod, &factorAt); err != nil {
 		return SessionEvidence{}, err
 	}
 	if disabled.Valid || mustChange != 0 || credential != txCredential || version != txVersion {
@@ -1061,6 +1108,14 @@ func (s *Store) CompleteLogin(ctx context.Context, transactionID, expectedStage,
 			return SessionEvidence{}, ErrInvalidProof
 		}
 		evidence.AMR, evidence.MFAVerifiedAt = []string{"pwd", "mfa"}, now
+	case ProofRecorded:
+		if enrolled == 0 || (factorMethod != "otp" && factorMethod != "mfa") || !factorAt.Valid {
+			if needFactor {
+				return SessionEvidence{}, ErrFactorRequired
+			}
+			break // nothing was required and nothing recorded: password-only
+		}
+		evidence.AMR, evidence.MFAVerifiedAt = []string{"pwd", factorMethod}, factorAt.Int64
 	default:
 		return SessionEvidence{}, errors.New("unknown proof kind")
 	}
@@ -1223,4 +1278,150 @@ func (s *Store) HasAuthenticators(ctx context.Context) (bool, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM authenticators WHERE kind = 'totp' AND disabled_at IS NULL`).Scan(&n)
 	return n > 0, err
+}
+
+// RecordFactorForTransaction settles a factor proof for a login that still
+// has steps to go (a forced password change after the factor). In one
+// transaction: the transaction must be live at fromStage and the account
+// unchanged since it was opened; the proof is consumed exactly as in
+// CompleteLogin (replay guard or recovery code); the method and time are
+// written to the transaction's own columns and the stage advances to
+// toStage with the attempt counter reset. CompleteLogin later reads them
+// through ProofRecorded.
+func (s *Store) RecordFactorForTransaction(ctx context.Context, transactionID, fromStage, toStage string, proof LoginProof, now, expiresAt int64) error {
+	if proof.Kind != ProofTOTP && proof.Kind != ProofRecovery {
+		return errors.New("a factor proof is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var userID, credential, txCredential string
+	var version, txVersion int64
+	var disabled sql.NullInt64
+	var enrolled int
+	err = tx.QueryRowContext(ctx, `
+		SELECT t.user_id, t.credential_hash, t.security_version, p.password_hash, a.security_version, a.disabled_at,
+		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
+		FROM authentication_transactions t
+		JOIN accounts a ON a.id = t.user_id
+		JOIN password_credentials p ON p.user_id = a.id
+		WHERE t.id = ? AND t.stage = ? AND t.consumed_at IS NULL AND t.expires_at > ?`, transactionID, fromStage, now).
+		Scan(&userID, &txCredential, &txVersion, &credential, &version, &disabled, &enrolled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrTransactionNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if disabled.Valid || credential != txCredential || version != txVersion {
+		return ErrStaleTransaction
+	}
+	if enrolled == 0 {
+		return ErrInvalidProof
+	}
+	method := "otp"
+	switch proof.Kind {
+	case ProofTOTP:
+		ok, err := recordAcceptedStepTx(ctx, tx, proof.AuthenticatorID, userID, proof.Step, proof.Rewrapped, proof.KeyID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrInvalidProof
+		}
+	case ProofRecovery:
+		ok, err := consumeRecoveryCodeTx(ctx, tx, userID, proof.RecoveryCodeHash, now)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrInvalidProof
+		}
+		method = "mfa"
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE authentication_transactions SET factor_method = ?, factor_at = ?, stage = ?, attempts = 0,
+		expires_at = CASE WHEN ? > expires_at THEN ? ELSE expires_at END
+		WHERE id = ? AND stage = ? AND consumed_at IS NULL`, method, now, toStage, expiresAt, expiresAt, transactionID, fromStage)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrTransactionNotFound
+	}
+	return tx.Commit()
+}
+
+// ReplacePasswordUnderTransaction is the forced first-login change performed
+// inside an incomplete login (no session exists yet). It replaces the
+// credential exactly like ReplacePasswordIfCurrent (compare-and-swap on the
+// verified hash, must_change cleared, every session revoked and fanned out,
+// audited) and, in the same SQLite transaction, re-binds the login
+// transaction to the new hash and advances it to toStage, so the browser
+// that just changed the password can finish its login while any other
+// transaction bound to the old hash goes stale.
+func (s *Store) ReplacePasswordUnderTransaction(ctx context.Context, transactionID, fromStage, toStage, userID, expectedHash, passwordHash string, now, expiresAt int64) error {
+	if userID == "" || expectedHash == "" || passwordHash == "" {
+		return errors.New("user id and password hashes are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// The transaction must still describe the account as it is: same
+	// credential and same security version (a factor replaced or reset
+	// since the password step voids it), live, at the expected stage.
+	var txVersion, version int64
+	var txCredential string
+	var disabled sql.NullInt64
+	err = tx.QueryRowContext(ctx, `
+		SELECT t.security_version, t.credential_hash, a.security_version, a.disabled_at
+		FROM authentication_transactions t JOIN accounts a ON a.id = t.user_id
+		WHERE t.id = ? AND t.user_id = ? AND t.stage = ? AND t.consumed_at IS NULL AND t.expires_at > ?`,
+		transactionID, userID, fromStage, now).Scan(&txVersion, &txCredential, &version, &disabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrTransactionNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if disabled.Valid || txVersion != version || txCredential != expectedHash {
+		return ErrStaleTransaction
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE password_credentials SET password_hash = ?, changed_at = ?
+		WHERE user_id = ? AND password_hash = ?
+		  AND EXISTS (SELECT 1 FROM accounts WHERE id = ? AND disabled_at IS NULL)`,
+		passwordHash, now, userID, expectedHash, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrCredentialChanged
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET must_change_password = 0, updated_at = ? WHERE id = ?`, now, userID); err != nil {
+		return err
+	}
+	if _, err := revokeSessionsTx(ctx, tx, userID, now, "password_replaced"); err != nil {
+		return err
+	}
+	if err := enqueueLogoutEventTx(ctx, tx, userID, "password_replaced", now); err != nil {
+		return err
+	}
+	if err := insertAudit(ctx, tx, "password.replaced", userID, now, `{}`); err != nil {
+		return err
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE authentication_transactions SET credential_hash = ?, stage = ?, attempts = 0,
+		expires_at = CASE WHEN ? > expires_at THEN ? ELSE expires_at END
+		WHERE id = ? AND user_id = ? AND stage = ? AND credential_hash = ? AND consumed_at IS NULL AND expires_at > ?`,
+		passwordHash, toStage, expiresAt, expiresAt, transactionID, userID, fromStage, expectedHash, now)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrTransactionNotFound
+	}
+	return tx.Commit()
 }

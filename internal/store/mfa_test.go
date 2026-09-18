@@ -835,3 +835,66 @@ func TestHasAuthenticators(t *testing.T) {
 		t.Fatal("enrolled factor not seen")
 	}
 }
+
+// A database left at v6 by the M1 binary (marker 6 present, no v7 columns)
+// still gets the v7 columns: the v6 claim being taken must not skip later
+// versions.
+func TestMFAMigrationUpgradesAV6Database(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, q := range []string{
+		`DELETE FROM schema_migrations WHERE version = 7`,
+		`ALTER TABLE authentication_transactions DROP COLUMN factor_method`,
+		`ALTER TABLE authentication_transactions DROP COLUMN factor_at`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.hasColumn(ctx, "authentication_transactions", "factor_method") || s.hasMigration(ctx, 7) {
+		t.Fatal("fixture still at v7")
+	}
+	_ = s.Close()
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatalf("reopen v6 database: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if !s.hasColumn(ctx, "authentication_transactions", "factor_method") || !s.hasColumn(ctx, "authentication_transactions", "factor_at") || !s.hasMigration(ctx, 7) {
+		t.Fatal("v7 columns not added to a v6 database")
+	}
+}
+
+// A forced password change inside a login transaction is refused once the
+// account's factor changed underneath it (security version bumped), and the
+// password stays as it was.
+func TestReplacePasswordUnderTransactionRefusesAStaleVersion(t *testing.T) {
+	s, a, now := mfaFixture(t)
+	ctx := context.Background()
+	enrol(t, s, a, "", now)
+	a, _ = s.PasswordAccountByEmail(ctx, a.Email)
+	newLoginTx(t, s, a, "t1", "st1", "password_change", now+1)
+	enrol(t, s, a, "", now+2) // replacement from elsewhere: version bumps
+	err := s.ReplacePasswordUnderTransaction(ctx, "t1", "password_change", "complete", a.ID, a.PasswordHash, "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3", now+3, now+300)
+	if !errors.Is(err, ErrStaleTransaction) {
+		t.Fatalf("stale replace: %v", err)
+	}
+	after, _ := s.PasswordAccountByEmail(ctx, a.Email)
+	if after.PasswordHash != a.PasswordHash {
+		t.Fatal("password changed under a stale transaction")
+	}
+	// Fresh transaction, same everything: works and re-binds the credential.
+	after2 := after
+	newLoginTx(t, s, after2, "t2", "st2", "password_change", now+4)
+	if err := s.ReplacePasswordUnderTransaction(ctx, "t2", "password_change", "complete", after2.ID, after2.PasswordHash, "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3", now+5, now+300); err != nil {
+		t.Fatal(err)
+	}
+	tr, err := s.AuthTransactionByState(ctx, "st2", now+6)
+	if err != nil || tr.Stage != "complete" || tr.CredentialHash != "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3" {
+		t.Fatalf("transaction after replace: %+v %v", tr, err)
+	}
+}
