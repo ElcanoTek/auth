@@ -388,8 +388,38 @@ func TestDisableAndResetClearFactorStateAndRevoke(t *testing.T) {
 	if _, err := s.ActiveAuthenticator(ctx, a.ID); !errors.Is(err, ErrNoAuthenticator) {
 		t.Fatal("reset left the factor")
 	}
-	if err := s.ResetMFA(ctx, "nobody", "admin-1", "x", now); !errors.Is(err, ErrAccountNotFound) {
+	// Without an active factor there is nothing to reset: an unknown
+	// account and an unenrolled one both read as "no authenticator".
+	if err := s.ResetMFA(ctx, "nobody", "admin-1", "x", now); !errors.Is(err, ErrNoAuthenticator) {
 		t.Fatalf("reset of unknown account: %v", err)
+	}
+	if err := s.ResetMFA(ctx, a.ID, "admin-1", "again", now+10); !errors.Is(err, ErrNoAuthenticator) {
+		t.Fatalf("reset of an account already without a factor: %v", err)
+	}
+	// Promotion under "admins" signs an unenrolled new administrator out.
+	if _, _, err := s.SetMFAPolicy(ctx, mfa.ModeAdmins, "admin-1", now+11); err != nil {
+		t.Fatal(err)
+	}
+	grace, _ := s.CreatePasswordAccount(ctx, "grace@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Z3Jh", false, now)
+	session(t, s, grace, "grace-1", now+11)
+	if err := s.SetAccountAdmin(ctx, grace.Email, true, now+12); err != nil {
+		t.Fatal(err)
+	}
+	if liveSessions(t, s, grace.ID, now+13) != 0 {
+		t.Fatal("promotion under the admins policy left an unenrolled administrator signed in")
+	}
+	// Counts are relative to the current policy: admins already required
+	// do not count again, everyone adds the rest.
+	if n, _ := s.CountNewlyRequiredWithoutFactor(ctx, mfa.ModeAdmins); n != 0 {
+		t.Fatalf("admins under admins = %d, want 0", n)
+	}
+	// Stale-revision guard.
+	current, _ := s.MFAPolicy(ctx)
+	if _, _, err := s.SetMFAPolicyIfRevision(ctx, mfa.ModeEveryone, current.Revision-1, "admin-1", now+14); !errors.Is(err, ErrStalePolicy) {
+		t.Fatalf("stale revision: %v", err)
+	}
+	if _, _, err := s.SetMFAPolicyIfRevision(ctx, mfa.ModeOptional, current.Revision, "admin-1", now+15); err != nil {
+		t.Fatal(err)
 	}
 	types := auditTypes(t, s, a.ID)
 	if !contains(types, "mfa.disabled") || !contains(types, "mfa.reset") {

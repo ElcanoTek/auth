@@ -311,17 +311,42 @@ password. What people see:
   the signed-in page then says so. Five wrong codes end that sign-in attempt.
   No session exists until the code is accepted: the password alone never
   signs an enrolled account in.
-- **Required accounts.** When the deployment policy (or a per-user setting,
-  both in the console in the next release; today `auth user` on the box)
-  requires a factor the account lacks, sign-in continues straight into
-  enrolment; a forced first-login password change happens after an existing
+- **Required accounts.** When the deployment policy or a per-user
+  requirement (both set in the console, or with `auth mfa policy` and
+  `auth user mfa-required` on the box) requires a factor the account lacks,
+  sign-in continues straight into enrolment; a forced first-login password change happens after an existing
   factor is proven and before enrolment. Existing sessions of an account that
   becomes required, and has no factor, are signed out immediately.
 - **Turning it off.** Under the Optional policy a person may turn their own
   factor off from the Security page (password and code required). A required
   account cannot; it can only replace the authenticator. A lost authenticator
-  is an administrator reset (next release; today `auth user` on the box),
-  after which the account must enrol again before it can sign in.
+  is an administrator reset (Settings → Reset two-factor in the console, or
+  `auth user mfa-reset <email> --reason "..."` on the box), after which the
+  account is signed out everywhere and must enrol again before it can sign
+  in, whatever the policy: a reset never quietly returns an account to
+  password-only.
+- **Administering it.** The Accounts tab shows each account's two-factor
+  status (Enabled, Enrollment required, Not enrolled) beside its status
+  badge. **Two-factor policy** (top right of the table) chooses Optional,
+  Required for administrators or Required for everyone and says, per
+  choice, how many enabled accounts would have to enrol: those are signed out
+  the moment a stricter policy is saved and enrol at their next sign-in;
+  relaxing the policy removes nobody's authenticator. In each row's
+  **Access** popup a **Require 2FA** pill adds a per-account requirement (the
+  strongest rule wins; it is locked when the policy already requires it).
+  Every two-factor change in the console needs the administrator's own
+  sign-in to be less than five minutes old; otherwise the page offers
+  **Verify now** (password, plus their code) and the change is repeated.
+  Resetting someone's authenticator additionally requires the acting
+  administrator to have one themselves. Recommended rollout: leave the policy
+  Optional, have every administrator enrol from Security, then switch to
+  Required for administrators.
+- **Notifications.** When the deployment has an email driver other than
+  `stdout`, the account is emailed (never with codes or secrets) when an
+  authenticator is set up, replaced or turned off, when an administrator
+  resets it, and when a recovery code signs in. The audit log records the
+  same events regardless (`mfa.*`, `login.recovery_code_used`,
+  `admin.mfa_*`).
 - **What applications see.** The identity claims report how the session was
   authenticated: `amr` is `["pwd"]`, `["pwd","otp"]` (authenticator) or
   `["pwd","mfa"]` (recovery code), and `acr` is `urn:elcanotek:loa:1` for a

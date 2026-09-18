@@ -438,7 +438,7 @@ func noticeClass(code string) string {
 	switch code {
 	case "signed_out":
 		return "alert"
-	case "stale_form":
+	case "stale_form", "mfa_required":
 		return "warn"
 	}
 	return ""
@@ -450,6 +450,8 @@ func noticeTitle(code string) string {
 		return "Signed out."
 	case "stale_form":
 		return "Expired."
+	case "mfa_required":
+		return "Two-factor sign-in required."
 	}
 	return ""
 }
@@ -463,6 +465,8 @@ func (s *Server) noticeMessage(code string) string {
 		return "You are signed out of " + s.cfg.BrandName + ". Any " + s.cfg.BrandName + " app still open is being signed out too."
 	case "stale_form":
 		return staleFormMessage
+	case "mfa_required":
+		return "Your account now requires an authenticator app. Sign in again to set it up."
 	}
 	return ""
 }

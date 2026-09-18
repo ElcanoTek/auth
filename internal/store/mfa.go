@@ -172,6 +172,8 @@ var (
 	// ErrFactorRequired: the flow tried to finish without a factor, but the
 	// account has one or policy now demands one.
 	ErrFactorRequired = errors.New("a second factor is required")
+	// ErrStalePolicy: the policy changed since the form was rendered.
+	ErrStalePolicy = errors.New("two-factor policy changed meanwhile")
 )
 
 const (
@@ -221,13 +223,21 @@ func mfaPolicyQ(ctx context.Context, q querier) (MFAPolicy, error) {
 // policy change is confirmed: enabled accounts the new mode would require a
 // factor from that do not have one yet.
 func (s *Store) CountNewlyRequiredWithoutFactor(ctx context.Context, mode mfa.Mode) (int64, error) {
+	current, err := s.MFAPolicy(ctx)
+	if err != nil {
+		return 0, err
+	}
+	// Accounts the current policy already requires are already signed out
+	// (or enrolled), so only the accounts the candidate mode adds count.
 	var n int64
-	err := s.db.QueryRowContext(ctx, `
+	err = s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM accounts a
 		JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.disabled_at IS NULL AND a.mfa_required = 0
 		  AND NOT EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
-		  AND (? = 'everyone' OR (? = 'admins' AND a.is_admin = 1))`, string(mode), string(mode)).Scan(&n)
+		  AND (? = 'everyone' OR (? = 'admins' AND a.is_admin = 1))
+		  AND NOT (? = 'everyone' OR (? = 'admins' AND a.is_admin = 1))`,
+		string(mode), string(mode), string(current.Mode), string(current.Mode)).Scan(&n)
 	return n, err
 }
 
@@ -238,6 +248,13 @@ func (s *Store) CountNewlyRequiredWithoutFactor(ctx context.Context, mode mfa.Mo
 // application session may outlive its central one. Returns the new policy
 // and how many accounts were signed out.
 func (s *Store) SetMFAPolicy(ctx context.Context, mode mfa.Mode, actorID string, now int64) (MFAPolicy, int64, error) {
+	return s.SetMFAPolicyIfRevision(ctx, mode, -1, actorID, now)
+}
+
+// SetMFAPolicyIfRevision is SetMFAPolicy that applies only while the policy
+// is still at expectedRevision (a form rendered from that revision); -1
+// skips the check. A mismatch is ErrStalePolicy and changes nothing.
+func (s *Store) SetMFAPolicyIfRevision(ctx context.Context, mode mfa.Mode, expectedRevision int64, actorID string, now int64) (MFAPolicy, int64, error) {
 	if _, err := mfa.ParseMode(string(mode)); err != nil {
 		return MFAPolicy{}, 0, err
 	}
@@ -249,6 +266,9 @@ func (s *Store) SetMFAPolicy(ctx context.Context, mode mfa.Mode, actorID string,
 	current, err := mfaPolicyQ(ctx, tx)
 	if err != nil {
 		return MFAPolicy{}, 0, err
+	}
+	if expectedRevision >= 0 && current.Revision != expectedRevision {
+		return current, 0, ErrStalePolicy
 	}
 	next := MFAPolicy{Mode: mode, Revision: current.Revision + 1, UpdatedAt: time.Unix(now, 0)}
 	if _, err := tx.ExecContext(ctx, `
@@ -681,7 +701,8 @@ func (s *Store) DisableAuthenticator(ctx context.Context, userID, keepSessionHas
 // every session is revoked and the back-channel logout queued. The account
 // is marked as requiring a factor, so it lands in "enrollment required" at
 // its next sign-in whether or not the deployment policy demands one: a reset
-// must never quietly turn an account back into password-only access.
+// must never quietly turn an account back into password-only access. It
+// needs an active factor (ErrNoAuthenticator otherwise).
 func (s *Store) ResetMFA(ctx context.Context, userID, actorID, reason string, now int64) error {
 	if strings.TrimSpace(reason) == "" {
 		return errors.New("a reason is required")
@@ -691,6 +712,11 @@ func (s *Store) ResetMFA(ctx context.Context, userID, actorID, reason string, no
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// A reset is for a lost authenticator: without one there is nothing to
+	// reset, and "Require 2FA" is the control for that case.
+	if _, err := activeAuthenticatorQ(ctx, tx, userID); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE accounts SET mfa_required = 1, updated_at = ?
 		WHERE id = ? AND EXISTS (SELECT 1 FROM password_credentials p WHERE p.user_id = accounts.id)`, now, userID)
 	if err != nil {

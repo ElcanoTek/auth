@@ -952,6 +952,19 @@ func (s *Store) SetAccountAdmin(ctx context.Context, email string, admin bool, n
 	if err := insertAudit(ctx, tx, event, a.ID, now, `{}`); err != nil {
 		return err
 	}
+	// Promotion is a policy-tightening path: under "Required for
+	// administrators" the new administrator must have a factor, so an
+	// unenrolled one is signed out now and enrols at the next sign-in,
+	// exactly as if the policy had just been set.
+	if admin {
+		policy, err := mfaPolicyQ(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if _, err := signOutUnenrolledRequiredTx(ctx, tx, policy.Mode, a.ID, now); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 

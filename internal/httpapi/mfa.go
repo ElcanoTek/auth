@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -435,6 +436,7 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
 	if proof.Kind == store.ProofRecovery {
 		_ = s.store.RecordAudit(r.Context(), "login.recovery_code_used", account.ID, ipKey, now.Unix())
+		s.notify(account.Email, "A recovery code was used to sign in", "A recovery code signed in to your "+s.cfg.BrandName+" account. If this was not you, contact your administrator; if you lost your authenticator, set up a new one from Security.")
 	}
 	if next != "" {
 		http.Redirect(w, r, stagePath(next), http.StatusSeeOther)
@@ -675,6 +677,7 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 	s.setSessionCookies(w, raw, csrfNew, absolute)
 	s.clearLoginTxCookie(w)
 	_ = s.store.RecordAudit(r.Context(), "login.succeeded", account.ID, s.rateKey("ip", clientIP(r)), now.Unix())
+	s.notify(account.Email, "Two-factor sign-in turned on", "An authenticator app was set up on your "+s.cfg.BrandName+" account and every other session was signed out. If this was not you, contact your administrator.")
 	s.renderRecoveryCodes(w, codes, s.loginTxDest(tr), "Authenticator set up")
 }
 
@@ -731,11 +734,41 @@ func (s *Server) assuredIdentity(w http.ResponseWriter, r *http.Request, allowEn
 
 // recentlyVerified: the session was created, or re-verified, within the
 // re-authentication window, so a sensitive action may proceed.
-func recentlyVerified(sess store.AuthSession, now time.Time) bool {
-	if now.Sub(sess.CreatedAt) <= reauthWindow {
+func recentlyVerified(sess store.AuthSession, now time.Time, window time.Duration) bool {
+	if now.Sub(sess.CreatedAt) <= window {
 		return true
 	}
-	return sess.ReauthAt != nil && now.Sub(*sess.ReauthAt) <= reauthWindow
+	return sess.ReauthAt != nil && now.Sub(*sess.ReauthAt) <= window
+}
+
+// reauthWindow is five minutes unless the configuration says otherwise
+// (tests shrink it to force the step-up).
+func (s *Server) reauthWindow() time.Duration {
+	if s.cfg.MFAReauthWindow > 0 {
+		return s.cfg.MFAReauthWindow
+	}
+	return reauthWindow
+}
+
+// notify sends a short email about a security change when the deployment
+// has a real email driver. Best effort: a failure is logged by tenant only,
+// never blocks the change, and the message never carries codes or secrets.
+// Password-mode boxes usually have no driver, in which case nothing is sent
+// and the audit log remains the record.
+func (s *Server) notify(to, subject, body string) {
+	if s.sender == nil || s.cfg.EmailDriver == "" || s.cfg.EmailDriver == "stdout" {
+		return
+	}
+	s.sends.Add(1)
+	go func(to, subject, text string) {
+		defer s.sends.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		html := "<!doctype html><html><body style=\"font:16px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#1a1a1a;padding:24px\"><p>" + template.HTMLEscapeString(text) + "</p></body></html>"
+		if err := s.sender.Send(ctx, to, subject, text, html); err != nil {
+			log.Printf("send security notice failed (tenant=%s): %v", emailTenant(to), err)
+		}
+	}(to, subject, body)
 }
 
 var securityActions = map[string]bool{"start": true, "confirm": true, "regenerate": true, "disable": true}
@@ -807,7 +840,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Every action is sensitive: it needs a fresh password (and factor).
-	if !recentlyVerified(identity.Session, now) {
+	if !recentlyVerified(identity.Session, now, s.reauthWindow()) {
 		q := url.Values{"action": {action}}
 		if returnTo != "" {
 			q.Set("return_to", returnTo)
@@ -865,6 +898,9 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 		title := "Authenticator set up"
 		if account.MFAEnrolled {
 			title = "Authenticator replaced"
+			s.notify(account.Email, "Authenticator replaced", "The authenticator app on your "+s.cfg.BrandName+" account was replaced and every other session was signed out. If this was not you, contact your administrator.")
+		} else {
+			s.notify(account.Email, "Two-factor sign-in turned on", "An authenticator app was set up on your "+s.cfg.BrandName+" account and every other session was signed out. If this was not you, contact your administrator.")
 		}
 		s.renderRecoveryCodes(w, codes, dest, title)
 	case "regenerate":
@@ -882,6 +918,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "something went wrong", http.StatusInternalServerError)
 			return
 		}
+		s.notify(account.Email, "New recovery codes", "New recovery codes were generated for your "+s.cfg.BrandName+" account; the old ones no longer work. If this was not you, contact your administrator.")
 		s.renderRecoveryCodes(w, codes, "/account/security", "New recovery codes")
 	case "disable":
 		err := s.store.DisableAuthenticator(r.Context(), account.ID, identity.Session.TokenHash, now.Unix())
@@ -897,6 +934,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 			logUnlessCancelled("disable authenticator", err)
 			http.Error(w, "something went wrong", http.StatusInternalServerError)
 		default:
+			s.notify(account.Email, "Two-factor sign-in turned off", "Two-factor sign-in was turned off on your "+s.cfg.BrandName+" account and every other session was signed out. If this was not you, contact your administrator.")
 			http.Redirect(w, r, "/account/security?off=1", http.StatusSeeOther)
 		}
 	}
@@ -1005,6 +1043,12 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 	if err := s.store.StampSessionReauth(r.Context(), identity.Session.TokenHash, now.Unix()); err != nil {
 		s.clearPasswordCookies(w)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	// With no Security action pending, a caller such as the admin console
+	// gets the browser back (the target was validated by resolveReturnTo).
+	if action == "" && returnTo != "" {
+		http.Redirect(w, r, returnTo, http.StatusSeeOther)
 		return
 	}
 	// Back to the Security page; the action the person wanted is offered
