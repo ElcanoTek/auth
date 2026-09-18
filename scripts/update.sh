@@ -80,12 +80,15 @@ env_value() {
   v="$(KEY="$1" awk '
     index($0, "=") && $0 ~ ("^[[:space:]]*" ENVIRON["KEY"] "[[:space:]]*=") { v = $0; sub(/^[^=]*=/, "", v); last = v }
     END { print last }' "$APP_DIR/.env.local" 2>/dev/null)"
-  v="${v%%#*}"
-  # Trim the ends, then one pair of quotes; inner spaces are part of the value.
+  # Trim the ends first. A quoted value ends at its closing quote (a # inside
+  # the quotes is part of the value, as the server reads it); a bare value
+  # ends at the first #.
   v="${v#"${v%%[![:space:]]*}"}"
   v="${v%"${v##*[![:space:]]}"}"
-  v="${v#[\"\']}"
-  v="${v%[\"\']}"
+  case "$v" in
+    \"*|\'*) local q="${v:0:1}"; v="${v:1}"; v="${v%%"$q"*}" ;;
+    *)       v="${v%%#*}"; v="${v%"${v##*[![:space:]]}"}" ;;
+  esac
   printf '%s' "$v"
 }
 health_addr() {
