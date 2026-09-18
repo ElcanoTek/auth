@@ -49,7 +49,8 @@ should too.
    without access to your application gets `error=access_denied`.
 
 3. **Code exchange.** POST the code, `redirect_uri` and `code_verifier` to
-   `/token` with `client_secret_basic`. The response carries the standard
+   `/token` with `client_secret_basic` (a `client_id` form field is optional
+   and, when present, must match the Basic username). The response carries the standard
    identity claims directly and as an EdDSA-signed `id_token`; verify it
    against `/jwks.json` (exact `iss` and `aud`, live `exp`, matching
    `nonce`). There is no `access_token`: Auth has no resource server. `amr`

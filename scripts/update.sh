@@ -66,12 +66,31 @@ say()  { printf '%s\n' "$*"; }
 step() { printf '\n%s▸ %s%s\n' "$c_bold" "$*" "$c_reset"; }
 ok()   { printf '%s✓ %s%s\n' "$c_green" "$*" "$c_reset"; }
 warn() { printf '%s! %s%s\n' "$c_yellow" "$*" "$c_reset" >&2; }
+info() { printf '%s» %s%s\n' "$c_dim" "$*" "$c_reset"; }
 die()  { printf '%s✗ %s%s\n' "$c_red" "$*" "$c_reset" >&2; exit 1; }
 
 # wait_healthy polls /healthz for ~10s. 0 = the server answered, 1 = never did.
+# The listen address comes from .env.local (default 127.0.0.1:9000); a box
+# on another port must not be judged unhealthy and rolled back for it.
+health_addr() {
+  local addr host port
+  # Last occurrence wins, as it does for the server; whitespace around the
+  # key and value, a quoted value and a trailing comment are all tolerated.
+  addr="$(awk -F= '/^[[:space:]]*AUTH_ADDR[[:space:]]*=/ { v = $0; sub(/^[^=]*=/, "", v); last = v } END { print last }' "$APP_DIR/.env.local" 2>/dev/null)"
+  addr="${addr%%#*}"
+  addr="${addr//[\"\' ]/}"
+  addr="${addr:-127.0.0.1:9000}"
+  # A wildcard or empty listen host is probed on loopback, same port.
+  port="${addr##*:}"
+  host="${addr%:*}"
+  case "$host" in
+    ""|"0.0.0.0"|"[::]"|"::"|"*") host="127.0.0.1" ;;
+  esac
+  printf '%s:%s' "$host" "$port"
+}
 wait_healthy() {
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -fsS http://127.0.0.1:9000/healthz >/dev/null 2>&1; then
+    if curl -fsS "http://$(health_addr)/healthz" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -279,6 +298,22 @@ cp -p "$APP_DIR/bin/auth-admin"          "$BACKUP/auth-admin"
 cp -p "$SYSTEMD_DIR/auth-server.service" "$BACKUP/auth-server.service"
 cp -p "$SYSTEMD_DIR/auth.target"         "$BACKUP/auth.target"
 cp -p "$CLI_BIN"                         "$BACKUP/auth-cli"
+# A consistent snapshot of the database from just before the swap. It is not
+# restored automatically (the previous build reads a newer additive schema
+# fine, and an automatic restore would drop whatever happened in between);
+# the rollback message names it so an operator can choose.
+DB_SNAPSHOT=""
+if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$APP_DIR/data/state.db" ]]; then
+  mkdir -p "$APP_DIR/data/backups"
+  DB_SNAPSHOT="$APP_DIR/data/backups/pre-update-$(date +%Y%m%d%H%M%S).db"
+  if sqlite3 "$APP_DIR/data/state.db" ".backup '$DB_SNAPSHOT'" 2>/dev/null; then
+    chmod 0600 "$DB_SNAPSHOT"; chown "$APP_USER:$APP_USER" "$DB_SNAPSHOT" 2>/dev/null || true
+    info "database snapshot: $DB_SNAPSHOT"
+  else
+    warn "could not snapshot the database before the swap (continuing)"
+    DB_SNAPSHOT=""
+  fi
+fi
 
 # rollback_and_die restores the snapshotted binaries + unit/CLI files, restarts,
 # and exits non-zero. Used for BOTH a failed mid-swap and a started-but-unhealthy
@@ -297,7 +332,7 @@ rollback_and_die() {
   systemctl daemon-reload || true
   systemctl start auth-server.service || true
   if wait_healthy; then
-    die "update aborted — the new build didn't come up; rolled back to the previous binary + units (${before_sha:0:12}) and the service is healthy on them. Investigate: journalctl -u auth-server -n 50"
+    die "update aborted — the new build didn't come up; rolled back to the previous binary + units (${before_sha:0:12}) and the service is healthy on them. Investigate: journalctl -u auth-server -n 50${DB_SNAPSHOT:+; pre-update database snapshot: $DB_SNAPSHOT}"
   fi
   die "update FAILED and the rollback ALSO failed /healthz — manual recovery needed: journalctl -u auth-server -n 50"
 }

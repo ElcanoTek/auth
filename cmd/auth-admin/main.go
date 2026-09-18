@@ -978,4 +978,11 @@ func requireMFAKeyConfigured(what string) {
 	if strings.TrimSpace(os.Getenv("AUTH_MFA_KEY")) == "" {
 		fatalf("%s needs AUTH_MFA_KEY in .env.local first (generate one with `auth mfa keygen`, then `auth restart`); otherwise the affected accounts could not enrol and would be locked out", what)
 	}
+	// The same parse the server does: a present but malformed key would
+	// pass a non-empty check here and then stop the server at its next
+	// start, with the accounts already signed out into a flow that cannot
+	// complete.
+	if _, err := mfa.ParseKeyring(os.Getenv("AUTH_MFA_KEY"), os.Getenv("AUTH_MFA_KEY_ID"), os.Getenv("AUTH_MFA_PREVIOUS_KEYS")); err != nil {
+		fatalf("%s: AUTH_MFA_KEY in .env.local is not usable (%v); fix it before changing the policy", what, err)
+	}
 }

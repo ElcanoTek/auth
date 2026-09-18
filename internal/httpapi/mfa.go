@@ -872,6 +872,15 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
+	if r.Method == http.MethodPost {
+		// Before the first FormValue, or the body is parsed at Go's default
+		// 10 MB ceiling and this cap is moot.
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+	}
 	returnTo := s.resolveReturnTo(r.URL.Query().Get("return_to"))
 	if returnTo == "" {
 		returnTo = s.resolveReturnTo(r.FormValue("return_to"))
@@ -898,11 +907,6 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
 	if !s.validCSRF(r) {
@@ -946,8 +950,21 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 			log.Printf("render mfa enroll: %v", err)
 		}
 	case "confirm":
+		// The pending secret is a TOTP oracle like any other: the attempt is
+		// reserved (account, address, deployment) before the code is checked.
+		ids, ipKey, limited, err := s.mfaAttempt(r, account.ID, now)
+		if err != nil {
+			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			return
+		}
+		if limited {
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enrol_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
+			renderPage("", "Too many attempts. Wait a few minutes and try again.")
+			return
+		}
 		pending, step, verified := s.confirmEnrolment(r, account, r.FormValue("code"), now)
 		if !verified {
+			_ = s.store.RecordAudit(r.Context(), "mfa.enrol_failed", account.ID, ipKey, now.Unix())
 			view, err := s.enrolmentView(r, account, now)
 			if err != nil {
 				http.Error(w, "something went wrong", http.StatusInternalServerError)
@@ -960,6 +977,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
 		codes, hashes, setID, err := newRecoverySet()
 		if err != nil {
 			http.Error(w, "something went wrong", http.StatusInternalServerError)
@@ -993,9 +1011,16 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "something went wrong", http.StatusInternalServerError)
 			return
 		}
-		if err := s.store.ReplaceRecoveryCodes(r.Context(), account.ID, hashes, setID, now.Unix()); err != nil {
+		if err := s.store.ReplaceRecoveryCodes(r.Context(), account.ID, identity.Session.TokenHash, hashes, setID, now.Unix()); err != nil {
 			if errors.Is(err, store.ErrNoAuthenticator) {
 				renderPage("", "Set up an authenticator first.")
+				return
+			}
+			if errors.Is(err, store.ErrInvalidSession) {
+				// The factor was replaced while this request was in flight
+				// and this session no longer speaks for the account.
+				s.clearPasswordCookies(w)
+				http.Redirect(w, r, "/", http.StatusSeeOther)
 				return
 			}
 			logUnlessCancelled("regenerate recovery codes", err)
@@ -1052,6 +1077,13 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "something went wrong", http.StatusInternalServerError)
 		return
 	}
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+	}
 	action := r.URL.Query().Get("action")
 	if action == "" {
 		action = r.FormValue("action")
@@ -1077,11 +1109,6 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
 	if !s.validCSRF(r) {

@@ -260,6 +260,7 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
@@ -775,8 +776,23 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// administrator replaced the password (or disabled the account) in the
 	// meantime, this must not overwrite their change. Their replacement
 	// already revoked this session, so send the user back to sign in.
-	err = s.store.ReplacePasswordIfCurrent(r.Context(), account.ID, account.PasswordHash, encoded, now.Unix())
-	if errors.Is(err, store.ErrCredentialChanged) {
+	// Every session is signed out, this browser's token included (a copied
+	// cookie must not outlive the change), and this browser continues under
+	// a new token that carries its evidence forward: a proven factor stays
+	// proven, so an enrolled account is not bounced to step-up. The CSRF
+	// token rotates with it.
+	rawSession, err := randomSecret(32)
+	if err != nil {
+		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		return
+	}
+	newCSRF, err := randomSecret(32)
+	if err != nil {
+		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		return
+	}
+	err = s.store.ReplacePasswordRotatingSession(r.Context(), account.ID, account.PasswordHash, encoded, identity.Session.TokenHash, hashSecret(rawSession), now.Unix())
+	if errors.Is(err, store.ErrCredentialChanged) || errors.Is(err, store.ErrInvalidSession) {
 		s.clearPasswordCookies(w)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
@@ -786,12 +802,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.renderChangePassword(w, "Something went wrong. Try again.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
-	updated, err := s.store.PasswordAccountByID(r.Context(), identity.Account.ID)
-	if err != nil || s.issuePasswordSession(w, r, updated, now) != nil {
-		s.clearPasswordCookies(w)
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
+	s.setSessionCookies(w, rawSession, newCSRF, identity.Session.AbsoluteExpiresAt)
 	dest := s.resolveReturnTo(r.FormValue("return_to"))
 	if dest == "" {
 		dest = s.defaultDest()
@@ -873,6 +884,11 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		code := "login_required"
 		if identity != nil {
 			code = "interaction_required"
+			if level == store.AssuranceFactorUnverified {
+				// Same as the interactive path: a session whose factor
+				// evidence no longer holds is not worth keeping.
+				s.clearPasswordCookies(w)
+			}
 		}
 		s.redirectAuthorizeError(w, r, redirectURI, state, code)
 		return
@@ -978,8 +994,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	auditRefusal := func(event string) {
 		_, _ = s.store.RecordAuditIfAbsent(r.Context(), event, "", ipRateKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
 	}
+	// RFC 6749 §2.3.1: with client_secret_basic the client is identified by
+	// the Authorization header; a client_id in the body is allowed but must
+	// then agree with it.
 	clientID, clientSecret, ok := r.BasicAuth()
-	if !ok || clientID == "" || clientID != r.FormValue("client_id") {
+	if bodyID := r.FormValue("client_id"); !ok || clientID == "" || (bodyID != "" && bodyID != clientID) {
 		auditRefusal("token.invalid_client")
 		writeInvalidClient(w)
 		return

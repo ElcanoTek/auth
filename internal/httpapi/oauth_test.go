@@ -407,14 +407,54 @@ func TestForcedPasswordChangeReturnsToAuthorization(t *testing.T) {
 	if changed.StatusCode != http.StatusSeeOther || changed.Header.Get("Location") != authorizePath {
 		t.Fatalf("password replacement destination = %d %q", changed.StatusCode, changed.Header.Get("Location"))
 	}
-	var replacementSession *http.Cookie
+	// The browser continues under a rotated token; the pending authorization
+	// completes with it.
+	var rotated *http.Cookie
 	for _, c := range changed.Cookies() {
-		if c.Name == cfg.PasswordCookieName {
-			replacementSession = c
+		if c.Name == cfg.PasswordCookieName && c.Value != "" {
+			rotated = c
 		}
 	}
-	if replacementSession == nil || authorizeCode(t, ts.URL, replacementSession, verifier) == "" {
+	if rotated == nil || rotated.Value == session.Value || authorizeCode(t, ts.URL, rotated, verifier) == "" {
 		t.Fatal("authorization did not resume after forced password replacement")
+	}
+}
+
+// RFC 6749 §2.3.1: with client_secret_basic the body's client_id is optional;
+// when present it must agree with the Authorization header.
+func TestTokenAcceptsBasicAuthWithoutBodyClientID(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	if _, err := st.CreateApplication(t.Context(), testOAuthClientID, "Explorer", testOAuthRedirect, "",
+		hashSecret(testOAuthClientSecret), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := st.PasswordAccountByEmail(t.Context(), "alice@example.com")
+	if _, _, err := st.SetApplicationAccess(t.Context(), a.ID, []string{testOAuthClientID}, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	login, session, _ := passwordLogin(t, ts, cfg, "alice@example.com", plain)
+	_ = login.Body.Close()
+	exchange := func(code string, form url.Values) int {
+		form.Set("grant_type", "authorization_code")
+		form.Set("code", code)
+		form.Set("redirect_uri", testOAuthRedirect)
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(testOAuthClientID, testOAuthClientSecret)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	verifier := strings.Repeat("a", 43)
+	if got := exchange(authorizeCode(t, ts.URL, session, verifier), url.Values{"code_verifier": {verifier}}); got != http.StatusOK {
+		t.Fatalf("exchange without body client_id = %d, want 200", got)
+	}
+	verifier = strings.Repeat("b", 43)
+	if got := exchange(authorizeCode(t, ts.URL, session, verifier), url.Values{"code_verifier": {verifier}, "client_id": {"someone-else"}}); got != http.StatusUnauthorized {
+		t.Fatalf("exchange with a disagreeing body client_id = %d, want 401", got)
 	}
 }
 

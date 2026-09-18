@@ -101,7 +101,7 @@ env_show_redacted() {
       if (eq == 0) { print; next }
       key = substr($0, 1, eq - 1)
       sub(/^[[:space:]]+/, "", key)
-      if (key ~ /TOKEN|KEY|SECRET|PASSWORD|PASSWD/) {
+      if (key ~ /TOKEN|KEY|SECRET|PASS/) {
         printf "%s=[REDACTED]\n", key
       } else {
         print

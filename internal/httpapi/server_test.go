@@ -320,41 +320,51 @@ func TestConcurrentPasswordFailuresCannotRacePastRateLimit(t *testing.T) {
 	}
 }
 
-func TestPasswordChangeRevokesOldSessionAndClearsMustChange(t *testing.T) {
+func TestPasswordChangeRevokesOtherSessionsAndClearsMustChange(t *testing.T) {
 	ts, st, cfg, current := newPasswordTestServer(t, true)
-	login, oldSession, csrf := passwordLogin(t, ts, cfg, "alice@example.com", current)
-	if login.Header.Get("Location") != "/change-password" || oldSession == nil || csrf == nil {
-		t.Fatalf("initial login = location %q session=%v csrf=%v", login.Header.Get("Location"), oldSession, csrf)
+	// A second browser signed in earlier: it must be signed out by the change.
+	other, otherSession, _ := passwordLogin(t, ts, cfg, "alice@example.com", current)
+	_ = other.Body.Close()
+	login, session, csrf := passwordLogin(t, ts, cfg, "alice@example.com", current)
+	if login.Header.Get("Location") != "/change-password" || session == nil || csrf == nil || otherSession == nil {
+		t.Fatalf("initial login = location %q session=%v csrf=%v", login.Header.Get("Location"), session, csrf)
 	}
 	_ = login.Body.Close()
 	const next = "this is the replacement password"
 	changed := postPasswordForm(t, ts.URL+"/change-password", url.Values{
 		"current_password": {current}, "new_password": {next},
 		"confirm_password": {next}, "csrf_token": {csrf.Value},
-	}, oldSession, csrf)
+	}, session, csrf)
 	defer func() { _ = changed.Body.Close() }()
-	var newSession *http.Cookie
+	var rotated *http.Cookie
 	for _, c := range changed.Cookies() {
 		if c.Name == cfg.PasswordCookieName && c.Value != "" {
-			newSession = c
+			rotated = c
 		}
 	}
-	if changed.StatusCode != http.StatusSeeOther || newSession == nil {
-		t.Fatalf("change response = %d location=%q session=%v", changed.StatusCode, changed.Header.Get("Location"), newSession)
+	if changed.StatusCode != http.StatusSeeOther || rotated == nil || rotated.Value == session.Value {
+		t.Fatalf("change response = %d location=%q rotated=%v", changed.StatusCode, changed.Header.Get("Location"), rotated)
+	}
+	otherReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
+	otherReq.AddCookie(otherSession)
+	otherResp, _ := http.DefaultClient.Do(otherReq)
+	_ = otherResp.Body.Close()
+	if otherResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("other session survived password replacement: %d", otherResp.StatusCode)
 	}
 	oldReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
-	oldReq.AddCookie(oldSession)
+	oldReq.AddCookie(session)
 	oldResp, _ := http.DefaultClient.Do(oldReq)
 	_ = oldResp.Body.Close()
 	if oldResp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("old session survived password replacement: %d", oldResp.StatusCode)
+		t.Fatalf("the pre-change token survived the change: %d", oldResp.StatusCode)
 	}
 	newReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/verify", nil)
-	newReq.AddCookie(newSession)
+	newReq.AddCookie(rotated)
 	newResp, _ := http.DefaultClient.Do(newReq)
 	_ = newResp.Body.Close()
 	if newResp.StatusCode != http.StatusOK {
-		t.Fatalf("replacement session invalid: %d", newResp.StatusCode)
+		t.Fatalf("the rotated session is not valid: %d", newResp.StatusCode)
 	}
 	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
 	ok, _, err := passwordauth.Verify(a.PasswordHash, next)
