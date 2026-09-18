@@ -43,8 +43,10 @@ should too.
    a random `state`, a random `nonce`, and an S256 PKCE challenge. The
    authorization response carries `code`, `state` and `iss`. `prompt=none` is
    supported for silent sign-in: a browser with a live central session comes
-   back with a code, one without comes back with `error=login_required`, and
-   an account without access to your application gets `error=access_denied`.
+   back with a code, one without comes back with `error=login_required`, an
+   account that must first change its password (or otherwise needs to
+   interact with Auth) gets `error=interaction_required`, and an account
+   without access to your application gets `error=access_denied`.
 
 3. **Code exchange.** POST the code, `redirect_uri` and `code_verifier` to
    `/token` with `client_secret_basic`. The response carries the standard
@@ -64,7 +66,8 @@ should too.
    - Your logout control revokes your session, clears your cookie, and sends
      the browser to Auth's `GET /logout?client_id=<your id>`. Auth revokes
      every central session of the account, fans a signed back-channel logout
-     out to every registered application, and lands on its login page. Never
+     out to every application with a back-channel endpoint, and lands on its
+     login page. Never
      end only your own session from a user-facing logout: a silent sign-in
      would put the person straight back in.
    - Expose `POST /auth/backchannel-logout`. It receives Auth's `logout+jwt`

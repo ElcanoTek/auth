@@ -6,9 +6,9 @@ Auth v2 is a small, self-hosted identity service for one organization. It
 authenticates people centrally while each application retains its own
 memberships, roles, and host-only sessions.
 
-New installations use email and password. Legacy magic-link deployments
-remain supported through an explicit mode until they are migrated
-separately.
+New deployments choose password mode (`AUTH_LOGIN_MODE=password`). The
+configuration default stays `magic`, so existing magic-link installations are
+unchanged until they are migrated separately.
 
 This document records the design decisions and the delivered shape. The
 operator-facing behaviour is in [`DEPLOY.md`](DEPLOY.md) and the application
@@ -99,7 +99,7 @@ Legacy `domains`, `magic_links`, and `users` tables remain intact.
 3. Issue 256-bit, 60-second, single-use codes bound to client, callback, nonce,
    and PKCE challenge.
 4. Return short-lived standard identity claims (`iss`, `sub`, `aud`, `iat`,
-   `exp`, `nonce`, `auth_time`, `amr`, `acr`, `kid`).
+   `exp`, `nonce`, `auth_time`, `amr`, `acr`), signed with a `kid` header.
 5. Add signing-key overlap and rotation.
 6. Integrate the first application; prove that Auth's cookie and each
    application's cookie are not interchangeable.

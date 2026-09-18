@@ -153,8 +153,8 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	// If they're already signed in, skip the form. Bounce to ?return_to=
 	// or AUTH_DEFAULT_RETURN_TO. The "already logged in" case is common
-	// when an operator clicks the auth URL directly from an existing
-	// chat tab; sending them back to where they came from is sleeker
+	// when an operator clicks the auth URL directly from an application's
+	// tab; sending them back to where they came from is sleeker
 	// than re-asking for an email.
 	if sess := s.currentSession(r); sess != nil {
 		dest := s.resolveReturnTo(r.URL.Query().Get("return_to"))
@@ -857,8 +857,8 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	callbackQuery.Set("code", rawCode)
 	callbackQuery.Set("state", state)
 	// RFC 9207: name the issuer on the response so a client that ever talks
-	// to more than one authorization server can detect a mix-up. Explorer
-	// ignores it today; it costs nothing and the callback signature is
+	// to more than one authorization server can detect a mix-up. Clients may
+	// ignore it; it costs nothing and the callback signature is
 	// forward-compatible.
 	callbackQuery.Set("iss", s.issuerURL())
 	dest.RawQuery = callbackQuery.Encode()
@@ -1297,8 +1297,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 //
 //   - POST with the CSRF token: the form on /account.
 //   - GET /logout?client_id=<registered app>: RP-initiated logout (OpenID
-//     Connect RP-Initiated Logout 1.0, without id_token_hint). Explorer, Lens
-//     and Fleet send the browser here after ending their own session.
+//     Connect RP-Initiated Logout 1.0, without id_token_hint). Applications
+//     send the browser here after ending their own session.
 //
 // Either way every central session of the signed-in account is revoked and a
 // back-channel logout is queued to every registered application in the same

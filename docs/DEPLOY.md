@@ -239,7 +239,8 @@ and keep the old public key published for at least the configured assertion
 lifetime (five minutes by default). Then remove it and restart again.
 Explorer, Lens, and Fleet read the published `/jwks.json` (cached ten minutes,
 refreshed on an unknown `kid`), so no application env edit is needed for a
-rotation; their static `AUTH_SIGNING_PUBKEY` remains as offline fallback.
+rotation. Explorer and Lens keep their static `AUTH_SIGNING_PUBKEY` as an
+offline fallback; Fleet has none (step 6 above).
 
 Back-channel endpoints receive a signed `logout_token` form field. Auth stores
 the event and each delivery before the account mutation commits, leases due
@@ -273,7 +274,8 @@ Signing out at any application means signing out of every application. After
 ending its own session, Explorer, Lens or Fleet sends the browser to
 `GET /logout?client_id=<its registered id>` on the Auth host. Auth revokes
 every central session of that account (all devices), queues the signed
-back-channel logout to every registered application in the same transaction,
+back-channel logout to every registered application with a back-channel
+endpoint in the same transaction,
 clears its cookies and shows its login page with a "signed out" notice. The
 form on `/account` does the same. Scope and timing, stated plainly:
 
@@ -282,9 +284,11 @@ form on `/account` does the same. Scope and timing, stated plainly:
   then every two seconds), and retried for up to seven days if an
   application is down. A sign-in that completed in the same instant as the
   logout can survive for one application session (24 hours).
-- Only central (password-mode) sessions and the application sessions built on
-  them are covered. Legacy stateless magic-link cookies on other devices
-  and Fleet's own password sessions are not.
+- Central (password-mode) sessions and the application sessions built on
+  them are covered. Fleet's own break-glass password sessions end too: Fleet
+  folds a per-user salt, rotated when the back-channel event is honoured,
+  into its password-session epoch. Legacy stateless magic-link cookies on
+  other devices are not covered.
 - Because the request is a plain GET, a hostile page can force a sign-out;
   that costs the user a login, not access, and is accepted in exchange for a
   click-free flow. Any registered client id is honoured (ids are public).
@@ -332,7 +336,8 @@ Tabs:
 - **Page controls.** Top right: the theme toggle and an **×** back to your
   apps. Bottom left: **Sign out**. An administrator's own password is changed
   from their own row: Settings → Reset password → Change, which opens the
-  change-password form (current password required; sessions stay signed in).
+  change-password form (current password required; every other device and
+  application is signed out, this browser stays signed in).
 
 - **One tab per registered application.** Its status with Enable / Disable,
   the registered endpoints, how many accounts have access, **who signs in

@@ -9,8 +9,9 @@ It runs in one of two modes, chosen per deployment:
 - **Password mode** (new deployments). Administrators create accounts; people
   sign in with email and password. Applications integrate through an
   OpenID Connect style authorization-code handoff (`/authorize`, `/token`,
-  discovery, JWKS) and receive a signed back-channel logout when a session
-  ends. A web admin console at `/admin` manages accounts, per-application
+  discovery, JWKS) and, if they register a back-channel endpoint, receive a
+  signed logout when a sign-out, password change or disablement revokes the
+  person's sessions. A web admin console at `/admin` manages accounts, per-application
   access and sign-outs. See
   [`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md) for the
   design.
@@ -52,8 +53,9 @@ client authentication and receives standard identity claims plus an
 EdDSA-signed `id_token`, then mints its own host-only session. The Auth
 cookie is host-only and never shared with an application. Password
 replacement, account disablement and sign-out revoke the central session and
-queue one signed back-channel logout per registered application, delivered by
-a retrying worker.
+queue one signed back-channel logout per application that registered a
+back-channel endpoint, delivered by a retrying worker. Passive expiry sends
+nothing.
 
 **Magic-link mode.** Auth emails a one-time link signed with its Ed25519 key.
 Clicking it sets a signed cookie on `AUTH_COOKIE_DOMAIN`, so it rides to every
@@ -245,7 +247,8 @@ the public key; `internal/token/token.go` is the Go reference.
 **Password mode.** The central session is an opaque 256-bit token stored only
 as its SHA-256 hash; the browser holds it in a host-only cookie. Identity
 reaches an application as an EdDSA-signed `id_token` (standard claims: `iss`,
-`sub`, `aud`, `iat`, `exp`, `nonce`, `auth_time`, `amr`, `acr`, `kid`) and
+`sub`, `aud`, `iat`, `exp`, `nonce`, `auth_time`, `amr`, `acr`; the JOSE
+header's `kid` names the signing key) and
 sign-outs arrive as signed `logout+jwt` back-channel tokens, both verifiable
 against `/jwks.json`.
 
