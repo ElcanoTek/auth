@@ -2,9 +2,8 @@
 //
 // We use modernc.org/sqlite (pure-Go, no CGO) so the binary stays a
 // single self-contained drop-in — no system sqlite3 install required
-// on the deploy host. Chat uses Postgres because it has heavy multi-
-// connection workloads (per-turn agent state, SSE) and a Postgres
-// dependency is cheap on a box that already has one. This service has
+// on the deploy host. Postgres would suit a service with heavy multi-
+// connection workloads (per-turn agent state, SSE). This service has
 // neither — a single small file is the right primitive.
 //
 // Legacy schema:
@@ -1340,7 +1339,7 @@ func (s *Store) RevokeAllAuthSessions(ctx context.Context, userID string, now in
 // RevokeAllAuthSessionsByToken is the user-facing logout: the presented
 // session must be live (a stale or forged cookie cannot force other devices
 // out), and then every session of its account is revoked and the back-channel
-// logout is queued to every application, all in one transaction. It returns
+// logout is queued to every application with a receiver, all in one transaction. It returns
 // the account id, or "" when the token named no live session. A database
 // error is returned so the caller can fail closed.
 func (s *Store) RevokeAllAuthSessionsByToken(ctx context.Context, tokenHash string, now int64, reason string) (string, error) {

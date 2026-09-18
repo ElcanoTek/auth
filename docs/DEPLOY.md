@@ -1,7 +1,7 @@
-# Deploying Elcano Auth on a fresh Fedora box
+# Deploying Auth on a fresh Fedora box
 
-This is the **central login service** for the Elcano microservice
-stack. The deploy model assumes:
+This is the **central login service** for a set of applications. The deploy
+model assumes:
 
 - One Fedora server (tested on **Fedora 39+**; should work on RHEL /
   AlmaLinux 9+).
@@ -27,11 +27,11 @@ sudo bash /opt/auth-src/scripts/bootstrap.sh
 
 `bootstrap.sh` is interactive by default. It asks for:
 
-1. **Hostname** — `auth.elcanotek.com` for prod, or `localhost` for dev.
-2. **Login mode** — `password` for a new client deployment or `magic` for the
-   existing Elcano deployment.
+1. **Hostname** — `auth.example.com` for prod, or `localhost` for dev.
+2. **Login mode** — `password` for a new deployment or `magic` for a legacy
+   shared-cookie stack.
 3. In magic mode, **cookie domain** — auto-guessed from the hostname (e.g.
-   `auth.elcanotek.com` → `elcanotek.com`). The cookie will ride to
+   `auth.example.com` → `example.com`). The cookie will ride to
    every subdomain of this. Just confirm.
 4. In magic mode, **email driver** — `sendgrid` (recommended), `smtp`, or `stdout`
    (dev only — prints the magic link to the journal). For SendGrid,
@@ -54,16 +54,16 @@ Every prompt honors an `AUTH_BOOTSTRAP_*` env var. Set
 ```bash
 sudo env \
   AUTH_BOOTSTRAP_NON_INTERACTIVE=1 \
-  AUTH_BOOTSTRAP_HOSTNAME="auth.elcanotek.com" \
+  AUTH_BOOTSTRAP_HOSTNAME="auth.example.com" \
   AUTH_BOOTSTRAP_LOGIN_MODE="magic" \
-  AUTH_BOOTSTRAP_COOKIE_DOMAIN="elcanotek.com" \
-  AUTH_BOOTSTRAP_ALLOWED_DOMAINS="elcanotek.com,clientco.com" \
+  AUTH_BOOTSTRAP_COOKIE_DOMAIN="example.com" \
+  AUTH_BOOTSTRAP_ALLOWED_DOMAINS="example.com,partner.example" \
   AUTH_BOOTSTRAP_EMAIL_DRIVER="sendgrid" \
-  AUTH_BOOTSTRAP_EMAIL_FROM="Sign in <login@elcanotek.com>" \
+  AUTH_BOOTSTRAP_EMAIL_FROM="Sign in <login@example.com>" \
   AUTH_BOOTSTRAP_SENDGRID_API_KEY="SG.xxx" \
   AUTH_BOOTSTRAP_SETUP_CADDY=y \
   AUTH_BOOTSTRAP_USE_LETSENCRYPT=y \
-  AUTH_BOOTSTRAP_LE_EMAIL="ops@elcanotek.com" \
+  AUTH_BOOTSTRAP_LE_EMAIL="ops@example.com" \
   bash /opt/auth-src/scripts/bootstrap.sh
 ```
 
@@ -100,8 +100,7 @@ bootstrap derives and prints the matching public key either way.
 
 ## Why not containers?
 
-Same reasoning as chat: one tiny service, sqlite file, systemd +
-journalctl. Containers buy reproducibility + isolation at the cost
+One tiny service, a SQLite file, systemd and journalctl. Containers buy reproducibility + isolation at the cost
 of image builds + registries + extra mental overhead. For a service
 this small, the cost doesn't pay off.
 
@@ -173,10 +172,9 @@ one edit; nothing here is optional for the first sign-in to work.
    central mode without a valid public key. Fleet's OIDC client reads
    `FLEET_OIDC_ISSUER`, `FLEET_OIDC_CLIENT_ID`, and `FLEET_OIDC_CLIENT_SECRET`;
    **leave `AUTH_SIGNING_PUBKEY` unset on Fleet.** On Fleet that variable
-   also switches on the legacy "Use Elcano email" magic-link button, which
-   password-mode Auth cannot complete (it never mints the shared
-   `elcano_auth` cookie), so users would see a second sign-in button that
-   dead-ends. Fleet verifies back-channel logout tokens from Auth's
+   also switches on Fleet's legacy magic-link button, which password-mode
+   Auth cannot complete (it never mints the shared magic-link cookie), so
+   users would see a second sign-in button that dead-ends. Fleet verifies back-channel logout tokens from Auth's
    `/jwks.json` alone, so the only cost is that Fleet must be able to reach
    the Auth host when a logout arrives (Auth retries failed deliveries for
    seven days).
@@ -241,7 +239,8 @@ and keep the old public key published for at least the configured assertion
 lifetime (five minutes by default). Then remove it and restart again.
 Explorer, Lens, and Fleet read the published `/jwks.json` (cached ten minutes,
 refreshed on an unknown `kid`), so no application env edit is needed for a
-rotation; their static `AUTH_SIGNING_PUBKEY` remains as offline fallback.
+rotation. Explorer and Lens keep their static `AUTH_SIGNING_PUBKEY` as an
+offline fallback; Fleet has none (step 6 above).
 
 Back-channel endpoints receive a signed `logout_token` form field. Auth stores
 the event and each delivery before the account mutation commits, leases due
@@ -275,7 +274,8 @@ Signing out at any application means signing out of every application. After
 ending its own session, Explorer, Lens or Fleet sends the browser to
 `GET /logout?client_id=<its registered id>` on the Auth host. Auth revokes
 every central session of that account (all devices), queues the signed
-back-channel logout to every registered application in the same transaction,
+back-channel logout to every registered application with a back-channel
+endpoint in the same transaction,
 clears its cookies and shows its login page with a "signed out" notice. The
 form on `/account` does the same. Scope and timing, stated plainly:
 
@@ -284,9 +284,11 @@ form on `/account` does the same. Scope and timing, stated plainly:
   then every two seconds), and retried for up to seven days if an
   application is down. A sign-in that completed in the same instant as the
   logout can survive for one application session (24 hours).
-- Only central (password-mode) sessions and the application sessions built on
-  them are covered. Legacy stateless `elcano_auth` cookies on other devices
-  and Fleet's own password sessions are not.
+- Central (password-mode) sessions and the application sessions built on
+  them are covered. Fleet's own break-glass password sessions end too: Fleet
+  folds a per-user salt, rotated when the back-channel event is honoured,
+  into its password-session epoch. Legacy stateless magic-link cookies on
+  other devices are not covered.
 - Because the request is a plain GET, a hostile page can force a sign-out;
   that costs the user a login, not access, and is accepted in exchange for a
   click-free flow. Any registered client id is honoured (ids are public).
@@ -296,8 +298,8 @@ form on `/account` does the same. Scope and timing, stated plainly:
 `https://auth.<client>/admin` is the web console for administrators: accounts
 whose flag was set with `auth user admin <email> on` (or "Make admin" in the
 console itself). Everyone else gets a 404 there, and the Admin tile on their
-signed-in page stays greyed. Magic-mode deployments (Elcano's own
-auth.elcanotek.com) have no accounts, applications or administrators, so the
+signed-in page stays greyed. Magic-mode deployments have no accounts,
+applications or administrators, so the
 route does not exist for them at all.
 
 Tabs:
@@ -320,7 +322,8 @@ Tabs:
   Admin pill. Administrators
   cannot reset, disable or demote themselves from a row (their own row's
   Settings links to the change-password form instead, which signs out every
-  other device and app while this browser stays signed in, and its Sign out
+  other device and every application with a back-channel receiver while this
+  browser stays signed in, and its Sign out
   everywhere ends their own session too, returning them to the sign-in page),
   and the
   last enabled administrator can never be demoted or disabled, from the
@@ -334,7 +337,9 @@ Tabs:
 - **Page controls.** Top right: the theme toggle and an **×** back to your
   apps. Bottom left: **Sign out**. An administrator's own password is changed
   from their own row: Settings → Reset password → Change, which opens the
-  change-password form (current password required; sessions stay signed in).
+  change-password form (current password required; every other device and
+  every application with a back-channel receiver is signed out, this browser
+  stays signed in).
 
 - **One tab per registered application.** Its status with Enable / Disable,
   the registered endpoints, how many accounts have access, **who signs in
@@ -675,10 +680,18 @@ it, you ran `bootstrap.sh` and said yes to "Set up Caddy with Let's
 Encrypt?". You're done. Caddy fetches a cert in 15-30s and
 auto-renews forever.
 
-The TLS section in chat's [DEPLOY.md](../../chat/docs/DEPLOY.md) covers
-the corner cases (NAT, `tls internal`, DNS-01) identically — there's
-nothing auth-specific in that flow. Read that section, treat `chat`
-and `auth` as interchangeable subjects.
+Corner cases:
+
+- **Behind NAT or a firewall.** Let's Encrypt's HTTP-01 challenge needs
+  port 80 reachable from the internet. Forward 80 and 443 to the box, or use
+  the DNS-01 challenge with a Caddy build that includes your DNS provider's
+  module.
+- **Internal-only host.** Use `tls internal` in the site block: Caddy issues
+  a certificate from its own local CA. Install that CA on the machines that
+  will reach the host, or accept the browser warning.
+- **Certificate never arrives.** `journalctl -u caddy -n 100` shows the ACME
+  error; the usual causes are an A record that does not yet point at this
+  box, port 80 blocked, or a rate limit after repeated failed attempts.
 
 ### Coexisting with other services
 
@@ -691,18 +704,18 @@ live on different domains/subdomains. Caddy allows multiple top-level
 blocks; concatenate them:
 
 ```caddy
-auth.elcanotek.com { ... }      # block from /opt/auth/deploy/Caddyfile
-chat.elcanotek.com { ... }      # block from chat's Caddyfile
+auth.example.com { ... }      # block from /opt/auth/deploy/Caddyfile
+app.example.com { ... }       # block from the other service's Caddyfile
 ```
 
-**Option B — same host shared box.** auth + chat on `/auth`-prefixed
+**Option B — same host shared box.** auth + another service on `/auth`-prefixed
 paths of the same host. We don't currently support this without a
 small code change to `internal/httpapi/server.go` to mount routes at
 a path prefix; file an issue if you need it.
 
 ## Handing the public key to a verifier
 
-When you wire up a verifying service (home, chat, …) you need the current
+When you wire up a verifying service you need the current
 `AUTH_SIGNING_PUBKEY`. To print it without rotating anything:
 
 ```bash
@@ -723,7 +736,7 @@ auth keygen                       # prints AUTH_SIGNING_KEY + AUTH_SIGNING_PUBKE
 # Put the new private seed on the auth host:
 sudo sed -i "s|^AUTH_SIGNING_KEY=.*|AUTH_SIGNING_KEY=\"<new seed>\"|" /opt/auth/.env.local
 auth restart
-# Then update AUTH_SIGNING_PUBKEY on EVERY verifying service (home, chat, …)
+# Then update AUTH_SIGNING_PUBKEY on EVERY verifying service
 # to the new public key and restart each. Until you do, those services
 # reject all cookies (they verify against the old public key).
 
@@ -803,8 +816,8 @@ check:
 
 1. **Cookie domain.** Run `auth env show | grep COOKIE_DOMAIN`. The
    value must be the parent of every host you want to share the cookie
-   with. For `auth.elcanotek.com` + `chat.elcanotek.com`, set
-   `elcanotek.com` (not `auth.elcanotek.com`).
+   with. For `auth.example.com` + `app.example.com`, set
+   `example.com` (not `auth.example.com`).
 2. **`Secure` flag.** If `AUTH_COOKIE_SECURE="true"` (the default),
    the cookie only rides on HTTPS. A downstream service running on
    plain HTTP won't see it.
@@ -813,7 +826,7 @@ check:
    `copy_headers X-User-Email X-User-Tenant`. See
    [docs/INTEGRATION.md](INTEGRATION.md) for the exact snippet.
 4. **Native verifiers (Pattern B).** A service that verifies the cookie
-   itself (e.g. home) needs `AUTH_SIGNING_PUBKEY` set to the auth host's
+   itself needs `AUTH_SIGNING_PUBKEY` set to the auth host's
    current public key. If it's unset, malformed, or stale after a key
    rotation, that service rejects every cookie and bounces to login.
    Reprint the current public key with `auth pubkey` and update the
@@ -830,8 +843,7 @@ authoritative identity. Make sure your app code reads
 
 ### Caddy won't fetch a cert
 
-Same diagnosis as chat. `journalctl -u caddy -n 100` to see the
-ACME error. For internal-only hosts, switch to `tls internal`.
+`journalctl -u caddy -n 100` shows the ACME error. For internal-only hosts, switch to `tls internal`.
 
 ## Uninstall
 

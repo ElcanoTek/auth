@@ -153,8 +153,8 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	// If they're already signed in, skip the form. Bounce to ?return_to=
 	// or AUTH_DEFAULT_RETURN_TO. The "already logged in" case is common
-	// when an operator clicks the auth URL directly from an existing
-	// chat tab; sending them back to where they came from is sleeker
+	// when an operator clicks the auth URL directly from an application's
+	// tab; sending them back to where they came from is sleeker
 	// than re-asking for an email.
 	if sess := s.currentSession(r); sess != nil {
 		dest := s.resolveReturnTo(r.URL.Query().Get("return_to"))
@@ -857,8 +857,8 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	callbackQuery.Set("code", rawCode)
 	callbackQuery.Set("state", state)
 	// RFC 9207: name the issuer on the response so a client that ever talks
-	// to more than one authorization server can detect a mix-up. Explorer
-	// ignores it today; it costs nothing and the callback signature is
+	// to more than one authorization server can detect a mix-up. Clients may
+	// ignore it; it costs nothing and the callback signature is
 	// forward-compatible.
 	callbackQuery.Set("iss", s.issuerURL())
 	dest.RawQuery = callbackQuery.Encode()
@@ -1292,19 +1292,21 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// handlePasswordLogout is "sign out of every Elcano app". Two entry points
+// handlePasswordLogout is "sign out of every application". Two entry points
 // share it:
 //
 //   - POST with the CSRF token: the form on /account.
 //   - GET /logout?client_id=<registered app>: RP-initiated logout (OpenID
-//     Connect RP-Initiated Logout 1.0, without id_token_hint). Explorer, Lens
-//     and Fleet send the browser here after ending their own session.
+//     Connect RP-Initiated Logout 1.0, without id_token_hint). Applications
+//     send the browser here after ending their own session.
 //
 // Either way every central session of the signed-in account is revoked and a
-// back-channel logout is queued to every registered application in the same
-// transaction (RevokeAllAuthSessions), so an application session cannot
-// outlive the logout and an application that signs in silently (prompt=none)
-// cannot sign the user straight back in. The browser lands on this host's
+// back-channel logout is queued, in the same transaction
+// (RevokeAllAuthSessions), to every application that registered a receiver.
+// Delivery is asynchronous and retried for up to seven days, so application
+// sessions normally end within seconds of the receiver accepting the event
+// (an application that is down catches up later), and an application that
+// signs in silently (prompt=none) cannot sign the user straight back in. The browser lands on this host's
 // login page with a notice.
 //
 // The GET form can be triggered by a hostile page navigating the browser
@@ -1533,8 +1535,8 @@ func (s *Server) currentPasswordSession(r *http.Request) *passwordIdentity {
 // timeout therefore behaves as "idle limit minus at most one interval", never
 // longer, and a burst of requests from one page load costs one write.
 //
-// Convention for every Elcano service that keeps its own sessions (Auth,
-// Explorer, Lens, and anything built later): one minute. It is short enough
+// Convention for every service that keeps its own sessions after the central
+// handoff (Auth and every application built so far): one minute. It is short enough
 // that the stated idle limit stays accurate to the minute, and long enough to
 // collapse a page's burst of requests into a single write. Do not make it
 // configurable; it is a property of the storage pattern, not a policy knob.
@@ -1695,7 +1697,7 @@ func (s *Server) resolveReturnTo(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.User != nil {
 		// Userinfo ("https://allowed.example.com@evil.com/") only exists to
-		// confuse allowlists; no Elcano service is addressed that way.
+		// confuse allowlists; no legitimate application is addressed that way.
 		return ""
 	}
 	if u.Scheme != "https" && u.Scheme != "http" {

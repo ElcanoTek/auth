@@ -5,10 +5,8 @@
 //     users' login links. Default so a fresh install proves
 //     the click-through flow before the operator picks a
 //     real provider.
-//   - sendgrid: POST to api.sendgrid.com/v3/mail/send. Same provider
-//     the rest of the Elcano stack uses (chat-server's
-//     SendGrid MCP) — one account, one verified sender,
-//     same per-tenant audit trail.
+//   - sendgrid: POST to api.sendgrid.com/v3/mail/send. One account and
+//     one verified sender can serve every service in a stack.
 //   - smtp:     STARTTLS to host:port. The escape hatch for shops that
 //     have an existing relay (corporate / regulated envs).
 //
@@ -49,8 +47,7 @@ func (Stdout) Send(_ context.Context, to, subject, textBody, _ string) error {
 
 // SendGrid POSTs to api.sendgrid.com/v3/mail/send. From must be a
 // verified sender on the operator's SendGrid account; the API key is
-// per-account. This is the same provider chat-server's email MCP uses,
-// so a single SendGrid account covers the whole Elcano stack.
+// per-account.
 type SendGrid struct {
 	APIKey string
 	From   string // "Name <addr@domain>" or just "addr@domain"
@@ -180,7 +177,7 @@ func (s *SMTP) Send(ctx context.Context, to, subject, textBody, htmlBody string)
 	}
 
 	// MAIL FROM uses just the address part, even if the From header
-	// includes a display name ("Elcano <login@…>"). RCPT TO likewise.
+	// includes a display name ("Sign in <login@…>"). RCPT TO likewise.
 	if err := c.Mail(addressOnly(s.From)); err != nil {
 		return fmt.Errorf("mail from: %w", err)
 	}

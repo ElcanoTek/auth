@@ -2,8 +2,8 @@
 # Weekly version + security updates, all bundled into one PR per ecosystem.
 # Tests gate the merge — review the consolidated diff, don't read every changelog.
 #
-# auth has no `dev` branch (unlike chat/cutlass/gig/moc), so updates target
-# the default branch (main) — no target-branch override.
+# auth has no `dev` branch, so updates target the default branch (main) —
+# no target-branch override.
 version: 2
 updates:
   - package-ecosystem: gomod

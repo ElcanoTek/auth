@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/lib/envfile.sh — shared helpers for reading/writing KEY=VALUE
-# env files. Sourced by deploy/chat-cli so the quoting rules live in
-# one place. Ported from sister project gig.
+# env files. Sourced by deploy/auth-cli so the quoting rules live in
+# one place.
 #
 # Values are always written as:  KEY="value"
 # with \ and " inside the value escaped. Reads accept either unquoted,

@@ -24,9 +24,12 @@ profile.cov
 go.work
 go.work.sum
 
-# env files (.env.local holds the signing key + SendGrid key)
+# env files (.env.local holds the signing key + SendGrid key), and any
+# backup or variant of them
 .env
 .env.local
+.env.local.*
+*.bak
 
 # Local SQLite state (dev data dir — holds login records + magic nonces)
 /.localdata/

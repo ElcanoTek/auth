@@ -1,14 +1,18 @@
-# Elcano Auth v2 implementation plan
+# Auth v2 design: password mode
 
 ## Outcome
 
-Elcano Auth v2 is a small, self-hosted identity service for one client
-organization. It authenticates people centrally while Explorer, Lens, Pages,
-and Fleet retain their own memberships, roles, and host-only sessions.
+Auth v2 is a small, self-hosted identity service for one organization. It
+authenticates people centrally while each application retains its own
+memberships, roles, and host-only sessions.
 
-New installations use email and password. The existing Elcano magic-link
-deployment remains supported through an explicit legacy mode until it is
-migrated separately.
+New deployments choose password mode (`AUTH_LOGIN_MODE=password`). The
+configuration default stays `magic`, so existing magic-link installations are
+unchanged until they are migrated separately.
+
+This document records the design decisions and the delivered shape. The
+operator-facing behaviour is in [`DEPLOY.md`](DEPLOY.md) and the application
+contract in [`INTEGRATION.md`](INTEGRATION.md).
 
 ## Locked decisions
 
@@ -17,8 +21,10 @@ migrated separately.
 - Email is the only login identifier; an immutable random ID is the identity.
 - Admin-created accounts only; no public registration.
 - Admin-assisted password replacement; no public reset endpoint in v1.
-- Argon2id password hashes, minimum 15 and maximum 128 Unicode characters.
-- No composition rules or periodic password expiration.
+- Argon2id password hashes, minimum 12 and maximum 128 Unicode characters.
+- No composition rules or periodic password expiration; a blocklist of common
+  passwords and of words derived from the deployment (email, brand, hostname,
+  operator-supplied terms) instead.
 - Opaque 256-bit sessions; only SHA-256 token hashes are stored.
 - 30-day absolute and 7-day idle limits on the central session; one-day
   absolute and 12-hour idle limits on each application session.
@@ -28,8 +34,8 @@ migrated separately.
 - MFA/2FA, passkeys, recovery codes, SMS/email challenges, and upstream Google
   or Microsoft identities are not enabled in v1, but the account model and
   authentication transaction boundary must accommodate them.
-- Fleet keeps its independent password login. Central Auth is an additional
-  Fleet login path, never a replacement requirement.
+- An application may keep an independent break-glass login of its own.
+  Central Auth is an additional login path, never a replacement requirement.
 
 ## Security boundaries
 
@@ -93,10 +99,10 @@ Legacy `domains`, `magic_links`, and `users` tables remain intact.
 3. Issue 256-bit, 60-second, single-use codes bound to client, callback, nonce,
    and PKCE challenge.
 4. Return short-lived standard identity claims (`iss`, `sub`, `aud`, `iat`,
-   `exp`, `nonce`, `auth_time`, `amr`, `acr`, `kid`).
+   `exp`, `nonce`, `auth_time`, `amr`, `acr`), signed with a `kid` header.
 5. Add signing-key overlap and rotation.
-6. Integrate Explorer first; prove Auth, Explorer, and Lens cookies are not
-   interchangeable.
+6. Integrate the first application; prove that Auth's cookie and each
+   application's cookie are not interchangeable.
 
 The Auth-side protocol and operator tooling in steps 1-5 are implemented here.
 The authorization response carries `iss` alongside `code` and `state`
@@ -110,8 +116,8 @@ resource server, so nothing could verify one, and a credential nothing checks
 is a footgun rather than conformance. Add it back only when an API exists that
 a client should call as the signed-in user, with stored hash, scopes, expiry,
 and an introspection or audience-bound JWT for that API (see the comment in
-`handleToken`); Explorer and Lens integrations are maintained in their
-own repositories, while Fleet uses the OIDC response. The Auth session,
+`handleToken`). Each application's integration is maintained in its own
+repository. The Auth session,
 authorization code, and application session remain three separate credentials
 with distinct host and cookie boundaries.
 
@@ -120,7 +126,7 @@ with distinct host and cookie boundaries.
 1. Add durable, signed, idempotent back-channel logout events.
 2. Revoke application sessions on central disable, password replacement, or
    sign-out-everywhere.
-3. Integrate Lens and Fleet OIDC. Pages is explicitly outside this phase.
+3. Integrate the remaining applications.
 
 ### Application session conventions
 
@@ -138,20 +144,20 @@ the same shape, and any future service should too:
   re-check with Auth that the account is still enabled. The central session
   is the one that costs a password prompt, so it is the long one (30-day
   absolute, 7-day idle; `AUTH_PASSWORD_ABSOLUTE_HOURS`,
-  `AUTH_PASSWORD_IDLE_MINUTES`). Owner decision, 2026-09-15.
+  `AUTH_PASSWORD_IDLE_MINUTES`).
 - **Touch interval one minute.** A request only writes `last_seen_at` and
   `idle_expires_at` when the previous touch is more than a minute old. The
   idle limit then behaves as "12 hours minus at most one minute", never
   longer, and a page's burst of requests costs one write instead of one per
   request. Keep it a constant, not a setting; it is a storage pattern, not a
-  policy. Auth, Explorer, and Lens all use one minute.
+  policy. Every application built so far uses one minute.
 - Local access decision (an email allowlist or membership table) applied at
   login; revoking access ends that email's sessions in the same transaction.
-- Logout is "sign out of every Elcano app": the application revokes its own
+- Logout is "sign out of every application": the application revokes its own
   session, clears its cookie, and redirects the browser to Auth's
   `GET /logout?client_id=<its id>`. Auth revokes every central session of
-  the account, fans the back-channel logout out to every application, and
-  lands on its login page. An application never ends only its own session
+  the account, fans the back-channel logout out to every application that
+  registered a receiver, and lands on its login page. An application never ends only its own session
   from a user-facing logout, because a silent SSO start would sign the user
   straight back in.
 - A `POST /auth/backchannel-logout` receiver that verifies Auth's signed
@@ -165,9 +171,18 @@ the same shape, and any future service should too:
   rotation is a one-sided change on Auth. The static key is the bootstrap and
   offline fallback, never the only source.
 
+### Delivered since
+
+- Web administration console at `/admin`, backed by the same store as the
+  CLI: accounts, per-application access, administrator flag, team tags,
+  password resets, sign-out everywhere, application status.
+- Per-application access enforced at `/authorize` and at code issue and
+  exchange.
+- Branding from a client bundle (`AUTH_CLIENT_CONFIG_DIR`).
+- `prompt=none` silent sign-in and RP-initiated `GET /logout?client_id`.
+
 ### Later
 
-- Web administration UI backed by the same service layer as the CLI.
 - TOTP and WebAuthn/passkey 2FA, hashed recovery codes, factor reset auditing,
   and step-up policies.
 - Pluggable email/SMS delivery and optional upstream Google/Microsoft OIDC.

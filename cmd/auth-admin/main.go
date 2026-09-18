@@ -10,8 +10,8 @@
 //	auth-admin user list|del
 //	auth-admin audit list [email] [limit]
 //
-// Reads AUTH_DATA_DIR from the env (chat-cli source's .env.local
-// before invoking us, same as chat). Talks to the same SQLite file the
+// Reads AUTH_DATA_DIR from the env (the `auth` wrapper sources .env.local
+// before invoking us). Talks to the same SQLite file the
 // running auth-server reads — SQLite's WAL mode handles concurrent
 // access fine.
 package main
@@ -115,7 +115,7 @@ The 'auth' shell wrapper sources .env.local before calling us.`)
 // keygenCmd prints a fresh Ed25519 keypair as ready-to-paste env lines.
 // The private seed (AUTH_SIGNING_KEY) goes in the auth host's .env.local
 // and nowhere else; the public key (AUTH_SIGNING_PUBKEY) is handed to
-// every verifying service (home, chat, …). Because verification only needs
+// every verifying service. Because verification only needs
 // the public key, distributing it can never enable token forgery.
 func keygenCmd() {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -126,7 +126,7 @@ func keygenCmd() {
 	fmt.Println("# Ed25519 signing keypair for the Elcano auth service.")
 	fmt.Println("# PRIVATE — auth host only (auth/.env.local). Never copy it anywhere else.")
 	fmt.Printf("AUTH_SIGNING_KEY=%s\n", base64.StdEncoding.EncodeToString(priv.Seed()))
-	fmt.Println("# PUBLIC — distribute to every verifying service (home, chat, …). Safe to share.")
+	fmt.Println("# PUBLIC — distribute to every verifying service. Safe to share.")
 	fmt.Printf("AUTH_SIGNING_PUBKEY=%s\n", base64.StdEncoding.EncodeToString(pub))
 }
 
@@ -134,7 +134,7 @@ func keygenCmd() {
 // value) into the matching base64 public key. It mirrors how config.Load
 // parses the seed and how keygen encodes the pair, so the output is
 // byte-identical to what bootstrap printed and what verifying services
-// (home/chat/…) expect in AUTH_SIGNING_PUBKEY.
+// expect in AUTH_SIGNING_PUBKEY.
 func derivePublicKey(seedB64 string) (string, error) {
 	seed, err := base64.StdEncoding.DecodeString(strings.TrimSpace(seedB64))
 	if err != nil {

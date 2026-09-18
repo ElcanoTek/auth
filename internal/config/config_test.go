@@ -56,12 +56,12 @@ func TestDefaultReturnToLanding(t *testing.T) {
 	t.Run("derives home.<cookie-domain>", func(t *testing.T) {
 		clearAllAuthEnv(t)
 		t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
-		t.Setenv("AUTH_COOKIE_DOMAIN", "elcanotek.com")
+		t.Setenv("AUTH_COOKIE_DOMAIN", "example.com")
 		cfg, err := Load("")
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if got, want := cfg.DefaultReturnTo, "https://home.elcanotek.com"; got != want {
+		if got, want := cfg.DefaultReturnTo, "https://home.example.com"; got != want {
 			t.Errorf("DefaultReturnTo = %q, want %q", got, want)
 		}
 	})
@@ -70,13 +70,13 @@ func TestDefaultReturnToLanding(t *testing.T) {
 	t.Run("explicit value wins", func(t *testing.T) {
 		clearAllAuthEnv(t)
 		t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
-		t.Setenv("AUTH_COOKIE_DOMAIN", "elcanotek.com")
-		t.Setenv("AUTH_DEFAULT_RETURN_TO", "https://lens.elcanotek.com/")
+		t.Setenv("AUTH_COOKIE_DOMAIN", "example.com")
+		t.Setenv("AUTH_DEFAULT_RETURN_TO", "https://lens.example.com/")
 		cfg, err := Load("")
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if got, want := cfg.DefaultReturnTo, "https://lens.elcanotek.com/"; got != want {
+		if got, want := cfg.DefaultReturnTo, "https://lens.example.com/"; got != want {
 			t.Errorf("DefaultReturnTo = %q, want %q", got, want)
 		}
 	})
@@ -315,13 +315,13 @@ func TestLoadDefaultReturnToHostsFromCookieDomain(t *testing.T) {
 	// gets sane subdomain-wide allowlisting for free.
 	clearAllAuthEnv(t)
 	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
-	t.Setenv("AUTH_COOKIE_DOMAIN", "elcanotek.com")
+	t.Setenv("AUTH_COOKIE_DOMAIN", "example.com")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(cfg.ReturnToHosts) != 1 || cfg.ReturnToHosts[0] != ".elcanotek.com" {
-		t.Errorf("ReturnToHosts = %v, want [.elcanotek.com]", cfg.ReturnToHosts)
+	if len(cfg.ReturnToHosts) != 1 || cfg.ReturnToHosts[0] != ".example.com" {
+		t.Errorf("ReturnToHosts = %v, want [.example.com]", cfg.ReturnToHosts)
 	}
 }
 

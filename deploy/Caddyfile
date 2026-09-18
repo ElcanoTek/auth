@@ -1,7 +1,6 @@
 # Sample Caddyfile for auth-server.
 #
-# Caddy handles automatic TLS via Let's Encrypt — the same shape every
-# other Elcano service ships. Replace auth.example.com with your real
+# Caddy handles automatic TLS via Let's Encrypt. Replace auth.example.com with your real
 # host. bootstrap.sh fills in your hostname + (optionally) an ACME
 # contact email below.
 #
@@ -16,8 +15,8 @@
 #    at https://auth.example.com/verify. That endpoint reads the shared
 #    elcano_auth cookie and returns 200 + X-User-Email /
 #    X-User-Tenant headers (or 401). See the snippet at the bottom for
-#    how a downstream Caddyfile uses it. (Scoped services like chat/moc
-#    verify the cookie in-app instead — see docs/INTEGRATION.md.)
+#    how a downstream Caddyfile uses it. (Services that keep their own
+#    membership list verify the cookie in-app instead — see docs/INTEGRATION.md.)
 #
 # Renewals: Caddy auto-renews ~30 days before expiry. No cron needed.
 
@@ -62,7 +61,7 @@ auth.example.com {
 #     reverse_proxy 127.0.0.1:8000   # the app's local port
 # }
 #
-# Note: the cookie set by auth-server has Domain=elcanotek.com (or
+# Note: the cookie set by auth-server has Domain=example.com (or
 # whatever AUTH_COOKIE_DOMAIN is configured to), so it rides along on
 # every subdomain request automatically. forward_auth just confirms
 # it's valid and hands the email/tenant headers to the upstream.
