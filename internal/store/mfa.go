@@ -436,6 +436,34 @@ func (s *Store) ActivateAuthenticator(ctx context.Context, pendingID, userID str
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if completion != nil {
+		// Before any factor state changes, the login transaction must still
+		// describe this account as it is now: enabled, no forced password
+		// change pending, the same credential and the same (pre-bump)
+		// security version it was opened under. A password reset or factor
+		// mutation since the password step makes the browser's pending
+		// enrolment void, and the pending row stays pending.
+		var txCredential, credential string
+		var txVersion, version int64
+		var disabled sql.NullInt64
+		var mustChange int
+		err := tx.QueryRowContext(ctx, `
+			SELECT t.credential_hash, t.security_version, p.password_hash, a.security_version, a.disabled_at, a.must_change_password
+			FROM authentication_transactions t
+			JOIN accounts a ON a.id = t.user_id
+			JOIN password_credentials p ON p.user_id = a.id
+			WHERE t.id = ? AND t.user_id = ? AND t.stage = ? AND t.consumed_at IS NULL AND t.expires_at > ?`,
+			completion.TransactionID, userID, completion.Stage, now).Scan(&txCredential, &txVersion, &credential, &version, &disabled, &mustChange)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrTransactionNotFound
+		}
+		if err != nil {
+			return 0, err
+		}
+		if disabled.Valid || mustChange != 0 || credential != txCredential || version != txVersion {
+			return 0, ErrStaleTransaction
+		}
+	}
 	var previous int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM authenticators WHERE user_id = ? AND kind = 'totp' AND verified_at IS NOT NULL AND disabled_at IS NULL`, userID).Scan(&previous); err != nil {
 		return 0, err

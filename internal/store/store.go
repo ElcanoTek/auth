@@ -1259,8 +1259,8 @@ func (s *Store) CreateAuthSession(ctx context.Context, tokenHash, userID, verifi
 		return errors.New("invalid session parameters")
 	}
 	// Password-only evidence, issued under the account's current security
-	// version. Logins that proved a second factor go through
-	// ConsumeAuthTransactionAndCreateSession instead.
+	// version. Logins that proved a second factor go through CompleteLogin
+	// (or ActivateAuthenticator with a completion) instead.
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at, amr, security_version)
 		SELECT ?, a.id, ?, ?, ?, ?, 'pwd', a.security_version

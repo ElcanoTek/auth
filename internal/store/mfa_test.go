@@ -703,6 +703,44 @@ func TestCompleteLoginWithRecoveryCodeAndEnrolmentCompletion(t *testing.T) {
 	if _, err := s.ActiveAuthenticator(ctx, dave.ID); !errors.Is(err, ErrNoAuthenticator) {
 		t.Fatal("activation committed despite the failed completion")
 	}
+	// A password reset after the password step voids the browser's pending
+	// enrolment: nothing is activated, no session appears, the pending row
+	// stays pending.
+	erin, _ := s.CreatePasswordAccount(ctx, "erin@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$ZXJp", false, now)
+	newLoginTx(t, s, erin, "t5", "st5", "enroll", now+12)
+	if err := s.CreatePendingAuthenticator(ctx, "pe", erin.ID, "", []byte("sealed"), "1", now+12, now+700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPassword(ctx, erin.Email, "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3", false, now+13); err != nil {
+		t.Fatal(err)
+	}
+	stale := &LoginCompletion{TransactionID: "t5", Stage: "enroll", TokenHash: "e-1", IdleExpiresAt: now + 80, AbsoluteAt: now + 140}
+	if _, err := s.ActivateAuthenticator(ctx, "pe", erin.ID, 50, []string{"erin-h1"}, "set", "", stale, now+14); !errors.Is(err, ErrStaleTransaction) {
+		t.Fatalf("activation on a transaction opened under the old password: %v", err)
+	}
+	if _, err := s.ActiveAuthenticator(ctx, erin.ID); !errors.Is(err, ErrNoAuthenticator) {
+		t.Fatal("stale completion activated a factor")
+	}
+	if _, err := s.PendingAuthenticator(ctx, erin.ID, now+14); err != nil {
+		t.Fatalf("pending enrolment should survive a refused completion: %v", err)
+	}
+	if liveSessions(t, s, erin.ID, now+15) != 0 {
+		t.Fatal("stale completion minted a session")
+	}
+	// Likewise a factor mutation (security version bump) in between.
+	frank, _ := s.CreatePasswordAccount(ctx, "frank@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$ZnJh", false, now)
+	newLoginTx(t, s, frank, "t6", "st6", "enroll", now+16)
+	enrol(t, s, frank, "", now+16) // an administrator-side or other-browser enrolment bumps the version
+	if err := s.CreatePendingAuthenticator(ctx, "pf", frank.ID, "", []byte("sealed"), "1", now+18, now+700); err != nil {
+		t.Fatal(err)
+	}
+	bumped := &LoginCompletion{TransactionID: "t6", Stage: "enroll", TokenHash: "f-1", IdleExpiresAt: now + 80, AbsoluteAt: now + 140}
+	if _, err := s.ActivateAuthenticator(ctx, "pf", frank.ID, 60, []string{"frank-h1"}, "set", "", bumped, now+19); !errors.Is(err, ErrStaleTransaction) {
+		t.Fatalf("activation on a transaction opened before a factor change: %v", err)
+	}
+	if liveSessions(t, s, frank.ID, now+20) != 0 {
+		t.Fatal("stale completion minted a session after a factor change")
+	}
 }
 
 func TestAssessTable(t *testing.T) {
