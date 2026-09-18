@@ -193,7 +193,8 @@ func validateKeyID(id string) error {
 		return fmt.Errorf("mfa: key id %q must be 1-%d characters", id, maxKeyIDLen)
 	}
 	for _, r := range id {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+		isAlnum := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+		if !isAlnum && r != '-' && r != '_' && r != '.' {
 			return fmt.Errorf("mfa: key id %q may use only letters, digits, '-', '_' and '.'", id)
 		}
 	}

@@ -10,7 +10,7 @@ import (
 )
 
 // Recovery codes are the offline fallback for a lost authenticator. Each is
-// 130 bits of randomness (26 base32 characters) shown once in dashed groups
+// 128 bits of randomness (16 bytes, 26 base32 characters) shown once in dashed groups
 // and stored only as a SHA-256 digest: with that much entropy a slow hash
 // buys nothing, and a plain digest lets the store look a submitted code up
 // by primary key and consume it in one conditional statement.

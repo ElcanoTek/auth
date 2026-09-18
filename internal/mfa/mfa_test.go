@@ -280,3 +280,31 @@ func TestPolicy(t *testing.T) {
 		t.Fatal("Label")
 	}
 }
+
+// A six-digit value can, rarely, be the code for two adjacent steps. Verify
+// must then record the later step, so presenting the same value again at
+// that step is a replay and fails. The secret and step below were found by
+// search (steps 70000018 and 70000019 both yield 000180); the test fails if
+// the library's HOTP ever changes.
+func TestVerifyCollisionRecordsTheLaterStep(t *testing.T) {
+	secret := []byte("collide-000000062449")
+	const first = int64(70000018)
+	a, _ := generateForTest(secret, first)
+	b, _ := generateForTest(secret, first+1)
+	if a != b || a != "000180" {
+		t.Fatalf("fixture no longer collides: %s vs %s", a, b)
+	}
+	now := time.Unix(first*Period, 0) // current step = first; window covers first+1
+	step, ok := Verify(secret, a, now, -1)
+	if !ok || step != first+1 {
+		t.Fatalf("matched step %d (ok=%v), want the later step %d", step, ok, first+1)
+	}
+	// Recorded at first+1, the same value is refused at every step in the
+	// window, including when the clock has moved on to first+1.
+	if _, ok := Verify(secret, a, now, step); ok {
+		t.Fatal("collided value replayed after the later step was recorded")
+	}
+	if _, ok := Verify(secret, a, time.Unix((first+1)*Period, 0), step); ok {
+		t.Fatal("collided value replayed at the later step")
+	}
+}

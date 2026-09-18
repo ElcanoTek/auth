@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -72,9 +74,9 @@ func enrol(t *testing.T, s *Store, a Account, keepSession string, now int64) Aut
 	}
 	hashes := []string{}
 	for i := 0; i < mfa.RecoveryCodeCount; i++ {
-		hashes = append(hashes, mfa.HashRecoveryCode(fmt.Sprintf("CODE%02d", i)))
+		hashes = append(hashes, mfa.HashRecoveryCode(fmt.Sprintf("%s-CODE%02d", a.ID, i)))
 	}
-	if _, err := s.ActivateAuthenticator(ctx, id, a.ID, 100, hashes, "set-1", keepSession, now+1); err != nil {
+	if _, err := s.ActivateAuthenticator(ctx, id, a.ID, 100, hashes, "set-1", keepSession, nil, now+1); err != nil {
 		t.Fatal(err)
 	}
 	f, err := s.ActiveAuthenticator(ctx, a.ID)
@@ -104,19 +106,70 @@ func TestMFASchemaMigratesAnOlderDatabaseInPlace(t *testing.T) {
 	if !s.hasMigration(ctx, 6) {
 		t.Fatal("v6 marker missing")
 	}
-	// Re-opening (a second start) is idempotent: the guarded ALTERs and
-	// CREATE IF NOT EXISTS statements run again without error.
+}
+
+// A database written by a v5 binary (base schema, marker 5, no v6 columns)
+// is upgraded in place by one claimed transaction; its rows keep working with
+// password-only defaults and a second open changes nothing.
+func TestMFAMigrationUpgradesARealV5Database(t *testing.T) {
 	dir := t.TempDir()
-	first, err := Open(dir)
+	raw, err := sql.Open("sqlite", filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = first.Close()
-	second, err := Open(dir)
+	if _, err := raw.Exec(schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []int{2, 3, 4, 5} {
+		if _, err := raw.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(?, 1)`, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().Unix()
+	if _, err := raw.Exec(`INSERT INTO accounts(id, email, normalized_email, must_change_password, is_admin, team, created_at, updated_at)
+		VALUES('u1', 'v5@example.com', 'v5@example.com', 0, 1, '', ?, ?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO password_credentials(user_id, password_hash, changed_at) VALUES('u1', 'hash', ?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at)
+		VALUES('v5-session', 'u1', ?, ?, ?, ?)`, now, now, now+3600, now+7200); err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"mfa_required", "security_version"} {
+		var n int
+		if err := raw.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = ?`, col).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("fixture already has accounts.%s (%d, %v)", col, n, err)
+		}
+	}
+	_ = raw.Close()
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open v5 database with v6 binary: %v", err)
+	}
+	ctx := context.Background()
+	if !s.hasMigration(ctx, 6) || !s.hasColumn(ctx, "auth_sessions", "amr") || !s.hasColumn(ctx, "accounts", "security_version") {
+		t.Fatal("v6 columns or marker missing after upgrade")
+	}
+	acct, sess, err := s.ValidateAuthSession(ctx, "v5-session", now+1, time.Hour, time.Minute)
+	if err != nil || len(sess.AMR) != 1 || sess.AMR[0] != "pwd" || sess.MFAVerifiedAt != nil || acct.SecurityVersion != 0 || acct.MFAEnrolled || acct.MFARequired {
+		t.Fatalf("v5 session after upgrade: %+v %+v %v", acct, sess, err)
+	}
+	if Assess(acct, sess, mfa.ModeOptional) != AssuranceOK {
+		t.Fatal("v5 session must stay sufficient under Optional")
+	}
+	policy, err := s.MFAPolicy(ctx)
+	if err != nil || policy.Mode != mfa.ModeOptional || policy.Revision != 0 {
+		t.Fatalf("policy after upgrade: %+v %v", policy, err)
+	}
+	_ = s.Close()
+	again, err := Open(dir)
 	if err != nil {
 		t.Fatalf("second open: %v", err)
 	}
-	_ = second.Close()
+	_ = again.Close()
 }
 
 func TestMFAPolicyDefaultSetAndRevokeInsufficientSessions(t *testing.T) {
@@ -147,7 +200,7 @@ func TestMFAPolicyDefaultSetAndRevokeInsufficientSessions(t *testing.T) {
 	}
 	deliveries, _ := s.PendingLogoutDeliveries(ctx, "", now+2)
 	_ = deliveries // no applications registered: nothing to deliver, no error
-	if !contains(auditTypes(t, s, alice.ID), "mfa.policy_changed") {
+	if !contains(auditTypes(t, s, ""), "mfa.policy_changed") {
 		t.Fatal("policy change not audited")
 	}
 	// Relaxing never removes anything and revokes nobody.
@@ -187,11 +240,11 @@ func TestEnrolmentActivatesAtomicallyAndUpgradesTheEnrollingSession(t *testing.T
 	if _, err := s.PendingAuthenticator(ctx, a.ID, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ActivateAuthenticator(ctx, "p1", a.ID, 5, []string{"h"}, "set", "keep", now+1); !errors.Is(err, ErrPendingNotFound) {
+	if _, err := s.ActivateAuthenticator(ctx, "p1", a.ID, 5, []string{"h"}, "set", "keep", nil, now+1); !errors.Is(err, ErrPendingNotFound) {
 		t.Fatalf("activating the replaced pending row: %v", err)
 	}
 	hashes := []string{mfa.HashRecoveryCode("A"), mfa.HashRecoveryCode("B")}
-	revoked, err := s.ActivateAuthenticator(ctx, "p2", a.ID, 7, hashes, "set-1", "keep", now+1)
+	revoked, err := s.ActivateAuthenticator(ctx, "p2", a.ID, 7, hashes, "set-1", "keep", nil, now+1)
 	if err != nil || revoked != 1 {
 		t.Fatalf("activate: revoked=%d err=%v", revoked, err)
 	}
@@ -223,7 +276,7 @@ func TestEnrolmentActivatesAtomicallyAndUpgradesTheEnrollingSession(t *testing.T
 	if f, _ := s.ActiveAuthenticator(ctx, a.ID); f.ID != "p2" {
 		t.Fatal("pending replacement must not disturb the active factor")
 	}
-	if _, err := s.ActivateAuthenticator(ctx, "p3", a.ID, 9, hashes, "set-2", "keep", now+4); err != nil {
+	if _, err := s.ActivateAuthenticator(ctx, "p3", a.ID, 9, hashes, "set-2", "keep", nil, now+4); err != nil {
 		t.Fatal(err)
 	}
 	if f, _ := s.ActiveAuthenticator(ctx, a.ID); f.ID != "p3" {
@@ -297,6 +350,27 @@ func TestDisableAndResetClearFactorStateAndRevoke(t *testing.T) {
 	if err := s.DisableAuthenticator(ctx, a.ID, "keep", now+5); !errors.Is(err, ErrNoAuthenticator) {
 		t.Fatalf("second disable: %v", err)
 	}
+	// A required account cannot disable, whatever the caller checked outside.
+	enrol(t, s, a, "keep", now+5)
+	if _, _, err := s.SetMFAPolicy(ctx, mfa.ModeEveryone, "admin-1", now+6); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DisableAuthenticator(ctx, a.ID, "keep", now+7); !errors.Is(err, ErrFactorRequired) {
+		t.Fatalf("disable under everyone policy: %v", err)
+	}
+	if _, _, err := s.SetMFAPolicy(ctx, mfa.ModeOptional, "admin-1", now+7); err != nil {
+		t.Fatal(err)
+	}
+	// A wrong keep token fails the whole mutation instead of half-applying.
+	if err := s.DisableAuthenticator(ctx, a.ID, "not-a-session", now+7); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("disable with a foreign keep token: %v", err)
+	}
+	if _, err := s.ActiveAuthenticator(ctx, a.ID); err != nil {
+		t.Fatal("factor was disabled although the keep-session update failed")
+	}
+	if err := s.DisableAuthenticator(ctx, a.ID, "keep", now+7); err != nil {
+		t.Fatal(err)
+	}
 	// Reset ends everything, including the caller's own session.
 	enrol(t, s, a, "keep", now+6)
 	if err := s.ResetMFA(ctx, a.ID, "admin-1", "", now+8); err == nil {
@@ -307,6 +381,9 @@ func TestDisableAndResetClearFactorStateAndRevoke(t *testing.T) {
 	}
 	if liveSessions(t, s, a.ID, now+9) != 0 {
 		t.Fatal("reset left sessions live")
+	}
+	if acct, _ := s.PasswordAccountByEmail(ctx, a.Email); !acct.MFARequired {
+		t.Fatal("reset must leave the account in enrollment-required, never password-only")
 	}
 	if _, err := s.ActiveAuthenticator(ctx, a.ID); !errors.Is(err, ErrNoAuthenticator) {
 		t.Fatal("reset left the factor")
@@ -327,7 +404,7 @@ func TestRecoveryCodesConsumeOnceAndRegenerate(t *testing.T) {
 		t.Fatalf("regenerating without a factor: %v", err)
 	}
 	enrol(t, s, a, "", now)
-	h := mfa.HashRecoveryCode("CODE03")
+	h := mfa.HashRecoveryCode(a.ID + "-CODE03")
 	var wins atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 6; i++ {
@@ -351,13 +428,13 @@ func TestRecoveryCodesConsumeOnceAndRegenerate(t *testing.T) {
 	if n, _ := s.RecoveryCodesRemaining(ctx, a.ID); n != mfa.RecoveryCodeCount-1 {
 		t.Fatalf("remaining = %d", n)
 	}
-	if ok, _ := s.ConsumeRecoveryCode(ctx, "someone-else", mfa.HashRecoveryCode("CODE04"), now+1); ok {
+	if ok, _ := s.ConsumeRecoveryCode(ctx, "someone-else", mfa.HashRecoveryCode(a.ID+"-CODE04"), now+1); ok {
 		t.Fatal("another account consumed alice's code")
 	}
 	if err := s.ReplaceRecoveryCodes(ctx, a.ID, []string{"n1", "n2", "n3"}, "set-2", now+2); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := s.ConsumeRecoveryCode(ctx, a.ID, mfa.HashRecoveryCode("CODE05"), now+3); ok {
+	if ok, _ := s.ConsumeRecoveryCode(ctx, a.ID, mfa.HashRecoveryCode(a.ID+"-CODE05"), now+3); ok {
 		t.Fatal("old set still valid after regeneration")
 	}
 	if n, _ := s.RecoveryCodesRemaining(ctx, a.ID); n != 3 {
@@ -384,15 +461,22 @@ func TestAuthTransactionLifecycle(t *testing.T) {
 	if _, err := s.AuthTransactionByState(ctx, "state-1", now+301); !errors.Is(err, ErrTransactionNotFound) {
 		t.Fatalf("expired: %v", err)
 	}
-	// Attempts: the cap deletes the transaction.
+	// Attempts: every reserved attempt (the last included) is still usable;
+	// only the attempt past the cap deletes the transaction.
 	for i, want := range []int{2, 1, 0} {
 		rem, err := s.RecordTransactionAttempt(ctx, "t1")
 		if err != nil || rem != want {
 			t.Fatalf("attempt %d: remaining=%d err=%v", i+1, rem, err)
 		}
 	}
+	if _, err := s.AuthTransactionByState(ctx, "state-1", now+1); err != nil {
+		t.Fatalf("transaction must survive its final reserved attempt: %v", err)
+	}
+	if _, err := s.RecordTransactionAttempt(ctx, "t1"); !errors.Is(err, ErrTooManyAttempts) {
+		t.Fatalf("attempt past the cap: %v", err)
+	}
 	if _, err := s.AuthTransactionByState(ctx, "state-1", now+1); !errors.Is(err, ErrTransactionNotFound) {
-		t.Fatal("transaction survived exhausting its attempts")
+		t.Fatal("transaction survived exceeding its attempts")
 	}
 	// A new one replaces any earlier one of the same purpose.
 	tr.ID, tr.StateHash = "t2", "state-2"
@@ -429,25 +513,139 @@ func TestAuthTransactionLifecycle(t *testing.T) {
 	}
 }
 
-func TestConsumeTransactionCreatesSessionExactlyOnce(t *testing.T) {
-	s, a, now := mfaFixture(t)
-	ctx := context.Background()
-	tr := AuthTransaction{ID: "t1", UserID: a.ID, Purpose: "login", Stage: "done", StateHash: "st",
-		CredentialHash: a.PasswordHash, ExpiresAt: time.Unix(now+300, 0)}
-	if err := s.CreateAuthTransaction(ctx, tr, now); err != nil {
+func newLoginTx(t *testing.T, s *Store, a Account, id, state, stage string, now int64) {
+	t.Helper()
+	tr := AuthTransaction{ID: id, UserID: a.ID, Purpose: "login", Stage: stage, StateHash: state,
+		CredentialHash: a.PasswordHash, SecurityVersion: a.SecurityVersion, ExpiresAt: time.Unix(now+300, 0)}
+	if err := s.CreateAuthTransaction(context.Background(), tr, now); err != nil {
 		t.Fatal(err)
 	}
-	evidence := SessionEvidence{AMR: []string{"pwd", "otp"}, MFAVerifiedAt: now}
-	if err := s.ConsumeAuthTransactionAndCreateSession(ctx, "t1", "factor", "s-wrong-stage", evidence, now, now+60, now+120); !errors.Is(err, ErrTransactionNotFound) {
+}
+
+func TestCompleteLoginPasswordOnlyRespectsTheLiveRequirement(t *testing.T) {
+	s, a, now := mfaFixture(t)
+	ctx := context.Background()
+	newLoginTx(t, s, a, "t1", "st1", "done", now)
+	if _, err := s.CompleteLogin(ctx, "t1", "factor", "s-wrong", LoginProof{Kind: ProofNone}, now+1, now+61, now+121); !errors.Is(err, ErrTransactionNotFound) {
 		t.Fatalf("wrong stage: %v", err)
 	}
+	ev, err := s.CompleteLogin(ctx, "t1", "done", "s1", LoginProof{Kind: ProofNone}, now+1, now+61, now+121)
+	if err != nil || len(ev.AMR) != 1 || ev.AMR[0] != "pwd" || ev.MFAVerifiedAt != 0 {
+		t.Fatalf("password-only completion: %+v %v", ev, err)
+	}
+	if _, err := s.CompleteLogin(ctx, "t1", "done", "s1-again", LoginProof{Kind: ProofNone}, now+2, now+62, now+122); !errors.Is(err, ErrTransactionNotFound) {
+		t.Fatalf("second completion of a consumed transaction: %v", err)
+	}
+	// Policy tightened after the password step: a password-only completion
+	// is refused even though the transaction was opened under Optional.
+	newLoginTx(t, s, a, "t2", "st2", "done", now+3)
+	if _, _, err := s.SetMFAPolicy(ctx, mfa.ModeEveryone, "admin", now+4); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CompleteLogin(ctx, "t2", "done", "s2", LoginProof{Kind: ProofNone}, now+5, now+65, now+125); !errors.Is(err, ErrFactorRequired) {
+		t.Fatalf("completion after tightening: %v", err)
+	}
+	// Tightening also signed her existing password-only session out, and
+	// the refused completion must not have minted a new one.
+	if liveSessions(t, s, a.ID, now+6) != 0 {
+		t.Fatal("a refused completion must not mint a session")
+	}
+	// A credential change under the transaction makes it stale.
+	if _, _, err := s.SetMFAPolicy(ctx, mfa.ModeOptional, "admin", now+6); err != nil {
+		t.Fatal(err)
+	}
+	newLoginTx(t, s, a, "t3", "st3", "done", now+7)
+	if err := s.SetPassword(ctx, a.Email, "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3", false, now+8); err != nil {
+		t.Fatal(err)
+	}
+	// SetPassword deleted nothing from authentication_transactions but the
+	// credential differs; the transaction row must still exist to be judged.
+	newLoginTx(t, s, a, "t4", "st4", "done", now+9) // bound to the OLD hash captured in a
+	if _, err := s.CompleteLogin(ctx, "t4", "done", "s4", LoginProof{Kind: ProofNone}, now+10, now+70, now+130); !errors.Is(err, ErrStaleTransaction) {
+		t.Fatalf("stale credential: %v", err)
+	}
+}
+
+func TestCompleteLoginWithTOTPConsumesTheStepExactlyOnce(t *testing.T) {
+	s, a, now := mfaFixture(t)
+	ctx := context.Background()
+	f := enrol(t, s, a, "", now)
+	a, _ = s.PasswordAccountByEmail(ctx, a.Email)
+	newLoginTx(t, s, a, "t1", "st1", "factor", now+2)
+	// Password-only is no longer enough for this account.
+	if _, err := s.CompleteLogin(ctx, "t1", "factor", "s0", LoginProof{Kind: ProofNone}, now+3, now+63, now+123); !errors.Is(err, ErrFactorRequired) {
+		t.Fatalf("password-only for an enrolled account: %v", err)
+	}
+	newLoginTx(t, s, a, "t1", "st1", "factor", now+3)
+	// Six browsers present the same valid code for the same step.
 	var wins atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 6; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			err := s.ConsumeAuthTransactionAndCreateSession(ctx, "t1", "done", fmt.Sprintf("s-%d", i), evidence, now+1, now+61, now+121)
+			_, err := s.CompleteLogin(ctx, "t1", "factor", fmt.Sprintf("s-%d", i),
+				LoginProof{Kind: ProofTOTP, AuthenticatorID: f.ID, Step: 101, Rewrapped: []byte("resealed"), KeyID: "2"}, now+4, now+64, now+124)
+			if err == nil {
+				wins.Add(1)
+			} else if !errors.Is(err, ErrTransactionNotFound) {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if wins.Load() != 1 || liveSessions(t, s, a.ID, now+5) != 1 {
+		t.Fatalf("%d completions, %d sessions", wins.Load(), liveSessions(t, s, a.ID, now+5))
+	}
+	g, _ := s.ActiveAuthenticator(ctx, a.ID)
+	if g.LastAcceptedStep != 101 || string(g.Ciphertext) != "resealed" || g.KeyID != "2" {
+		t.Fatalf("step/rewrap not recorded with the session: %+v", g)
+	}
+	// The same step cannot complete a second login: the replay guard is
+	// inside the completion transaction, so the transaction is consumed
+	// and no session appears.
+	newLoginTx(t, s, a, "t2", "st2", "factor", now+6)
+	if _, err := s.CompleteLogin(ctx, "t2", "factor", "s-replay", LoginProof{Kind: ProofTOTP, AuthenticatorID: f.ID, Step: 101}, now+7, now+67, now+127); !errors.Is(err, ErrInvalidProof) {
+		t.Fatalf("replayed step: %v", err)
+	}
+	if liveSessions(t, s, a.ID, now+8) != 1 {
+		t.Fatal("replay minted a session")
+	}
+	// Another account's authenticator id is refused.
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, now)
+	enrol(t, s, bob, "", now+9)
+	fb, _ := s.ActiveAuthenticator(ctx, bob.ID)
+	newLoginTx(t, s, a, "t3", "st3", "factor", now+10)
+	if _, err := s.CompleteLogin(ctx, "t3", "factor", "s-cross", LoginProof{Kind: ProofTOTP, AuthenticatorID: fb.ID, Step: 200}, now+11, now+71, now+131); !errors.Is(err, ErrInvalidProof) {
+		t.Fatalf("foreign authenticator: %v", err)
+	}
+	// Evidence lands on the session and satisfies Assess.
+	for i := 0; i < 6; i++ {
+		if acct, sess, err := s.ValidateAuthSession(ctx, fmt.Sprintf("s-%d", i), now+12, time.Hour, time.Minute); err == nil {
+			if len(sess.AMR) != 2 || sess.AMR[1] != "otp" || sess.MFAVerifiedAt == nil || Assess(acct, sess, mfa.ModeEveryone) != AssuranceOK {
+				t.Fatalf("evidence: %+v", sess)
+			}
+			if err := s.StampSessionReauth(ctx, sess.TokenHash, now+13); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestCompleteLoginWithRecoveryCodeAndEnrolmentCompletion(t *testing.T) {
+	s, a, now := mfaFixture(t)
+	ctx := context.Background()
+	enrol(t, s, a, "", now)
+	a, _ = s.PasswordAccountByEmail(ctx, a.Email)
+	newLoginTx(t, s, a, "t1", "st1", "factor", now+2)
+	h := mfa.HashRecoveryCode(a.ID + "-CODE07")
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := s.CompleteLogin(ctx, "t1", "factor", fmt.Sprintf("r-%d", i), LoginProof{Kind: ProofRecovery, RecoveryCodeHash: h}, now+3, now+63, now+123)
 			if err == nil {
 				wins.Add(1)
 			} else if !errors.Is(err, ErrTransactionNotFound) {
@@ -457,37 +655,53 @@ func TestConsumeTransactionCreatesSessionExactlyOnce(t *testing.T) {
 	}
 	wg.Wait()
 	if wins.Load() != 1 {
-		t.Fatalf("%d sessions from one transaction", wins.Load())
+		t.Fatalf("%d recovery completions", wins.Load())
 	}
-	if liveSessions(t, s, a.ID, now+2) != 1 {
-		t.Fatal("expected exactly one session")
+	if n, _ := s.RecoveryCodesRemaining(ctx, a.ID); n != mfa.RecoveryCodeCount-1 {
+		t.Fatalf("remaining = %d", n)
 	}
-	var sess AuthSession
+	newLoginTx(t, s, a, "t2", "st2", "factor", now+4)
+	if _, err := s.CompleteLogin(ctx, "t2", "factor", "r-again", LoginProof{Kind: ProofRecovery, RecoveryCodeHash: h}, now+5, now+65, now+125); !errors.Is(err, ErrInvalidProof) {
+		t.Fatalf("reused recovery code: %v", err)
+	}
 	for i := 0; i < 6; i++ {
-		if _, got, err := s.ValidateAuthSession(ctx, fmt.Sprintf("s-%d", i), now+2, time.Hour, time.Minute); err == nil {
-			sess = got
+		if _, sess, err := s.ValidateAuthSession(ctx, fmt.Sprintf("r-%d", i), now+6, time.Hour, time.Minute); err == nil {
+			if len(sess.AMR) != 2 || sess.AMR[1] != "mfa" {
+				t.Fatalf("recovery evidence: %+v", sess)
+			}
 		}
 	}
-	if len(sess.AMR) != 2 || sess.AMR[1] != "otp" || sess.MFAVerifiedAt == nil {
-		t.Fatalf("evidence not stored: %+v", sess)
-	}
-	if err := s.StampSessionReauth(ctx, sess.TokenHash, now+3); err != nil {
+	// Enrolment as the final step of a login: activation consumes the
+	// transaction and mints the session in the same transaction.
+	carol, _ := s.CreatePasswordAccount(ctx, "carol@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Y2Fy", false, now)
+	newLoginTx(t, s, carol, "t3", "st3", "enroll", now+7)
+	if err := s.CreatePendingAuthenticator(ctx, "pc", carol.ID, "", []byte("sealed"), "1", now+7, now+700); err != nil {
 		t.Fatal(err)
 	}
-	if _, got, _ := s.ValidateAuthSession(ctx, sess.TokenHash, now+4, time.Hour, time.Minute); got.ReauthAt == nil || got.ReauthAt.Unix() != now+3 {
-		t.Fatalf("reauth not stamped: %+v", got)
-	}
-	// A transaction whose account changed its credential in between cannot
-	// mint a session.
-	tr.ID, tr.StateHash = "t2", "st2"
-	if err := s.CreateAuthTransaction(ctx, tr, now); err != nil {
+	completion := &LoginCompletion{TransactionID: "t3", Stage: "enroll", TokenHash: "c-1", IdleExpiresAt: now + 70, AbsoluteAt: now + 130}
+	if _, err := s.ActivateAuthenticator(ctx, "pc", carol.ID, 50, []string{"carol-h1"}, "set", "", completion, now+8); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetPassword(ctx, a.Email, "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3", false, now+5); err != nil {
+	acct, sess, err := s.ValidateAuthSession(ctx, "c-1", now+9, time.Hour, time.Minute)
+	if err != nil || !acct.MFAEnrolled || len(sess.AMR) != 2 || sess.MFAVerifiedAt == nil || sess.SecurityVersion != acct.SecurityVersion {
+		t.Fatalf("session from enrolment completion: %+v %+v %v", acct, sess, err)
+	}
+	if _, err := s.AuthTransactionByState(ctx, "st3", now+9); !errors.Is(err, ErrTransactionNotFound) {
+		t.Fatal("login transaction survived enrolment completion")
+	}
+	// A completion naming a transaction of another stage fails the whole
+	// activation: the pending row stays pending.
+	dave, _ := s.CreatePasswordAccount(ctx, "dave@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$ZGF2", false, now)
+	newLoginTx(t, s, dave, "t4", "st4", "factor", now+10)
+	if err := s.CreatePendingAuthenticator(ctx, "pd", dave.ID, "", []byte("sealed"), "1", now+10, now+700); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ConsumeAuthTransactionAndCreateSession(ctx, "t2", "done", "s-late", evidence, now+6, now+66, now+126); !errors.Is(err, ErrInvalidSession) {
-		t.Fatalf("stale credential: %v", err)
+	bad := &LoginCompletion{TransactionID: "t4", Stage: "enroll", TokenHash: "d-1", IdleExpiresAt: now + 70, AbsoluteAt: now + 130}
+	if _, err := s.ActivateAuthenticator(ctx, "pd", dave.ID, 50, []string{"dave-h1"}, "set", "", bad, now+11); !errors.Is(err, ErrTransactionNotFound) {
+		t.Fatalf("activation with a mismatched completion: %v", err)
+	}
+	if _, err := s.ActiveAuthenticator(ctx, dave.ID); !errors.Is(err, ErrNoAuthenticator) {
+		t.Fatal("activation committed despite the failed completion")
 	}
 }
 
@@ -506,7 +720,9 @@ func TestAssessTable(t *testing.T) {
 		{"required per user, not enrolled", Account{MFARequired: true}, AuthSession{}, mfa.ModeOptional, AssuranceEnrollmentRequired},
 		{"enrolled, session never proved it", Account{MFAEnrolled: true, SecurityVersion: 1}, AuthSession{SecurityVersion: 1}, mfa.ModeOptional, AssuranceFactorUnverified},
 		{"enrolled, session predates factor change", Account{MFAEnrolled: true, SecurityVersion: 2}, AuthSession{MFAVerifiedAt: &verified, SecurityVersion: 1}, mfa.ModeOptional, AssuranceFactorUnverified},
-		{"enrolled and proven", Account{MFAEnrolled: true, SecurityVersion: 2}, AuthSession{MFAVerifiedAt: &verified, SecurityVersion: 2}, mfa.ModeEveryone, AssuranceOK},
+		{"enrolled, timestamp but password-only amr", Account{MFAEnrolled: true, SecurityVersion: 2}, AuthSession{MFAVerifiedAt: &verified, SecurityVersion: 2, AMR: []string{"pwd"}}, mfa.ModeOptional, AssuranceFactorUnverified},
+		{"enrolled and proven", Account{MFAEnrolled: true, SecurityVersion: 2}, AuthSession{MFAVerifiedAt: &verified, SecurityVersion: 2, AMR: []string{"pwd", "otp"}}, mfa.ModeEveryone, AssuranceOK},
+		{"enrolled, proven by recovery code", Account{MFAEnrolled: true, SecurityVersion: 2}, AuthSession{MFAVerifiedAt: &verified, SecurityVersion: 2, AMR: []string{"pwd", "mfa"}}, mfa.ModeEveryone, AssuranceOK},
 		{"non-admin under admins mode, not enrolled", Account{}, AuthSession{}, mfa.ModeAdmins, AssuranceOK},
 	}
 	for _, c := range cases {

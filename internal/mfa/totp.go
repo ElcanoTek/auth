@@ -142,7 +142,10 @@ func NormalizeCode(code string) string {
 // matched step (for the caller to record atomically) and whether it matched.
 //
 // Every candidate step is computed and compared even after a match, so the
-// work done does not depend on which step matched or whether any did.
+// work done does not depend on which step matched or whether any did. When
+// the same six digits happen to match more than one adjacent step, the
+// greatest one is recorded, so the value cannot be presented again at the
+// later step.
 func Verify(secret []byte, code string, now time.Time, lastAcceptedStep int64) (int64, bool) {
 	code = NormalizeCode(code)
 	if code == "" || len(secret) != SecretSize {
@@ -162,7 +165,7 @@ func Verify(secret []byte, code string, now time.Time, lastAcceptedStep int64) (
 			return 0, false
 		}
 		equal := subtle.ConstantTimeCompare([]byte(expected), []byte(code)) == 1
-		if equal && step > lastAcceptedStep && !ok {
+		if equal && step > lastAcceptedStep {
 			matched, ok = step, true
 		}
 	}
