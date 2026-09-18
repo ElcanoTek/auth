@@ -266,6 +266,12 @@ case "$cmd" in
     # public key to each verifying service. No env/data needed.
     exec "$ADMIN_BIN" keygen "$@"
     ;;
+  mfa)
+    # `auth mfa keygen` — print a fresh AUTH_MFA_KEY (encrypts authenticator
+    # secrets at rest). Doesn't touch config; paste the lines into .env.local
+    # and `auth restart`. No env/data needed.
+    exec "$ADMIN_BIN" mfa "$@"
+    ;;
   pubkey)
     # `auth pubkey` — print AUTH_SIGNING_PUBKEY for the CURRENT signing key.
     # Sources .env.local so AUTH_SIGNING_KEY is in the env, then derives the
@@ -356,6 +362,7 @@ CRYPTO
   auth keygen                       print a fresh Ed25519 signing keypair
   auth pubkey                       print AUTH_SIGNING_PUBKEY for the current
                                     signing key (to hand to verifying services)
+  auth mfa keygen                   print a fresh AUTH_MFA_KEY for 2FA secrets
 
 UPDATES
   auth update                       git pull + rebuild + restart

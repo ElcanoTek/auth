@@ -67,6 +67,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
+	// Second factor: the encryption key for authenticator secrets is
+	// optional until someone enrols. After that its absence is a
+	// misconfiguration, not a downgrade: refuse to start rather than run a
+	// deployment whose enrolled factors cannot be verified.
+	if cfg.LoginMode == "password" && cfg.MFAKeyring == nil {
+		has, err := st.HasAuthenticators(context.Background())
+		if err != nil {
+			log.Fatalf("mfa: %v", err)
+		}
+		if has {
+			log.Fatalf("AUTH_MFA_KEY is unset but accounts hold authenticators; restore the key from the .env.local backup (or reset their factors with the CLI) before starting")
+		}
+		log.Printf("2FA unavailable: AUTH_MFA_KEY is not set (generate one with `auth mfa keygen`)")
+	}
 	defer func() { _ = st.Close() }()
 
 	// Seed the domain allowlist from env. This is additive — runtime

@@ -452,3 +452,43 @@ func TestAuditRetentionLoadsFromEnvFile(t *testing.T) {
 		t.Errorf("AuditRetention from file = %v, want 30 days", cfg.AuditRetention)
 	}
 }
+
+// The second-factor key is optional (2FA off) but must be well-formed when
+// set, and the issuer label authenticator apps show defaults to the brand
+// and may never contain a colon.
+func TestMFAConfiguration(t *testing.T) {
+	clearAllAuthEnv(t)
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+	t.Setenv("AUTH_LOGIN_MODE", "password")
+	t.Setenv("AUTH_BRAND_NAME", "Northwind")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MFAKeyring != nil || cfg.MFAIssuer != "Northwind" {
+		t.Fatalf("unset key: ring=%v issuer=%q", cfg.MFAKeyring, cfg.MFAIssuer)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AUTH_MFA_KEY", "c2hvcnQ=")
+	if _, err := Load(""); err == nil {
+		t.Fatal("short AUTH_MFA_KEY accepted")
+	}
+	t.Setenv("AUTH_MFA_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	t.Setenv("AUTH_MFA_KEY_ID", "2026a")
+	t.Setenv("AUTH_MFA_PREVIOUS_KEYS", "2025a:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE=")
+	t.Setenv("AUTH_MFA_ISSUER", "North:wind")
+	cfg, err = Load("")
+	if err != nil || cfg.MFAKeyring == nil || cfg.MFAKeyring.ActiveID() != "2026a" || !cfg.MFAKeyring.NeedsRewrap("2025a") {
+		t.Fatalf("keyring: %+v %v", cfg.MFAKeyring, err)
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_MFA_ISSUER") {
+		t.Fatalf("issuer with colon: %v", err)
+	}
+	t.Setenv("AUTH_MFA_ISSUER", "Northwind SSO")
+	cfg, _ = Load("")
+	if err := cfg.Validate(); err != nil || cfg.MFAIssuer != "Northwind SSO" {
+		t.Fatalf("explicit issuer: %q %v", cfg.MFAIssuer, err)
+	}
+}

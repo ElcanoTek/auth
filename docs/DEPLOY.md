@@ -293,6 +293,34 @@ form on `/account` does the same. Scope and timing, stated plainly:
   that costs the user a login, not access, and is accepted in exchange for a
   click-free flow. Any registered client id is honoured (ids are public).
 
+## Second factor (2FA): server configuration
+
+Password mode can require an authenticator-app code (TOTP) after the
+password. The enrolment and sign-in screens, the account **Security** page
+and the console controls arrive in the next releases; this one adds the
+server side they depend on, so a box configured now needs no further change.
+
+- `AUTH_MFA_KEY` is a base64 32-byte AES-256 key that seals every
+  authenticator secret at rest. It lives only in `.env.local`, separate from
+  the signing seed, and belongs in the same backup: without it no enrolled
+  factor can be verified. `bootstrap.sh` generates it for password-mode
+  installs; on an existing box run `auth mfa keygen`, paste the two lines
+  into `.env.local` and `auth restart`. Unset, 2FA is simply unavailable; once
+  any account holds a factor the server refuses to start without it.
+- `AUTH_MFA_KEY_ID` (default `1`) labels the key. To rotate, generate a new
+  key, give it a new id, move the old pair to `AUTH_MFA_PREVIOUS_KEYS` as
+  `id:key`, restart, and keep it there until every factor has been re-sealed
+  (each successful verification re-seals under the active key). Then drop it.
+- `AUTH_MFA_ISSUER` is the label authenticator apps show for the account
+  (default the brand name); it may not contain `:`. Changing it affects only
+  new enrolments.
+- The server clock must be right: codes are valid for thirty seconds either
+  side of now and nothing widens that. Fedora runs chronyd by default; keep it.
+- Schema v6 adds the factor, transaction, policy and recovery-code columns on
+  first start. Existing sessions stay valid: a password-only session is
+  sufficient exactly while the account has no factor and no policy requires
+  one, so nobody is signed out by the upgrade.
+
 ## Admin console (password mode)
 
 `https://auth.<client>/admin` is the web console for administrators: accounts

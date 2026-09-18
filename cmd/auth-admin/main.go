@@ -36,6 +36,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/elcanotek/auth/internal/mfa"
 	passwordauth "github.com/elcanotek/auth/internal/password"
 	"github.com/elcanotek/auth/internal/store"
 	"golang.org/x/term"
@@ -63,6 +64,8 @@ func main() {
 		applicationCmd(dataDir, os.Args[2:])
 	case "keygen":
 		keygenCmd()
+	case "mfa":
+		mfaCmd(os.Args[2:])
 	case "pubkey":
 		pubkeyCmd()
 	case "help", "-h", "--help":
@@ -107,6 +110,7 @@ APPLICATIONS
 CRYPTO
   auth-admin keygen                       generate a fresh Ed25519 signing keypair
   auth-admin pubkey                       print AUTH_SIGNING_PUBKEY for the current AUTH_SIGNING_KEY
+  auth-admin mfa keygen                   generate AUTH_MFA_KEY (encrypts authenticator secrets at rest)
 
 Reads AUTH_DATA_DIR from the env (default /opt/auth/data).
 The 'auth' shell wrapper sources .env.local before calling us.`)
@@ -128,6 +132,28 @@ func keygenCmd() {
 	fmt.Printf("AUTH_SIGNING_KEY=%s\n", base64.StdEncoding.EncodeToString(priv.Seed()))
 	fmt.Println("# PUBLIC — distribute to every verifying service. Safe to share.")
 	fmt.Printf("AUTH_SIGNING_PUBKEY=%s\n", base64.StdEncoding.EncodeToString(pub))
+}
+
+// mfaCmd holds the second-factor operator commands. "keygen" prints a fresh
+// AES-256 key for AUTH_MFA_KEY: it encrypts every authenticator secret at
+// rest and lives only on the auth host, separate from the signing key.
+// Losing it makes every enrolled factor unverifiable (people fall back to
+// administrator resets), so it belongs in the same backup as .env.local.
+func mfaCmd(args []string) {
+	if len(args) < 1 || args[0] != "keygen" {
+		fmt.Fprintln(os.Stderr, "usage: auth-admin mfa keygen")
+		os.Exit(2)
+	}
+	key, err := mfa.NewKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mfa keygen: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("# AES-256 key that seals authenticator (2FA) secrets at rest.")
+	fmt.Println("# PRIVATE — auth host only (auth/.env.local). Back it up with the signing key.")
+	fmt.Printf("AUTH_MFA_KEY=%s\n", key)
+	fmt.Println("# Label for this key; rotate by moving the old pair to AUTH_MFA_PREVIOUS_KEYS as id:key.")
+	fmt.Println("AUTH_MFA_KEY_ID=1")
 }
 
 // derivePublicKey turns a base64 Ed25519 private seed (the AUTH_SIGNING_KEY

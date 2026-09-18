@@ -311,7 +311,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		time.Now().Unix()); err != nil {
 		return fmt.Errorf("record back-channel logout schema version: %w", err)
 	}
-	return s.migrateApplicationAccess(ctx)
+	if err := s.migrateApplicationAccess(ctx); err != nil {
+		return err
+	}
+	return s.migrateMFA(ctx)
 }
 
 // migrateApplicationAccess is schema v5. Per-application access arrived
@@ -679,6 +682,9 @@ type Account struct {
 	MustChangePassword bool
 	IsAdmin            bool
 	Team               string // free-text tag set in the admin console; "" = none
+	MFARequired        bool   // per-user "Require 2FA" set in the console
+	MFAEnrolled        bool   // has an active TOTP factor
+	SecurityVersion    int64  // bumped by every factor-affecting change
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
@@ -735,7 +741,9 @@ func (s *Store) CreatePasswordAccount(ctx context.Context, email, passwordHash s
 func (s *Store) PasswordAccountByEmail(ctx context.Context, email string) (Account, error) {
 	return scanAccount(s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
-		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at
+		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
+		       a.mfa_required, a.security_version,
+		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.normalized_email = ?`, normalizeAccountEmail(email)))
 }
@@ -743,7 +751,9 @@ func (s *Store) PasswordAccountByEmail(ctx context.Context, email string) (Accou
 func (s *Store) PasswordAccountByID(ctx context.Context, id string) (Account, error) {
 	return scanAccount(s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
-		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at
+		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
+		       a.mfa_required, a.security_version,
+		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.id = ?`, id))
 }
@@ -753,10 +763,10 @@ type rowScanner interface{ Scan(...any) error }
 func scanAccount(row rowScanner) (Account, error) {
 	var a Account
 	var disabled sql.NullInt64
-	var mustChange, isAdmin int
+	var mustChange, isAdmin, mfaRequired, enrolled int
 	var created, updated int64
 	if err := row.Scan(&a.ID, &a.Email, &a.NormalizedEmail, &a.PasswordHash, &disabled,
-		&mustChange, &isAdmin, &a.Team, &created, &updated); err != nil {
+		&mustChange, &isAdmin, &a.Team, &created, &updated, &mfaRequired, &a.SecurityVersion, &enrolled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Account{}, ErrAccountNotFound
 		}
@@ -764,6 +774,7 @@ func scanAccount(row rowScanner) (Account, error) {
 	}
 	a.MustChangePassword = mustChange != 0
 	a.IsAdmin = isAdmin != 0
+	a.MFARequired, a.MFAEnrolled = mfaRequired != 0, enrolled != 0
 	a.CreatedAt = time.Unix(created, 0)
 	a.UpdatedAt = time.Unix(updated, 0)
 	if disabled.Valid {
@@ -886,7 +897,9 @@ func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled b
 func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
-		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at
+		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
+		       a.mfa_required, a.security_version,
+		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		ORDER BY a.normalized_email`)
 	if err != nil {
@@ -1229,6 +1242,10 @@ type AuthSession struct {
 	AbsoluteExpiresAt time.Time
 	RevokedAt         *time.Time
 	RevocationReason  string
+	AMR               []string   // how it was authenticated: pwd, otp, mfa
+	MFAVerifiedAt     *time.Time // when the second factor was proven for it
+	SecurityVersion   int64      // the account's security_version it was issued under
+	ReauthAt          *time.Time // last fresh password (+factor) re-verification
 }
 
 // CreateAuthSession inserts a session only if verifiedHash is STILL the
@@ -1241,9 +1258,12 @@ func (s *Store) CreateAuthSession(ctx context.Context, tokenHash, userID, verifi
 	if tokenHash == "" || userID == "" || verifiedHash == "" || idleExpiresAt <= createdAt || absoluteExpiresAt <= createdAt {
 		return errors.New("invalid session parameters")
 	}
+	// Password-only evidence, issued under the account's current security
+	// version. Logins that proved a second factor go through
+	// ConsumeAuthTransactionAndCreateSession instead.
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at)
-		SELECT ?, a.id, ?, ?, ?, ?
+		INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at, amr, security_version)
+		SELECT ?, a.id, ?, ?, ?, ?, 'pwd', a.security_version
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.id = ? AND a.disabled_at IS NULL AND p.password_hash = ?`,
 		tokenHash, createdAt, createdAt, idleExpiresAt, absoluteExpiresAt, userID, verifiedHash)
@@ -1264,21 +1284,27 @@ func (s *Store) CreateAuthSession(ctx context.Context, tokenHash, userID, verifi
 func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now int64, idleTTL, touchInterval time.Duration) (Account, AuthSession, error) {
 	var sess AuthSession
 	var a Account
-	var disabled, revoked sql.NullInt64
-	var mustChange, isAdmin int
+	var disabled, revoked, mfaAt, reauthAt sql.NullInt64
+	var mustChange, isAdmin, mfaRequired, enrolled int
 	var created, updated, sessionCreated, lastSeen, idleExpires, absoluteExpires int64
+	var amr string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, a.disabled_at,
 		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
+		       a.mfa_required, a.security_version,
+		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL),
 		       s.token_hash, s.created_at, s.last_seen_at, s.idle_expires_at,
-		       s.absolute_expires_at, s.revoked_at, COALESCE(s.revocation_reason, '')
+		       s.absolute_expires_at, s.revoked_at, COALESCE(s.revocation_reason, ''),
+		       s.amr, s.mfa_verified_at, s.security_version, s.reauth_at
 		FROM auth_sessions s
 		JOIN accounts a ON a.id = s.user_id
 		JOIN password_credentials p ON p.user_id = a.id
 		WHERE s.token_hash = ?`, tokenHash).Scan(
 		&a.ID, &a.Email, &a.NormalizedEmail, &disabled,
-		&mustChange, &isAdmin, &a.Team, &created, &updated, &sess.TokenHash, &sessionCreated,
-		&lastSeen, &idleExpires, &absoluteExpires, &revoked, &sess.RevocationReason)
+		&mustChange, &isAdmin, &a.Team, &created, &updated, &mfaRequired, &a.SecurityVersion, &enrolled,
+		&sess.TokenHash, &sessionCreated,
+		&lastSeen, &idleExpires, &absoluteExpires, &revoked, &sess.RevocationReason,
+		&amr, &mfaAt, &sess.SecurityVersion, &reauthAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Account{}, AuthSession{}, ErrInvalidSession
@@ -1290,8 +1316,11 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 	}
 	a.MustChangePassword = mustChange != 0
 	a.IsAdmin = isAdmin != 0
+	a.MFARequired, a.MFAEnrolled = mfaRequired != 0, enrolled != 0
 	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
 	sess.UserID = a.ID
+	sess.AMR = strings.Fields(amr)
+	sess.MFAVerifiedAt, sess.ReauthAt = nullTime(mfaAt), nullTime(reauthAt)
 	sess.CreatedAt, sess.LastSeenAt = time.Unix(sessionCreated, 0), time.Unix(lastSeen, 0)
 	sess.IdleExpiresAt, sess.AbsoluteExpiresAt = time.Unix(idleExpires, 0), time.Unix(absoluteExpires, 0)
 	if now-lastSeen >= int64(touchInterval.Seconds()) {
@@ -1707,6 +1736,11 @@ type AuthorizationGrant struct {
 	Nonce            string
 	CodeChallenge    string
 	AuthTime         int64
+	// Evidence of the session behind the code, filled on exchange: AMR is
+	// the space-separated method list ("pwd", "pwd otp", "pwd mfa") and
+	// MFAVerifiedAt is 0 when no second factor was proven.
+	AMR           string
+	MFAVerifiedAt int64
 }
 
 // IssueAuthorizationCode binds the one-time code to an enabled application,
@@ -1729,6 +1763,16 @@ func (s *Store) IssueAuthorizationCode(ctx context.Context, codeHash string, gra
 		WHERE client_id = ? AND session_token_hash = ? AND consumed_at IS NULL`,
 		grant.ClientID, grant.SessionTokenHash); err != nil {
 		return err
+	}
+	// The session must carry the evidence the account's policy demands
+	// (second factor proven when one is enrolled or required). Evaluated
+	// inside the transaction so a policy or factor change that lands
+	// concurrently is seen.
+	if level, err := assuranceTx(ctx, tx, grant.UserID, grant.SessionTokenHash); err != nil || level != AssuranceOK {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return ErrInvalidGrant
 	}
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO authorization_codes(code_hash, client_id, user_id, session_token_hash, redirect_uri,
@@ -1784,7 +1828,17 @@ func (s *Store) ConsumeAuthorizationCode(ctx context.Context, codeHash, clientID
 	if err != nil {
 		return AuthorizationGrant{}, err
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT email FROM accounts WHERE id = ?`, grant.UserID).Scan(&grant.Email); err != nil {
+	// Re-check the evidence at exchange time: a factor enrolled, reset or
+	// policy tightened between /authorize and /token makes the code void,
+	// and the rollback leaves it unconsumed for nobody (it expires).
+	if level, err := assuranceTx(ctx, tx, grant.UserID, grant.SessionTokenHash); err != nil || level != AssuranceOK {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return AuthorizationGrant{}, err
+		}
+		return AuthorizationGrant{}, ErrInvalidGrant
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT a.email, s.amr, COALESCE(s.mfa_verified_at, 0) FROM accounts a JOIN auth_sessions s ON s.user_id = a.id
+		WHERE a.id = ? AND s.token_hash = ?`, grant.UserID, grant.SessionTokenHash).Scan(&grant.Email, &grant.AMR, &grant.MFAVerifiedAt); err != nil {
 		return AuthorizationGrant{}, err
 	}
 	if err := insertApplicationAudit(ctx, tx, "authorization.code_exchanged", grant.ClientID, grant.UserID, now); err != nil {
@@ -1952,6 +2006,19 @@ func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetent
 		return 0, err
 	}
 	attempts, _ := res.RowsAffected()
+	// Incomplete logins and unconfirmed enrolments are short-lived by
+	// design; sweep the expired ones along with everything else.
+	res, err = tx.ExecContext(ctx, `DELETE FROM authentication_transactions WHERE expires_at <= ? OR consumed_at IS NOT NULL`, now)
+	if err != nil {
+		return 0, err
+	}
+	transactions, _ := res.RowsAffected()
+	res, err = tx.ExecContext(ctx, `DELETE FROM authenticators WHERE verified_at IS NULL AND pending_expires_at IS NOT NULL AND pending_expires_at <= ?`, now)
+	if err != nil {
+		return 0, err
+	}
+	pending, _ := res.RowsAffected()
+	attempts += transactions + pending
 	var audits int64
 	if auditRetention > 0 {
 		res, err = tx.ExecContext(ctx, `DELETE FROM audit_events WHERE occurred_at < ?`, now-int64(auditRetention.Seconds()))
