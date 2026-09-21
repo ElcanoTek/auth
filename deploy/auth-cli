@@ -16,11 +16,62 @@ set -euo pipefail
 # under it.
 if [[ $EUID -eq 0 ]]; then
   APP_DIR="${APP_DIR:-/opt/auth}"
+  APP_USER="${APP_USER:-auth}"
 else
   APP_DIR="/opt/auth"
+  APP_USER="auth"
 fi
 ADMIN_BIN="$APP_DIR/bin/auth-admin"
 ENV_LOCAL="$APP_DIR/.env.local"
+
+# run_admin SUBCOMMAND ARGS... runs auth-admin as the service user with the
+# settings it needs from .env.local in its environment. Root reads the file
+# (it is root:auth 0640) and exports only what the command uses; runuser
+# keeps the environment, so no secret ever appears in an argument list, and
+# SUDO_USER survives for the "cli:<who>" attribution. The binary and the
+# database are touched as the service user, never as root, so the store
+# never acquires root-owned files. A non-root caller is re-run under sudo.
+# load_env_file FILE exports its KEY=VALUE lines without executing the file:
+# it is data, whoever could write it. Quoting follows the server's loader.
+load_env_file() {
+  local file="$1" line key v q
+  [[ -f "$file" && ! -L "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+    v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+    case "$v" in
+      \"*|\'*) q="${v:0:1}"; v="${v:1}"; v="${v%%"$q"*}"
+             [[ "$q" == '"' ]] && { v="${v//\\\"/\"}"; v="${v//\\\\/\\}"; } ;;
+      *)       v="${v%%#*}"; v="${v%"${v##*[![:space:]]}"}" ;;
+    esac
+    export "$key=$v"
+  done < "$file"
+}
+
+run_admin() {
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo -- "$0" "$@"
+  fi
+  # Script variables are captured first: the allowlist below unsets every
+  # exported name, including these when a caller exported them.
+  local actor="${SUDO_USER:-}" app_user="$APP_USER" admin_bin="$ADMIN_BIN" app_dir="$APP_DIR" v
+  load_env_file "$ENV_LOCAL"
+  # The service user gets exactly these variables (runuser keeps the
+  # environment, so nothing travels on a command line): the settings
+  # auth-admin reads, the operator's name for the audit trail, a minimal
+  # PATH and a HOME it can write.
+  for v in $(compgen -e); do
+    case "$v" in
+      AUTH_DATA_DIR|AUTH_MFA_KEY|AUTH_MFA_KEY_ID|AUTH_MFA_PREVIOUS_KEYS|AUTH_SIGNING_KEY|AUTH_BRAND_NAME|AUTH_HOSTNAME|AUTH_ISSUER_URL|AUTH_PASSWORD_BLOCKED_TERMS|AUTH_LOGIN_MODE|TERM|LANG|LC_ALL) ;;
+      *) unset "$v" ;;
+    esac
+  done
+  export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$app_dir/data}"
+  export SUDO_USER="$actor" PATH=/usr/local/bin:/usr/bin:/bin HOME="$AUTH_DATA_DIR"
+  exec runuser -u "$app_user" -- "$admin_bin" "$@"
+}
 
 if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
   c_reset=$'\033[0m' c_dim=$'\033[2m' c_bold=$'\033[1m'
@@ -91,8 +142,9 @@ _env_edit() {
 
   local app_user="${APP_USER:-auth}"
 
+  [[ -L "$ENV_LOCAL" ]] && { echo "$ENV_LOCAL is a symlink; refusing to edit through it" >&2; exit 1; }
   if [[ ! -f "$ENV_LOCAL" ]]; then
-    install -o "$app_user" -g "$app_user" -m 0600 /dev/null "$ENV_LOCAL"
+    install -o root -g "$app_user" -m 0640 /dev/null "$ENV_LOCAL"
   fi
 
   local -a names=(nano vim helix)
@@ -138,8 +190,9 @@ _env_edit() {
   fi
 
   "$bin" "$ENV_LOCAL"
-  chown "$app_user:$app_user" "$ENV_LOCAL"
-  chmod 0600 "$ENV_LOCAL"
+  # Root writes, the service reads.
+  chown root:"$app_user" "$ENV_LOCAL"
+  chmod 0640 "$ENV_LOCAL"
   echo "✓ $ENV_LOCAL saved (run 'sudo auth env check' to validate, then 'sudo auth restart')"
 }
 
@@ -163,23 +216,30 @@ _env_check() {
   local owner mode
   owner="$(stat -c '%U:%G' "$ENV_LOCAL" 2>/dev/null || echo unknown)"
   mode="$(stat -c '%a' "$ENV_LOCAL" 2>/dev/null || echo "")"
-  if [[ "$owner" == "$app_user:$app_user" ]]; then
+  # Root writes the file and the service reads it: root:auth 0640. A file
+  # still owned by the service user is the pre-2026-09 layout; the next
+  # `sudo auth rebuild` migrates it.
+  if [[ "$owner" == "root:$app_user" ]]; then
     printf '  %s✓%s owned by %s\n' "$c_green" "$c_reset" "$owner"
+  elif [[ "$owner" == "$app_user:$app_user" ]]; then
+    printf '  %s!%s owned by %s (previous layout; expected root:%s — run %ssudo auth rebuild%s to migrate)\n' \
+      "$c_yellow" "$c_reset" "$owner" "$app_user" "$c_bold" "$c_reset"
+    warn=1
   else
-    printf '  %s✗%s owned by %s (expected %s:%s — auth-server runs as %s and cannot read root-owned files)\n' \
-      "$c_red" "$c_reset" "$owner" "$app_user" "$app_user" "$app_user"
-    printf '       fix: %ssudo chown %s:%s %s%s\n' "$c_dim" "$app_user" "$app_user" "$ENV_LOCAL" "$c_reset"
+    printf '  %s✗%s owned by %s (expected root:%s — auth-server runs as %s and reads it through the group)\n' \
+      "$c_red" "$c_reset" "$owner" "$app_user" "$app_user"
+    printf '       fix: %ssudo chown root:%s %s && sudo chmod 0640 %s%s\n' "$c_dim" "$app_user" "$ENV_LOCAL" "$ENV_LOCAL" "$c_reset"
     fail=1
   fi
-  if [[ "$mode" == "600" || "$mode" == "640" || "$mode" == "400" ]]; then
-    printf '  %s✓%s mode %s (auth user can read)\n' "$c_green" "$c_reset" "$mode"
+  if [[ "$mode" == "640" || "$mode" == "600" || "$mode" == "400" ]]; then
+    printf '  %s✓%s mode %s\n' "$c_green" "$c_reset" "$mode"
   else
-    printf '  %s!%s mode %s (expected 600 — secrets in this file)\n' "$c_yellow" "$c_reset" "$mode"
+    printf '  %s!%s mode %s (expected 640 — secrets in this file)\n' "$c_yellow" "$c_reset" "$mode"
     warn=1
   fi
 
   if [[ "$EUID" -eq 0 ]]; then
-    if sudo -u "$app_user" -H test -r "$ENV_LOCAL" 2>/dev/null; then
+    if runuser -u "$app_user" -- test -r "$ENV_LOCAL" 2>/dev/null; then
       printf '  %s✓%s readable by %s\n' "$c_green" "$c_reset" "$app_user"
     else
       printf '  %s✗%s %s cannot read %s — auth-server will fail on startup\n' \
@@ -232,71 +292,15 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
-  domain)
-    # `auth domain <add|del|list> [name]`. Sources AUTH_DATA_DIR from
-    # .env.local so the admin CLI hits the same SQLite file the running
-    # auth-server uses.
-    # shellcheck disable=SC1090
-    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
-    export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
-    exec "$ADMIN_BIN" domain "$@"
-    ;;
-  user)
-    # Password-account administration plus the legacy magic-link audit.
-    # shellcheck disable=SC1090
-    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
-    export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
-    # Sourcing does not export: pass the two-factor key through explicitly so
-    # auth-admin can tell whether requiring a factor is safe on this box.
-    export AUTH_MFA_KEY="${AUTH_MFA_KEY:-}"
-    # Password policy context: `auth user create|set-password` refuse passwords
-    # built from the brand, hostname, issuer, or the operator's blocked terms.
-    export AUTH_BRAND_NAME AUTH_HOSTNAME AUTH_ISSUER_URL AUTH_PASSWORD_BLOCKED_TERMS
-    exec "$ADMIN_BIN" user "$@"
-    ;;
-  audit)
-    # `auth audit list [email] [limit]` — newest password-mode security
-    # events (logins, failures, rate limits, password/account changes).
-    # shellcheck disable=SC1090
-    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
-    export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
-    exec "$ADMIN_BIN" audit "$@"
-    ;;
-  app)
-    # Confidential-client registration and rotation. The generated secret is
-    # printed once; only its hash is retained in SQLite.
-    # shellcheck disable=SC1090
-    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
-    export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
-    exec "$ADMIN_BIN" app "$@"
-    ;;
-  keygen)
-    # `auth keygen` — print a fresh Ed25519 signing keypair. Doesn't touch
-    # config; the operator copies the private seed into .env.local and the
-    # public key to each verifying service. No env/data needed.
-    exec "$ADMIN_BIN" keygen "$@"
-    ;;
-  mfa)
-    # `auth mfa keygen` prints a fresh AUTH_MFA_KEY (encrypts authenticator
-    # secrets at rest; paste into .env.local and `auth restart`).
-    # `auth mfa policy [mode]` shows or sets who must use two-factor sign-in,
-    # so it needs the data directory like the user commands.
-    # shellcheck disable=SC1090
-    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
-    export AUTH_DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
-    export AUTH_MFA_KEY="${AUTH_MFA_KEY:-}"
-    exec "$ADMIN_BIN" mfa "$@"
-    ;;
-  pubkey)
-    # `auth pubkey` — print AUTH_SIGNING_PUBKEY for the CURRENT signing key.
-    # Sources .env.local so AUTH_SIGNING_KEY is in the env, then derives the
-    # public half. Use when wiring up a verifying service and
-    # the bootstrap output is long gone — no keygen (that mints a NEW key)
-    # and no openssl/python one-liner needed.
-    # shellcheck disable=SC1090
-    [[ -f "$ENV_LOCAL" ]] && . "$ENV_LOCAL"
-    export AUTH_SIGNING_KEY="${AUTH_SIGNING_KEY:-}"
-    exec "$ADMIN_BIN" pubkey "$@"
+  domain|user|audit|app|mfa|keygen|pubkey)
+    # domain: the magic-link allowlist. user: password accounts and the
+    # legacy audit. audit: security events. app: confidential clients (the
+    # secret is printed once, only its hash is kept). mfa: AUTH_MFA_KEY
+    # generation and the two-factor policy. keygen: a fresh signing keypair
+    # (touches nothing). pubkey: the public half of the current signing key.
+    # All run as the service user against the database the running server
+    # uses; see run_admin.
+    run_admin "$cmd" "$@"
     ;;
   update)
     exec sudo bash "$APP_DIR/scripts/update.sh" "$@"
@@ -325,18 +329,20 @@ case "$cmd" in
     fi
     ;;
   backup)
-    dest="${1:-$APP_DIR/data/backups}"
-    umask 077
-    mkdir -p "$dest"
+    [[ $EUID -eq 0 ]] || exec sudo -- "$0" backup "$@"
+    load_env_file "$ENV_LOCAL"
+    data_dir="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    dest="${1:-$data_dir/backups}"
+    install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$dest"
     stamp="$(date +%F-%H%M%S)"
-    # SQLite's online backup via `.backup` produces a consistent
-    # snapshot while the server is running — sqlite3 has to be present;
-    # bootstrap installs it.
+    # SQLite's online backup via `.backup` produces a consistent snapshot
+    # while the server is running (sqlite3 is installed by bootstrap). It
+    # runs as the service user so no root-owned -wal/-shm file can appear
+    # beside the database.
     out="$dest/auth-$stamp.db"
-    sqlite3 "$APP_DIR/data/state.db" ".backup '$out'"
-    chmod 0600 "$out"
+    runuser -u "$APP_USER" -- bash -c "umask 077 && sqlite3 '$data_dir/state.db' \".backup '$out'\""
     echo "✓ backup written to $out"
-    echo "  restore with: cp $out $APP_DIR/data/state.db && sudo auth restart"
+    echo "  restore with: sudo auth stop && sudo rm -f $data_dir/state.db-wal $data_dir/state.db-shm && sudo cp $out $data_dir/state.db && sudo chown $APP_USER:$APP_USER $data_dir/state.db && sudo auth start"
     ;;
   env)
     env_cmd "$@"

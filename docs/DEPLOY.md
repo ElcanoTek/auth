@@ -49,7 +49,9 @@ up where it left off.
 ### Non-interactive install (agents, Ansible, CI)
 
 Every prompt honors an `AUTH_BOOTSTRAP_*` env var. Set
-`AUTH_BOOTSTRAP_NON_INTERACTIVE=1` and the installer runs hands-off:
+`AUTH_BOOTSTRAP_NON_INTERACTIVE=1` and the installer runs hands-off (a
+client bundle is optional: leave `AUTH_BOOTSTRAP_CLIENT_CONFIG` unset for the
+default look):
 
 ```bash
 sudo env \
@@ -96,13 +98,43 @@ bootstrap derives and prints the matching public key either way.
 
 - `/opt/auth/` — source tree, built binaries, and the SQLite file
   under `data/state.db`.
-- Dedicated `auth` system user, `nologin` shell.
+- Dedicated `auth` system user, `nologin` shell. It owns only `data/`
+  (and a build cache); everything root runs is root-owned. See
+  [File ownership](#file-ownership).
 - Two systemd units:
   - `auth-server.service` — the Go service on `127.0.0.1:9000`.
   - `auth.target` — one-liner for "bring this up/down".
 - `/usr/local/bin/auth` — operator CLI for domain/user management
   and service control.
 - Optional: Caddy at `80/443` with automatic Let's Encrypt.
+
+## File ownership
+
+The service user must not be able to change anything root executes or
+sources, so the installed tree follows one rule, enforced by
+`scripts/lib/layout.sh` on every bootstrap and update (an install made
+under the earlier, service-owned layout is migrated in place the first time
+the new `update.sh` runs; see [Upgrading](#upgrading)):
+
+| Path | Owner | Mode | Why |
+|---|---|---|---|
+| `/opt/auth/` and the synced source, `scripts/`, `deploy/`, `docs/` | `root:root` | `0755` / `go-w` | root sources `scripts/lib/*.sh` and runs `scripts/update.sh` from here |
+| `/opt/auth/bin/auth-server`, `auth-admin` | `root:root` | `0755` | the service and the CLI execute them |
+| `/opt/auth/.env.local` | `root:auth` | `0640` | root writes it (`auth env edit`), the service reads it through the group |
+| `/opt/auth/data/` | `auth:auth` | `0700` | the only place the service writes: `state.db` and `backups/` |
+| `/var/cache/auth-build/` | `auth:auth` | `0700` | Go caches for the unprivileged build |
+| `/opt/auth-client/` (bundle checkout) | `root:root` | `go-w` | root pulls it; a service-writable `.git/hooks` would run as root at the next pull |
+
+Builds run as `auth` in a throwaway staging copy with those caches, and root
+installs the result. `auth user|domain|app|audit|mfa|keygen|pubkey` and
+`auth backup` run `auth-admin` and `sqlite3` as `auth` (root reads
+`.env.local` and passes the needed settings through the environment, never
+on a command line), so the database never acquires root-owned files.
+`auth env check` reports any deviation from the table.
+`scripts/test/layout_test.sh` (run as root on a scratch box) exercises all of
+this end to end against a throwaway system user: migration of a
+service-owned tree with planted files, idempotent re-run, rollback, the CLI
+running as the service user, and a fresh non-interactive bootstrap.
 
 ## Why not containers?
 
@@ -711,6 +743,15 @@ That runs `scripts/update.sh`, which:
 
 Your `.env.local`, the SQLite file, and the domain allowlist all
 live outside the paths `update.sh` replaces.
+
+> **First update after adopting the root-owned layout (2026-09):** the same
+> self-updater rule applies. The first `auth update` runs the old installed
+> script, which lands the new source but still leaves the tree owned by
+> `auth`; run `sudo auth rebuild` once afterwards (it runs the new script,
+> which migrates ownership in place and re-installs the binaries root-owned),
+> then confirm with `sudo auth env check`. `auth-admin` runs as the service
+> user from then on; if a root-owned `state.db-wal` or `-shm` exists from an
+> earlier root-run CLI, the migration's `chown -R auth:auth data/` fixes it.
 
 > **First update after adopting the auto-rollback release:** `auth update`
 > runs the `update.sh` already installed under `/opt/auth`, and the new
