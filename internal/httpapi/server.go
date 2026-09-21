@@ -1532,8 +1532,19 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleHealth is what the updater and the proxy watch: it answers ok only
+// when the database answers too, so a build that starts but cannot reach
+// its store is not declared healthy.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Cache-Control", "no-store")
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	if err := s.store.Ping(ctx); err != nil {
+		log.Printf("healthz: database: %v", err)
+		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	_, _ = w.Write([]byte("ok\n"))
 }
 

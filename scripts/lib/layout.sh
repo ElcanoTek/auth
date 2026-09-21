@@ -164,6 +164,13 @@ layout_build() {
       mkdir -p bin
       go build -o bin/auth-server ./cmd/auth-server
       go build -o bin/auth-admin  ./cmd/auth-admin" || return 1
+  # From here on root owns the staging copy again: the service user can no
+  # longer swap a built binary for a symlink (or anything else) between the
+  # build and the install that follows, but can still execute the staged
+  # binary for the pre-flight (root-owned, world-traversable, unwritable).
+  chown -R -h root:root "$staging" || return 1
+  chmod 0755 "$staging" || return 1
+  chmod -R go-w "$staging" || return 1
 }
 
 # layout_install_tree SRC STAGING syncs the source tree from root's trusted
@@ -178,8 +185,22 @@ layout_install_tree() {
   install -d -m 0755 -o root -g root "$APP_DIR" || return 1
   rsync -a --delete --no-owner --no-group --chmod=go-w "${LAYOUT_SYNC_EXCLUDES[@]}" "$src/" "$APP_DIR/" || return 1
   install -d -m 0755 -o root -g root "$APP_DIR/bin" || return 1
-  install -o root -g root -m 0755 "$staging/bin/auth-server" "$APP_DIR/bin/auth-server" || return 1
-  install -o root -g root -m 0755 "$staging/bin/auth-admin"  "$APP_DIR/bin/auth-admin" || return 1
+  # Each staged output must be a plain regular file that root owns with a
+  # single name: install(1) follows symlinks, so a link planted in the
+  # staging copy could otherwise turn a root-only file into a world-readable
+  # copy under bin/. layout_build hands the staging copy back to root before
+  # this runs, so the check cannot be raced.
+  local bin p
+  for bin in auth-server auth-admin; do
+    p="$staging/bin/$bin"
+    if [[ -L "$p" || ! -f "$p" ]]; then
+      layout_die "$p is not a regular file; refusing to install it" || return 1
+    fi
+    if [[ "$(stat -c '%U %h' "$p")" != "root 1" ]]; then
+      layout_die "$p is not root's single-linked file ($(stat -c '%U, %h links' "$p")); refusing to install it" || return 1
+    fi
+    install -o root -g root -m 0755 "$p" "$APP_DIR/bin/$bin" || return 1
+  done
 }
 
 # layout_apply enforces the ownership model on whatever is at APP_DIR now,

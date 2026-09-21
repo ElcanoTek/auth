@@ -82,6 +82,19 @@ func Open(dataDir string) (*Store, error) {
 	return s, nil
 }
 
+// Ping runs a trivial query so a health check proves the database answers,
+// not merely that the process is up.
+func (s *Store) Ping(ctx context.Context) error {
+	var one int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1`).Scan(&one); err != nil {
+		return err
+	}
+	if one != 1 {
+		return errors.New("unexpected ping result")
+	}
+	return nil
+}
+
 // OpenReadOnly opens an existing database without migrating or writing it,
 // for pre-flight checks (auth-server -check-config) that must not touch
 // the live database a running server owns. The file must exist.

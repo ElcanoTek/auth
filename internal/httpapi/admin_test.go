@@ -212,7 +212,7 @@ func shownSecret(t *testing.T, body string) string {
 
 func TestAdminCreatesAccountWithAccessAndOneTimePassword(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
-	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	resp, body := alice.post(url.Values{"action": {"create"}, "email": {"Carol@Example.com"}, "apps": {"explorer"}})
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Created carol@example.com") {
 		t.Fatalf("create = %d\n%s", resp.StatusCode, body)
@@ -391,7 +391,7 @@ func TestAdminGuardsSelfAndLastAdministrator(t *testing.T) {
 func TestAdminSetsAccessAndSignsOutOfRemovedApp(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	ctx := context.Background()
-	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	bob, _ := st.PasswordAccountByEmail(ctx, "bob@example.com")
 	// Grant explorer, remove fleet in one save.
 	_, body := alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}})
@@ -402,7 +402,13 @@ func TestAdminSetsAccessAndSignsOutOfRemovedApp(t *testing.T) {
 		t.Fatalf("bob access = %v", ids)
 	}
 	pending, _ := st.PendingLogoutDeliveries(ctx, "fleet", time.Now().Unix())
-	if len(pending) != 1 || pending[0].Reason != "access_revoked" {
+	revoked := 0
+	for _, p := range pending {
+		if p.Reason == "access_revoked" {
+			revoked++
+		}
+	}
+	if revoked != 1 {
 		t.Fatalf("fleet pending = %+v", pending)
 	}
 	// The fleet tab shows that pending delivery and the access count.
@@ -571,7 +577,7 @@ func exchangeOAuthCodeFor(t *testing.T, base, code, verifier, clientID, secret, 
 // shows a sign-out as a red banner.
 func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
-	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	_, body := alice.get("/admin")
 	for _, want := range []string{
 		`popovertarget="add-user"`, `id="add-user" class="modal" popover`,

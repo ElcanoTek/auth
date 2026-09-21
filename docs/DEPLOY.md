@@ -27,9 +27,13 @@ sudo bash /opt/auth-src/scripts/bootstrap.sh
 
 `bootstrap.sh` is interactive by default. It asks for:
 
-1. **Hostname** — `auth.example.com` for prod, or `localhost` for dev.
-2. **Login mode** — `password` for a new deployment or `magic` for a legacy
-   shared-cookie stack.
+1. **Hostname** — `auth.example.com` for prod, or `localhost` for dev (no
+   default on a fresh box; a re-run offers the current one).
+2. **Login mode** — `password` (the default for a new install) or `magic` for
+   a legacy shared-cookie stack (kept on re-runs).
+3. **Client bundle** — the client's config repository (git URL or local
+   path) for branding, or blank for the default look; then the **brand
+   name** used in prose, defaulting to the bundle's wordmark.
 3. In magic mode, **cookie domain** — auto-guessed from the hostname (e.g.
    `auth.example.com` → `example.com`). The cookie will ride to
    every subdomain of this. Just confirm.
@@ -88,8 +92,15 @@ sudo env \
   bash /opt/auth-src/scripts/bootstrap.sh
 ```
 
-Missing vars fall back to defaults (localhost, no Caddy, stdout
-delivery). The `AUTH_SIGNING_KEY` keypair is auto-generated regardless —
+`AUTH_BOOTSTRAP_HOSTNAME` and, in magic mode, the cookie domain are required;
+a missing `AUTH_BOOTSTRAP_LOGIN_MODE` means `password` on a fresh box, a
+missing `AUTH_BOOTSTRAP_CLIENT_CONFIG` means the default look, and with a real
+hostname Caddy and Let's Encrypt are set up unless
+`AUTH_BOOTSTRAP_SETUP_CADDY=n` / `AUTH_BOOTSTRAP_USE_LETSENCRYPT=n`. Add
+`AUTH_BOOTSTRAP_CLIENT_CONFIG="https://github.com/<org>/<client>-config.git"`
+and `AUTH_BOOTSTRAP_BRAND_NAME="Northwind"` for a branded install (the box
+needs a read-only credential for that repository first, see "Branding from
+the client bundle"). The `AUTH_SIGNING_KEY` keypair is auto-generated regardless —
 if you want to pin one (e.g. to keep the same key across a rebuild),
 pre-set `AUTH_SIGNING_KEY` in the environment before invocation; the
 bootstrap derives and prints the matching public key either way.
@@ -161,10 +172,12 @@ one edit; nothing here is optional for the first sign-in to work.
 **On the Auth host**
 
 1. Deploy or update Auth (`sudo auth update`) so it carries the current
-   protocol (applications require the `exp` claim on logout tokens).
+   protocol (applications require the `exp` claim on logout tokens). A box
+   that was just bootstrapped is current: skip this step and the next.
 2. Set the mode and issuer in `/opt/auth/.env.local`, then `auth restart`:
    `AUTH_LOGIN_MODE="password"`, `AUTH_ISSUER_URL="https://auth.<client>"`.
    The password cookie name must keep its `__Host-` prefix in production.
+   (Bootstrap writes both; this is for a box converted from magic mode.)
 3. Print the public key every application will need:
    `auth pubkey` → the `AUTH_SIGNING_PUBKEY=...` line.
 4. Create the first account and make it an administrator:
@@ -172,6 +185,10 @@ one edit; nothing here is optional for the first sign-in to work.
    The person must change the temporary password at first login; after
    that they can open the web admin console at `https://auth.<client>/admin`
    and create every other account from there (see "Admin console" below).
+   Before any sensitive console action (creating accounts, granting
+   applications, resets, sign-outs, policy) they set up their authenticator
+   at `/account/security`; once every administrator has one, run
+   `auth mfa policy admins`.
 5. Register each application with its exact callback and logout URLs, then its
    back-channel endpoint. One client ID and secret per deployment; never share
    a secret between applications or between clients:
@@ -462,18 +479,18 @@ signed-in page stays greyed. Magic-mode deployments have no accounts,
 applications or administrators, so the
 route does not exist for them at all.
 
-Sensitive actions need the administrator's own second factor. Disabling or
-enabling an account, resetting a password, signing someone else out, changing
-who is an administrator (including creating one), changing the two-factor
-policy or a per-account requirement, resetting someone's authenticator, and
-disabling or enabling an application all require that the acting
+Sensitive actions need the administrator's own second factor. Creating an
+account, changing its applications or administrator status, disabling or
+enabling it, resetting a password, signing someone else out, changing the
+two-factor policy or a per-account requirement, resetting someone's
+authenticator, and disabling or enabling an application all require that the acting
 administrator has an authenticator and entered its code less than five
 minutes ago (a sign-in with the code counts; the **Enter it now** step-up
 counts; a recovery-code sign-in does not). A stolen console session is
-therefore not enough to lock people out or take over an account. Tagging
-teams, changing application access and creating a plain account are not
-gated. On a server without `AUTH_MFA_KEY` the sensitive actions are only
-available from the `auth` CLI on the box.
+therefore not enough to lock people out, mint an account or widen what one
+can reach. Team tags (alone or in a batch) and signing yourself out are the
+only console writes that are not gated. On a server without `AUTH_MFA_KEY`
+the sensitive actions are only available from the `auth` CLI on the box.
 
 Tabs:
 

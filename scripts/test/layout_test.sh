@@ -251,6 +251,22 @@ S2="$T/staging2"; mkdir -p "$S2/bin"; cp "$APP/bin/auth-server" "$APP/bin/auth-a
 lib_call "$G" layout_install_tree "$SRC" "$S2" >/dev/null 2>&1 && ok "layout_install_tree ran" || bad "layout_install_tree failed"
 check test ! -e "$G/scripts/lib/evil.sh"
 check test -f "$G/scripts/lib/layout.sh"
+# A staged binary that is a symlink to a root-only file (planted by the
+# service user between build and install) must never be installed; nor one
+# the service user still owns.
+echo "root-only sentinel" > "$T/rootsecret"; chmod 0600 "$T/rootsecret"
+S7="$T/staging-link"; mkdir -p "$S7/bin"; cp "$APP/bin/auth-admin" "$S7/bin/auth-admin"; ln -s "$T/rootsecret" "$S7/bin/auth-server"; chown -R root:root "$S7"
+G7="$T/guard-link"; mkdir -p "$G7/data"; write_env "$G7/.env.local"
+if lib_call "$G7" layout_install_tree "$SRC" "$S7" >/dev/null 2>&1; then bad "a symlinked staged binary was installed"; else ok "layout_install_tree refuses a symlinked staged binary"; fi
+if [[ -e "$G7/bin/auth-server" ]] && grep -q "root-only sentinel" "$G7/bin/auth-server" 2>/dev/null; then bad "the root-only sentinel was copied into bin/"; else ok "no root-only content reached bin/"; fi
+S8="$T/staging-owned"; mkdir -p "$S8/bin"; cp "$APP/bin/auth-server" "$APP/bin/auth-admin" "$S8/bin/"; chown -R "$APP_USER" "$S8"
+if lib_call "$G7" layout_install_tree "$SRC" "$S8" >/dev/null 2>&1; then bad "a service-owned staged binary was installed"; else ok "layout_install_tree refuses a staged binary the service user owns"; fi
+# After a real build the staging copy belongs to root again.
+S9="$(mktemp -d /var/lib/auth-layout-stage.XXXXXX)"
+lib_call "$G7" layout_build "$SRC" "$S9" >/dev/null 2>&1 && ok "layout_build ran" || bad "layout_build failed"
+[[ -z "$(find "$S9" \( ! -user root -o -perm /022 \) -print -quit)" ]] && ok "staging copy is root's and unwritable by others after the build" || bad "staging copy still service-owned or writable after the build"
+runuser -u "$APP_USER" -- "$S9/bin/auth-server" -check-config -env "$APP/.env.local" >/dev/null 2>&1 && ok "service user can still run the staged binary for the pre-flight" || bad "pre-flight cannot execute the staged binary"
+rm -rf "$S9"
 # A service-owned source tree is refused as an install source.
 S3="$T/src-owned"; mkdir -p "$S3"; chown "$APP_USER" "$S3"
 if lib_call "$G" layout_require_trusted "$S3" >/dev/null 2>&1; then bad "service-owned source accepted"; else ok "layout_require_trusted refuses a service-owned source"; fi

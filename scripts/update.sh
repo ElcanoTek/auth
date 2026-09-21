@@ -172,7 +172,7 @@ restore_bundle_on_exit() {
 step "1/4  Fetching latest from $SRC_DIR"
 
 cd "$SRC_DIR"
-git config --global --add safe.directory "$SRC_DIR" 2>/dev/null || true
+git config --global --get-all safe.directory 2>/dev/null | grep -qx -- "$SRC_DIR" || git config --global --add safe.directory "$SRC_DIR" 2>/dev/null || true
 
 before_sha="$(git rev-parse HEAD)"
 

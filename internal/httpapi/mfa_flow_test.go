@@ -627,3 +627,70 @@ func TestSecurityPageEnrollmentConfirmIsRateLimited(t *testing.T) {
 		t.Fatalf("eleventh guess: %d\n%s", resp.StatusCode, page)
 	}
 }
+
+// Every two-factor POST refuses a stale or missing CSRF token before doing
+// anything: no session, no consumed code, no enrollment, no transaction
+// change. The browser helper injects a valid token by default; these posts
+// carry a wrong one on purpose.
+func TestEveryTwoFactorPostNeedsCSRF(t *testing.T) {
+	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	ctx := context.Background()
+	secret, seeded := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	a, _ := st.PasswordAccountByEmail(ctx, "alice@example.com")
+	remaining, _ := st.RecoveryCodesRemaining(ctx, a.ID)
+	// Mid-login: code, recovery code and cancel.
+	alice := newBrowser(t, ts)
+	alice.login("alice@example.com", plain)
+	for _, form := range []url.Values{
+		{"csrf_token": {"wrong"}, "code": {codeFor(t, secret, time.Now())}},
+		{"csrf_token": {"wrong"}, "recovery_code": {seeded[0]}},
+	} {
+		if resp, _ := alice.post("/login/verify", form); resp.StatusCode == http.StatusSeeOther || alice.has(cfg.PasswordCookieName) {
+			t.Fatalf("/login/verify without CSRF signed in: %v", form)
+		}
+	}
+	if resp, _ := alice.post("/login/cancel", url.Values{"csrf_token": {"wrong"}}); !alice.has("auth_login") {
+		t.Fatalf("/login/cancel without CSRF dropped the transaction: %d", resp.StatusCode)
+	}
+	if n, _ := st.RecoveryCodesRemaining(ctx, a.ID); n != remaining {
+		t.Fatal("a recovery code was consumed by a CSRF-less post")
+	}
+	// The real code still works afterwards (nothing was burnt).
+	if resp, _ := alice.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now())}}); resp.StatusCode != http.StatusSeeOther || !alice.has(cfg.PasswordCookieName) {
+		t.Fatalf("valid post after the forged ones: %d", resp.StatusCode)
+	}
+	// Signed in: every Security action and the step-up page.
+	for _, action := range []string{"start", "confirm", "regenerate", "disable"} {
+		if _, page := alice.post("/account/security", url.Values{"csrf_token": {"wrong"}, "action": {action}, "code": {"000000"}}); !strings.Contains(page, staleFormMessage) {
+			t.Fatalf("/account/security %s without CSRF was not refused:\n%s", action, page)
+		}
+	}
+	if _, page := alice.post("/account/security/verify", url.Values{"csrf_token": {"wrong"}, "password": {plain}, "code": {codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))}}); !strings.Contains(page, staleFormMessage) {
+		t.Fatalf("/account/security/verify without CSRF was not refused:\n%s", page)
+	}
+	if b, _ := st.PasswordAccountByEmail(ctx, "alice@example.com"); !b.MFAEnrolled {
+		t.Fatal("a CSRF-less post disabled the authenticator")
+	}
+	if n, _ := st.RecoveryCodesRemaining(ctx, a.ID); n != remaining {
+		t.Fatal("a CSRF-less post regenerated the recovery codes")
+	}
+	if _, err := st.PendingAuthenticator(ctx, a.ID, time.Now().Unix()); err == nil {
+		t.Fatal("a CSRF-less start created a pending authenticator")
+	}
+}
+
+// /healthz says ok only while the database answers.
+func TestHealthzReflectsTheDatabase(t *testing.T) {
+	ts, st, _, _ := newPasswordTestServer(t, false)
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz: %v %d", err, resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	_ = st.Close()
+	resp, err = http.Get(ts.URL + "/healthz")
+	if err != nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("healthz with a closed database: %v %d", err, resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}

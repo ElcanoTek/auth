@@ -48,6 +48,20 @@ func pwdOnlySession(t *testing.T, s *Store, a Account, hash string, now int64) {
 	}
 }
 
+// evidenceSession writes a session row with chosen evidence, so a test can
+// violate exactly one of the actor-proof conditions at a time.
+func evidenceSession(t *testing.T, s *Store, a Account, hash, amr string, mfaAt int64, now int64) {
+	t.Helper()
+	var mfaCol any
+	if mfaAt > 0 {
+		mfaCol = mfaAt
+	}
+	if _, err := s.db.ExecContext(context.Background(), `INSERT INTO auth_sessions(token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at, amr, mfa_verified_at, security_version)
+		SELECT ?, id, ?, ?, ?, ?, ?, ?, security_version FROM accounts WHERE id = ?`, hash, now, now, now+3600, now+7200, amr, mfaCol, a.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func liveSessions(t *testing.T, s *Store, userID string, now int64) int {
 	t.Helper()
 	n, err := s.CountActiveAuthSessions(context.Background(), userID, now)
@@ -1662,5 +1676,65 @@ func TestOpenReadOnlyOnARealV5DatabaseAndOddPaths(t *testing.T) {
 	// Missing file: os.IsNotExist so the pre-flight can skip the check.
 	if _, err := OpenReadOnly(t.TempDir()); !os.IsNotExist(err) {
 		t.Fatalf("missing database: %v", err)
+	}
+}
+
+// Each condition of the factor proof is necessary on its own. Mutation
+// testing showed the combined test masked them: every negative fixture
+// violated two or more conditions, so removing any single one changed
+// nothing. These fixtures violate exactly one each.
+func TestActorProofConditionsAreEachNecessary(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, now)
+	enrol := func() {
+		t.Helper()
+		if b, _ := s.PasswordAccountByID(ctx, bob.ID); !b.MFAEnrolled {
+			enroll(t, s, bob, "", now)
+		}
+	}
+	proof := func(hash string, freshAfter int64) *ActorProof {
+		return &ActorProof{SessionHash: hash, FreshAfter: freshAfter, RequireFactor: true}
+	}
+	// 1. Fresh, enrolled, factor proven a moment ago, but the evidence says
+	// recovery code ("mfa"), not authenticator ("otp"): refused.
+	enrol()
+	enroll(t, s, alice, "", now)
+	evidenceSession(t, s, alice, "alice-recovery", "pwd mfa", now, now)
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", proof("alice-recovery", now-60), now+1); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("recovery-code evidence accepted as a factor proof: %v", err)
+	}
+	// 2. "otp" evidence, enrolled, session re-verified with the password just
+	// now, but the code itself was entered before the window: refused.
+	enrol()
+	evidenceSession(t, s, alice, "alice-oldcode", "pwd otp", now, now)
+	if err := s.StampSessionReauth(ctx, "alice-oldcode", now+1000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", proof("alice-oldcode", now+900), now+1001); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("stale code with a fresh password re-verification accepted: %v", err)
+	}
+	// 3. "otp" evidence with a fresh code, but the actor no longer has an
+	// active authenticator (evidence that outlived a disable): refused.
+	enrol()
+	if err := s.DisableAuthenticator(ctx, alice.ID, "", now+2); err != nil {
+		t.Fatal(err)
+	}
+	evidenceSession(t, s, alice, "alice-noauth", "pwd otp", now+3, now+3)
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", proof("alice-noauth", now-60), now+4); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("otp evidence without an active authenticator accepted: %v", err)
+	}
+	// Control: all conditions met, the proof is accepted.
+	enrol()
+	enroll(t, s, alice, "", now+5)
+	evidenceSession(t, s, alice, "alice-good", "pwd otp", now+6, now+6)
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", proof("alice-good", now), now+7); err != nil {
+		t.Fatalf("complete proof refused: %v", err)
+	}
+	if b, _ := s.PasswordAccountByID(ctx, bob.ID); b.MFAEnrolled {
+		t.Fatal("reset did not happen with a complete proof")
 	}
 }
