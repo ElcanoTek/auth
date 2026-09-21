@@ -253,8 +253,11 @@ func TestCLIApplicationsAndKeys(t *testing.T) {
 	if out, code := c.run("", "app", "create", "fleet", "https://fleet.example.com/cb"); code == 0 {
 		t.Fatalf("duplicate app accepted:\n%s", out)
 	}
-	if out, code := c.run("", "app", "create", "bad", "http://insecure.example.com/cb"); code == 0 && !strings.Contains(out, "insecure") {
-		t.Fatalf("plain-http callback accepted silently:\n%s", out)
+	if out, code := c.run("", "app", "create", "bad", "http://insecure.example.com/cb"); code == 0 {
+		t.Fatalf("plain-http callback accepted:\n%s", out)
+	}
+	if _, err := st.ApplicationByID(context.Background(), "bad"); err == nil {
+		t.Fatal("an application with a plain-http callback was recorded")
 	}
 	list := c.must("", "app", "list")
 	if !strings.Contains(list, "fleet") {

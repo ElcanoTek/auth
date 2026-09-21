@@ -34,10 +34,10 @@ sudo bash /opt/auth-src/scripts/bootstrap.sh
 3. **Client bundle** — the client's config repository (git URL or local
    path) for branding, or blank for the default look; then the **brand
    name** used in prose, defaulting to the bundle's wordmark.
-3. In magic mode, **cookie domain** — auto-guessed from the hostname (e.g.
+4. In magic mode, **cookie domain** — auto-guessed from the hostname (e.g.
    `auth.example.com` → `example.com`). The cookie will ride to
    every subdomain of this. Just confirm.
-4. In magic mode, **email driver** — `sendgrid` (recommended), `smtp`, or `stdout`
+5. In magic mode, **email driver** — `sendgrid` (recommended), `smtp`, or `stdout`
    (dev only — prints the magic link to the journal). For SendGrid,
    you'll also enter your verified sender address and API key.
 

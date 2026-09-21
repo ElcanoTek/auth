@@ -259,8 +259,12 @@ S7="$T/staging-link"; mkdir -p "$S7/bin"; cp "$APP/bin/auth-admin" "$S7/bin/auth
 G7="$T/guard-link"; mkdir -p "$G7/data"; write_env "$G7/.env.local"
 if lib_call "$G7" layout_install_tree "$SRC" "$S7" >/dev/null 2>&1; then bad "a symlinked staged binary was installed"; else ok "layout_install_tree refuses a symlinked staged binary"; fi
 if [[ -e "$G7/bin/auth-server" ]] && grep -q "root-only sentinel" "$G7/bin/auth-server" 2>/dev/null; then bad "the root-only sentinel was copied into bin/"; else ok "no root-only content reached bin/"; fi
+# A service-owned staged regular file is what a build produces; it is read
+# as the service user and installed root-owned (content the service could
+# read anyway, so nothing root-only can be laundered through it).
 S8="$T/staging-owned"; mkdir -p "$S8/bin"; cp "$APP/bin/auth-server" "$APP/bin/auth-admin" "$S8/bin/"; chown -R "$APP_USER" "$S8"
-if lib_call "$G7" layout_install_tree "$SRC" "$S8" >/dev/null 2>&1; then bad "a service-owned staged binary was installed"; else ok "layout_install_tree refuses a staged binary the service user owns"; fi
+if lib_call "$G7" layout_install_tree "$SRC" "$S8" >/dev/null 2>&1; then ok "layout_install_tree installs a staged binary read as the service user"; else bad "service-owned staged binary refused"; fi
+[[ "$(stat -c '%U:%G %a' "$G7/bin/auth-server")" == "root:root 755" ]] && cmp -s "$G7/bin/auth-server" "$APP/bin/auth-server" && ok "installed copy is root:root 755 with the staged content" || bad "installed copy: $(stat -c '%U:%G %a' "$G7/bin/auth-server" 2>&1)"
 # After a real build the staging copy belongs to root again.
 S9="$(mktemp -d /var/lib/auth-layout-stage.XXXXXX)"
 lib_call "$G7" layout_build "$SRC" "$S9" >/dev/null 2>&1 && ok "layout_build ran" || bad "layout_build failed"
@@ -349,8 +353,12 @@ if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb 
    APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_LOGIN_MODE=password AUTH_BOOTSTRAP_SETUP_CADDY=n \
-   AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   AUTH_BOOTSTRAP_COOKIE_SECURE=n AUTH_BOOTSTRAP_BRAND_NAME='North "Wind" \ Co' \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap.log" 2>&1; then ok "bootstrap succeeded"; else bad "bootstrap failed"; tail -25 "$T/bootstrap.log"; fi
+# The brand name round-trips exactly through the env file, quotes and
+# backslash included, as the server reads it and as the re-run reader does.
+grep -qF 'AUTH_BRAND_NAME="North \"Wind\" \\ Co"' "$APP2/.env.local" && ok "brand written with the file's escaping" || bad "brand line: $(grep '^AUTH_BRAND_NAME=' "$APP2/.env.local")"
+[[ "$( { APP_DIR="$APP2" APP_USER="$APP_USER"; . "$SRC/scripts/lib/layout.sh"; layout_read_env "$APP2/.env.local"; printf '%s' "$AUTH_BRAND_NAME"; } 2>/dev/null)" == 'North "Wind" \ Co' ]] && ok "re-run reader decodes the escaped brand exactly" || bad "reader decoded: $( { APP_DIR="$APP2" APP_USER="$APP_USER"; . "$SRC/scripts/lib/layout.sh"; layout_read_env "$APP2/.env.local"; printf '%s' "$AUTH_BRAND_NAME"; } 2>/dev/null)"
 ( APP_DIR="$APP2" APP_USER="$APP_USER" DATA_DIR="$APP2/data" ENV_FILE="$APP2/.env.local" BUILD_CACHE="$CACHE"
   # shellcheck disable=SC1091
   . "$SRC/scripts/lib/layout.sh"; layout_check ) && ok "fresh install follows the layout" || bad "fresh install layout"
@@ -365,6 +373,7 @@ if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb 
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap2.log" 2>&1; then ok "bootstrap re-run succeeded"; else bad "bootstrap re-run failed"; tail -25 "$T/bootstrap2.log"; fi
 grep -q '^AUTH_RETURN_TO_HOSTS="a.example.com"' "$APP2/.env.local" && ok "re-run kept an unknown setting" || bad "re-run lost AUTH_RETURN_TO_HOSTS"
 grep -q '^AUTH_HOSTNAME="localhost"' "$APP2/.env.local" && ok "re-run kept the hostname from the env file (read as data)" || bad "re-run hostname"
+grep -qF 'AUTH_BRAND_NAME="North \"Wind\" \\ Co"' "$APP2/.env.local" && ok "re-run kept the escaped brand byte for byte" || bad "re-run brand line: $(grep '^AUTH_BRAND_NAME=' "$APP2/.env.local")"
 [[ "$(owner_mode "$APP2/.env.local")" == "root:$APP_USER 640" ]] && ok "re-run env root:$APP_USER 640" || bad "re-run env $(owner_mode "$APP2/.env.local")"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

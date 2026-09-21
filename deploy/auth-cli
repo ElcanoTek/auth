@@ -34,7 +34,7 @@ ENV_LOCAL="$APP_DIR/.env.local"
 # load_env_file FILE exports its KEY=VALUE lines without executing the file:
 # it is data, whoever could write it. Quoting follows the server's loader.
 load_env_file() {
-  local file="$1" line key v q
+  local file="$1" line key v
   [[ -f "$file" && ! -L "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line#"${line%%[![:space:]]*}"}"
@@ -43,15 +43,38 @@ load_env_file() {
     # Only the service's own settings: never LD_PRELOAD, PATH, BASH_ENV or
     # anything else a formerly service-writable file could carry.
     case "$key" in AUTH_*|SENDGRID_API_KEY) ;; *) continue ;; esac
-    v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
-    case "$v" in
-      \"*|\'*) q="${v:0:1}"; v="${v:1}"; v="${v%%"$q"*}"
-             [[ "$q" == '"' ]] && { v="${v//\\\"/\"}"; v="${v//\\\\/\\}"; } ;;
-      *)       v="${v%%#*}"; v="${v%"${v##*[![:space:]]}"}" ;;
-    esac
-    export "$key=$v"
+    export "$key=$(env_unquote "$v")"
   done < "$file"
 }
+
+# env_unquote RAW prints the value of one env-file assignment the way the
+# server's loader reads it: surrounding whitespace trimmed; a double-quoted
+# value ends at the first unescaped quote and unescapes \" and \; a
+# single-quoted value ends at the next quote; a bare value ends at the first
+# " #". Shared shape with internal/config's envFileValue.
+env_unquote() {
+  local v="$1" out="" i c n
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
+    \"*)
+      i=1
+      while (( i < ${#v} )); do
+        c="${v:i:1}"
+        if [[ "$c" == "\\" ]]; then
+          n="${v:i+1:1}"
+          if [[ "$n" == '"' || "$n" == "\\" ]]; then out+="$n"; (( i += 2 )); continue; fi
+          out+="$c"; (( i++ )); continue
+        fi
+        [[ "$c" == '"' ]] && break
+        out+="$c"; (( i++ ))
+      done
+      printf '%s' "$out" ;;
+    \'*) v="${v:1}"; printf '%s' "${v%%\'*}" ;;
+    *) v="${v%%#*}"; printf '%s' "${v%"${v##*[![:space:]]}"}" ;;
+  esac
+}
+
 
 run_admin() {
   if [[ $EUID -ne 0 ]]; then

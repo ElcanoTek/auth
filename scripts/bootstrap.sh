@@ -109,7 +109,11 @@ genbase64() { openssl rand -base64 "$1" | tr -d '=\n' | tr '/+' '_-'; }
 # envq VALUE prints VALUE as a double-quoted env-file literal, escaping the
 # two characters the server's loader unescapes (backslash and double quote),
 # so any answer round-trips exactly. Used for every value written below.
-envq() { local v="$1"; v="${v//\\/\\\\}"; v="${v//\"/\\\"}"; printf '"%s"' "$v"; }
+envq() {
+  local v="$1"
+  [[ "$v" != *$'\n'* && "$v" != *$'\r'* ]] || die "a setting contains a line break, which the env file cannot carry: ${v:0:40}..."
+  v="${v//\\/\\\\}"; v="${v//\"/\\\"}"; printf '"%s"' "$v"
+}
 
 # guess_cookie_domain HOSTNAME → derives the cookie domain. For
 # "auth.example.com" → "example.com"; for "auth.example.co.uk" we err
@@ -251,7 +255,7 @@ ask_until_valid() {  # VAR ENVVAR LABEL DEFAULT VALIDATOR-FUNCTION
 }
 valid_hostname() {
   local h="${1,,}"
-  [[ "$h" == "localhost" || "$h" =~ ^127\. ]] && return 0
+  [[ "$h" == "localhost" || "$h" =~ ^127\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && return 0
   [[ "$h" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]
 }
 valid_login_mode() { [[ "$1" == "password" || "$1" == "magic" ]]; }
@@ -483,7 +487,7 @@ SETUP_CADDY="n"
 USE_LETSENCRYPT="n"
 LE_EMAIL=""
 COOKIE_SECURE="true"
-if [[ "$HOSTNAME_ANSWER" == "localhost" || "$HOSTNAME_ANSWER" == 127.* ]]; then
+if [[ "$HOSTNAME_ANSWER" == "localhost" || "$HOSTNAME_ANSWER" =~ ^127\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   COOKIE_SECURE="false"
 else
   # DNS pre-check so a misconfigured A record fails BEFORE we ask ACME.
@@ -626,7 +630,7 @@ esac
 cat >> "$ENV_OUT" <<EOF
 
 # ── UX ───────────────────────────────────────────────────────────
-AUTH_BRAND_NAME=$(envq "$BRAND_ESCAPED")
+AUTH_BRAND_NAME=$(envq "$BRAND_ANSWER")
 # Post-login landing for a direct visit (an application visit goes back to
 # the application). Unset: password mode lands on the signed-in page at
 # /account; magic mode lands on https://home.${COOKIE_DOMAIN_ANSWER:-<cookie-domain>}.
@@ -666,11 +670,11 @@ if [[ -n "$OLD_ENV_FILE" ]]; then
 fi
 umask "$OLD_UMASK"
 
-# Root writes it, the service reads it: root:auth 0640, installed over the
-# live file in one step.
-install -o root -g "$APP_USER" -m 0640 "$ENV_OUT" "$ENV_FILE"
-rm -f "$ENV_OUT"
-ok "env seeded"
+# The candidate stays beside the live file until the new build has accepted
+# it (step 5); it is readable by the service user for that pre-flight.
+chown root:"$APP_USER" "$ENV_OUT"
+chmod 0640 "$ENV_OUT"
+ok "env prepared (installed after the pre-flight)"
 
 # Surface the public key so the operator can wire up verifying services.
 # Safe to display/copy — it cannot mint tokens, only verify them.
@@ -683,21 +687,28 @@ step "5/6  Building auth-server + auth-admin"
 # The service user builds in a staging copy with its own caches; root then
 # installs root-owned source and binaries into $APP_DIR (scripts/lib/layout.sh).
 STAGING="$(mktemp -d)"
-trap 'rm -rf "$STAGING"' EXIT
+trap 'rm -rf "$STAGING" "$ENV_OUT"' EXIT
 layout_build "$SRC_DIR" "$STAGING"
+
+# Pre-flight before anything live is replaced: the staged build must accept
+# the candidate configuration (the same check `auth update` runs). On a
+# re-run a bad answer therefore leaves the running install exactly as it was.
+if ! runuser -u "$APP_USER" -- "$STAGING/bin/auth-server" -check-config -env "$ENV_OUT"; then
+  die "the new build refuses the configuration above (see its message); the current install was not touched"
+fi
+ok "configuration accepted by the new build"
+
+# Root writes the env file, the service reads it: root:auth 0640, installed
+# over the live file in one step, then source, binaries and CLI.
+install -o root -g "$APP_USER" -m 0640 "$ENV_OUT" "$ENV_FILE"
+rm -f "$ENV_OUT"
 layout_install_tree "$SRC_DIR" "$STAGING"
 layout_apply
 rm -rf "$STAGING"
 trap - EXIT
+ok "env seeded"
 
 install -o root -g root -m 0755 "$APP_DIR/deploy/auth-cli" "$CLI_PATH"
-
-# The built binary must accept the configuration just written before the
-# service is (re)started on it; the same pre-flight `auth update` runs.
-if ! runuser -u "$APP_USER" -- "$APP_DIR/bin/auth-server" -check-config -env "$ENV_FILE"; then
-  die "the built auth-server refuses $ENV_FILE (see the message above); nothing was started"
-fi
-ok "configuration accepted by the new build"
 
 # The listen address the server will use (default 127.0.0.1:9000; a re-run
 # keeps a tuned one), for the health check below.
@@ -825,6 +836,8 @@ printf '%s═══════════════════════�
 say
 if [[ "$SETUP_CADDY" == "y" ]]; then
   say "  URL          ${c_bold}https://${HOSTNAME_ANSWER}${c_reset}"
+elif [[ "$COOKIE_SECURE" == "true" ]]; then
+  say "  URL          ${c_bold}https://${HOSTNAME_ANSWER}${c_reset} ${c_dim}(once your own TLS proxy fronts 127.0.0.1:9000)${c_reset}"
 else
   say "  URL          ${c_bold}http://${HOSTNAME_ANSWER}:9000${c_reset}"
 fi
@@ -854,7 +867,8 @@ if [[ "$LOGIN_MODE_ANSWER" == "magic" && "$EMAIL_DRIVER_ANSWER" == "stdout" ]]; 
   say
 fi
 if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
-  APP_URL="https://${HOSTNAME_ANSWER}"; [[ "$SETUP_CADDY" == "y" ]] || APP_URL="http://${HOSTNAME_ANSWER}:9000"
+  APP_URL="https://${HOSTNAME_ANSWER}"; [[ "$COOKIE_SECURE" == "true" ]] || APP_URL="http://${HOSTNAME_ANSWER}:9000"
+  [[ "$SETUP_CADDY" == "y" || "$COOKIE_SECURE" != "true" ]] || say "  ${c_yellow}Before step 3, put an HTTPS reverse proxy for ${HOSTNAME_ANSWER} in front of 127.0.0.1:9000.${c_reset}"
   say "  ${c_bold}Next steps${c_reset} (full checklist: docs/DEPLOY.md, \"First password-mode client\")"
   say "    1. First administrator (a temporary password is shown once; they change it at first sign-in):"
   say "       ${c_dim}auth user create you@${HOSTNAME_ANSWER#auth.}${c_reset}"

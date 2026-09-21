@@ -48,17 +48,37 @@ env_value() {
   v="$(KEY="$1" awk '
     index($0, "=") && $0 ~ ("^[[:space:]]*" ENVIRON["KEY"] "[[:space:]]*=") { v = $0; sub(/^[^=]*=/, "", v); last = v }
     END { print last }' "$APP_DIR/.env.local" 2>/dev/null)"
-  # Trim the ends first. A quoted value ends at its closing quote (a # inside
-  # the quotes is part of the value, as the server reads it); a bare value
-  # ends at the first #.
+  env_unquote "$v"
+}
+
+# env_unquote RAW prints the value of one env-file assignment the way the
+# server's loader reads it: surrounding whitespace trimmed; a double-quoted
+# value ends at the first unescaped quote and unescapes \" and \; a
+# single-quoted value ends at the next quote; a bare value ends at the first
+# " #". Shared shape with internal/config's envFileValue.
+env_unquote() {
+  local v="$1" out="" i c n
   v="${v#"${v%%[![:space:]]*}"}"
   v="${v%"${v##*[![:space:]]}"}"
   case "$v" in
-    \"*|\'*) local q="${v:0:1}"; v="${v:1}"; v="${v%%"$q"*}" ;;
-    *)       v="${v%%#*}"; v="${v%"${v##*[![:space:]]}"}" ;;
+    \"*)
+      i=1
+      while (( i < ${#v} )); do
+        c="${v:i:1}"
+        if [[ "$c" == "\\" ]]; then
+          n="${v:i+1:1}"
+          if [[ "$n" == '"' || "$n" == "\\" ]]; then out+="$n"; (( i += 2 )); continue; fi
+          out+="$c"; (( i++ )); continue
+        fi
+        [[ "$c" == '"' ]] && break
+        out+="$c"; (( i++ ))
+      done
+      printf '%s' "$out" ;;
+    \'*) v="${v:1}"; printf '%s' "${v%%\'*}" ;;
+    *) v="${v%%#*}"; printf '%s' "${v%"${v##*[![:space:]]}"}" ;;
   esac
-  printf '%s' "$v"
 }
+
 health_addr() {
   local addr host port
   addr="$(env_value AUTH_ADDR)"

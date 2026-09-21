@@ -111,7 +111,7 @@ layout_require_data_dir() {
 # the previous layout, so it is data, never shell. Quoting rules match the
 # server's loader (one matched quote pair, a trailing comment on bare values).
 layout_read_env() {
-  local file="$1" line key v q
+  local file="$1" line key v
   [[ -f "$file" ]] || return 0
   layout_require_real "$file" || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -124,16 +124,38 @@ layout_read_env() {
       AUTH_*|SENDGRID_API_KEY) ;;
       *) continue ;;
     esac
-    v="${v#"${v%%[![:space:]]*}"}"
-    v="${v%"${v##*[![:space:]]}"}"
-    case "$v" in
-      \"*|\'*) q="${v:0:1}"; v="${v:1}"; v="${v%%"$q"*}"
-             [[ "$q" == '"' ]] && { v="${v//\\\"/\"}"; v="${v//\\\\/\\}"; } ;;
-      *)       v="${v%%#*}"; v="${v%"${v##*[![:space:]]}"}" ;;
-    esac
-    export "$key=$v"
+    export "$key=$(env_unquote "$v")"
   done < "$file"
 }
+
+# env_unquote RAW prints the value of one env-file assignment the way the
+# server's loader reads it: surrounding whitespace trimmed; a double-quoted
+# value ends at the first unescaped quote and unescapes \" and \; a
+# single-quoted value ends at the next quote; a bare value ends at the first
+# " #". Shared shape with internal/config's envFileValue.
+env_unquote() {
+  local v="$1" out="" i c n
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
+    \"*)
+      i=1
+      while (( i < ${#v} )); do
+        c="${v:i:1}"
+        if [[ "$c" == "\\" ]]; then
+          n="${v:i+1:1}"
+          if [[ "$n" == '"' || "$n" == "\\" ]]; then out+="$n"; (( i += 2 )); continue; fi
+          out+="$c"; (( i++ )); continue
+        fi
+        [[ "$c" == '"' ]] && break
+        out+="$c"; (( i++ ))
+      done
+      printf '%s' "$out" ;;
+    \'*) v="${v:1}"; printf '%s' "${v%%\'*}" ;;
+    *) v="${v%%#*}"; printf '%s' "${v%"${v##*[![:space:]]}"}" ;;
+  esac
+}
+
 
 # layout_build_cache makes the service user's build cache directory (its
 # parent must be root's; /var/cache is).
@@ -185,22 +207,33 @@ layout_install_tree() {
   install -d -m 0755 -o root -g root "$APP_DIR" || return 1
   rsync -a --delete --no-owner --no-group --chmod=go-w "${LAYOUT_SYNC_EXCLUDES[@]}" "$src/" "$APP_DIR/" || return 1
   install -d -m 0755 -o root -g root "$APP_DIR/bin" || return 1
-  # Each staged output must be a plain regular file that root owns with a
-  # single name: install(1) follows symlinks, so a link planted in the
-  # staging copy could otherwise turn a root-only file into a world-readable
-  # copy under bin/. layout_build hands the staging copy back to root before
-  # this runs, so the check cannot be raced.
-  local bin p
+  # The staged outputs are read AS THE SERVICE USER into a root-private
+  # directory and installed from there. Whatever that read follows (a
+  # symlink or a swapped file planted in the staging copy by a compromised
+  # service account) can only be something the service user could already
+  # read, so no root-only file can be laundered into a world-readable copy
+  # under bin/, however the staging copy is raced. Root touches only the
+  # private copy afterwards.
+  local bin p private
+  private="$(mktemp -d)" || return 1
+  chmod 0700 "$private" || { rm -rf "$private"; return 1; }
   for bin in auth-server auth-admin; do
     p="$staging/bin/$bin"
     if [[ -L "$p" || ! -f "$p" ]]; then
+      rm -rf "$private"
       layout_die "$p is not a regular file; refusing to install it" || return 1
     fi
-    if [[ "$(stat -c '%U %h' "$p")" != "root 1" ]]; then
-      layout_die "$p is not root's single-linked file ($(stat -c '%U, %h links' "$p")); refusing to install it" || return 1
+    if ! runuser -u "$APP_USER" -- cat -- "$p" > "$private/$bin"; then
+      rm -rf "$private"
+      layout_die "could not read $p as $APP_USER; refusing to install it" || return 1
     fi
-    install -o root -g root -m 0755 "$p" "$APP_DIR/bin/$bin" || return 1
+    if [[ ! -s "$private/$bin" ]]; then
+      rm -rf "$private"
+      layout_die "$p read back empty; refusing to install it" || return 1
+    fi
+    install -o root -g root -m 0755 "$private/$bin" "$APP_DIR/bin/$bin" || { rm -rf "$private"; return 1; }
   done
+  rm -rf "$private"
 }
 
 # layout_apply enforces the ownership model on whatever is at APP_DIR now,

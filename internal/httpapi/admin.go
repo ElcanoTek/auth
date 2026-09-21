@@ -624,10 +624,9 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		// The Access popup saves applications and the Admin flag in one store
 		// transaction: a refusal of any part changes nothing. Console-level
 		// rules that the store does not know (self-demotion, a server without
-		// an MFA key) are checked first, so no write is even attempted. A
-		// change of the Admin flag is a sensitive action (gate above applies
-		// only when the flag actually changes, so saving applications alone
-		// stays a password-level action).
+		// an MFA key) are checked first, so no write is even attempted. Every
+		// Access save is a sensitive action (gate above): applications are
+		// what an account may reach.
 		wantAdmin := r.FormValue("admin") == "on"
 		adminChange := wantAdmin != target.IsAdmin
 		policy := s.mfaPolicy(r)

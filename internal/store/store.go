@@ -85,12 +85,15 @@ func Open(dataDir string) (*Store, error) {
 // Ping runs a trivial query so a health check proves the database answers,
 // not merely that the process is up.
 func (s *Store) Ping(ctx context.Context) error {
-	var one int
-	if err := s.db.QueryRowContext(ctx, `SELECT 1`).Scan(&one); err != nil {
+	// A real table read (the migration markers), not SELECT 1: SQLite answers
+	// a constant without touching a page, which would prove nothing about a
+	// damaged or unreadable file.
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		return err
 	}
-	if one != 1 {
-		return errors.New("unexpected ping result")
+	if n < 1 {
+		return errors.New("schema markers missing")
 	}
 	return nil
 }

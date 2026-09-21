@@ -75,16 +75,21 @@ func TestCorruptCiphertextFailsClosed(t *testing.T) {
 	secret, seeded := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
 	f, _ := st.ActiveAuthenticator(context.Background(), a.ID)
-	// Control first: with intact ciphertext the current code signs in, so the
-	// refusal below is about the ciphertext and not about the code.
+	// Control first, with the previous step's code (inside the window): with
+	// intact ciphertext it signs in, so the refusal below is about the
+	// ciphertext and not about the code.
 	control := newBrowser(t, ts)
 	control.login("alice@example.com", plain)
-	if resp, _ := control.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now())}}); resp.StatusCode != http.StatusSeeOther || !control.has(cfg.PasswordCookieName) {
+	if resp, _ := control.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now().Add(-mfa.Period*time.Second))}}); resp.StatusCode != http.StatusSeeOther || !control.has(cfg.PasswordCookieName) {
 		t.Fatalf("control sign-in with intact ciphertext: %d", resp.StatusCode)
 	}
-	// Corrupt the stored ciphertext through the re-seal path (the control
-	// sign-in advanced the accepted step, so re-read it first).
+	// Corrupt the stored ciphertext through the re-seal path, recording the
+	// current step. The next step (now+30s) stays unused and inside the
+	// window, so replay protection cannot be what refuses it below.
 	f, _ = st.ActiveAuthenticator(context.Background(), a.ID)
+	if f.LastAcceptedStep != mfa.StepAt(time.Now().Add(-mfa.Period*time.Second)) {
+		t.Fatalf("control did not record the previous step: %d", f.LastAcceptedStep)
+	}
 	if ok, err := st.RecordAcceptedStep(context.Background(), f.ID, f.LastAcceptedStep+1, []byte("not an envelope"), "test"); err != nil || !ok {
 		t.Fatalf("corrupt: %v %v", ok, err)
 	}
