@@ -49,7 +49,9 @@ up where it left off.
 ### Non-interactive install (agents, Ansible, CI)
 
 Every prompt honors an `AUTH_BOOTSTRAP_*` env var. Set
-`AUTH_BOOTSTRAP_NON_INTERACTIVE=1` and the installer runs hands-off:
+`AUTH_BOOTSTRAP_NON_INTERACTIVE=1` and the installer runs hands-off (a
+client bundle is optional: leave `AUTH_BOOTSTRAP_CLIENT_CONFIG` unset for the
+default look):
 
 ```bash
 sudo env \
@@ -96,13 +98,51 @@ bootstrap derives and prints the matching public key either way.
 
 - `/opt/auth/` — source tree, built binaries, and the SQLite file
   under `data/state.db`.
-- Dedicated `auth` system user, `nologin` shell.
+- Dedicated `auth` system user, `nologin` shell. It owns only `data/`
+  (and a build cache); everything root runs is root-owned. See
+  [File ownership](#file-ownership).
 - Two systemd units:
   - `auth-server.service` — the Go service on `127.0.0.1:9000`.
   - `auth.target` — one-liner for "bring this up/down".
 - `/usr/local/bin/auth` — operator CLI for domain/user management
   and service control.
 - Optional: Caddy at `80/443` with automatic Let's Encrypt.
+
+## File ownership
+
+The service user must not be able to change anything root executes or
+sources, so the installed tree follows one rule, enforced by
+`scripts/lib/layout.sh` on every bootstrap and update (an install made
+under the earlier, service-owned layout is migrated in place the first time
+the new `update.sh` runs; see [Upgrading](#upgrading)):
+
+| Path | Owner | Mode | Why |
+|---|---|---|---|
+| `/opt/auth/` and the synced source, `scripts/`, `deploy/`, `docs/` | `root:root` | `0755` / `go-w` | root sources `scripts/lib/*.sh` and runs `scripts/update.sh` from here |
+| `/opt/auth/bin/auth-server`, `auth-admin` | `root:root` | `0755` | the service and the CLI execute them |
+| `/opt/auth/.env.local` | `root:auth` | `0640` | root writes it (`auth env edit`), the service reads it through the group |
+| `/opt/auth/data/` | `auth:auth` | `0700` | the only place the service writes: `state.db` and `backups/` |
+| `/var/cache/auth-build/` | `auth:auth` | `0700` | Go caches for the unprivileged build |
+| `/opt/auth-client/` (bundle checkout) | `root:root` | `go-w` | root pulls it with hooks disabled; a service-writable `.git/hooks` would run as root at the next pull |
+
+`AUTH_DATA_DIR` may stay at `/opt/auth/data` or point outside `/opt/auth`.
+An outside directory is never created or claimed by the installer (the
+setting comes from a file the service user could once write): it must
+already exist, owned by `auth`, under root-owned parents, and the unit needs
+a drop-in adding it to `ReadWritePaths`. Any other path inside `/opt/auth`
+is refused, because the source sync and the ownership pass could not
+protect it.
+
+Builds run as `auth` in a throwaway staging copy with those caches, and root
+installs the result. `auth user|domain|app|audit|mfa|keygen|pubkey` and
+`auth backup` run `auth-admin` and `sqlite3` as `auth` (root reads
+`.env.local` and passes the needed settings through the environment, never
+on a command line), so the database never acquires root-owned files.
+`auth env check` reports any deviation from the table.
+`scripts/test/layout_test.sh` (run as root on a scratch box) exercises all of
+this end to end against a throwaway system user: migration of a
+service-owned tree with planted files, idempotent re-run, rollback, the CLI
+running as the service user, and a fresh non-interactive bootstrap.
 
 ## Why not containers?
 
@@ -711,6 +751,34 @@ That runs `scripts/update.sh`, which:
 
 Your `.env.local`, the SQLite file, and the domain allowlist all
 live outside the paths `update.sh` replaces.
+
+> **First update after adopting the root-owned layout (2026-09):** do not use
+> the installed `auth` wrapper for this one step. On a box installed before
+> this release the wrapper and the installed `update.sh` are the very files
+> the service user could write, so the migration must run the new script from
+> the root-owned source checkout directly:
+>
+> ```bash
+> # the checkout, everything in it and every directory above it must be
+> # root's, unwritable by others, with no symlinks
+> stat -c '%U %a %n' / /opt /opt/auth-src                              # root, 755 (or stricter)
+> sudo find /opt/auth-src \( ! -user root -o -perm /022 -o -type l \) | head   # must print nothing
+> cd /opt/auth-src && sudo git -c core.hooksPath=/dev/null pull --ff-only
+> sudo env AUTH_UPDATE_NO_PULL=1 bash scripts/update.sh
+> sudo auth env check                               # reports the layout
+> ```
+>
+> If either command shows anything else, fix it first (`sudo chown -R
+> root:root /opt/auth-src && sudo chmod -R go-w /opt/auth-src`, remove any
+> symlink) or re-clone the repository as root.
+>
+> The script verifies the checkout is root's alone before it sources
+> anything, migrates the tree (and a client bundle checkout, which is
+> re-cloned from its remote if the service user could write it) and
+> re-installs binaries, units and the wrapper root-owned. `auth-admin` runs
+> as the service user from then on; a root-owned `state.db-wal` or `-shm`
+> left by an earlier root-run CLI is reclaimed for the service by the
+> migration.
 
 > **First update after adopting the auto-rollback release:** `auth update`
 > runs the `update.sh` already installed under `/opt/auth`, and the new

@@ -29,7 +29,7 @@ fi
 
 APP_DIR="${APP_DIR:-/opt/auth}"
 APP_USER="${APP_USER:-auth}"
-CLI_PATH="/usr/local/bin/auth"
+CLI_PATH="${CLI_PATH:-/usr/local/bin/auth}"
 
 DRY_RUN="${AUTH_BOOTSTRAP_DRY_RUN:-0}"
 
@@ -151,13 +151,40 @@ fi
 
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 [[ -d "$SRC_DIR/cmd/auth-server" ]] || die "not running from a repo checkout — clone first and re-run from inside it"
+# Root sources the layout library from this checkout and syncs it into
+# $APP_DIR, so the checkout must be root's alone (no service-owned or
+# group/world-writable path in or above it). Checked before sourcing.
+require_trusted_checkout() {
+  local p owner mode stray
+  p="$(readlink -f -- "$1")" || die "$1 does not resolve"
+  while :; do
+    owner="$(stat -c '%U' "$p")" || die "cannot stat $p"
+    mode="$(stat -c '%a' "$p")"
+    [[ "$owner" == "root" ]] || die "$p is owned by $owner; the source checkout and everything above it must be root's (chown -R root:root)"
+    [[ "$((8#$mode & 8#022))" -eq 0 ]] || die "$p is writable by group or others; run bootstrap from a checkout only root can write"
+    [[ "$p" == "/" ]] && break
+    p="$(dirname "$p")"
+  done
+  stray="$(find "$(readlink -f -- "$1")" \( ! -user root -o -perm -g+w -o -perm -o+w -o -type l \) -print -quit 2>/dev/null)"
+  [[ -z "$stray" ]] || die "$stray is not root's, is writable by group/others, or is a symlink; fix the checkout first (chown -R root:root $1 && chmod -R go-w $1)"
+}
+require_trusted_checkout "$SRC_DIR"
+# shellcheck disable=SC1091
+. "$SRC_DIR/scripts/lib/layout.sh"
+layout_require_trusted "$SRC_DIR"
 
 # ── 1. system packages ──────────────────────────────────────────────
 step "1/6  Installing system dependencies via dnf"
 PKGS=(git curl jq golang openssl sqlite bind-utils)
-dnf install -y "${PKGS[@]}" >/dev/null
+if [[ "${AUTH_BOOTSTRAP_SKIP_PACKAGES:-0}" == "1" ]]; then
+  info "AUTH_BOOTSTRAP_SKIP_PACKAGES=1: not running dnf (test harness)"
+else
+  dnf install -y "${PKGS[@]}" >/dev/null
+fi
 need_cmd go
 need_cmd sqlite3
+need_cmd rsync
+need_cmd runuser
 ok "installed: ${PKGS[*]}"
 
 # ── 2. user + directory ─────────────────────────────────────────────
@@ -165,21 +192,28 @@ step "2/6  Preparing ${APP_DIR} + '${APP_USER}' system user"
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
   useradd --system --shell /usr/sbin/nologin --home-dir "$APP_DIR" --create-home "$APP_USER"
 fi
-mkdir -p "$APP_DIR/data" "$APP_DIR/bin"
-chmod 0700 "$APP_DIR/data" # password hashes and sealed secrets live here
-chown -R "$APP_USER:$APP_USER" "$APP_DIR"
-ok "user '${APP_USER}' ready, ${APP_DIR} owned"
+# Root owns the tree; the service user owns only its data directory (see
+# scripts/lib/layout.sh). useradd --create-home made the directory
+# service-owned; layout_apply puts it right, on a fresh box and on one
+# installed under the previous layout alike.
+install -d -m 0755 -o root -g root "$APP_DIR" "$APP_DIR/bin"
+# A previous install may keep its data elsewhere: read the setting (as data)
+# before the ownership pass so the right directory is left to the service.
+[[ -f "$ENV_FILE" ]] && layout_read_env "$ENV_FILE"
+DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+[[ "$DATA_DIR" == /* ]] || DATA_DIR="$APP_DIR/$DATA_DIR"
+layout_require_data_dir
+layout_apply
+ok "user '${APP_USER}' ready, ${APP_DIR} root-owned, ${DATA_DIR} service-owned"
 
 # ── 3. config — hostname + cookie domain + email provider ──────────
 step "3/6  Configuring the instance"
 
-ENV_FILE="$APP_DIR/.env.local"
 if [[ -f "$ENV_FILE" ]]; then
   info "found existing ${ENV_FILE} — re-using values, only asking for what's missing"
-  set -a
-  # shellcheck source=/dev/null
-  . "$ENV_FILE"
-  set +a
+  # Read as data, never sourced: under the previous layout the service user
+  # could write this file.
+  layout_read_env "$ENV_FILE"
 fi
 
 # 3a — hostname
@@ -211,7 +245,13 @@ say
 say "  Client branding bundle — a git URL or local path of the client's config"
 say "  repository (the one Fleet uses). Auth reads only its branding: block."
 say "  Leave blank for the default look."
-CLIENT_CONFIG_ANSWER="$(prompt AUTH_BOOTSTRAP_CLIENT_CONFIG "Client bundle (git URL or path, blank for none)" "${AUTH_CLIENT_CONFIG_DIR:-}")"
+# Non-interactive runs that do not mention a bundle get none (the default
+# look), the same as an interactive blank answer.
+if [[ "$NON_INTERACTIVE" == "1" && -z "${AUTH_BOOTSTRAP_CLIENT_CONFIG+set}" ]]; then
+  CLIENT_CONFIG_ANSWER="${AUTH_CLIENT_CONFIG_DIR:-}"
+else
+  CLIENT_CONFIG_ANSWER="$(prompt AUTH_BOOTSTRAP_CLIENT_CONFIG "Client bundle (git URL or path, blank for none)" "${AUTH_CLIENT_CONFIG_DIR:-}")"
+fi
 CLIENT_CONFIG_DIR=""
 CLIENT_CHECKOUT="${AUTH_CLIENT_CHECKOUT:-${APP_DIR}-client}"
 if [[ -n "$CLIENT_CONFIG_ANSWER" ]]; then
@@ -226,11 +266,12 @@ if [[ -n "$CLIENT_CONFIG_ANSWER" ]]; then
       CLIENT_CONFIG_DIR="$CLIENT_CHECKOUT"
       if [[ "$DRY_RUN" != "1" ]]; then
         if [[ -d "$CLIENT_CONFIG_DIR/.git" ]]; then
-          git -C "$CLIENT_CONFIG_DIR" pull --ff-only --quiet || die "could not fast-forward $CLIENT_CONFIG_DIR"
+          layout_bundle_migrate "$CLIENT_CONFIG_DIR"
+          layout_bundle_git "$CLIENT_CONFIG_DIR" pull --ff-only --quiet || die "could not fast-forward $CLIENT_CONFIG_DIR"
         else
-          git clone --quiet "$CLIENT_CONFIG_ANSWER" "$CLIENT_CONFIG_DIR" || die "could not clone the bundle (does the box's git credential cover that repository?)"
+          git -c core.hooksPath=/dev/null clone --quiet "$CLIENT_CONFIG_ANSWER" "$CLIENT_CONFIG_DIR" || die "could not clone the bundle (does the box's git credential cover that repository?)"
         fi
-        chown -R "$APP_USER:$APP_USER" "$CLIENT_CONFIG_DIR"
+        layout_bundle "$CLIENT_CONFIG_DIR"
       fi
       ;;
     *)
@@ -435,6 +476,7 @@ step "4/6  Writing ${ENV_FILE}"
 # verbatim, so a re-run never silently drops a setting.
 # The backup lives under data/ (excluded from the source sync below, which
 # runs rsync --delete over the rest of $APP_DIR) so it survives this run.
+layout_require_real "$ENV_FILE"
 OLD_ENV_FILE=""
 if [[ -f "$ENV_FILE" ]]; then
   mkdir -p "$APP_DIR/data/backups"
@@ -443,9 +485,13 @@ if [[ -f "$ENV_FILE" ]]; then
   cp -p "$ENV_FILE" "$OLD_ENV_FILE"
   chmod 0600 "$OLD_ENV_FILE"
 fi
+# Written to a temporary file and installed over the live one in one step,
+# so a failure mid-way never leaves a half-written env file, and the result
+# is root:auth 0640 from the moment it exists.
+ENV_OUT="$(mktemp "$APP_DIR/.env.local.new.XXXXXX")"
 OLD_UMASK="$(umask)"
 umask 077
-cat > "$ENV_FILE" <<EOF
+cat > "$ENV_OUT" <<EOF
 # Auto-generated by bootstrap.sh on $(date -Iseconds)
 # Override anything via the process env (systemd EnvironmentFile=).
 
@@ -493,12 +539,12 @@ EOF
 
 case "$EMAIL_DRIVER_ANSWER" in
   sendgrid)
-    cat >> "$ENV_FILE" <<EOF
+    cat >> "$ENV_OUT" <<EOF
 SENDGRID_API_KEY="$SENDGRID_KEY_ANSWER"
 EOF
     ;;
   smtp)
-    cat >> "$ENV_FILE" <<EOF
+    cat >> "$ENV_OUT" <<EOF
 AUTH_SMTP_HOST="$SMTP_HOST"
 AUTH_SMTP_PORT="$SMTP_PORT"
 AUTH_SMTP_USER="$SMTP_USER"
@@ -512,7 +558,7 @@ esac
 BRAND_ESCAPED="${AUTH_BRAND_NAME:-Elcano}"
 BRAND_ESCAPED="${BRAND_ESCAPED//\\/\\\\}"
 BRAND_ESCAPED="${BRAND_ESCAPED//\"/\\\"}"
-cat >> "$ENV_FILE" <<EOF
+cat >> "$ENV_OUT" <<EOF
 
 # ── UX ───────────────────────────────────────────────────────────
 AUTH_BRAND_NAME="$BRAND_ESCAPED"
@@ -534,28 +580,30 @@ if [[ -n "$OLD_ENV_FILE" ]]; then
   kept=0
   for key in AUTH_ADDR AUTH_DATA_DIR AUTH_COOKIE_NAME AUTH_PASSWORD_COOKIE_NAME AUTH_CODE_TTL_SECONDS AUTH_ASSERTION_TTL_MINUTES; do
     [[ -n "${old_line[$key]:-}" ]] || continue
-    grep -q "^${key}=" "$ENV_FILE" || continue
+    grep -q "^${key}=" "$ENV_OUT" || continue
     REPL="${old_line[$key]}" KEY="$key" awk '
       index($0, ENVIRON["KEY"] "=") == 1 && !done { print ENVIRON["REPL"]; done = 1; next } { print }
-    ' "$ENV_FILE" > "$ENV_FILE.tmp" && cat "$ENV_FILE.tmp" > "$ENV_FILE" && rm -f "$ENV_FILE.tmp"
+    ' "$ENV_OUT" > "$ENV_OUT.tmp" && cat "$ENV_OUT.tmp" > "$ENV_OUT" && rm -f "$ENV_OUT.tmp"
     kept=$((kept + 1))
   done
   # Everything else the template does not know about is appended verbatim.
   carried=0
   for key in $(printf '%s\n' "${!old_line[@]}" | sort); do
-    grep -q "^${key}=" "$ENV_FILE" && continue
+    grep -q "^${key}=" "$ENV_OUT" && continue
     if [[ $carried -eq 0 ]]; then
-      printf '\n# ── Carried over from the previous .env.local (not set by this run) ──\n' >> "$ENV_FILE"
+      printf '\n# ── Carried over from the previous .env.local (not set by this run) ──\n' >> "$ENV_OUT"
     fi
-    printf '%s\n' "${old_line[$key]}" >> "$ENV_FILE"
+    printf '%s\n' "${old_line[$key]}" >> "$ENV_OUT"
     carried=$((carried + 1))
   done
   [[ $((kept + carried)) -gt 0 ]] && info "kept $((kept + carried)) setting(s) from the previous .env.local (backup: $OLD_ENV_FILE)"
 fi
 umask "$OLD_UMASK"
 
-chown "$APP_USER:$APP_USER" "$ENV_FILE"
-chmod 0600 "$ENV_FILE"
+# Root writes it, the service reads it: root:auth 0640, installed over the
+# live file in one step.
+install -o root -g "$APP_USER" -m 0640 "$ENV_OUT" "$ENV_FILE"
+rm -f "$ENV_OUT"
 ok "env seeded"
 
 # Surface the public key so the operator can wire up verifying services.
@@ -566,24 +614,17 @@ printf '    AUTH_SIGNING_PUBKEY=%s\n' "$AUTH_SIGNING_PUBKEY"
 # ── 5. build + install ──────────────────────────────────────────────
 step "5/6  Building auth-server + auth-admin"
 
-# Sync source into /opt/auth excluding state + secrets + binaries.
-rsync -a --delete \
-  --exclude='/.git' \
-  --exclude='/data' \
-  --exclude='/bin' \
-  --exclude='/.env.local' \
-  "$SRC_DIR/" "$APP_DIR/"
-chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+# The service user builds in a staging copy with its own caches; root then
+# installs root-owned source and binaries into $APP_DIR (scripts/lib/layout.sh).
+STAGING="$(mktemp -d)"
+trap 'rm -rf "$STAGING"' EXIT
+layout_build "$SRC_DIR" "$STAGING"
+layout_install_tree "$SRC_DIR" "$STAGING"
+layout_apply
+rm -rf "$STAGING"
+trap - EXIT
 
-sudo -u "$APP_USER" -H bash -c "
-  cd '$APP_DIR'
-  GOTOOLCHAIN=auto go mod tidy
-  mkdir -p bin
-  GOTOOLCHAIN=auto go build -o bin/auth-server ./cmd/auth-server
-  GOTOOLCHAIN=auto go build -o bin/auth-admin  ./cmd/auth-admin
-"
-
-install -m 0755 "$APP_DIR/deploy/auth-cli" "$CLI_PATH"
+install -o root -g root -m 0755 "$APP_DIR/deploy/auth-cli" "$CLI_PATH"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   info "DRY_RUN: skipping systemd install + start"
@@ -610,7 +651,7 @@ if [[ "$LOGIN_MODE_ANSWER" == "magic" && -n "$ALLOWED_DOMAINS_ANSWER" ]]; then
   for d in "${_DOMAINS[@]}"; do
     d="${d// /}"
     [[ -z "$d" ]] && continue
-    sudo -u "$APP_USER" AUTH_DATA_DIR="$APP_DIR/data" \
+    AUTH_DATA_DIR="$DATA_DIR" runuser -u "$APP_USER" -- \
       "$APP_DIR/bin/auth-admin" domain add "$d" >/dev/null 2>&1 || true
   done
 fi
@@ -668,7 +709,7 @@ else
 fi
 
 # ── motd ────────────────────────────────────────────────────────────
-tee /etc/motd > /dev/null <<'MOTD'
+[[ "$DRY_RUN" == "1" ]] || tee /etc/motd > /dev/null <<'MOTD'
      ╔══════════════════╗
      ║   ELCANO  AUTH   ║
      ║   ──────────     ║
@@ -699,7 +740,7 @@ if [[ "$LOGIN_MODE_ANSWER" == "magic" ]]; then
   say "  Allowlist    ${c_dim}${ALLOWED_DOMAINS_ANSWER:-(empty — open enrollment)}${c_reset}"
   say "  Email        ${c_dim}${EMAIL_DRIVER_ANSWER}${c_reset}"
 fi
-say "  Data dir     ${APP_DIR}/data"
+say "  Data dir     ${DATA_DIR} ${c_dim}(the only path the service user owns)${c_reset}"
 say "  Logs         ${c_dim}journalctl -fu auth-server${c_reset}"
 say "  CLI          ${c_dim}auth domain add …  •  auth user list  •  auth restart${c_reset}"
 say
