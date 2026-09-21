@@ -751,6 +751,9 @@ ok "configuration accepted by the new build"
 # Files that did not exist (a fresh box) are recorded instead, and removed
 # on failure, so a re-run starts from the same clean state.
 SNAP="$(mktemp -d)"; chmod 0700 "$SNAP"
+# The snapshot holds the live secrets: from this moment a failure removes it
+# (nothing has been swapped yet, so there is nothing to put back).
+trap 'restore_bundle_on_failure || true; rm -rf "$SNAP" "$STAGING" "$ENV_OUT" 2>/dev/null || true' EXIT
 SNAP_CREATED=()
 if [[ -f "$ENV_FILE" ]]; then cp -p "$ENV_FILE" "$SNAP/env"; else SNAP_CREATED+=("$ENV_FILE"); fi
 for b in auth-server auth-admin; do
@@ -758,25 +761,32 @@ for b in auth-server auth-admin; do
 done
 restore_install_on_failure() {
   [[ "$BOOTSTRAP_DONE" != "1" && -n "${SNAP:-}" && -d "$SNAP" ]] || return 0
-  local b p restored=0 removed=0
+  local b p restored=0 removed=0 failed=0
   # Each step is independent and best-effort: one failure must not stop
   # the others (this runs from the EXIT trap, under set -e).
-  if [[ -f "$SNAP/env" ]]; then
-    if install -o root -g "$APP_USER" -m 0640 "$SNAP/env" "$ENV_FILE"; then restored=1; else warn "could not put $ENV_FILE back; the previous copy is in $SNAP/env"; fi
+  # A file the swap never reached is left alone (byte-identical to its
+  # snapshot); only changed files are put back.
+  if [[ -f "$SNAP/env" ]] && ! cmp -s "$SNAP/env" "$ENV_FILE"; then
+    if install -o root -g "$APP_USER" -m 0640 "$SNAP/env" "$ENV_FILE"; then restored=1; else failed=1; warn "could not put $ENV_FILE back; the previous copy is in $SNAP/env"; fi
   fi
   for b in auth-server auth-admin; do
-    if [[ -f "$SNAP/$b" ]]; then
-      if install -o root -g root -m 0755 "$SNAP/$b" "$APP_DIR/bin/$b"; then restored=1; else warn "could not put $APP_DIR/bin/$b back; the previous copy is in $SNAP/$b"; fi
+    if [[ -f "$SNAP/$b" ]] && ! cmp -s "$SNAP/$b" "$APP_DIR/bin/$b"; then
+      if install -o root -g root -m 0755 "$SNAP/$b" "$APP_DIR/bin/$b"; then restored=1; else failed=1; warn "could not put $APP_DIR/bin/$b back; the previous copy is in $SNAP/$b"; fi
     fi
   done
   for p in "${SNAP_CREATED[@]}"; do
     [[ -e "$p" ]] || continue
-    if rm -f -- "$p"; then removed=1; else warn "could not remove $p, which this run created"; fi
+    if rm -f -- "$p"; then removed=1; else failed=1; warn "could not remove $p, which this run created"; fi
   done
   [[ "$restored" == "1" ]] && warn "the previous env file and binaries were put back (this run did not complete)"
   [[ "$removed" == "1" ]] && warn "files this run created were removed again (it did not complete)"
-  # The snapshot is kept when anything could not be put back.
-  [[ "$restored$removed" == "00" || -z "$(ls -A "$SNAP")" ]] && rm -rf "$SNAP" 2>/dev/null
+  # The snapshot (it holds the live secrets) is kept only while something
+  # could not be put back, and then named; otherwise it goes.
+  if [[ "$failed" == "1" ]]; then
+    warn "the previous files are kept in $SNAP (root only); put them back by hand, then remove it"
+  else
+    rm -rf "$SNAP" 2>/dev/null || warn "could not remove the snapshot $SNAP"
+  fi
   return 0
 }
 # Restores first, each best-effort; cleanup last, so a failing rm cannot

@@ -99,7 +99,17 @@ chmod 0755 "$T/stub/rsync"
 cat > "$T/stub/install" <<STUB
 #!/usr/bin/env bash
 if [[ -n "\${LT_FAIL_INSTALL:-}" ]]; then
-  for a in "\$@"; do [[ "\$a" == "\$LT_FAIL_INSTALL" ]] && { echo "install stub: refusing \$a" >&2; exit 1; }; done
+  for a in "\$@"; do for f in \$LT_FAIL_INSTALL; do [[ "\$a" == "\$f" ]] && { echo "install stub: refusing \$a" >&2; exit 1; }; done; done
+fi
+# LT_FAIL_INSTALL_SECOND: the first install to this target succeeds (the
+# swap), the second is refused (the restore).
+if [[ -n "\${LT_FAIL_INSTALL_SECOND:-}" ]]; then
+  for a in "\$@"; do
+    if [[ "\$a" == "\$LT_FAIL_INSTALL_SECOND" ]]; then
+      n=\$(( \$(cat "$T/stub/second.count" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "$T/stub/second.count"
+      [[ "\$n" -ge 2 ]] && { echo "install stub: refusing second install of \$a" >&2; exit 1; }
+    fi
+  done
 fi
 exec /usr/bin/install "\$@"
 STUB
@@ -446,7 +456,8 @@ cp "$APP2/.env.local" "$T/env2.before"
 # left with a new env beside half-replaced binaries.
 echo "previous-build-marker" >> "$APP2/bin/auth-server"
 cp "$APP2/.env.local" "$T/env2.swap"
-if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP2/bin/auth-admin" \
+mkdir -p "$T/tmp7"
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP2/bin/auth-admin" TMPDIR="$T/tmp7" \
    APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=auth.northwind.test AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=y \
@@ -456,6 +467,27 @@ grep -q 'previous env file and binaries were put back' "$T/bootstrap7.log" && ok
 cmp -s "$APP2/.env.local" "$T/env2.swap" && ok "live env put back after the mid-swap failure" || bad "live env differs after the mid-swap failure"
 grep -q "previous-build-marker" "$APP2/bin/auth-server" && ok "previous auth-server put back after the mid-swap failure" || bad "auth-server was left replaced"
 [[ "$(owner_mode "$APP2/.env.local")" == "root:$APP_USER 640" && "$(owner_mode "$APP2/bin/auth-server")" == "root:root 755" ]] && ok "restored files keep the layout's ownership" || bad "restored ownership $(owner_mode "$APP2/.env.local") $(owner_mode "$APP2/bin/auth-server")"
+[[ -z "$(ls -A "$T/tmp7")" ]] && ok "snapshot and staging removed after a successful restore (no secrets left in TMPDIR)" || bad "left in TMPDIR: $(ls -A "$T/tmp7" | tr '\n' ' ')"
+# When the restore itself fails, the snapshot (the only copy of the previous
+# env) is kept root-only and named, instead of being removed. Here the env is
+# swapped, the first binary's install is refused, and the env's restore is
+# refused too.
+mkdir -p "$T/tmp9"; rm -f "$T/stub/second.count"
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP2/bin/auth-server" LT_FAIL_INSTALL_SECOND="$APP2/.env.local" TMPDIR="$T/tmp9" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap9.log" 2>&1; then bad "bootstrap reported success when nothing could be installed"; else ok "bootstrap fails when nothing can be installed"; fi
+grep -q 'could not put .*\.env\.local back' "$T/bootstrap9.log" && ok "the failed restore is reported" || bad "no failed-restore message: $(grep -v '^$' "$T/bootstrap9.log" | tail -4)"
+kept_snap="$(sed 's/\x1b\[[0-9;]*m//g' "$T/bootstrap9.log" | sed -n 's/.*previous files are kept in \([^ ]*\) .*/\1/p' | tail -1)"
+[[ -n "$kept_snap" && -d "$kept_snap" && "$(owner_mode "$kept_snap")" == "root:root 700" ]] && ok "snapshot kept root-only and named: $kept_snap" || bad "snapshot not kept or not named (got '$kept_snap')"
+[[ -n "$kept_snap" ]] && cmp -s "$kept_snap/env" "$T/env2.swap" && ok "kept snapshot holds the previous env byte for byte" || bad "kept snapshot env differs or missing"
+[[ -n "$kept_snap" ]] && [[ -f "$kept_snap/auth-server" && -f "$kept_snap/auth-admin" ]] && ok "kept snapshot holds both previous binaries" || bad "kept snapshot binaries missing"
+! cmp -s "$APP2/.env.local" "$T/env2.swap" && ok "live env is the one the failed restore could not replace" || bad "live env unexpectedly restored"
+grep -q "previous-build-marker" "$APP2/bin/auth-server" && ok "unchanged auth-server was left alone (no needless reinstall)" || bad "auth-server changed"
+# The operator's manual step, as the message says: put the env back, remove the snapshot.
+install -o root -g "$APP_USER" -m 0640 "$kept_snap/env" "$APP2/.env.local"; rm -rf "$kept_snap" "$T/tmp9"; rm -f "$T/stub/second.count"
+cmp -s "$APP2/.env.local" "$T/env2.swap" && ok "env put back by hand from the kept snapshot" || bad "manual restore failed"
 # The same failure on a fresh box removes the files this run created, so
 # the next attempt starts clean instead of finding a half install.
 APP3="$T/app3"
