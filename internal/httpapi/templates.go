@@ -937,7 +937,7 @@ const adminHTML = `<!doctype html>
         <input name="team" type="text" list="teams" maxlength="40" placeholder="Team (for Set team; blank removes it)" aria-label="Team for the selected accounts">
         <button class="btn-ghost" type="submit">Apply to selected</button>
       </form>
-      <noscript><style nonce="{{.Nonce}}">.batch { display: flex; }</style></noscript>
+      <noscript><style nonce="{{.Nonce}}">.batch { display: flex; } .batch-count { display: none; }</style></noscript>
       {{else}}<p class="empty">No accounts yet. Add the first one with the button above.</p>{{end}}
       <datalist id="teams">{{range .Teams}}<option value="{{.}}">{{end}}</datalist>
     </section>
