@@ -24,7 +24,7 @@ import (
 //
 //   - A "factor" is one row in authenticators (kind "totp"). At most one is
 //     active per account (verified, not disabled); one more may be pending
-//     while a person enrols or replaces it.
+//     while a person enrolls or replaces it.
 //   - "security_version" on accounts counts factor-affecting changes. A
 //     session or an in-flight login transaction created under an older
 //     version is treated as insufficient evidence.
@@ -163,7 +163,7 @@ func hasColumnQ(ctx context.Context, q queryer, table, col string) bool {
 
 var (
 	ErrNoAuthenticator     = errors.New("no active authenticator")
-	ErrPendingNotFound     = errors.New("no pending enrolment")
+	ErrPendingNotFound     = errors.New("no pending enrollment")
 	ErrTransactionNotFound = errors.New("authentication transaction not found")
 	ErrTooManyAttempts     = errors.New("too many attempts")
 	ErrStaleTransaction    = errors.New("authentication transaction is stale")
@@ -527,7 +527,7 @@ func activeAuthenticatorQ(ctx context.Context, q querier, userID string) (Authen
 	return f, err
 }
 
-// CreatePendingAuthenticator starts an enrolment (or a replacement): one
+// CreatePendingAuthenticator starts an enrollment (or a replacement): one
 // pending row per account, replacing any earlier unconfirmed attempt. The
 // ciphertext is the sealed secret; the account's active factor, if any, is
 // untouched until ActivateAuthenticator confirms the new one.
@@ -556,7 +556,7 @@ func (s *Store) CreatePendingAuthenticator(ctx context.Context, id, userID, labe
 	return tx.Commit()
 }
 
-// PendingAuthenticator returns the account's live unconfirmed enrolment.
+// PendingAuthenticator returns the account's live unconfirmed enrollment.
 func (s *Store) PendingAuthenticator(ctx context.Context, userID string, now int64) (Authenticator, error) {
 	f, err := scanAuthenticator(s.db.QueryRowContext(ctx, `SELECT `+authenticatorColumns+`
 		FROM authenticators WHERE user_id = ? AND kind = 'totp' AND verified_at IS NULL AND pending_expires_at > ?`, userID, now))
@@ -567,7 +567,7 @@ func (s *Store) PendingAuthenticator(ctx context.Context, userID string, now int
 }
 
 // LoginCompletion asks a factor mutation that happens inside a login (the
-// enrolment step of an incomplete sign-in) to also consume the login
+// enrollment step of an incomplete sign-in) to also consume the login
 // transaction and mint the session, all in the same SQLite transaction.
 type LoginCompletion struct {
 	TransactionID string
@@ -577,13 +577,13 @@ type LoginCompletion struct {
 	AbsoluteAt    int64
 }
 
-// ActivateAuthenticator confirms a pending enrolment after the person proved
+// ActivateAuthenticator confirms a pending enrollment after the person proved
 // a code (acceptedStep). In one transaction it: disables the previous active
 // factor, marks the pending row verified with that step recorded (so the
 // confirmation code cannot be replayed), replaces the recovery-code set,
 // bumps the account's security version, revokes every other session of the
 // account (they no longer meet the account's evidence bar), upgrades the
-// session that did the enrolling (keepSessionHash) or, when the enrolment is
+// session that did the enrolling (keepSessionHash) or, when the enrollment is
 // a step of an incomplete login, consumes that login transaction and mints
 // the session (completion), queues the back-channel logout for the account's
 // applications, and audits. Exactly one of keepSessionHash and completion
@@ -606,7 +606,7 @@ func (s *Store) ActivateAuthenticator(ctx context.Context, pendingID, userID str
 		// change pending, the same credential and the same (pre-bump)
 		// security version it was opened under. A password reset or factor
 		// mutation since the password step makes the browser's pending
-		// enrolment void, and the pending row stays pending.
+		// enrollment void, and the pending row stays pending.
 		var txCredential, credential string
 		var txVersion, version int64
 		var disabled sql.NullInt64
@@ -632,7 +632,7 @@ func (s *Store) ActivateAuthenticator(ctx context.Context, pendingID, userID str
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM authenticators WHERE user_id = ? AND kind = 'totp' AND verified_at IS NOT NULL AND disabled_at IS NULL`, userID).Scan(&previous); err != nil {
 		return 0, err
 	}
-	// A sign-in-time enrolment proves the password and the new secret, not
+	// A sign-in-time enrollment proves the password and the new secret, not
 	// the factor the account already has; only a signed-in session that
 	// proved the existing factor (keepSessionHash) may replace it.
 	if completion != nil && previous > 0 {
@@ -668,8 +668,8 @@ func (s *Store) ActivateAuthenticator(ctx context.Context, pendingID, userID str
 		}
 	}
 	if completion != nil {
-		// The enrolment code was this login's proof. The transaction is
-		// consumed here and the session carries the enrolment as evidence.
+		// The enrollment code was this login's proof. The transaction is
+		// consumed here and the session carries the enrollment as evidence.
 		if _, err := consumeTransactionTx(ctx, tx, completion.TransactionID, completion.Stage, userID, now); err != nil {
 			return 0, err
 		}
@@ -750,7 +750,7 @@ func recordAcceptedStepTx(ctx context.Context, e execer, authenticatorID, userID
 // verified by the caller). Inside the transaction it re-reads the policy and
 // the account: an account that is currently required to have a factor
 // cannot disable it (ErrFactorRequired), however the request was gated
-// outside. Then: the active factor is disabled, pending enrolments and
+// outside. Then: the active factor is disabled, pending enrollments and
 // recovery codes deleted, the security version bumped, every other session
 // revoked, the acting session downgraded to password-only evidence, the
 // back-channel logout queued, and the event audited.
@@ -808,7 +808,7 @@ func (s *Store) DisableAuthenticator(ctx context.Context, userID, keepSessionHas
 }
 
 // ResetMFA is the administrator (or box CLI) path for a lost authenticator:
-// factor, pending enrolments, recovery codes and login transactions go;
+// factor, pending enrollments, recovery codes and login transactions go;
 // every session is revoked and the back-channel logout queued. The account
 // is marked as requiring a factor, so it lands in "enrollment required" at
 // its next sign-in whether or not the deployment policy demands one: a reset
@@ -993,7 +993,7 @@ func (s *Store) RecoveryCodesRemaining(ctx context.Context, userID string) (int,
 // ── authentication transactions ─────────────────────────────────────
 
 // AuthTransaction is an incomplete login: the password verified but a
-// second step (factor, forced password change, enrolment) is outstanding.
+// second step (factor, forced password change, enrollment) is outstanding.
 // It is bound to the credential and security version seen at creation and
 // to the policy revision, so anything that changes underneath invalidates it.
 type AuthTransaction struct {
@@ -1102,7 +1102,7 @@ func (s *Store) AuthTransactionByState(ctx context.Context, stateHash string, no
 }
 
 // AdvanceAuthTransaction moves a transaction to its next stage, optionally
-// extending its expiry (enrolment gets ten minutes where a challenge gets
+// extending its expiry (enrollment gets ten minutes where a challenge gets
 // five), and resets the attempt counter for the new stage. The stage
 // precondition makes concurrent advances race for one update; the loser
 // gets ErrTransactionNotFound.
@@ -1337,7 +1337,7 @@ func (s *Store) StampSessionReauth(ctx context.Context, tokenHash string, now in
 // the account's ACTIVE authenticator (so a factor disabled meanwhile refuses
 // the proof), and only then the session's evidence becomes "pwd otp" with
 // the verification time and the account's current security version. A
-// session that began with a recovery code, or before enrolment, thereby
+// session that began with a recovery code, or before enrollment, thereby
 // gains the proof that resets and other factor-gated actions demand.
 func (s *Store) VerifyFactorAndStampReauth(ctx context.Context, tokenHash, authenticatorID string, step int64, rewrapped []byte, keyID string, now int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1490,8 +1490,8 @@ func (s *Store) HasAuthenticators(ctx context.Context) (bool, error) {
 // MFAKeyRequiredReason says why this database cannot be served without
 // AUTH_MFA_KEY, or "" when it can. Enrolled authenticators need the key to
 // be verified; a non-optional policy or a per-account requirement needs it
-// so the people it covers can enrol at all (without it they would be sent
-// to an enrolment that cannot work, and an administrators policy would
+// so the people it covers can enroll at all (without it they would be sent
+// to an enrollment that cannot work, and an administrators policy would
 // lock the console). Works on a database that predates the MFA tables.
 func (s *Store) MFAKeyRequiredReason(ctx context.Context) (string, error) {
 	// A pre-v6 database has the reserved tables but not the v6 columns
@@ -1752,7 +1752,7 @@ func (s *Store) SaveAccountAccess(ctx context.Context, email string, save Access
 	return out, tx.Commit()
 }
 
-// AbandonPendingAuthenticator deletes an account's unconfirmed enrolment
+// AbandonPendingAuthenticator deletes an account's unconfirmed enrollment
 // (a cancelled sign-in, or a person leaving the set-up page).
 func (s *Store) AbandonPendingAuthenticator(ctx context.Context, userID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM authenticators WHERE user_id = ? AND kind = 'totp' AND verified_at IS NULL`, userID)

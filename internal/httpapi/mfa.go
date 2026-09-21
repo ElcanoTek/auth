@@ -25,7 +25,7 @@ import (
 //     transaction (store.AuthTransaction) is opened instead, its token in a
 //     host-only cookie, and the browser walks the stages that remain:
 //     factor (/login/verify), forced password change (/change-password) and
-//     enrolment (/login/enroll). The last stage completes the transaction
+//     enrollment (/login/enroll). The last stage completes the transaction
 //     and mints the session in one store transaction, so a password alone
 //     never produces a session for such an account.
 //   - Account → Security (/account/security): set up, replace or turn off an
@@ -44,7 +44,7 @@ const (
 	stageComplete       = "complete" // a password change with nothing left after it
 
 	challengeTTL = 5 * time.Minute  // factor step, password change
-	enrollTTL    = 10 * time.Minute // enrolment: scanning a QR takes longer
+	enrollTTL    = 10 * time.Minute // enrollment: scanning a QR takes longer
 	reauthWindow = 5 * time.Minute  // how long a fresh password check is honoured
 
 	errMFALocked   = "mfa_locked"
@@ -56,16 +56,16 @@ const (
 	//   - mfaGlobalLimit: factor attempts across every account, so one
 	//     deployment-wide flood cannot spend everybody's per-account budget
 	//     unnoticed (the per-account and per-address limits still apply).
-	//   - mfaEnrolLimit: fresh enrolment secrets generated per account.
+	//   - mfaEnrollLimit: fresh enrollment secrets generated per account.
 	//   - mfaResetLimit: administrator resets per acting administrator.
 	mfaGlobalLimit = 1000
-	mfaEnrolLimit  = 5
+	mfaEnrollLimit = 5
 	mfaResetLimit  = 10
 )
 
-// errEnrolLimited: too many fresh enrolment secrets for one account in the
+// errEnrollLimited: too many fresh enrollment secrets for one account in the
 // window; the person waits rather than being locked out.
-var errEnrolLimited = errors.New("too many enrolment attempts")
+var errEnrollLimited = errors.New("too many enrollment attempts")
 
 type loginTxMeta struct {
 	ReturnTo string `json:"return_to,omitempty"`
@@ -98,7 +98,7 @@ func factorNeeded(a store.Account, mode mfa.Mode) bool {
 }
 
 // firstStage is where an incomplete login starts: an existing factor is
-// proven first, then the forced password change, then enrolment.
+// proven first, then the forced password change, then enrollment.
 func firstStage(a store.Account) string {
 	switch {
 	case a.MFAEnrolled:
@@ -504,23 +504,23 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── enrolment (shared by /login/enroll and Account → Security) ─────
+// ── enrollment (shared by /login/enroll and Account → Security) ─────
 
-// enrolmentView prepares the QR and manual key for the account's pending
-// enrolment, creating one when none is live. The secret is generated here,
+// enrollmentView prepares the QR and manual key for the account's pending
+// enrollment, creating one when none is live. The secret is generated here,
 // sealed, and only ever rendered into this response.
-func (s *Server) enrolmentView(r *http.Request, account store.Account, now time.Time) (map[string]any, error) {
+func (s *Server) enrollmentView(r *http.Request, account store.Account, now time.Time) (map[string]any, error) {
 	pending, err := s.store.PendingAuthenticator(r.Context(), account.ID, now.Unix())
 	var secret []byte
 	if errors.Is(err, store.ErrPendingNotFound) {
 		// Generating a secret is cheap for us and free for an attacker to
 		// trigger, so fresh secrets per account are capped separately.
-		limited, err := s.reserveCounted(r.Context(), s.rateKey("mfa-enroll", account.ID), mfaEnrolLimit, now)
+		limited, err := s.reserveCounted(r.Context(), s.rateKey("mfa-enroll", account.ID), mfaEnrollLimit, now)
 		if err != nil {
 			return nil, err
 		}
 		if limited {
-			return nil, errEnrolLimited
+			return nil, errEnrollLimited
 		}
 		secret, err = mfa.NewSecret()
 		if err != nil {
@@ -576,9 +576,9 @@ func groupSecret(b32 string) string {
 	return b.String()
 }
 
-// confirmEnrolment checks the first code against the pending secret and
+// confirmEnrollment checks the first code against the pending secret and
 // returns the pending row and matched step for activation.
-func (s *Server) confirmEnrolment(r *http.Request, account store.Account, code string, now time.Time) (store.Authenticator, int64, bool) {
+func (s *Server) confirmEnrollment(r *http.Request, account store.Account, code string, now time.Time) (store.Authenticator, int64, bool) {
 	pending, err := s.store.PendingAuthenticator(r.Context(), account.ID, now.Unix())
 	if err != nil {
 		return store.Authenticator{}, 0, false
@@ -654,14 +654,14 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	render := func(errText string) {
-		view, err := s.enrolmentView(r, account, now)
-		if errors.Is(err, errEnrolLimited) {
-			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enrol_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
+		view, err := s.enrollmentView(r, account, now)
+		if errors.Is(err, errEnrollLimited) {
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enroll_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
 			s.restartLogin(w, r, tr, errMFALocked)
 			return
 		}
 		if err != nil {
-			log.Printf("mfa enrolment view: %v", err)
+			log.Printf("mfa enrollment view: %v", err)
 			http.Error(w, "something went wrong", http.StatusInternalServerError)
 			return
 		}
@@ -711,7 +711,7 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 		render("Too many attempts. Wait a few minutes and try again.")
 		return
 	}
-	pending, step, verified := s.confirmEnrolment(r, account, r.FormValue("code"), now)
+	pending, step, verified := s.confirmEnrollment(r, account, r.FormValue("code"), now)
 	if !verified {
 		_ = s.store.RecordAudit(r.Context(), "login.mfa_failed", account.ID, ipKey, now.Unix())
 		if left <= 0 {
@@ -769,7 +769,7 @@ func (s *Server) handleLoginCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	tr, account, ok := s.currentLoginTransaction(r)
 	if ok {
-		// A cancelled enrolment leaves no half-generated secret behind.
+		// A cancelled enrollment leaves no half-generated secret behind.
 		_ = s.store.AbandonPendingAuthenticator(r.Context(), account.ID)
 	}
 	s.restartLogin(w, r, tr, "")
@@ -779,10 +779,10 @@ func (s *Server) handleLoginCancel(w http.ResponseWriter, r *http.Request) {
 
 // assuredIdentity returns the signed-in identity when its session carries
 // the evidence the account's policy demands, and otherwise sends the browser
-// where it has to go: sign-in, the forced password change, enrolment, or (a
+// where it has to go: sign-in, the forced password change, enrollment, or (a
 // session that predates a factor change) sign-in after clearing the
 // cookies. allowEnrollment lets the Security page itself serve an account
-// that still has to enrol. The caller returns as soon as nil comes back.
+// that still has to enroll. The caller returns as soon as nil comes back.
 func (s *Server) assuredIdentity(w http.ResponseWriter, r *http.Request, allowEnrollment bool) *passwordIdentity {
 	identity := s.currentPasswordSession(r)
 	if identity == nil {
@@ -933,14 +933,14 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 	}
 	switch action {
 	case "start":
-		view, err := s.enrolmentView(r, account, now)
-		if errors.Is(err, errEnrolLimited) {
-			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enrol_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
+		view, err := s.enrollmentView(r, account, now)
+		if errors.Is(err, errEnrollLimited) {
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enroll_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
 			renderPage("", "Too many set-up attempts. Wait a few minutes and try again.")
 			return
 		}
 		if err != nil {
-			log.Printf("mfa enrolment view: %v", err)
+			log.Printf("mfa enrollment view: %v", err)
 			http.Error(w, "something went wrong", http.StatusInternalServerError)
 			return
 		}
@@ -958,14 +958,14 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if limited {
-			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enrol_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enroll_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
 			renderPage("", "Too many attempts. Wait a few minutes and try again.")
 			return
 		}
-		pending, step, verified := s.confirmEnrolment(r, account, r.FormValue("code"), now)
+		pending, step, verified := s.confirmEnrollment(r, account, r.FormValue("code"), now)
 		if !verified {
-			_ = s.store.RecordAudit(r.Context(), "mfa.enrol_failed", account.ID, ipKey, now.Unix())
-			view, err := s.enrolmentView(r, account, now)
+			_ = s.store.RecordAudit(r.Context(), "mfa.enroll_failed", account.ID, ipKey, now.Unix())
+			view, err := s.enrollmentView(r, account, now)
 			if err != nil {
 				http.Error(w, "something went wrong", http.StatusInternalServerError)
 				return
@@ -1207,7 +1207,7 @@ func acrFor(mfaVerifiedAt int64) string {
 // for an account whose login runs through a transaction (a factor was just
 // proven, or one must be enrolled next). It mirrors handleChangePassword's
 // checks, replaces the credential and re-binds the transaction to the new
-// hash in one store transaction, then either continues to enrolment or
+// hash in one store transaction, then either continues to enrollment or
 // completes the login with whatever factor evidence the transaction
 // recorded.
 func (s *Server) changePasswordUnderTransaction(w http.ResponseWriter, r *http.Request, tr store.AuthTransaction, account store.Account) {
@@ -1263,7 +1263,7 @@ func (s *Server) changePasswordUnderTransaction(w http.ResponseWriter, r *http.R
 		s.renderChangePassword(w, passwordauth.UserMessage(err), csrf, dest)
 		return
 	}
-	// What follows the change: enrolment when policy requires a factor the
+	// What follows the change: enrollment when policy requires a factor the
 	// account lacks, otherwise completion. The account is re-read after the
 	// change below, but the requirement does not depend on the password.
 	policy := s.mfaPolicy(r)

@@ -10,7 +10,7 @@ import (
 type Mode string
 
 const (
-	// ModeOptional: nobody is forced; a person who enrols must use it.
+	// ModeOptional: nobody is forced; a person who enrolls must use it.
 	ModeOptional Mode = "optional"
 	// ModeAdmins: every administrator must have a factor.
 	ModeAdmins Mode = "admins"

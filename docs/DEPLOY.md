@@ -309,7 +309,7 @@ An application may add `prompt=none` to its `/authorize` request to ask
 session Auth issues the code as usual; without one it never shows a form and
 redirects back to the registered callback with `error=login_required` (or
 `error=interaction_required` when the account is signed in but has to do
-something at Auth first: a forced password change, a required enrolment, or
+something at Auth first: a forced password change, a required enrollment, or
 a second factor its session has not proven), plus the caller's `state` and
 `iss`. Fleet uses this to try
 SSO automatically on an anonymous visit and fall back to its own login page
@@ -362,8 +362,8 @@ password. What people see:
 - **Required accounts.** When the deployment policy or a per-user
   requirement (both set in the console, or with `auth mfa policy` and
   `auth user mfa-required` on the box) requires a factor the account lacks,
-  sign-in continues straight into enrolment; a forced first-login password change happens after an existing
-  factor is proven and before enrolment. Existing sessions of an account that
+  sign-in continues straight into enrollment; a forced first-login password change happens after an existing
+  factor is proven and before enrollment. Existing sessions of an account that
   becomes required, and has no factor, are signed out immediately.
 - **Turning it off.** Under the Optional policy a person may turn their own
   factor off from the Security page (a sign-in or step-up less than five
@@ -372,29 +372,32 @@ password. What people see:
   account cannot; it can only replace the authenticator. A lost authenticator
   is an administrator reset (Settings → Reset two-factor in the console, or
   `auth user mfa-reset <email> --reason "..."` on the box), after which the
-  account is signed out everywhere and must enrol again before it can sign
+  account is signed out everywhere and must enroll again before it can sign
   in, whatever the policy: a reset never quietly returns an account to
   password-only.
 - **Administering it.** The Accounts tab shows each account's two-factor
   status (Enabled, Enrollment required, Not enrolled) beside its status
   badge. **Two-factor policy** (top right of the table) chooses Optional,
   Required for administrators or Required for everyone and says, per
-  choice, how many enabled accounts would have to enrol: those are signed out
-  the moment a stricter policy is saved and enrol at their next sign-in;
+  choice, how many enabled accounts would have to enroll: those are signed out
+  the moment a stricter policy is saved and enroll at their next sign-in;
   relaxing the policy removes nobody's authenticator. In each row's
-  **Access** popup a **Require 2FA** pill adds a per-account requirement (the
-  strongest rule wins; it is locked when the policy already requires it).
-  Every two-factor change in the console needs the administrator's own
-  sign-in to be less than five minutes old; otherwise the page offers
-  **Verify now** (password, plus their code) and the change is repeated.
-  Resetting someone's authenticator additionally requires the acting
-  administrator to have one themselves. Recommended rollout: leave the policy
-  Optional, have every administrator enrol from Security, then switch to
+  **Settings** popup, **Two-factor sign-in** shows the account's state and a
+  **Require** / **Stop requiring** button for the per-account requirement
+  (the strongest rule wins; the button is absent when the policy already
+  requires it); the batch bar above the table requires it of several
+  accounts at once. Every sensitive change in the console (see the admin
+  console section) needs the acting administrator's own authenticator code
+  entered less than five minutes ago; otherwise the page offers **Enter it
+  now** (password, plus their code) and the change is repeated. An
+  administrator without an authenticator is sent to set one up first.
+  Recommended rollout: leave the policy
+  Optional, have every administrator enroll from Security, then switch to
   Required for administrators.
 - **Limits.** Five wrong codes end a sign-in attempt; ten failed factor
   attempts per account, and fifty per address, in fifteen minutes pause
   further attempts (the same counters as passwords, and they survive a
-  restart); fresh enrolment secrets are capped at five per account, resets at
+  restart); fresh enrollment secrets are capped at five per account, resets at
   ten per administrator, and factor attempts at a thousand across the
   deployment, all per fifteen minutes. Every limit is a cooldown, never a
   permanent lockout.
@@ -406,10 +409,10 @@ password. What people see:
   ```
   This is audited as `mfa.reset` by `cli:<your login>`, signs the account
   out everywhere, and leaves it in **Enrollment required**: the next sign-in
-  goes straight to enrolment. Use it for identity recovery only; a password
+  goes straight to enrollment. Use it for identity recovery only; a password
   reset never removes a factor, and the CLI sends no notification (the audit
   log is the record). If the policy requires a factor of every administrator
-  and none can enrol because the key is gone, restore `AUTH_MFA_KEY` from
+  and none can enroll because the key is gone, restore `AUTH_MFA_KEY` from
   the `.env.local` backup first; without it the server refuses to start once
   factors exist, once the policy is anything but Optional, or once any
   account is individually required to use one (the refusal names which).
@@ -435,14 +438,14 @@ Server configuration:
   installs; on an existing box run `auth mfa keygen`, paste the two lines
   into `.env.local` and `auth restart`. Unset, 2FA is simply unavailable; once
   any account holds a factor, the policy requires one, or an account is
-  individually required to enrol, the server refuses to start without it.
+  individually required to enroll, the server refuses to start without it.
 - `AUTH_MFA_KEY_ID` (default `1`) labels the key. To rotate, generate a new
   key, give it a new id, move the old pair to `AUTH_MFA_PREVIOUS_KEYS` as
   `id:key`, restart, and keep it there until every factor has been re-sealed
   (each successful verification re-seals under the active key). Then drop it.
 - `AUTH_MFA_ISSUER` is the label authenticator apps show for the account
   (default the brand name); it may not contain `:`. Changing it affects only
-  new enrolments.
+  new enrollments.
 - The server clock must be right: codes are valid for thirty seconds either
   side of now and nothing widens that. Fedora runs chronyd by default; keep it.
 - Schema v6 adds the factor, transaction, policy and recovery-code columns on
@@ -459,9 +462,26 @@ signed-in page stays greyed. Magic-mode deployments have no accounts,
 applications or administrators, so the
 route does not exist for them at all.
 
+Sensitive actions need the administrator's own second factor. Disabling or
+enabling an account, resetting a password, signing someone else out, changing
+who is an administrator (including creating one), changing the two-factor
+policy or a per-account requirement, resetting someone's authenticator, and
+disabling or enabling an application all require that the acting
+administrator has an authenticator and entered its code less than five
+minutes ago (a sign-in with the code counts; the **Enter it now** step-up
+counts; a recovery-code sign-in does not). A stolen console session is
+therefore not enough to lock people out or take over an account. Tagging
+teams, changing application access and creating a plain account are not
+gated. On a server without `AUTH_MFA_KEY` the sensitive actions are only
+available from the `auth` CLI on the box.
+
 Tabs:
 
-- **Accounts.** Every password account with status (Active / Disabled / Must
+- **Accounts.** Tick accounts and use the bar above the table to change
+  several at once: set a team tag, sign them out everywhere, or require (or
+  stop requiring) two-factor sign-in; the notice lists what was done and
+  what was skipped and why (your own row is never signed out or required
+  from the batch). Every password account with status (Active / Disabled / Must
   change password), the Admin badge, its team tag, the applications it may
   sign in to and its live central sessions (the creation date sits in the
   Settings popup beside the email). Each row has two

@@ -391,7 +391,7 @@ USERS
   auth user show <email>            show account state and active sessions
   auth user revoke-sessions <email> revoke all sessions for one account
   auth user mfa-required <email> on|off  require two-factor sign-in for one account
-  auth user mfa-reset <email> --reason "<text>"  remove a lost authenticator (they enrol again)
+  auth user mfa-reset <email> --reason "<text>"  remove a lost authenticator (they enroll again)
   auth user list                    password accounts + magic-link audit
   auth user del <email>             remove a user from magic-link audit
 

@@ -63,10 +63,11 @@ type adminAccountRow struct {
 
 // adminMFAOption is one deployment-policy choice with what it would do.
 type adminMFAOption struct {
-	Mode    string
-	Label   string
-	Current bool
-	ToEnrol int64 // enabled accounts that would have to enrol
+	Mode     string
+	Label    string
+	Describe string // one-line explanation shown in the policy popup
+	Current  bool
+	ToEnroll int64 // enabled accounts that would have to enroll
 }
 
 type adminSignInRow struct {
@@ -116,6 +117,28 @@ type adminResult struct {
 	// NeedVerify: the action is sensitive and the administrator's sign-in is
 	// older than the re-verification window; the page offers the step-up.
 	NeedVerify bool
+	// NeedEnroll: the action is sensitive and the administrator has no
+	// authenticator yet; the page points at Security.
+	NeedEnroll bool
+}
+
+// sensitiveActions are the console actions that lock people out, take over
+// an account or widen privilege. They need the acting administrator's own
+// authenticator code, entered within the re-verification window: a stolen
+// admin browser session must not be enough to disable accounts, reset
+// passwords or change who is an administrator.
+var sensitiveActions = map[string]string{
+	"disable":          "disabling an account",
+	"enable":           "enabling an account",
+	"reset-password":   "resetting a password",
+	"revoke-sessions":  "signing someone out everywhere",
+	"grant-admin":      "changing who is an administrator",
+	"revoke-admin":     "changing who is an administrator",
+	"reset-mfa":        "resetting someone's two-factor sign-in",
+	"set-policy":       "changing the two-factor policy",
+	"set-mfa-required": "changing a two-factor requirement",
+	"disable-app":      "disabling an application",
+	"enable-app":       "enabling an application",
 }
 
 // failed logs an unexpected error and marks the result as a 500.
@@ -200,20 +223,52 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	tab := r.FormValue("tab")
 	res := adminResult{Tab: tab}
 	ipHash := s.rateKey("ip", clientIP(r))
-	// Second-factor changes are sensitive: they need a sign-in or step-up
-	// less than the re-verification window old (for an enrolled
-	// administrator the step-up includes their own code).
-	// For an enrolled administrator the fresh proof must include their
-	// authenticator: a recent sign-in that used a recovery code, or a
-	// pre-enrolment session, does not count; the step-up page does.
-	fresh := recentlyVerified(identity.Session, now, s.reauthWindow()) && (!actor.MFAEnrolled || hasMethod(identity.Session.AMR, "otp"))
-	// The same facts, re-checked inside the store transaction that writes.
-	proof := &store.ActorProof{SessionHash: identity.Session.TokenHash, FreshAfter: now.Add(-s.reauthWindow()).Unix(), RequireFactor: actor.MFAEnrolled}
+	// Sensitive actions (see sensitiveActions) need the administrator's own
+	// authenticator code entered within the re-verification window: a
+	// sign-in that used the code counts, a step-up on the verify page
+	// counts, a recovery-code sign-in or a password-only re-verification
+	// does not. An administrator without an authenticator is sent to set
+	// one up first.
+	fresh := actor.MFAEnrolled && recentlyVerified(identity.Session, now, s.reauthWindow()) && hasMethod(identity.Session.AMR, "otp")
+	// The same facts, re-checked inside the store transactions that accept
+	// an actor proof.
+	proof := &store.ActorProof{SessionHash: identity.Session.TokenHash, FreshAfter: now.Add(-s.reauthWindow()).Unix(), RequireFactor: true}
 	needVerify := func() adminResult {
 		res.Tab = adminAccountsTab
 		res.NeedVerify = true
-		res.Error = "Confirm it is you before changing two-factor settings."
+		res.Error = "Confirm it is you before making that change."
 		return res
+	}
+	// gate returns the page to show instead of performing a sensitive
+	// action, or ok=true when the administrator may proceed.
+	gate := func(what string) (adminResult, bool) {
+		if !s.mfaAvailable() {
+			res.Tab = adminAccountsTab
+			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset), so " + what + " is not possible from the console; use the auth CLI on the server."
+			return res, false
+		}
+		if !actor.MFAEnrolled {
+			res.Tab = adminAccountsTab
+			res.NeedEnroll = true
+			res.Error = "Set up two-factor sign-in on your own account before " + what + "."
+			return res, false
+		}
+		if !fresh {
+			r := needVerify()
+			r.Error = "Confirm it is you before " + what + "."
+			return r, false
+		}
+		return res, true
+	}
+	if what, sensitive := sensitiveActions[action]; sensitive {
+		// Signing yourself out is not a takeover of anyone; every other
+		// sensitive action, and any other target, needs the factor.
+		selfSignOut := action == "revoke-sessions" && strings.EqualFold(strings.TrimSpace(r.FormValue("email")), actor.Email)
+		if !selfSignOut {
+			if r, ok := gate(what); !ok {
+				return r
+			}
+		}
 	}
 	// Attribution is written after the mutation commits, on a context that
 	// survives the client hanging up, so a disconnect right after a
@@ -260,13 +315,6 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Status = http.StatusBadRequest
 			return res
 		}
-		if !s.mfaAvailable() {
-			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset)."
-			return res
-		}
-		if !fresh {
-			return needVerify()
-		}
 		revision, err := strconv.ParseInt(r.FormValue("revision"), 10, 64)
 		if err != nil || revision < 0 {
 			// The form always carries the revision it was rendered from; a
@@ -288,7 +336,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		audit("admin.mfa_policy_changed", "", "")
 		// The acting administrator may have just required a factor of
 		// themself without having one: their session is gone, so say so and
-		// send them to sign in (and enrol) rather than render a page that
+		// send them to sign in (and enroll) rather than render a page that
 		// bounces on the next click.
 		if mfa.Required(policy.Mode, actor.IsAdmin, actor.MFARequired) && !actor.MFAEnrolled {
 			res.Redirect = "/?notice=mfa_required"
@@ -298,11 +346,15 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		case 0:
 			res.Notice = fmt.Sprintf("Two-factor policy is now %s.", strings.ToLower(policy.Mode.Label()))
 		case 1:
-			res.Notice = fmt.Sprintf("Two-factor policy is now %s. One account without an authenticator was signed out and will enrol at its next sign-in.", strings.ToLower(policy.Mode.Label()))
+			res.Notice = fmt.Sprintf("Two-factor policy is now %s. One account without an authenticator was signed out and will enroll at its next sign-in.", strings.ToLower(policy.Mode.Label()))
 		default:
-			res.Notice = fmt.Sprintf("Two-factor policy is now %s. %d accounts without an authenticator were signed out and will enrol at their next sign-in.", strings.ToLower(policy.Mode.Label()), signedOut)
+			res.Notice = fmt.Sprintf("Two-factor policy is now %s. %d accounts without an authenticator were signed out and will enroll at their next sign-in.", strings.ToLower(policy.Mode.Label()), signedOut)
 		}
 		return res
+	}
+
+	if action == "batch" {
+		return s.adminBatch(r, actor, res, gate, proof, audit, now)
 	}
 
 	res.Tab = adminAccountsTab
@@ -315,6 +367,12 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 
 	if action == "create" {
 		res.Reopen = "add-user"
+		if r.FormValue("admin") == "on" {
+			// Creating an administrator widens privilege like promoting one.
+			if r, ok := gate("creating an administrator"); !ok {
+				return r
+			}
+		}
 		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
 			res.Error = "Team must be at most 40 characters."
@@ -482,17 +540,6 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Error = "Replace your own authenticator from Security."
 			return res
 		}
-		if !s.mfaAvailable() {
-			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset)."
-			return res
-		}
-		if !actor.MFAEnrolled {
-			res.Error = "Set up your own authenticator (Security) before resetting someone else's."
-			return res
-		}
-		if !fresh {
-			return needVerify()
-		}
 		reason, err := store.NormalizeReason(r.FormValue("reason"))
 		if err != nil {
 			res.Error = "Give a short reason for the reset (how you verified it was them), up to 200 characters."
@@ -505,14 +552,12 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Error = "Too many resets in a short time. Wait a few minutes and try again."
 			return res
 		}
-		resetProof := *proof
-		resetProof.RequireFactor = true
-		err = s.store.ResetMFABy(ctx, target.ID, actor.ID, reason, &resetProof, now.Unix())
+		err = s.store.ResetMFABy(ctx, target.ID, actor.ID, reason, proof, now.Unix())
 		if errors.Is(err, store.ErrActorNotFresh) {
 			return needVerify()
 		}
 		if errors.Is(err, store.ErrNoAuthenticator) {
-			res.Error = fmt.Sprintf("%s has no authenticator to reset. Use Require 2FA in Access if they should set one up.", target.Email)
+			res.Error = fmt.Sprintf("%s has no authenticator to reset. Use Require two-factor in Settings if they should set one up.", target.Email)
 			return res
 		}
 		if err != nil {
@@ -537,29 +582,66 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		} else {
 			res.Notice = fmt.Sprintf("%s is tagged %s.", target.Email, team)
 		}
+	case "set-mfa-required":
+		// Settings: require (or stop requiring) two-factor sign-in of one
+		// account. The store re-checks the actor proof in its transaction.
+		want := r.FormValue("required") == "on"
+		policy := s.mfaPolicy(r)
+		if want && mfa.Required(policy.Mode, target.IsAdmin, false) {
+			res.Error = fmt.Sprintf("The deployment policy already requires two-factor sign-in of %s.", target.Email)
+			return res
+		}
+		if want == target.MFARequired {
+			res.Notice = fmt.Sprintf("No change: two-factor sign-in is %s for %s.", map[bool]string{true: "already required", false: "not required"}[want], target.Email)
+			return res
+		}
+		if _, err := s.store.SetAccountMFARequiredBy(ctx, target.Email, want, actor.ID, proof, now.Unix()); err != nil {
+			if errors.Is(err, store.ErrActorNotFresh) {
+				return needVerify()
+			}
+			return res.failed("set mfa required", err)
+		}
+		if want {
+			audit("admin.mfa_required_set", target.ID, "")
+			if self && !actor.MFAEnrolled {
+				res.Redirect = "/?notice=mfa_required"
+				return res
+			}
+			if target.MFAEnrolled {
+				res.Notice = fmt.Sprintf("Two-factor sign-in is now required for %s; they can no longer turn it off.", target.Email)
+			} else {
+				res.Notice = fmt.Sprintf("Two-factor sign-in is now required for %s. They were signed out and set up an authenticator at their next sign-in.", target.Email)
+			}
+		} else {
+			audit("admin.mfa_required_cleared", target.ID, "")
+			res.Notice = fmt.Sprintf("Two-factor sign-in is no longer required for %s.", target.Email)
+		}
 	case "set-access":
-		// The Access popup saves three things (applications, the Admin flag,
-		// the per-account two-factor requirement) in one store transaction:
-		// a refusal of any part changes nothing. Console-level rules that the
-		// store does not know (self-demotion, a server without an MFA key,
-		// freshness) are checked first, so no write is even attempted.
+		// The Access popup saves applications and the Admin flag in one store
+		// transaction: a refusal of any part changes nothing. Console-level
+		// rules that the store does not know (self-demotion, a server without
+		// an MFA key) are checked first, so no write is even attempted. A
+		// change of the Admin flag is a sensitive action (gate above applies
+		// only when the flag actually changes, so saving applications alone
+		// stays a password-level action).
 		wantAdmin := r.FormValue("admin") == "on"
-		wantMFA := r.FormValue("mfa_required") == "on"
 		adminChange := wantAdmin != target.IsAdmin
-		mfaChange := wantMFA != target.MFARequired
 		policy := s.mfaPolicy(r)
 		promotionNeedsFactor := adminChange && wantAdmin && !target.MFAEnrolled && policy.Mode == mfa.ModeAdmins
 		if adminChange && self && !wantAdmin {
 			res.Error = "You cannot remove your own administrator access."
 			return res
 		}
-		if ((mfaChange && wantMFA) || promotionNeedsFactor) && !s.mfaAvailable() {
+		if adminChange {
+			if r, ok := gate("changing who is an administrator"); !ok {
+				return r
+			}
+		}
+		if promotionNeedsFactor && !s.mfaAvailable() {
 			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset), so nothing can be required of anyone yet."
 			return res
 		}
-		if mfaChange && !fresh {
-			return needVerify()
-		}
+		mfaChange := false
 		// An empty selection is a real instruction ("no applications"), not
 		// "leave as is": the popup always posts the full set.
 		apps := r.Form["apps"]
@@ -567,14 +649,9 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			apps = []string{}
 		}
 		save := store.AccessSave{Applications: apps}
+		var saveProof *store.ActorProof
 		if adminChange {
 			save.Admin = &wantAdmin
-		}
-		if mfaChange {
-			save.MFARequired = &wantMFA
-		}
-		var saveProof *store.ActorProof
-		if mfaChange {
 			saveProof = proof
 		}
 		outcome, err := s.store.SaveAccountAccess(ctx, target.Email, save, actor.ID, saveProof, now.Unix())
@@ -609,23 +686,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 				mfaNote = " Administrators must use two-factor sign-in here, so they were signed out and set up an authenticator at their next sign-in."
 			}
 		}
-		if outcome.MFAChanged {
-			if wantMFA {
-				audit("admin.mfa_required_set", target.ID, "")
-				mfaNote = " Two-factor sign-in is now required for them."
-				if !target.MFAEnrolled {
-					mfaNote += " They were signed out and will enrol at their next sign-in."
-				}
-			} else {
-				audit("admin.mfa_required_cleared", target.ID, "")
-				mfaNote = " Two-factor sign-in is no longer required for them."
-			}
-			if self && wantMFA && !actor.MFAEnrolled {
-				// Requiring it of oneself without a factor ended this session.
-				res.Redirect = "/?notice=mfa_required"
-				return res
-			}
-		}
+		_ = mfaChange
 		added, removed := outcome.Added, outcome.Removed
 		switch {
 		case len(added) == 0 && len(removed) == 0:
@@ -639,6 +700,134 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		}
 	default:
 		res.Status = http.StatusBadRequest
+	}
+	return res
+}
+
+// adminBatch applies one operation to every selected account: a team tag,
+// sign out everywhere, or requiring (or no longer requiring) two-factor
+// sign-in. Each account is its own store transaction; the notice reports
+// what was done and what was skipped and why. Sign-out and the two-factor
+// requirement are sensitive actions (gate); tagging is not.
+func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResult, gate func(string) (adminResult, bool), proof *store.ActorProof, audit func(event, targetID, appID string), now time.Time) adminResult {
+	ctx := r.Context()
+	res.Tab = adminAccountsTab
+	emails := r.Form["emails"]
+	if len(emails) == 0 {
+		res.Error = "Select at least one account first (the boxes on the left)."
+		return res
+	}
+	if len(emails) > 200 {
+		res.Status = http.StatusBadRequest
+		return res
+	}
+	op := r.FormValue("op")
+	var team string
+	switch op {
+	case "team":
+		var err error
+		if team, err = store.NormalizeTeam(r.FormValue("team")); err != nil {
+			res.Error = "Team must be at most 40 characters."
+			return res
+		}
+	case "signout":
+		if r, ok := gate("signing accounts out everywhere"); !ok {
+			return r
+		}
+	case "require-mfa", "unrequire-mfa":
+		if r, ok := gate("changing two-factor requirements"); !ok {
+			return r
+		}
+	default:
+		res.Status = http.StatusBadRequest
+		return res
+	}
+	policy := s.mfaPolicy(r)
+	var done, skipped []string
+	skip := func(email, why string) { skipped = append(skipped, email+" ("+why+")") }
+	for _, raw := range emails {
+		email, ok := validAdminEmail(raw)
+		if !ok {
+			continue
+		}
+		target, err := s.store.PasswordAccountByEmail(ctx, email)
+		if errors.Is(err, store.ErrAccountNotFound) {
+			skip(email, "no such account")
+			continue
+		}
+		if err != nil {
+			return res.failed("batch lookup", err)
+		}
+		switch op {
+		case "team":
+			if err := s.store.SetAccountTeam(ctx, target.Email, team, now.Unix()); err != nil {
+				return res.failed("batch team", err)
+			}
+			audit("admin.team_set", target.ID, "")
+			done = append(done, target.Email)
+		case "signout":
+			if target.ID == actor.ID {
+				skip(target.Email, "you; use your own row to sign yourself out")
+				continue
+			}
+			if _, err := s.store.RevokeAllAuthSessions(ctx, target.ID, now.Unix(), "admin_revoked"); err != nil {
+				return res.failed("batch revoke", err)
+			}
+			audit("admin.sessions_revoked", target.ID, "")
+			done = append(done, target.Email)
+		case "require-mfa", "unrequire-mfa":
+			want := op == "require-mfa"
+			if target.ID == actor.ID {
+				skip(target.Email, "you; set yours up from Security")
+				continue
+			}
+			if want && mfa.Required(policy.Mode, target.IsAdmin, false) {
+				skip(target.Email, "already required by the policy")
+				continue
+			}
+			if want == target.MFARequired {
+				skip(target.Email, "no change")
+				continue
+			}
+			if _, err := s.store.SetAccountMFARequiredBy(ctx, target.Email, want, actor.ID, proof, now.Unix()); err != nil {
+				if errors.Is(err, store.ErrActorNotFresh) {
+					res.NeedVerify = true
+					res.Error = "Confirm it is you before changing two-factor requirements."
+					return res
+				}
+				return res.failed("batch mfa required", err)
+			}
+			if want {
+				audit("admin.mfa_required_set", target.ID, "")
+			} else {
+				audit("admin.mfa_required_cleared", target.ID, "")
+			}
+			done = append(done, target.Email)
+		}
+	}
+	var what string
+	switch op {
+	case "team":
+		if team == "" {
+			what = "Removed the team tag from"
+		} else {
+			what = "Tagged " + team + ":"
+		}
+	case "signout":
+		what = "Signed out everywhere:"
+	case "require-mfa":
+		what = "Two-factor sign-in now required (unenrolled accounts were signed out and set up an authenticator at their next sign-in):"
+	case "unrequire-mfa":
+		what = "Two-factor sign-in no longer required:"
+	}
+	switch {
+	case len(done) == 0:
+		res.Error = "Nothing changed. Skipped: " + strings.Join(skipped, "; ") + "."
+	default:
+		res.Notice = fmt.Sprintf("%s %s (%d).", what, strings.Join(done, ", "), len(done))
+		if len(skipped) > 0 {
+			res.Notice += " Skipped: " + strings.Join(skipped, "; ") + "."
+		}
 	}
 	return res
 }
@@ -674,8 +863,8 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		"Brand": s.cfg.BrandName, "Email": actor.Email, "CSRF": csrf,
 		"Tabs": tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
 		"Secret": result.Secret, "SecretFor": result.ForEmail, "Reopen": result.Reopen,
-		"NeedVerify": result.NeedVerify, "MFAAvailable": s.mfaAvailable(),
-		"ActorEnrolled": actor.MFAEnrolled, "ActorFresh": recentlyVerified(identity.Session, now, s.reauthWindow()),
+		"NeedVerify": result.NeedVerify, "NeedEnroll": result.NeedEnroll, "MFAAvailable": s.mfaAvailable(),
+		"ActorEnrolled": actor.MFAEnrolled, "ActorFresh": actor.MFAEnrolled && recentlyVerified(identity.Session, now, s.reauthWindow()) && hasMethod(identity.Session.AMR, "otp"),
 		"MFAPolicy": policy.Mode.Label(), "MFARevision": policy.Revision,
 	}
 
@@ -754,7 +943,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		data["AppChoices"] = choices
 		data["Teams"] = teams
 		// The policy popup shows, for each choice, how many enabled accounts
-		// would have to enrol (and be signed out now) if it were chosen.
+		// would have to enroll (and be signed out now) if it were chosen.
 		var options []adminMFAOption
 		for _, mode := range []mfa.Mode{mfa.ModeOptional, mfa.ModeAdmins, mfa.ModeEveryone} {
 			n, err := s.store.CountNewlyRequiredWithoutFactor(ctx, mode)
@@ -764,7 +953,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 				// the popup says so and withholds Save.
 				data["MFACountError"] = true
 			}
-			options = append(options, adminMFAOption{Mode: string(mode), Label: mode.Label(), Current: mode == policy.Mode, ToEnrol: n})
+			options = append(options, adminMFAOption{Mode: string(mode), Label: mode.Label(), Describe: mfaModeDescription(mode), Current: mode == policy.Mode, ToEnroll: n})
 		}
 		data["MFAOptions"] = options
 	} else {
@@ -808,6 +997,18 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 	}
 	if err := s.render(w, "admin.html", data); err != nil {
 		log.Printf("render admin: %v", err)
+	}
+}
+
+// mfaModeDescription is the console's one-line explanation of each policy.
+func mfaModeDescription(mode mfa.Mode) string {
+	switch mode {
+	case mfa.ModeAdmins:
+		return "Everyone who can open this console must sign in with an authenticator app; other accounts may set one up but are not made to."
+	case mfa.ModeEveryone:
+		return "Every account must sign in with an authenticator app."
+	default:
+		return "Nobody is made to. Anyone may set up an authenticator from their Security page, and once they have, they always use it."
 	}
 }
 

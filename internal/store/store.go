@@ -1073,7 +1073,7 @@ func setAccountAdminTx(ctx context.Context, tx *sql.Tx, a Account, admin bool, n
 	}
 	// Promotion is a policy-tightening path: under "Required for
 	// administrators" the new administrator must have a factor, so an
-	// unenrolled one is signed out now and enrols at the next sign-in,
+	// unenrolled one is signed out now and enrolls at the next sign-in,
 	// exactly as if the policy had just been set.
 	if admin {
 		policy, err := mfaPolicyQ(ctx, tx)
@@ -2199,7 +2199,7 @@ func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetent
 		return 0, err
 	}
 	attempts, _ := res.RowsAffected()
-	// Incomplete logins and unconfirmed enrolments are short-lived by
+	// Incomplete logins and unconfirmed enrollments are short-lived by
 	// design; sweep the expired ones along with everything else.
 	res, err = tx.ExecContext(ctx, `DELETE FROM authentication_transactions WHERE expires_at <= ? OR consumed_at IS NOT NULL`, now)
 	if err != nil {

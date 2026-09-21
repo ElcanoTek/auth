@@ -879,7 +879,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// so an error response may go back to it (OIDC Core 3.1.2.6). No
 		// code, no identity: only the fact that a silent sign-in is not
 		// possible right now. interaction_required means "signed in, but
-		// something (the forced password change, enrolment, the second
+		// something (the forced password change, enrollment, the second
 		// factor) has to happen at Auth first".
 		code := "login_required"
 		if identity != nil {
@@ -1503,7 +1503,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"authenticated": false})
 			return
 		}
-		// An incomplete account (forced change, enrolment pending, factor
+		// An incomplete account (forced change, enrollment pending, factor
 		// not proven) is not authenticated for any caller's purposes; the
 		// state is named so a client can route the person correctly.
 		if level := store.Assess(identity.Account, identity.Session, s.mfaPolicy(r).Mode); level != store.AssuranceOK {

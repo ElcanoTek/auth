@@ -345,6 +345,14 @@ ul.plain li { margin: 0.2rem 0; }
 .seg-opt.locked { cursor: not-allowed; }
 .seg-opt.locked input { cursor: not-allowed; }
 .seg-group { margin-bottom: var(--space-4); }
+.list th.sel, .list td.sel { width: 1.6rem; padding-right: 0; }
+.list td.sel input, .list th.sel input { width: 1rem; height: 1rem; margin: 0; accent-color: var(--color-primary); cursor: pointer; }
+.batch { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-2); }
+.batch-count { font-size: var(--font-size-caption); color: var(--color-text-muted); min-width: 5.5rem; }
+.batch select, .batch input[type=text] { min-height: 2.25rem; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-caption); color: var(--color-text-primary); background: var(--color-surface-1); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.batch input[type=text] { flex: 1; min-width: 12rem; }
+.batch select:focus-visible, .batch input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--focus-ring); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .seg-group .hint { margin-top: var(--space-2); }
 .tag { display: inline-block; padding: 0.1rem 0.5rem; border-radius: var(--radius-pill); font-size: 0.6875rem; font-weight: var(--font-weight-bold); letter-spacing: 0.04em; background: var(--color-bg); border: 1px solid var(--color-border-strong); color: var(--color-text-secondary); white-space: nowrap; }
 .card.admin { max-width: 68rem; }
@@ -681,6 +689,17 @@ const noAccessHTML = `<!doctype html>
 const adminScript = `
 (function () {
   var alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_.!@*=~";
+  var all = document.querySelector("[data-select-all]");
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("[data-select]"));
+  var count = document.querySelector("[data-batch-count]");
+  function refresh() {
+    var n = boxes.filter(function (b) { return b.checked; }).length;
+    if (count) { count.textContent = n + " selected"; }
+    if (all) { all.checked = n > 0 && n === boxes.length; all.indeterminate = n > 0 && n < boxes.length; }
+  }
+  if (all) { all.addEventListener("change", function () { boxes.forEach(function (b) { b.checked = all.checked; }); refresh(); }); }
+  boxes.forEach(function (b) { b.addEventListener("change", refresh); });
+  refresh();
   document.querySelectorAll("[data-generate]").forEach(function (button) {
     button.addEventListener("click", function () {
       var field = document.getElementById(button.getAttribute("data-generate"));
@@ -735,7 +754,8 @@ const adminHTML = `<!doctype html>
     <nav class="tabs" aria-label="Admin sections">
       {{range .Tabs}}<a class="tab{{if .Active}} active{{end}}" href="{{.URL}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}
     </nav>
-    {{if .NeedVerify}}<div class="banner warn" role="alert"><strong>Confirm it is you.</strong> Two-factor changes need a sign-in less than five minutes old. <a href="/account/security/verify?return_to=%2Fadmin">Verify now</a> and then repeat the change.</div>
+    {{if .NeedVerify}}<div class="banner warn" role="alert"><strong>Confirm it is you.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need your authenticator code entered less than five minutes ago. <a href="/account/security/verify?return_to=%2Fadmin">Enter it now</a> and then repeat the change.</div>
+    {{else if .NeedEnroll}}<div class="banner warn" role="alert"><strong>Set up two-factor sign-in first.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need an administrator's own authenticator. <a href="/account/security?return_to=%2Fadmin">Set yours up</a> and then repeat the change.</div>
     {{else if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     {{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
     {{if .Secret}}<div class="secret" role="status">
@@ -749,22 +769,36 @@ const adminHTML = `<!doctype html>
       <div class="section-head">
         <div>
           <h2 id="accounts-heading">Accounts</h2>
-          <p class="muted">Who can sign in, to which applications, and whether they can open this console. Two-factor policy: <strong>{{.MFAPolicy}}</strong>.</p>
+          <p class="muted">Who can sign in, to which applications, and whether they can open this console. Two-factor policy: <strong>{{.MFAPolicy}}</strong>. Tick accounts to change several at once.</p>
         </div>
         <div class="row-actions">
           <button class="btn-ghost" type="button" popovertarget="mfa-policy">Two-factor policy</button>
           <button class="btn inline" type="button" popovertarget="add-user">Add user</button>
         </div>
       </div>
-      {{if .Accounts}}<div class="table-wrap"><table class="list">
-        <thead><tr><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th class="num">Sessions</th><th></th></tr></thead>
+      {{if .Accounts}}
+      <form id="batch-form" class="batch" method="post" action="/admin" aria-label="Change the selected accounts">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="batch">
+        <span class="batch-count" data-batch-count aria-live="polite">0 selected</span>
+        <label class="sr-only" for="batch-op">What to do with the selected accounts</label>
+        <select id="batch-op" name="op">
+          <option value="team">Set team</option>
+          <option value="signout">Sign out everywhere</option>
+          <option value="require-mfa">Require two-factor</option>
+          <option value="unrequire-mfa">Stop requiring two-factor</option>
+        </select>
+        <input name="team" type="text" list="teams" maxlength="40" placeholder="Team (for Set team; blank removes it)" aria-label="Team for the selected accounts">
+        <button class="btn-ghost" type="submit">Apply to selected</button>
+      </form>
+      <div class="table-wrap"><table class="list">
+        <thead><tr><th class="sel"><input type="checkbox" data-select-all aria-label="Select every account"></th><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th></th></tr></thead>
         <tbody>
         {{range $i, $row := .Accounts}}<tr>
+          <td class="sel"><input type="checkbox" name="emails" value="{{$row.Email}}" form="batch-form" data-select aria-label="Select {{$row.Email}}"></td>
           <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
           <td><div class="chips"><span class="badge {{$row.StatusClass}}">{{$row.Status}}</span><span class="badge {{$row.MFAClass}}" title="Two-factor sign-in">2FA: {{$row.MFAStatus}}</span></div></td>
           <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
           <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
-          <td class="num">{{$row.Sessions}}</td>
           <td><div class="row-actions">
             <button class="btn-ghost" type="button" popovertarget="access-{{$i}}" aria-label="Access: {{$row.Email}}">Access</button>
             <button class="btn-ghost" type="button" popovertarget="settings-{{$i}}" aria-label="Settings: {{$row.Email}}">Settings</button>
@@ -781,13 +815,6 @@ const adminHTML = `<!doctype html>
                 </span>
                 <p class="hint">{{if $row.Self}}You cannot remove your own administrator access.{{else if and $row.IsAdmin (not $row.CanDemote)}}The last enabled administrator cannot be removed.{{else}}Full permissions: opens this console and manages every account.{{end}}</p>
               </div>
-              <div class="seg-group"><span class="seg-label">Two-factor</span>
-                <span class="seg" role="group" aria-label="Two-factor requirement for {{$row.Email}}">
-                  {{if or $row.MFAPolicyBound (not $.MFAAvailable)}}<label class="seg-opt locked"><input type="checkbox"{{if or $row.MFAPolicyBound $row.MFARequired}} checked{{end}} disabled> Require 2FA</label><input type="hidden" name="mfa_required" value="{{if $row.MFARequired}}on{{else}}off{{end}}">
-                  {{else}}<label class="seg-opt"><input type="checkbox" name="mfa_required" value="on"{{if $row.MFARequired}} checked{{end}}> Require 2FA</label>{{end}}
-                </span>
-                <p class="hint">{{if not $.MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY).{{else if $row.MFAPolicyBound}}The deployment policy already requires it for this account.{{else if $row.MFAEnrolled}}Enrolled ({{$row.MFAStatus}}). Requiring it means they cannot turn it off.{{else}}Not enrolled. Requiring it signs them out now; they set up an authenticator at their next sign-in.{{end}}</p>
-              </div>
               <div class="seg-group"><span class="seg-label">Applications</span>
                 {{if $row.Apps}}<span class="seg" role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}<label class="seg-opt"><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
                 <p class="hint">Selected applications sign in through {{$.Brand}}; deselecting one signs them out of it now.</p>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
@@ -797,7 +824,7 @@ const adminHTML = `<!doctype html>
           </div>
           <div id="settings-{{$i}}" class="modal" popover aria-labelledby="settings-{{$i}}-title">
             <div class="modal-head"><h3 id="settings-{{$i}}-title">Settings</h3><button class="icon-btn" type="button" popovertarget="settings-{{$i}}" popovertargetaction="hide" aria-label="Close">&times;</button></div>
-            <p class="who">{{$row.Email}} <span class="dot">&middot;</span> created {{$row.Created}}</p>
+            <p class="who">{{$row.Email}} <span class="dot">&middot;</span> created {{$row.Created}} <span class="dot">&middot;</span> {{$row.Sessions}} active session{{if ne $row.Sessions 1}}s{{end}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-team"><input type="hidden" name="email" value="{{$row.Email}}">
               <div class="field"><label for="team-{{$i}}">Team</label>
@@ -815,6 +842,13 @@ const adminHTML = `<!doctype html>
                   <button class="btn" type="submit">Confirm reset</button>
                 </form>
               </details>
+            </div>
+            <div class="setting">
+              <div><strong>Two-factor sign-in</strong><p class="muted">{{if not $.MFAAvailable}}Not set up on this server (AUTH_MFA_KEY).{{else if $row.MFAPolicyBound}}Required by the deployment policy; {{$row.MFAStatus}}.{{else if $row.MFARequired}}Required for this account; {{$row.MFAStatus}}. They cannot turn it off.{{else if $row.MFAEnrolled}}Enrolled voluntarily. Requiring it means they cannot turn it off.{{else}}Not enrolled. Requiring it signs them out now; they set up an authenticator at their next sign-in.{{end}}</p></div>
+              {{if and $.MFAAvailable (not $row.MFAPolicyBound)}}<form method="post" action="/admin">
+                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-mfa-required"><input type="hidden" name="email" value="{{$row.Email}}"><input type="hidden" name="required" value="{{if $row.MFARequired}}off{{else}}on{{end}}">
+                <button class="btn-ghost" type="submit" aria-label="{{if $row.MFARequired}}Stop requiring two-factor: {{$row.Email}}{{else}}Require two-factor: {{$row.Email}}{{end}}">{{if $row.MFARequired}}Stop requiring{{else}}Require{{end}}</button>
+              </form>{{else if $row.MFAPolicyBound}}<span class="badge ok">Policy</span>{{end}}
             </div>
             <div class="setting">
               <div><strong>Reset two-factor</strong><p class="muted">{{if $row.MFAEnrolled}}Lost authenticator: removes it and the recovery codes, signs them out everywhere; they set up a new one at their next sign-in.{{else}}No authenticator is set up ({{$row.MFAStatus}}).{{end}}</p></div>
@@ -906,7 +940,7 @@ const adminHTML = `<!doctype html>
 
     <div id="mfa-policy" class="modal" popover aria-labelledby="mfa-policy-title">
       <div class="modal-head"><h3 id="mfa-policy-title">Two-factor policy</h3><button class="icon-btn" type="button" popovertarget="mfa-policy" popovertargetaction="hide" aria-label="Close">&times;</button></div>
-      <p class="who">Who must sign in with an authenticator app. A person who sets one up voluntarily always has to use it. The strongest rule wins: a per-user requirement (Access) adds to this.</p>
+      <p class="who">Who must enter a code from an authenticator app after their password. Anyone may set one up from their Security page, and once they have, they always use it; this policy decides who is made to. A per-account requirement (Settings) adds to whichever policy is chosen.</p>
       {{if not .MFAAvailable}}<div class="err">Two-factor sign-in is not set up on this server: set AUTH_MFA_KEY (see <code>auth mfa keygen</code>) and restart.</div>{{else}}
       <form method="post" action="/admin">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="set-policy"><input type="hidden" name="revision" value="{{.MFARevision}}">
@@ -915,8 +949,8 @@ const adminHTML = `<!doctype html>
           <p class="hint">{{range .MFAOptions}}{{if .Current}}Current: {{.Label}}.{{end}}{{end}}</p>
         </div>
         {{if .MFACountError}}<div class="err">The affected-account counts could not be loaded, so the policy cannot be changed from here right now. Reload and try again.</div>{{else}}
-        <ul class="plain">{{range .MFAOptions}}<li><strong>{{.Label}}</strong>: {{if eq .ToEnrol 0}}nobody new has to enrol.{{else if eq .ToEnrol 1}}1 account without an authenticator is signed out now and enrols at its next sign-in.{{else}}{{.ToEnrol}} accounts without an authenticator are signed out now and enrol at their next sign-in.{{end}}</li>{{end}}</ul>
-        <p class="hint">Relaxing the policy never removes anyone's authenticator. Changes take effect immediately{{if not .ActorFresh}} and need a sign-in less than five minutes old{{end}}.</p>
+        <ul class="plain">{{range .MFAOptions}}<li><strong>{{.Label}}</strong>: {{.Describe}} {{if eq .ToEnroll 0}}Choosing it now makes nobody new enroll.{{else if eq .ToEnroll 1}}Choosing it now signs out 1 account without an authenticator; they set one up at their next sign-in.{{else}}Choosing it now signs out {{.ToEnroll}} accounts without an authenticator; they set one up at their next sign-in.{{end}}</li>{{end}}</ul>
+        <p class="hint">Relaxing the policy never removes anyone's authenticator. Changes take effect immediately{{if not .ActorFresh}} and need your authenticator code entered less than five minutes ago{{end}}.</p>
         <button class="btn" type="submit">Save policy</button>{{end}}
       </form>{{end}}
     </div>
