@@ -40,6 +40,9 @@ load_env_file() {
     line="${line#"${line%%[![:space:]]*}"}"
     [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]] || continue
     key="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+    # Only the service's own settings: never LD_PRELOAD, PATH, BASH_ENV or
+    # anything else a formerly service-writable file could carry.
+    case "$key" in AUTH_*|SENDGRID_API_KEY) ;; *) continue ;; esac
     v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
     case "$v" in
       \"*|\'*) q="${v:0:1}"; v="${v:1}"; v="${v%%"$q"*}"
@@ -199,6 +202,7 @@ _env_edit() {
 _env_check() {
   local app_user="${APP_USER:-auth}"
   local fail=0 warn=0
+  load_env_file "$ENV_LOCAL"
 
   printf '%schecking %s%s\n' "$c_bold" "$ENV_LOCAL" "$c_reset"
 
@@ -273,6 +277,25 @@ _env_check() {
     printf '  %s!%s %d line(s) without KEY= prefix (auth-server will skip them):\n' \
       "$c_yellow" "$c_reset" "$bad"
     for b in "${bad_lines[@]}"; do printf '       line %s\n' "$b"; done
+    warn=1
+  fi
+
+  # The whole install layout, when the library is present and root's own
+  # (a tree from the previous layout is not sourced; the migration in
+  # docs/DEPLOY.md installs it root-owned).
+  local lib="$APP_DIR/scripts/lib/layout.sh" libstat
+  libstat="$(stat -c '%U %a' "$lib" 2>/dev/null || echo "")"
+  if [[ -f "$lib" && ! -L "$lib" && "${libstat% *}" == "root" && "$(( 8#${libstat#* } & 8#022 ))" -eq 0 ]]; then
+    local data_dir="${AUTH_DATA_DIR:-$APP_DIR/data}"
+    if APP_DIR="$APP_DIR" APP_USER="$app_user" DATA_DIR="$data_dir" ENV_FILE="$ENV_LOCAL" \
+         bash -c '. "$1" && layout_check' _ "$lib" 2>&1 | sed 's/^/       /'; then
+      printf '  %s✓%s install layout: root owns the tree, %s owns %s\n' "$c_green" "$c_reset" "$app_user" "$data_dir"
+    else
+      printf '  %s✗%s install layout differs from docs/DEPLOY.md (see above); run the migration in docs/DEPLOY.md\n' "$c_red" "$c_reset"
+      fail=1
+    fi
+  else
+    printf '  %s!%s install layout not checked: %s is missing or not root-owned (previous layout; see the migration in docs/DEPLOY.md)\n' "$c_yellow" "$c_reset" "$lib"
     warn=1
   fi
 

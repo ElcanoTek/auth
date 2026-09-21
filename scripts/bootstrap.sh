@@ -151,6 +151,24 @@ fi
 
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 [[ -d "$SRC_DIR/cmd/auth-server" ]] || die "not running from a repo checkout — clone first and re-run from inside it"
+# Root sources the layout library from this checkout and syncs it into
+# $APP_DIR, so the checkout must be root's alone (no service-owned or
+# group/world-writable path in or above it). Checked before sourcing.
+require_trusted_checkout() {
+  local p owner mode stray
+  p="$(readlink -f -- "$1")" || die "$1 does not resolve"
+  while :; do
+    owner="$(stat -c '%U' "$p")" || die "cannot stat $p"
+    mode="$(stat -c '%a' "$p")"
+    [[ "$owner" != "$APP_USER" ]] || die "$p is owned by the service user $APP_USER; run bootstrap from a root-owned checkout"
+    [[ "$((8#$mode & 8#022))" -eq 0 ]] || die "$p is writable by group or others; run bootstrap from a checkout only root can write"
+    [[ "$p" == "/" ]] && break
+    p="$(dirname "$p")"
+  done
+  stray="$(find "$(readlink -f -- "$1")" \( -user "$APP_USER" -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null)"
+  [[ -z "$stray" ]] || die "$stray is owned by the service user or writable by group/others; chmod -R go-w the checkout first"
+}
+require_trusted_checkout "$SRC_DIR"
 # shellcheck disable=SC1091
 . "$SRC_DIR/scripts/lib/layout.sh"
 layout_require_trusted "$SRC_DIR"
@@ -179,6 +197,12 @@ fi
 # service-owned; layout_apply puts it right, on a fresh box and on one
 # installed under the previous layout alike.
 install -d -m 0755 -o root -g root "$APP_DIR" "$APP_DIR/bin"
+# A previous install may keep its data elsewhere: read the setting (as data)
+# before the ownership pass so the right directory is left to the service.
+[[ -f "$ENV_FILE" ]] && layout_read_env "$ENV_FILE"
+DATA_DIR="${AUTH_DATA_DIR:-$APP_DIR/data}"
+[[ "$DATA_DIR" == /* ]] || DATA_DIR="$APP_DIR/$DATA_DIR"
+layout_require_data_dir
 layout_apply
 ok "user '${APP_USER}' ready, ${APP_DIR} root-owned, ${DATA_DIR} service-owned"
 

@@ -84,6 +84,24 @@ esac
 exit 0
 STUB
 chmod 0755 "$T/stub/systemctl"
+# rsync stub: fails the install sync into APP_DIR when asked, to prove the
+# guarded swap rolls back on a mid-swap error.
+cat > "$T/stub/rsync" <<STUB
+#!/usr/bin/env bash
+if [[ "\${LT_FAIL_RSYNC:-0}" == "1" ]]; then
+  for a in "\$@"; do [[ "\$a" == "$APP/" ]] && exit 23; done
+fi
+exec /usr/bin/rsync "\$@"
+STUB
+chmod 0755 "$T/stub/rsync"
+
+# A client bundle: a bare remote, one commit, and a checkout the service user
+# owns that carries a planted post-merge hook (the previous layout).
+B="$T/bundle-remote"; git init -q --bare "$B"
+W="$T/bundle-work"; git clone -q "$B" "$W" 2>/dev/null
+( cd "$W" && echo 'branding: {}' > manifest.yaml && git add . && git -c user.email=t@t -c user.name=t commit -qm init && git push -q origin HEAD 2>/dev/null )
+BENV="$T/bundle-env"; git clone -q --no-hardlinks "$B" "$BENV"  # no shared inodes: the chown below must not touch the remote
+printf '#!/bin/sh\ntouch %s/hooked-env\n' "$T" > "$BENV/.git/hooks/post-merge"; chmod +x "$BENV/.git/hooks/post-merge"; chown -R "$APP_USER:$APP_USER" "$BENV"
 
 SEED="$(head -c 32 /dev/urandom | base64)"
 MFAKEY="$(head -c 32 /dev/urandom | base64)"
@@ -101,11 +119,12 @@ AUTH_CSRF_COOKIE_NAME="auth_csrf"
 AUTH_MFA_KEY="$MFAKEY"
 AUTH_MFA_KEY_ID="1"
 AUTH_EMAIL_DRIVER="stdout"
+AUTH_CLIENT_CONFIG_DIR="$BENV"
 ENV
 }
 
 run_update() {  # extra env as args
-  env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+  env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LAYOUT_BUILD_GOFLAGS="-p=1" \
     APP_DIR="$APP" SRC_DIR="$SRC" APP_USER="$APP_USER" SYSTEMD_DIR="$SYSTEMD" CLI_BIN="$BIN/auth" \
     LOCK_FILE="$T/lock" BUILD_CACHE="$CACHE" AUTH_UPDATE_NO_PULL=1 AUTH_UPDATE_YES=1 "$@" \
     bash "$SRC/scripts/update.sh"
@@ -127,6 +146,9 @@ mkdir -p "$APP/data" "$APP/bin"
 rsync -a --exclude=/.git "$SRC/" "$APP/"
 ( cd "$SRC" && GOFLAGS=-buildvcs=false go build -o "$APP/bin/auth-server" ./cmd/auth-server && go build -o "$APP/bin/auth-admin" ./cmd/auth-admin )
 write_env "$APP/.env.local"
+# Keys a formerly service-writable file could carry: they must never be
+# exported into a root process, and the server ignores them.
+printf 'LD_PRELOAD="%s/evil.so"\nPATH="%s/evilbin"\nBASH_ENV="%s/evil.sh"\n' "$T" "$T" "$T" >> "$APP/.env.local"
 echo 'echo pwned' > "$APP/scripts/lib/evil.sh"                    # a file the service user planted
 mkdir -p "$APP/.cache/go-build"                                    # old in-place build cache
 ln -s /etc/passwd "$APP/scripts/planted-link"                      # a symlink into the system
@@ -154,6 +176,10 @@ check test ! -e "$APP/.cache"
 [[ "$(owner_mode "$CACHE")" == "$APP_USER:$APP_USER 700" ]] && ok "build cache $APP_USER 700" || bad "cache $(owner_mode "$CACHE")"
 [[ -z "$(find "$SRC" -user "$APP_USER" -print -quit)" ]] && ok "trusted source untouched by the build" || bad "service-owned files in SRC_DIR"
 check healthy
+[[ "$(stat -c %U "$BENV/.git")" == "root" ]] && ok "bundle named in .env.local re-cloned root-owned on a rebuild-only run" || bad "bundle .git owner $(stat -c %U "$BENV/.git")"
+check test ! -e "$BENV/.git/hooks/post-merge"
+check test ! -e "$T/hooked-env"
+ls -d "$BENV.legacy-"* >/dev/null 2>&1 && ok "legacy bundle checkout kept beside for inspection" || bad "legacy bundle not kept"
 if pgrep -u "$APP_USER" -f "$APP/bin/auth-server" >/dev/null; then ok "auth-server runs as $APP_USER"; else bad "auth-server is not running as $APP_USER"; fi
 if pgrep -u root -f "^$APP/bin/auth-server" >/dev/null; then bad "an auth-server process runs as root"; else ok "no auth-server process runs as root"; fi
 check runuser -u "$APP_USER" -- test -r "$APP/.env.local"
@@ -163,10 +189,11 @@ check bash -c "! runuser -u $APP_USER -- test -w '$APP/scripts/update.sh'"
 
 # ── 3. idempotent re-run ──────────────────────────────────────────────
 section "re-run is idempotent"
-before="$(find "$APP" -printf '%p %U %G %m\n' | sort | sha256sum)"
+tree_state() { find "$APP" -path "$APP/data" -prune -o -printf '%p %U %G %m\n' | sort | sha256sum; }
+before="$(tree_state)"
 if run_update >"$T/update2.log" 2>&1; then ok "second update.sh succeeded"; else bad "second update.sh failed"; tail -20 "$T/update2.log"; fi
-after="$(find "$APP" -path "$APP/data" -prune -o -printf '%p %U %G %m\n' | sort | sha256sum)"
-before_nodata="$(echo "$before" | true)"
+after="$(tree_state)"
+[[ "$before" == "$after" ]] && ok "re-run changed no owner, mode or path outside data/" || bad "re-run changed the tree"
 check layout_ok
 check healthy
 
@@ -195,6 +222,12 @@ check layout_ok
 ls "$APP/data/backups"/pre-update-*.db >/dev/null 2>&1 && ok "pre-update database snapshot written" || bad "no pre-update snapshot"
 run_update >"$T/update4.log" 2>&1 && ok "service restored by a normal run" || bad "recovery run failed"
 check healthy
+# A failure inside the guarded swap (the install sync itself) rolls back too.
+if run_update LT_FAIL_RSYNC=1 >"$T/update5.log" 2>&1; then bad "update with a failing install sync reported success"; else ok "update with a failing install sync exits non-zero"; fi
+grep -q 'swap failed mid-install' "$T/update5.log" && ok "mid-swap failure took the rollback path" || bad "mid-swap failure did not roll back"
+[[ "$(owner_mode "$APP/bin/auth-server")" == "root:root 755" ]] && ok "binary root:root after mid-swap rollback" || bad "binary $(owner_mode "$APP/bin/auth-server") after mid-swap rollback"
+check layout_ok
+check healthy
 
 # ── 6. library guards ─────────────────────────────────────────────────
 section "layout library guards"
@@ -217,10 +250,14 @@ E="$T/evil.env"; printf 'AUTH_HOSTNAME="quoted # not a comment"\nAUTH_ADDR=127.0
 out="$(lib_call "$G" eval 'layout_read_env "$E"; printf "%s|%s" "$AUTH_HOSTNAME" "$AUTH_ADDR"' 2>/dev/null || true)"
 [[ "$out" == "quoted # not a comment|127.0.0.1:1" ]] && ok "layout_read_env parses quotes and comments" || bad "layout_read_env gave '$out'"
 check test ! -e "$T/executed"
+out="$(lib_call "$G" eval 'layout_read_env "$APP/.env.local"; printf "%s|%s|%s" "${LD_PRELOAD:-unset}" "${BASH_ENV:-unset}" "$AUTH_HOSTNAME"' 2>/dev/null || true)"
+[[ "$out" == "unset|unset|localhost" ]] && ok "layout_read_env exports AUTH_* only (LD_PRELOAD, BASH_ENV dropped)" || bad "layout_read_env control keys: '$out'"
+if lib_call "$G" env DATA_DIR="$G/data/nested" bash -c 'true' >/dev/null 2>&1 && ( APP_DIR="$G" APP_USER="$APP_USER" DATA_DIR="$G/data/nested"; . "$SRC/scripts/lib/layout.sh"; layout_require_data_dir ) >/dev/null 2>&1; then bad "nested data dir accepted"; else ok "layout_require_data_dir refuses a nested data dir"; fi
+( APP_DIR="$G" APP_USER="$APP_USER" DATA_DIR="$T/outside-data"; . "$SRC/scripts/lib/layout.sh"; layout_require_data_dir ) >/dev/null 2>&1 && ok "layout_require_data_dir accepts a data dir outside the install" || bad "outside data dir refused"
+S4="$T/src-groupw"; mkdir -p "$S4/scripts"; echo x > "$S4/scripts/x.sh"; chmod g+w "$S4/scripts/x.sh"
+if lib_call "$G" layout_require_trusted "$S4" >/dev/null 2>&1; then bad "group-writable file in source accepted"; else ok "layout_require_trusted refuses a group-writable file in the source"; fi
 # A legacy bundle with a planted hook is re-cloned root-owned, hook gone.
-B="$T/bundle-remote"; git init -q --bare "$B"
-W="$T/bundle-work"; git clone -q "$B" "$W" 2>/dev/null; ( cd "$W" && echo 'branding: {}' > manifest.yaml && git add . && git -c user.email=t@t -c user.name=t commit -qm init && git push -q origin HEAD:master 2>/dev/null || git push -q origin HEAD 2>/dev/null )
-BD="$T/bundle"; git clone -q "$B" "$BD"; printf '#!/bin/sh\ntouch %s/hooked\n' "$T" > "$BD/.git/hooks/post-merge"; chmod +x "$BD/.git/hooks/post-merge"; chown -R "$APP_USER:$APP_USER" "$BD"
+BD="$T/bundle"; git clone -q --no-hardlinks "$B" "$BD"; printf '#!/bin/sh\ntouch %s/hooked\n' "$T" > "$BD/.git/hooks/post-merge"; chmod +x "$BD/.git/hooks/post-merge"; chown -R "$APP_USER:$APP_USER" "$BD"
 lib_call "$G" layout_bundle_migrate "$BD" >/dev/null 2>&1 && ok "layout_bundle_migrate ran" || bad "layout_bundle_migrate failed"
 [[ "$(stat -c %U "$BD/.git")" == "root" ]] && ok "bundle re-cloned root-owned" || bad "bundle .git owner $(stat -c %U "$BD/.git")"
 check test ! -e "$BD/.git/hooks/post-merge"
@@ -232,7 +269,7 @@ check test ! -e "$T/hooked"
 section "bootstrap fresh install (DRY_RUN, non-interactive, password mode)"
 APP2="$T/app2"
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
-   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_LOGIN_MODE=password AUTH_BOOTSTRAP_SETUP_CADDY=n \
    AUTH_BOOTSTRAP_COOKIE_SECURE=n \
@@ -245,7 +282,7 @@ if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb 
 # Re-run keeps settings and stays in layout (env file read as data).
 echo 'AUTH_RETURN_TO_HOSTS="a.example.com"' >> "$APP2/.env.local"
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
-   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap2.log" 2>&1; then ok "bootstrap re-run succeeded"; else bad "bootstrap re-run failed"; tail -25 "$T/bootstrap2.log"; fi

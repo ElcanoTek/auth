@@ -123,7 +123,12 @@ the new `update.sh` runs; see [Upgrading](#upgrading)):
 | `/opt/auth/.env.local` | `root:auth` | `0640` | root writes it (`auth env edit`), the service reads it through the group |
 | `/opt/auth/data/` | `auth:auth` | `0700` | the only place the service writes: `state.db` and `backups/` |
 | `/var/cache/auth-build/` | `auth:auth` | `0700` | Go caches for the unprivileged build |
-| `/opt/auth-client/` (bundle checkout) | `root:root` | `go-w` | root pulls it; a service-writable `.git/hooks` would run as root at the next pull |
+| `/opt/auth-client/` (bundle checkout) | `root:root` | `go-w` | root pulls it with hooks disabled; a service-writable `.git/hooks` would run as root at the next pull |
+
+`AUTH_DATA_DIR` may stay at `/opt/auth/data` or point outside `/opt/auth`
+(then add that path to the unit's `ReadWritePaths` with a drop-in); any other
+path inside `/opt/auth` is refused, because the source sync and the
+ownership pass could not protect it.
 
 Builds run as `auth` in a throwaway staging copy with those caches, and root
 installs the result. `auth user|domain|app|audit|mfa|keygen|pubkey` and
@@ -744,14 +749,26 @@ That runs `scripts/update.sh`, which:
 Your `.env.local`, the SQLite file, and the domain allowlist all
 live outside the paths `update.sh` replaces.
 
-> **First update after adopting the root-owned layout (2026-09):** the same
-> self-updater rule applies. The first `auth update` runs the old installed
-> script, which lands the new source but still leaves the tree owned by
-> `auth`; run `sudo auth rebuild` once afterwards (it runs the new script,
-> which migrates ownership in place and re-installs the binaries root-owned),
-> then confirm with `sudo auth env check`. `auth-admin` runs as the service
-> user from then on; if a root-owned `state.db-wal` or `-shm` exists from an
-> earlier root-run CLI, the migration's `chown -R auth:auth data/` fixes it.
+> **First update after adopting the root-owned layout (2026-09):** do not use
+> the installed `auth` wrapper for this one step. On a box installed before
+> this release the wrapper and the installed `update.sh` are the very files
+> the service user could write, so the migration must run the new script from
+> the root-owned source checkout directly:
+>
+> ```bash
+> stat -c '%U %a' /opt/auth-src                    # must be root and not group/world-writable
+> cd /opt/auth-src && sudo git pull --ff-only
+> sudo env AUTH_UPDATE_NO_PULL=1 bash scripts/update.sh
+> sudo auth env check                               # reports the layout
+> ```
+>
+> The script verifies the checkout is root's alone before it sources
+> anything, migrates the tree (and a client bundle checkout, which is
+> re-cloned from its remote if the service user could write it) and
+> re-installs binaries, units and the wrapper root-owned. `auth-admin` runs
+> as the service user from then on; a root-owned `state.db-wal` or `-shm`
+> left by an earlier root-run CLI is reclaimed for the service by the
+> migration.
 
 > **First update after adopting the auto-rollback release:** `auth update`
 > runs the `update.sh` already installed under `/opt/auth`, and the new

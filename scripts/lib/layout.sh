@@ -31,9 +31,11 @@ BUILD_CACHE="${BUILD_CACHE:-/var/cache/auth-build}"
 # secrets and binaries never travel with the source.
 LAYOUT_SYNC_EXCLUDES=(--exclude='/.git' --exclude='/data' --exclude='/.env.local' --exclude='/bin')
 
-# layout_die is the error exit used inside the library (the callers define
-# their own die with colours; this one must work anywhere).
-layout_die() { printf 'layout: %s\n' "$*" >&2; exit 1; }
+# layout_die reports a refusal and fails the calling function (return 1, not
+# exit: inside update.sh's guarded swap block an exit would skip the
+# rollback). Every caller propagates it with `|| return 1`; at top level,
+# set -e turns it into the script's own die.
+layout_die() { printf 'layout: %s\n' "$*" >&2; return 1; }
 
 # layout_require_real PATH refuses a symlink where a real file or directory
 # is expected: a service-controlled symlink could redirect a root chown,
@@ -41,25 +43,56 @@ layout_die() { printf 'layout: %s\n' "$*" >&2; exit 1; }
 layout_require_real() {
   local p
   for p in "$@"; do
-    [[ -L "$p" ]] && layout_die "$p is a symlink; a real path is required"
+    if [[ -L "$p" ]]; then
+      layout_die "$p is a symlink; a real path is required" || return 1
+    fi
   done
   return 0
 }
 
-# layout_require_trusted DIR refuses a directory (or any ancestor) that the
-# service user owns or that anyone else can write: root syncs source from it,
-# sources scripts in it and runs git in it.
-layout_require_trusted() {
-  local dir="$1" p owner mode
-  p="$(readlink -f -- "$dir")" || layout_die "$dir does not resolve"
+# layout_require_trusted_path PATH refuses a path, or any ancestor of it,
+# that the service user owns or that group or others can write: a
+# service-controlled ancestor could swap the whole subtree.
+layout_require_trusted_path() {
+  local p owner mode
+  p="$(readlink -f -- "$1")" || { layout_die "$1 does not resolve"; return 1; }
   while :; do
-    owner="$(stat -c '%U' "$p")" || layout_die "cannot stat $p"
+    owner="$(stat -c '%U' "$p")" || { layout_die "cannot stat $p"; return 1; }
     mode="$(stat -c '%a' "$p")"
-    [[ "$owner" != "$APP_USER" ]] || layout_die "$p is owned by the service user $APP_USER; root must own the source it installs from"
-    [[ "$((8#$mode & 8#002))" -eq 0 ]] || layout_die "$p is world-writable"
+    [[ "$owner" != "$APP_USER" ]] || { layout_die "$p is owned by the service user $APP_USER; root must own it"; return 1; }
+    [[ "$((8#$mode & 8#022))" -eq 0 ]] || { layout_die "$p is writable by group or others"; return 1; }
     [[ "$p" == "/" ]] && break
     p="$(dirname "$p")"
   done
+  return 0
+}
+
+# layout_require_trusted DIR is layout_require_trusted_path plus a scan of
+# everything inside: nothing under a directory root syncs source from,
+# sources scripts in, or runs git in may be owned by the service user or
+# writable by group or others (that covers .git/hooks and the scripts).
+layout_require_trusted() {
+  local dir="$1" stray
+  layout_require_trusted_path "$dir" || return 1
+  stray="$(find "$(readlink -f -- "$dir")" \( -user "$APP_USER" -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null)"
+  if [[ -n "$stray" ]]; then
+    layout_die "$stray is owned by the service user or writable by group/others; the source checkout must be root's alone" || return 1
+  fi
+  return 0
+}
+
+# layout_require_data_dir refuses a data directory the layout cannot protect:
+# inside APP_DIR it must be exactly APP_DIR/data (the sync excludes that name
+# and the ownership pass prunes it; any other nested path would be deleted
+# by the sync or locked by the pass). A directory outside APP_DIR is fine
+# for the layout, but the unit's ReadWritePaths must name it.
+layout_require_data_dir() {
+  local app data
+  app="$(readlink -m -- "$APP_DIR")"; data="$(readlink -m -- "$DATA_DIR")"
+  case "$data" in
+    "$app/data") return 0 ;;
+    "$app"|"$app"/*) layout_die "AUTH_DATA_DIR=$DATA_DIR is inside $APP_DIR but is not $APP_DIR/data; only that path is supported inside the install" || return 1 ;;
+  esac
   return 0
 }
 
@@ -70,11 +103,17 @@ layout_require_trusted() {
 layout_read_env() {
   local file="$1" line key v q
   [[ -f "$file" ]] || return 0
-  layout_require_real "$file"
+  layout_require_real "$file" || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line#"${line%%[![:space:]]*}"}"
     [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]] || continue
     key="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+    # Only the service's own settings: a legacy file could carry
+    # LD_PRELOAD, PATH or BASH_ENV, which must never reach a root process.
+    case "$key" in
+      AUTH_*|SENDGRID_API_KEY) ;;
+      *) continue ;;
+    esac
     v="${v#"${v%%[![:space:]]*}"}"
     v="${v%"${v##*[![:space:]]}"}"
     case "$v" in
@@ -89,8 +128,8 @@ layout_read_env() {
 # layout_build_cache makes the service user's build cache directory (its
 # parent must be root's; /var/cache is).
 layout_build_cache() {
-  layout_require_real "$BUILD_CACHE"
-  install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$BUILD_CACHE"
+  layout_require_real "$BUILD_CACHE" || return 1
+  install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$BUILD_CACHE" || return 1
 }
 
 # layout_build SRC STAGING copies the source into STAGING and builds both
@@ -98,22 +137,23 @@ layout_build_cache() {
 # caches under BUILD_CACHE. The staged copy is the service user's and is
 # used for nothing but producing bin/: root installs source from SRC, never
 # from here. -mod=readonly: a go.mod that would need changes fails the build
-# instead of being rewritten (CI keeps it tidy).
+# instead of being rewritten (CI keeps it tidy). LAYOUT_BUILD_GOFLAGS adds
+# flags for constrained hosts (the test harness passes -p=1).
 layout_build() {
   local src="$1" staging="$2"
-  layout_require_trusted "$src"
-  rsync -a --delete "${LAYOUT_SYNC_EXCLUDES[@]}" "$src/" "$staging/"
-  chown -R "$APP_USER:$APP_USER" "$staging"
-  layout_build_cache
+  layout_require_trusted "$src" || return 1
+  rsync -a --delete "${LAYOUT_SYNC_EXCLUDES[@]}" "$src/" "$staging/" || return 1
+  chown -R "$APP_USER:$APP_USER" "$staging" || return 1
+  layout_build_cache || return 1
   runuser -u "$APP_USER" -- env -i \
     PATH="$PATH" HOME="$BUILD_CACHE" \
     GOCACHE="$BUILD_CACHE/go-build" GOMODCACHE="$BUILD_CACHE/mod" GOPATH="$BUILD_CACHE/gopath" \
-    GOTOOLCHAIN=auto GOFLAGS="-mod=readonly -buildvcs=false" \
+    GOTOOLCHAIN=auto GOFLAGS="-mod=readonly -buildvcs=false ${LAYOUT_BUILD_GOFLAGS:-}" \
     bash -c "set -euo pipefail
       cd '$staging'
       mkdir -p bin
       go build -o bin/auth-server ./cmd/auth-server
-      go build -o bin/auth-admin  ./cmd/auth-admin"
+      go build -o bin/auth-admin  ./cmd/auth-admin" || return 1
 }
 
 # layout_install_tree SRC STAGING syncs the source tree from root's trusted
@@ -123,13 +163,13 @@ layout_build() {
 # user (the pre-flight and the unit both run them as it), never as root.
 layout_install_tree() {
   local src="$1" staging="$2"
-  layout_require_trusted "$src"
-  layout_require_real "$APP_DIR"
-  install -d -m 0755 -o root -g root "$APP_DIR"
-  rsync -a --delete --no-owner --no-group --chmod=go-w "${LAYOUT_SYNC_EXCLUDES[@]}" "$src/" "$APP_DIR/"
-  install -d -m 0755 -o root -g root "$APP_DIR/bin"
-  install -o root -g root -m 0755 "$staging/bin/auth-server" "$APP_DIR/bin/auth-server"
-  install -o root -g root -m 0755 "$staging/bin/auth-admin"  "$APP_DIR/bin/auth-admin"
+  layout_require_trusted "$src" || return 1
+  layout_require_real "$APP_DIR" || return 1
+  install -d -m 0755 -o root -g root "$APP_DIR" || return 1
+  rsync -a --delete --no-owner --no-group --chmod=go-w "${LAYOUT_SYNC_EXCLUDES[@]}" "$src/" "$APP_DIR/" || return 1
+  install -d -m 0755 -o root -g root "$APP_DIR/bin" || return 1
+  install -o root -g root -m 0755 "$staging/bin/auth-server" "$APP_DIR/bin/auth-server" || return 1
+  install -o root -g root -m 0755 "$staging/bin/auth-admin"  "$APP_DIR/bin/auth-admin" || return 1
 }
 
 # layout_apply enforces the ownership model on whatever is at APP_DIR now,
@@ -138,21 +178,21 @@ layout_install_tree() {
 # directory (never touched, not even briefly) and the env file, which get
 # their own owners. Leftover Go caches from the old in-place build go too.
 layout_apply() {
-  layout_require_real "$APP_DIR" "$DATA_DIR" "$ENV_FILE"
-  install -d -m 0755 -o root -g root "$APP_DIR"
+  layout_require_real "$APP_DIR" "$DATA_DIR" "$ENV_FILE" || return 1
+  install -d -m 0755 -o root -g root "$APP_DIR" || return 1
   rm -rf "$APP_DIR/.cache" "$APP_DIR/go" 2>/dev/null || true
   find "$APP_DIR" \( -path "$DATA_DIR" -o -path "$ENV_FILE" \) -prune -o -print0 \
-    | xargs -0 -r chown -h root:root
+    | xargs -0 -r chown -h root:root || return 1
   find "$APP_DIR" \( -path "$DATA_DIR" -o -path "$ENV_FILE" \) -prune -o ! -type l -print0 \
-    | xargs -0 -r chmod go-w
+    | xargs -0 -r chmod go-w || return 1
   if [[ -f "$ENV_FILE" ]]; then
-    chown root:"$APP_USER" "$ENV_FILE"
-    chmod 0640 "$ENV_FILE"
+    chown root:"$APP_USER" "$ENV_FILE" || return 1
+    chmod 0640 "$ENV_FILE" || return 1
   fi
-  install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR"
-  chown -R -h "$APP_USER:$APP_USER" "$DATA_DIR"
-  chmod 0700 "$DATA_DIR"
-  layout_build_cache
+  install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR" || return 1
+  chown -R -h "$APP_USER:$APP_USER" "$DATA_DIR" || return 1
+  chmod 0700 "$DATA_DIR" || return 1
+  layout_build_cache || return 1
 }
 
 # layout_bundle_git DIR ARGS runs git in a bundle checkout with hooks off:
@@ -173,18 +213,31 @@ layout_bundle_git() {
 layout_bundle_migrate() {
   local dir="$1" url fresh
   [[ -d "$dir/.git" ]] || return 0
-  layout_require_real "$dir" "$dir/.git"
-  if [[ "$(stat -c '%U' "$dir/.git")" != "$APP_USER" && -z "$(find "$dir/.git" -user "$APP_USER" -print -quit)" ]]; then
-    layout_bundle "$dir"
+  layout_require_real "$dir" "$dir/.git" || return 1
+  # The checkout's parents must be root's: a service-writable parent could
+  # replace a root-owned checkout wholesale.
+  layout_require_trusted_path "$(dirname "$(readlink -f -- "$dir")")" || return 1
+  if [[ "$(stat -c '%U' "$dir")" != "$APP_USER" && -z "$(find "$dir" \( -user "$APP_USER" -o -perm -g+w -o -perm -o+w \) -print -quit)" ]]; then
+    layout_bundle "$dir" || return 1
     return 0
   fi
-  url="$(git config --file "$dir/.git/config" --get remote.origin.url)" || layout_die "cannot read remote.origin.url of $dir"
-  fresh="$(mktemp -d "${dir}.fresh.XXXXXX")"
-  git -c core.hooksPath=/dev/null clone --quiet "$url" "$fresh/checkout" || layout_die "could not re-clone the client bundle from its remote (does the box's git credential cover it?)"
-  mv "$dir" "${dir}.legacy-$(date +%Y%m%d%H%M%S)"
-  mv "$fresh/checkout" "$dir"
-  rmdir "$fresh"
-  layout_bundle "$dir"
+  # The remote is read from the old config as data and must be an ordinary
+  # https or ssh remote; anything else (a local path, an exotic transport)
+  # is refused rather than cloned.
+  url="$(git config --file "$dir/.git/config" --get remote.origin.url)" || { layout_die "cannot read remote.origin.url of $dir"; return 1; }
+  case "$url" in
+    https://*|ssh://*|git@*:*) ;;
+    file:///*|/*)
+      # A local repository is acceptable only when root alone can write it.
+      layout_require_trusted "${url#file://}" || return 1 ;;
+    *) layout_die "the client bundle remote $url is not an https, ssh or root-owned local repository; re-clone it by hand into a root-owned directory"; return 1 ;;
+  esac
+  fresh="$(mktemp -d "${dir}.fresh.XXXXXX")" || return 1
+  git -c core.hooksPath=/dev/null clone --quiet "$url" "$fresh/checkout" || { rm -rf "$fresh"; layout_die "could not re-clone the client bundle from its remote (does the box's git credential cover it?)"; return 1; }
+  mv "$dir" "${dir}.legacy-$(date +%Y%m%d%H%M%S)" || return 1
+  mv "$fresh/checkout" "$dir" || return 1
+  rmdir "$fresh" || true
+  layout_bundle "$dir" || return 1
   printf 'layout: re-cloned the client bundle at %s (previous checkout kept beside it)\n' "$dir" >&2
 }
 
@@ -194,10 +247,12 @@ layout_bundle_migrate() {
 layout_bundle() {
   local dir="$1"
   [[ -d "$dir" ]] || return 0
-  layout_require_real "$dir"
-  chown -R -h root:root "$dir"
-  find "$dir" ! -type l -exec chmod go-w,go+rX {} +
-  [[ -d "$dir/.git/hooks" ]] && find "$dir/.git/hooks" -type f ! -name '*.sample' -delete
+  layout_require_real "$dir" || return 1
+  chown -R -h root:root "$dir" || return 1
+  find "$dir" ! -type l -exec chmod go-w,go+rX {} + || return 1
+  if [[ -d "$dir/.git/hooks" ]]; then
+    find "$dir/.git/hooks" -type f ! -name '*.sample' -delete || return 1
+  fi
   return 0
 }
 

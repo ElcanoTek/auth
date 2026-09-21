@@ -18,40 +18,6 @@ set -euo pipefail
 SRC_DIR="${SRC_DIR:-/opt/auth-src}"
 APP_DIR="${APP_DIR:-/opt/auth}"
 
-# The client branding bundle, if .env.local names one. Its commit before this
-# run is remembered so every failure path can put it back: a bundle the new
-# (or current) binary refuses would otherwise defeat the binary rollback,
-# because the restored binary would refuse the same bundle.
-bundle_dir="$(sed -n 's/^[[:space:]]*AUTH_CLIENT_CONFIG_DIR[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$APP_DIR/.env.local" 2>/dev/null | tail -n1)"
-bundle_before=""
-bundle_after=""
-# Hooks off: they are never versioned, and a hook is what a checkout the
-# service user could once write would carry.
-bundle_git() { git -c safe.directory="$bundle_dir" -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$bundle_dir" "$@"; }
-if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
-  bundle_before="$(bundle_git rev-parse HEAD 2>/dev/null || echo '')"
-  bundle_after="$bundle_before"
-fi
-# restore_bundle puts the checkout back on its pre-update commit. It reports
-# truthfully: bundle_after only changes when the reset succeeded, so a failed
-# reset can be retried and is never described as done. Armed as an EXIT trap
-# the moment the pull advances the bundle (see below), so a cancelled or
-# failed update of any kind cannot leave a bundle the binary has not accepted.
-update_succeeded=0
-restore_bundle() {
-  if [[ -n "$bundle_before" && "$bundle_before" != "$bundle_after" ]]; then
-    if bundle_git reset --hard --quiet "$bundle_before" 2>/dev/null; then
-      warn "client bundle reset to ${bundle_before:0:12}"
-      bundle_after="$bundle_before"
-    else
-      warn "could not reset the client bundle to ${bundle_before:0:12} — check $bundle_dir"
-      return 1
-    fi
-  fi
-}
-restore_bundle_on_exit() {
-  [[ "$update_succeeded" == "1" ]] || restore_bundle || true
-}
 APP_USER="${APP_USER:-auth}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}" # overridable for tests
 CLI_BIN="${CLI_BIN:-/usr/local/bin/auth}"         # overridable for tests
@@ -128,6 +94,80 @@ flock -n 9 || die "another 'auth update' or 'auth rebuild' is already running �
 [[ -d "$SRC_DIR/.git" ]] || die "no git checkout at $SRC_DIR"
 [[ -d "$APP_DIR" ]]      || die "no existing install at $APP_DIR (did you skip bootstrap?)"
 
+# ── trust the source checkout before root reads anything from it ──────
+# Root will source scripts/lib/layout.sh from $SRC_DIR, run git in it and
+# sync it into $APP_DIR, so it must be root's alone: no ancestor or file owned
+# by the service user or writable by group or others. This check runs before
+# the library is sourced (it cannot come from the library it protects).
+require_trusted_checkout() {
+  local p owner mode stray
+  p="$(readlink -f -- "$1")" || die "$1 does not resolve"
+  while :; do
+    owner="$(stat -c '%U' "$p")" || die "cannot stat $p"
+    mode="$(stat -c '%a' "$p")"
+    [[ "$owner" != "$APP_USER" ]] || die "$p is owned by the service user $APP_USER; the source checkout must be root's"
+    [[ "$((8#$mode & 8#022))" -eq 0 ]] || die "$p is writable by group or others; the source checkout must be root's alone"
+    [[ "$p" == "/" ]] && break
+    p="$(dirname "$p")"
+  done
+  stray="$(find "$(readlink -f -- "$1")" \( -user "$APP_USER" -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null)"
+  [[ -z "$stray" ]] || die "$stray is owned by the service user or writable by group/others; fix the ownership of $1 (chown -R root:root, chmod -R go-w) before updating"
+}
+require_trusted_checkout "$SRC_DIR"
+# The ownership model (who owns and runs what) comes from the checkout being
+# deployed, so the functions always match the code. Nothing under $APP_DIR is
+# sourced: a tree installed under the previous layout was service-writable.
+[[ -f "$SRC_DIR/scripts/lib/layout.sh" ]] || die "$SRC_DIR has no scripts/lib/layout.sh; check out a commit that has it (2026-09 or later) before updating"
+# The database lives where the server was told (AUTH_DATA_DIR, default
+# $APP_DIR/data; a relative value is relative to $APP_DIR); the library
+# prunes and excludes it by this name.
+DATA_DIR="$(env_value AUTH_DATA_DIR)"
+DATA_DIR="${DATA_DIR:-$APP_DIR/data}"
+[[ "$DATA_DIR" == /* ]] || DATA_DIR="$APP_DIR/$DATA_DIR"
+# shellcheck disable=SC1091
+. "$SRC_DIR/scripts/lib/layout.sh"
+layout_require_trusted "$SRC_DIR"
+layout_require_data_dir
+
+# The client branding bundle, if .env.local names one. Its commit before this
+# run is remembered so every failure path can put it back: a bundle the new
+# (or current) binary refuses would otherwise defeat the binary rollback,
+# because the restored binary would refuse the same bundle.
+bundle_dir="$(sed -n 's/^[[:space:]]*AUTH_CLIENT_CONFIG_DIR[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$APP_DIR/.env.local" 2>/dev/null | tail -n1)"
+bundle_before=""
+bundle_after=""
+# Hooks off: they are never versioned, and a hook is what a checkout the
+# service user could once write would carry.
+bundle_git() { layout_bundle_git "$bundle_dir" "$@"; }
+if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
+  # A checkout the service user could write (previous layout) is re-cloned
+  # from its remote before root runs any git command in it, on every path
+  # through this script, the rebuild-only one included.
+  layout_bundle_migrate "$bundle_dir" || die "could not migrate the client bundle at $bundle_dir"
+  bundle_before="$(bundle_git rev-parse HEAD 2>/dev/null || echo '')"
+  bundle_after="$bundle_before"
+fi
+# restore_bundle puts the checkout back on its pre-update commit. It reports
+# truthfully: bundle_after only changes when the reset succeeded, so a failed
+# reset can be retried and is never described as done. Armed as an EXIT trap
+# the moment the pull advances the bundle (see below), so a cancelled or
+# failed update of any kind cannot leave a bundle the binary has not accepted.
+update_succeeded=0
+restore_bundle() {
+  if [[ -n "$bundle_before" && "$bundle_before" != "$bundle_after" ]]; then
+    if bundle_git reset --hard --quiet "$bundle_before" 2>/dev/null; then
+      warn "client bundle reset to ${bundle_before:0:12}"
+      bundle_after="$bundle_before"
+    else
+      warn "could not reset the client bundle to ${bundle_before:0:12} — check $bundle_dir"
+      return 1
+    fi
+  fi
+}
+restore_bundle_on_exit() {
+  [[ "$update_succeeded" == "1" ]] || restore_bundle || true
+}
+
 # ── 1. fetch ─────────────────────────────────────────────────────────
 step "1/4  Fetching latest from $SRC_DIR"
 
@@ -188,10 +228,6 @@ else
   # the previous checkout stays in use. The checkout lives outside $APP_DIR
   # (bootstrap puts it at ${APP_DIR}-client) so the swap below never touches it.
   if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
-    # A checkout the service user could write (previous layout) is re-cloned
-    # from its remote before root runs anything in it; one root already owns
-    # is only re-tightened.
-    layout_bundle_migrate "$bundle_dir"
     if bundle_git pull --ff-only --quiet 2>/dev/null; then
       bundle_after="$(bundle_git rev-parse HEAD 2>/dev/null || echo "$bundle_before")"
       layout_bundle "$bundle_dir"
@@ -258,16 +294,6 @@ else
   fi
 fi
 
-# The ownership model (who owns and runs what) comes from the checkout being
-# deployed, so the functions always match the code; the installed copy is the
-# fallback for a manual rollback to a commit that predates the file.
-# Nothing under $APP_DIR is sourced: a tree installed under the previous
-# layout was writable by the service user.
-[[ -f "$SRC_DIR/scripts/lib/layout.sh" ]] || die "$SRC_DIR has no scripts/lib/layout.sh; check out a commit that has it (2026-09 or later) before updating"
-# shellcheck disable=SC1091
-. "$SRC_DIR/scripts/lib/layout.sh"
-layout_require_trusted "$SRC_DIR"
-
 # ── 2. build in staging ──────────────────────────────────────────────
 step "2/4  Building new artifacts (staging)"
 
@@ -329,9 +355,6 @@ cp -p "$CLI_BIN"                         "$BACKUP/auth-cli"
 # $APP_DIR/data; a relative value is relative to $APP_DIR). An existing
 # database that cannot be snapshotted stops the update here, before any
 # swap: the rollback aid the messages promise must exist.
-DATA_DIR="$(env_value AUTH_DATA_DIR)"
-DATA_DIR="${DATA_DIR:-$APP_DIR/data}"
-[[ "$DATA_DIR" == /* ]] || DATA_DIR="$APP_DIR/$DATA_DIR"
 DB_SNAPSHOT=""
 if [[ -f "$DATA_DIR/state.db" ]]; then
   command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is needed to snapshot $DATA_DIR/state.db before the swap (dnf install sqlite); nothing was changed"
