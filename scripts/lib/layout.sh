@@ -30,6 +30,8 @@ BUILD_CACHE="${BUILD_CACHE:-/var/cache/auth-build}"
 # The rsync exclusions shared by every sync of the source tree: state,
 # secrets and binaries never travel with the source.
 LAYOUT_SYNC_EXCLUDES=(--exclude='/.git' --exclude='/data' --exclude='/.env.local' --exclude='/bin')
+# Upper bound for one staged binary (a Go build here is well under 100 MB).
+LAYOUT_MAX_BINARY_BYTES="${LAYOUT_MAX_BINARY_BYTES:-268435456}"
 
 # layout_die reports a refusal and fails the calling function (return 1, not
 # exit: inside update.sh's guarded swap block an exit would skip the
@@ -223,13 +225,22 @@ layout_install_tree() {
       rm -rf "$private"
       layout_die "$p is not a regular file; refusing to install it" || return 1
     fi
-    if ! runuser -u "$APP_USER" -- cat -- "$p" > "$private/$bin"; then
+    # Bounded in bytes and time: a staged path swapped for a FIFO or a
+    # device must not hang the updater or fill the disk. A Go binary here
+    # is a few tens of MB; the cap is generous.
+    if ! timeout 120 runuser -u "$APP_USER" -- head -c "$LAYOUT_MAX_BINARY_BYTES" -- "$p" > "$private/$bin"; then
       rm -rf "$private"
       layout_die "could not read $p as $APP_USER; refusing to install it" || return 1
     fi
-    if [[ ! -s "$private/$bin" ]]; then
+    local size
+    size="$(stat -c %s "$private/$bin")"
+    if [[ "$size" -eq 0 || "$size" -ge "$LAYOUT_MAX_BINARY_BYTES" ]]; then
       rm -rf "$private"
-      layout_die "$p read back empty; refusing to install it" || return 1
+      layout_die "$p read back $size bytes (empty or over the ${LAYOUT_MAX_BINARY_BYTES}-byte cap); refusing to install it" || return 1
+    fi
+    if ! head -c 4 -- "$private/$bin" | cmp -s - <(printf '\x7fELF'); then
+      rm -rf "$private"
+      layout_die "$p is not an ELF executable; refusing to install it" || return 1
     fi
     install -o root -g root -m 0755 "$private/$bin" "$APP_DIR/bin/$bin" || { rm -rf "$private"; return 1; }
   done
@@ -270,6 +281,19 @@ layout_apply() {
 layout_bundle_git() {
   local dir="$1"; shift
   git -c safe.directory="$dir" -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$dir" "$@"
+}
+
+# layout_bundle_restore DIR COMMIT puts a bundle checkout back on COMMIT
+# when a run that advanced it did not complete, so the running service is
+# not left with a bundle it never accepted. A checkout already on COMMIT is
+# left alone; an empty COMMIT (nothing was recorded) is a no-op.
+layout_bundle_restore() {
+  local dir="$1" commit="$2"
+  [[ -n "$commit" && -d "$dir/.git" ]] || return 0
+  [[ "$(layout_bundle_git "$dir" rev-parse HEAD 2>/dev/null)" != "$commit" ]] || return 0
+  layout_bundle_git "$dir" reset --hard --quiet "$commit" 2>/dev/null \
+    || { layout_die "could not put the bundle in $dir back on ${commit:0:12}; check it before restarting the service" || return 1; }
+  printf 'layout: client bundle in %s put back on %s (the run did not complete)\n' "$dir" "${commit:0:12}" >&2
 }
 
 # layout_bundle_migrate DIR re-clones a bundle checkout that is not root's

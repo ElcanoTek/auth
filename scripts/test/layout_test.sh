@@ -265,6 +265,14 @@ if [[ -e "$G7/bin/auth-server" ]] && grep -q "root-only sentinel" "$G7/bin/auth-
 S8="$T/staging-owned"; mkdir -p "$S8/bin"; cp "$APP/bin/auth-server" "$APP/bin/auth-admin" "$S8/bin/"; chown -R "$APP_USER" "$S8"
 if lib_call "$G7" layout_install_tree "$SRC" "$S8" >/dev/null 2>&1; then ok "layout_install_tree installs a staged binary read as the service user"; else bad "service-owned staged binary refused"; fi
 [[ "$(stat -c '%U:%G %a' "$G7/bin/auth-server")" == "root:root 755" ]] && cmp -s "$G7/bin/auth-server" "$APP/bin/auth-server" && ok "installed copy is root:root 755 with the staged content" || bad "installed copy: $(stat -c '%U:%G %a' "$G7/bin/auth-server" 2>&1)"
+# A staged output swapped for a FIFO (would block forever) or for a device
+# (would never end) is refused, and quickly.
+SF="$T/staging-fifo"; mkdir -p "$SF/bin"; cp "$APP/bin/auth-admin" "$SF/bin/auth-admin"; mkfifo "$SF/bin/auth-server"; chown -R root:root "$SF"; chmod -R a+rX "$SF"
+started=$(date +%s)
+if lib_call "$G7" layout_install_tree "$SRC" "$SF" >/dev/null 2>&1; then bad "a FIFO staged output was installed"; else ok "layout_install_tree refuses a FIFO staged output"; fi
+[[ $(( $(date +%s) - started )) -lt 100 ]] && ok "the refusal did not hang" || bad "refusal took too long"
+SD="$T/staging-dev"; mkdir -p "$SD/bin"; cp "$APP/bin/auth-admin" "$SD/bin/auth-admin"; ln -s /dev/zero "$SD/bin/auth-server"; chown -R -h root:root "$SD"
+if LAYOUT_MAX_BINARY_BYTES=1048576 lib_call "$G7" layout_install_tree "$SRC" "$SD" >/dev/null 2>&1; then bad "an endless staged output was installed"; else ok "layout_install_tree refuses an endless staged output"; fi
 # After a real build the staging copy belongs to root again.
 S9="$(mktemp -d /var/lib/auth-layout-stage.XXXXXX)"
 lib_call "$G7" layout_build "$SRC" "$S9" >/dev/null 2>&1 && ok "layout_build ran" || bad "layout_build failed"
@@ -338,13 +346,21 @@ if lib_call "$G" layout_bundle_migrate "$BM" >/dev/null 2>&1; then bad "migratio
 [[ -z "$(ls -d "$BM.fresh."* 2>/dev/null)" ]] && ok "no temporary clone left behind" || bad "temporary clone left behind"
 : "$missing_head"
 # A legacy bundle with a planted hook is re-cloned root-owned, hook gone.
-BD="$T/bundle"; git clone -q --no-hardlinks "$B" "$BD"; printf '#!/bin/sh\ntouch %s/hooked\n' "$T" > "$BD/.git/hooks/post-merge"; chmod +x "$BD/.git/hooks/post-merge"; chown -R "$APP_USER:$APP_USER" "$BD"
+BD="$T/bundle"; git clone -q --no-hardlinks "$B" "$BD"; git -C "$BD" reset -q --hard HEAD~1; printf '#!/bin/sh\ntouch %s/hooked\n' "$T" > "$BD/.git/hooks/post-merge"; chmod +x "$BD/.git/hooks/post-merge"; chown -R "$APP_USER:$APP_USER" "$BD"
 lib_call "$G" layout_bundle_migrate "$BD" >/dev/null 2>&1 && ok "layout_bundle_migrate ran" || bad "layout_bundle_migrate failed"
 [[ "$(stat -c %U "$BD/.git")" == "root" ]] && ok "bundle re-cloned root-owned" || bad "bundle .git owner $(stat -c %U "$BD/.git")"
 check test ! -e "$BD/.git/hooks/post-merge"
 ls -d "$BD.legacy-"* >/dev/null 2>&1 && ok "legacy bundle kept beside for inspection" || bad "legacy bundle not kept"
+bd_before="$(git -C "$BD" rev-parse HEAD)"
 lib_call "$G" layout_bundle_git "$BD" pull --ff-only --quiet >/dev/null 2>&1 && ok "root pull in migrated bundle" || bad "pull failed"
 check test ! -e "$T/hooked"
+# A run that advanced the bundle and then failed puts it back where the
+# service had it; a bundle already there, or no recorded commit, is left alone.
+[[ "$(git -C "$BD" rev-parse HEAD)" != "$bd_before" ]] && ok "pull moved the bundle" || bad "pull did not move the bundle"
+lib_call "$G" layout_bundle_restore "$BD" "$bd_before" >/dev/null 2>&1 && ok "layout_bundle_restore ran" || bad "layout_bundle_restore failed"
+[[ "$(git -C "$BD" rev-parse HEAD)" == "$bd_before" ]] && ok "bundle back on the commit the service had" || bad "bundle at $(git -C "$BD" rev-parse HEAD), wanted $bd_before"
+lib_call "$G" layout_bundle_restore "$BD" "" >/dev/null 2>&1 && [[ "$(git -C "$BD" rev-parse HEAD)" == "$bd_before" ]] && ok "restore with no recorded commit is a no-op" || bad "empty restore changed the bundle"
+if lib_call "$G" layout_bundle_restore "$BD" "0000000000000000000000000000000000000000" >/dev/null 2>&1; then bad "restore to an unknown commit reported success"; else ok "restore to an unknown commit fails"; fi
 
 # ── 7. fresh install through bootstrap (dry run, non-interactive) ──────
 section "bootstrap fresh install (DRY_RUN, non-interactive, password mode)"
@@ -375,6 +391,45 @@ grep -q '^AUTH_RETURN_TO_HOSTS="a.example.com"' "$APP2/.env.local" && ok "re-run
 grep -q '^AUTH_HOSTNAME="localhost"' "$APP2/.env.local" && ok "re-run kept the hostname from the env file (read as data)" || bad "re-run hostname"
 grep -qF 'AUTH_BRAND_NAME="North \"Wind\" \\ Co"' "$APP2/.env.local" && ok "re-run kept the escaped brand byte for byte" || bad "re-run brand line: $(grep '^AUTH_BRAND_NAME=' "$APP2/.env.local")"
 [[ "$(owner_mode "$APP2/.env.local")" == "root:$APP_USER 640" ]] && ok "re-run env root:$APP_USER 640" || bad "re-run env $(owner_mode "$APP2/.env.local")"
+
+# A value with a line break cannot be written to the line-oriented env file:
+# the run dies before writing, the live env is untouched, and the rejected
+# value (it could be a secret) is not echoed.
+cp "$APP2/.env.local" "$T/env2.before"
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n AUTH_BOOTSTRAP_BRAND_NAME=$'Fine\nAUTH_LOGIN_MODE=magic' \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap3.log" 2>&1; then bad "bootstrap accepted a brand with a line break"; else ok "bootstrap refuses a value with a line break"; fi
+grep -q 'BRAND_ANSWER contains a line break' "$T/bootstrap3.log" && ok "the refusal names the setting" || bad "no refusal message: $(tail -3 "$T/bootstrap3.log")"
+grep -q 'Fine' "$T/bootstrap3.log" && bad "the rejected value was echoed" || ok "the rejected value was not echoed"
+cmp -s "$APP2/.env.local" "$T/env2.before" && ok "live env untouched after the refusal" || bad "live env changed after the refusal"
+[[ -z "$(ls "$APP2"/.env.local.new.* 2>/dev/null)" ]] && ok "no candidate env left behind" || bad "candidate env left behind"
+# The pre-flight checks the candidate env, not the settings this shell
+# exported from the previous env file (the server lets the process
+# environment shadow the file): a re-run with a new hostname must report it.
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=auth.northwind.test AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=y \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap5.log" 2>&1; then ok "bootstrap re-run with a new hostname succeeded"; else bad "re-run with a new hostname failed"; tail -8 "$T/bootstrap5.log"; fi
+grep -q 'configuration OK (hostname=auth.northwind.test,' "$T/bootstrap5.log" && ok "pre-flight validated the candidate env, not the exported old one" || bad "pre-flight line: $(grep 'configuration OK' "$T/bootstrap5.log")"
+grep -q '^AUTH_HOSTNAME="auth.northwind.test"' "$APP2/.env.local" && ok "new hostname written" || bad "hostname not written"
+# Put the hostname back so the checks below compare against a known file.
+env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap6.log" 2>&1 || bad "restoring localhost failed"
+cp "$APP2/.env.local" "$T/env2.before"
+# Only the loopback literal and localhost are local HTTP; a malformed
+# 127.x address is not a hostname at all.
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=127.999.999.999 AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap4.log" 2>&1; then bad "bootstrap accepted 127.999.999.999 as a hostname"; else ok "bootstrap rejects 127.999.999.999"; fi
+cmp -s "$APP2/.env.local" "$T/env2.before" && ok "live env untouched after the bad hostname" || bad "live env changed after the bad hostname"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

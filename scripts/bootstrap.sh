@@ -109,10 +109,31 @@ genbase64() { openssl rand -base64 "$1" | tr -d '=\n' | tr '/+' '_-'; }
 # envq VALUE prints VALUE as a double-quoted env-file literal, escaping the
 # two characters the server's loader unescapes (backslash and double quote),
 # so any answer round-trips exactly. Used for every value written below.
-envq() {
-  local v="$1"
-  [[ "$v" != *$'\n'* && "$v" != *$'\r'* ]] || die "a setting contains a line break, which the env file cannot carry: ${v:0:40}..."
-  v="${v//\\/\\\\}"; v="${v//\"/\\\"}"; printf '"%s"' "$v"
+envq() { local v="$1"; v="${v//\\/\\\\}"; v="${v//\"/\\\"}"; printf '"%s"' "$v"; }
+
+# On any exit before the install completed, put a bundle this run advanced
+# back on its previous commit (see the pull below).
+BOOTSTRAP_DONE=0
+BUNDLE_BEFORE=""
+BUNDLE_DIR_FOR_RESTORE=""
+restore_bundle_on_failure() {
+  if [[ "$BOOTSTRAP_DONE" != "1" && -n "$BUNDLE_BEFORE" && -n "$BUNDLE_DIR_FOR_RESTORE" ]]; then
+    layout_bundle_restore "$BUNDLE_DIR_FOR_RESTORE" "$BUNDLE_BEFORE" || true
+  fi
+}
+trap restore_bundle_on_failure EXIT
+
+# require_single_line NAME... dies, naming only the variable, when a value
+# carries a line break: the env file is line-oriented and a check inside the
+# heredoc's command substitution could not stop the write. Secret values are
+# never echoed.
+require_single_line() {
+  local name
+  for name in "$@"; do
+    if [[ "${!name:-}" == *$'\n'* || "${!name:-}" == *$'\r'* ]]; then
+      die "the value for $name contains a line break, which the env file cannot carry"
+    fi
+  done
 }
 
 # guess_cookie_domain HOSTNAME → derives the cookie domain. For
@@ -255,8 +276,10 @@ ask_until_valid() {  # VAR ENVVAR LABEL DEFAULT VALIDATOR-FUNCTION
 }
 valid_hostname() {
   local h="${1,,}"
-  [[ "$h" == "localhost" || "$h" =~ ^127\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && return 0
-  [[ "$h" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]
+  [[ "$h" == "localhost" || "$h" == "127.0.0.1" ]] && return 0
+  # A DNS name whose last label is all digits is not a name but a (broken)
+  # numeric address, e.g. 127.999.999.999; the only address accepted is above.
+  [[ "$h" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ && ! "$h" =~ \.[0-9]+$ ]]
 }
 valid_login_mode() { [[ "$1" == "password" || "$1" == "magic" ]]; }
 
@@ -321,6 +344,12 @@ if [[ -n "$CLIENT_CONFIG_ANSWER" ]]; then
         fi
         if [[ -d "$CLIENT_CONFIG_DIR/.git" ]]; then
           layout_bundle_migrate "$CLIENT_CONFIG_DIR"
+          # Remember where the live bundle was: if this run fails later (a
+          # refused configuration, a failed build) the checkout goes back,
+          # so the running service is not left with a bundle it never
+          # accepted.
+          BUNDLE_BEFORE="$(layout_bundle_git "$CLIENT_CONFIG_DIR" rev-parse HEAD 2>/dev/null || true)"
+          BUNDLE_DIR_FOR_RESTORE="$CLIENT_CONFIG_DIR"
           layout_bundle_git "$CLIENT_CONFIG_DIR" pull --ff-only --quiet || die "could not fast-forward $CLIENT_CONFIG_DIR"
         else
           git -c core.hooksPath=/dev/null clone --quiet "$CLIENT_CONFIG_ANSWER" "$CLIENT_CONFIG_DIR" || die "could not clone the bundle (does the box's git credential cover that repository?)"
@@ -487,7 +516,7 @@ SETUP_CADDY="n"
 USE_LETSENCRYPT="n"
 LE_EMAIL=""
 COOKIE_SECURE="true"
-if [[ "$HOSTNAME_ANSWER" == "localhost" || "$HOSTNAME_ANSWER" =~ ^127\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ "$HOSTNAME_ANSWER" == "localhost" || "$HOSTNAME_ANSWER" == "127.0.0.1" ]]; then
   COOKIE_SECURE="false"
 else
   # DNS pre-check so a misconfigured A record fails BEFORE we ask ACME.
@@ -562,6 +591,9 @@ fi
 # Written to a temporary file and installed over the live one in one step,
 # so a failure mid-way never leaves a half-written env file, and the result
 # is root:auth 0640 from the moment it exists.
+require_single_line HOSTNAME_ANSWER LOGIN_MODE_ANSWER ISSUER_AUTHORITY AUTH_SIGNING_KEY COOKIE_DOMAIN_ANSWER \
+  PASSWORD_COOKIE_NAME AUTH_MFA_KEY AUTH_MFA_KEY_ID AUTH_MFA_PREVIOUS_KEYS ALLOWED_DOMAINS_ANSWER CLIENT_CONFIG_DIR \
+  EMAIL_DRIVER_ANSWER EMAIL_FROM_ANSWER SENDGRID_KEY_ANSWER SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS BRAND_ANSWER
 ENV_OUT="$(mktemp "$APP_DIR/.env.local.new.XXXXXX")"
 OLD_UMASK="$(umask)"
 umask 077
@@ -651,6 +683,14 @@ if [[ -n "$OLD_ENV_FILE" ]]; then
   for key in AUTH_ADDR AUTH_DATA_DIR AUTH_COOKIE_NAME AUTH_PASSWORD_COOKIE_NAME AUTH_CODE_TTL_SECONDS AUTH_ASSERTION_TTL_MINUTES; do
     [[ -n "${old_line[$key]:-}" ]] || continue
     grep -q "^${key}=" "$ENV_OUT" || continue
+    # The password cookie's name follows the cookie mode (__Host- only with
+    # secure cookies): a previous name from the other mode is not kept, or
+    # the server would refuse the file after a move between localhost and
+    # a public hostname.
+    if [[ "$key" == "AUTH_PASSWORD_COOKIE_NAME" ]]; then
+      if [[ "$COOKIE_SECURE" == "true" && "${old_line[$key]}" != *"=\"__Host-"* && "${old_line[$key]}" != *"=__Host-"* ]]; then continue; fi
+      if [[ "$COOKIE_SECURE" != "true" && "${old_line[$key]}" == *"__Host-"* ]]; then continue; fi
+    fi
     REPL="${old_line[$key]}" KEY="$key" awk '
       index($0, ENVIRON["KEY"] "=") == 1 && !done { print ENVIRON["REPL"]; done = 1; next } { print }
     ' "$ENV_OUT" > "$ENV_OUT.tmp" && cat "$ENV_OUT.tmp" > "$ENV_OUT" && rm -f "$ENV_OUT.tmp"
@@ -687,13 +727,18 @@ step "5/6  Building auth-server + auth-admin"
 # The service user builds in a staging copy with its own caches; root then
 # installs root-owned source and binaries into $APP_DIR (scripts/lib/layout.sh).
 STAGING="$(mktemp -d)"
-trap 'rm -rf "$STAGING" "$ENV_OUT"' EXIT
+trap 'rm -rf "$STAGING" "$ENV_OUT"; restore_bundle_on_failure' EXIT
 layout_build "$SRC_DIR" "$STAGING"
 
 # Pre-flight before anything live is replaced: the staged build must accept
 # the candidate configuration (the same check `auth update` runs). On a
 # re-run a bad answer therefore leaves the running install exactly as it was.
-if ! runuser -u "$APP_USER" -- "$STAGING/bin/auth-server" -check-config -env "$ENV_OUT"; then
+# With a scrubbed environment: this shell exported the previous env file's
+# settings (to offer them as defaults) and the server lets the process
+# environment shadow the file, so without env -i the check would validate
+# the old settings, not the candidate. The service runs from a unit with
+# only its EnvironmentFile, which this mirrors.
+if ! runuser -u "$APP_USER" -- env -i PATH="$PATH" HOME=/ "$STAGING/bin/auth-server" -check-config -env "$ENV_OUT"; then
   die "the new build refuses the configuration above (see its message); the current install was not touched"
 fi
 ok "configuration accepted by the new build"
@@ -705,6 +750,9 @@ rm -f "$ENV_OUT"
 layout_install_tree "$SRC_DIR" "$STAGING"
 layout_apply
 rm -rf "$STAGING"
+# From here the install is the new one and the bundle it was checked against
+# stays: a later failure (Caddy, motd) must not move the bundle back.
+BOOTSTRAP_DONE=1
 trap - EXIT
 ok "env seeded"
 

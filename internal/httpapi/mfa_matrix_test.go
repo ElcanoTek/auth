@@ -75,6 +75,11 @@ func TestCorruptCiphertextFailsClosed(t *testing.T) {
 	secret, seeded := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
 	f, _ := st.ActiveAuthenticator(context.Background(), a.ID)
+	// The test spans three consecutive steps; keep clear of a boundary so a
+	// step change between the calls below cannot move the window.
+	if until := mfa.Period*time.Second - time.Duration(time.Now().Unix()%int64(mfa.Period))*time.Second; until < 5*time.Second {
+		time.Sleep(until)
+	}
 	// Control first, with the previous step's code (inside the window): with
 	// intact ciphertext it signs in, so the refusal below is about the
 	// ciphertext and not about the code.
