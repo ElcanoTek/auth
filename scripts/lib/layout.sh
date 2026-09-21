@@ -74,9 +74,11 @@ layout_require_trusted_path() {
 layout_require_trusted() {
   local dir="$1" stray
   layout_require_trusted_path "$dir" || return 1
-  stray="$(find "$(readlink -f -- "$dir")" \( ! -user root -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null)"
+  # A symlink is refused outright: its own owner and mode say nothing about
+  # the file root would actually source or the git metadata it would use.
+  stray="$(find "$(readlink -f -- "$dir")" \( ! -user root -o -perm -g+w -o -perm -o+w -o -type l \) -print -quit 2>/dev/null)"
   if [[ -n "$stray" ]]; then
-    layout_die "$stray is not root's or is writable by group/others; the source checkout must be root's alone (chown -R root:root, chmod -R go-w)" || return 1
+    layout_die "$stray is not root's, is writable by group/others, or is a symlink; the source checkout must be root's alone with no symlinks (chown -R root:root, chmod -R go-w, remove links)" || return 1
   fi
   return 0
 }
@@ -230,7 +232,10 @@ layout_bundle_migrate() {
   # The checkout's parents must be root's: a service-writable parent could
   # replace a root-owned checkout wholesale.
   layout_require_trusted_path "$(dirname "$(readlink -f -- "$dir")")" || return 1
-  if [[ "$(stat -c '%U' "$dir")" != "$APP_USER" && -z "$(find "$dir" \( -user "$APP_USER" -o -perm -g+w -o -perm -o+w \) -print -quit)" ]]; then
+  # Only a checkout that is already root's alone (every path root-owned,
+  # nothing group/world-writable, no symlinks) is kept; anything else could
+  # carry git metadata root must not run with, and is re-cloned.
+  if [[ -z "$(find "$dir" \( ! -user root -o -perm -g+w -o -perm -o+w -o -type l \) -print -quit)" ]]; then
     layout_bundle "$dir" || return 1
     return 0
   fi
@@ -251,17 +256,25 @@ layout_bundle_migrate() {
   # the update that follows treats the remote's tip as an ordinary pull
   # with the usual rollback baseline. A commit the remote no longer has
   # leaves the clone at the tip, with a warning.
-  local old_head
+  # Fail closed: if the running service's commit cannot be identified or is
+  # no longer on the remote, nothing is replaced and the operator re-clones
+  # by hand (a silent jump to the tip would change what the service serves).
+  local old_head old_branch
   old_head="$(layout_git_head_as_data "$dir")"
+  old_branch="$(layout_git_branch_as_data "$dir")"
+  [[ -n "$old_head" ]] || { layout_die "cannot read the commit the client bundle at $dir is on; re-clone it by hand into a root-owned directory at the commit the service should serve"; return 1; }
   fresh="$(mktemp -d "${dir}.fresh.XXXXXX")" || return 1
   git -c core.hooksPath=/dev/null clone --quiet "$url" "$fresh/checkout" || { rm -rf "$fresh"; layout_die "could not re-clone the client bundle from its remote (does the box's git credential cover it?)"; return 1; }
-  if [[ -n "$old_head" ]]; then
-    if git -C "$fresh/checkout" -c core.hooksPath=/dev/null cat-file -e "$old_head^{commit}" 2>/dev/null; then
-      git -C "$fresh/checkout" -c core.hooksPath=/dev/null reset --hard --quiet "$old_head" || { rm -rf "$fresh"; return 1; }
-    else
-      printf 'layout: the previous bundle commit %s is not on the remote; the re-clone stays at the remote tip\n' "${old_head:0:12}" >&2
-    fi
+  if [[ -n "$old_branch" ]] && git -C "$fresh/checkout" -c core.hooksPath=/dev/null rev-parse --verify --quiet "origin/$old_branch" >/dev/null; then
+    # The same branch as before, tracking the remote, so the pulls that
+    # follow fast-forward the branch the operator chose.
+    git -C "$fresh/checkout" -c core.hooksPath=/dev/null checkout --quiet -B "$old_branch" "origin/$old_branch" || { rm -rf "$fresh"; return 1; }
   fi
+  if ! git -C "$fresh/checkout" -c core.hooksPath=/dev/null cat-file -e "$old_head^{commit}" 2>/dev/null; then
+    rm -rf "$fresh"
+    layout_die "the client bundle at $dir is on commit ${old_head:0:12}, which its remote no longer has; re-clone it by hand into a root-owned directory (the service keeps running on the current checkout)" || return 1
+  fi
+  git -C "$fresh/checkout" -c core.hooksPath=/dev/null reset --hard --quiet "$old_head" || { rm -rf "$fresh"; return 1; }
   mv "$dir" "${dir}.legacy-$(date +%Y%m%d%H%M%S)" || return 1
   mv "$fresh/checkout" "$dir" || return 1
   rmdir "$fresh" || true
@@ -289,6 +302,15 @@ layout_git_head_as_data() {
     *) line="$head" ;;
   esac
   [[ "$line" =~ ^[0-9a-f]{40}$ ]] && printf '%s' "$line"
+  return 0
+}
+
+# layout_git_branch_as_data DIR prints the branch a checkout has checked
+# out, read from .git/HEAD as a file; nothing for a detached HEAD.
+layout_git_branch_as_data() {
+  local head
+  head="$(head -c 200 "$1/.git/HEAD" 2>/dev/null | tr -d '\n')" || return 0
+  [[ "$head" =~ ^ref:[[:space:]]*refs/heads/([A-Za-z0-9._/-]+)$ ]] && printf '%s' "${BASH_REMATCH[1]}"
   return 0
 }
 

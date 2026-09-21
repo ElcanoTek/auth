@@ -279,6 +279,22 @@ else
 fi
 S4="$T/src-groupw"; mkdir -p "$S4/scripts"; echo x > "$S4/scripts/x.sh"; chmod g+w "$S4/scripts/x.sh"
 if lib_call "$G" layout_require_trusted "$S4" >/dev/null 2>&1; then bad "group-writable file in source accepted"; else ok "layout_require_trusted refuses a group-writable file in the source"; fi
+# A root-owned symlink pointing at a service-writable file must not pass.
+S5="$T/src-link"; mkdir -p "$S5/scripts/lib"; echo x > "$S5/scripts/lib/real.sh"; mkdir -p "$T/svc"; chown "$APP_USER" "$T/svc"; echo evil > "$T/svc/layout.sh"; ln -s "$T/svc/layout.sh" "$S5/scripts/lib/layout.sh"
+if lib_call "$G" layout_require_trusted "$S5" >/dev/null 2>&1; then bad "symlink in source accepted"; else ok "layout_require_trusted refuses a symlink in the source"; fi
+# A checkout owned by another unprivileged user is not trusted either.
+S6="$T/src-nobody"; mkdir -p "$S6/scripts"; echo x > "$S6/scripts/x.sh"; chown -R nobody "$S6"
+if lib_call "$G" layout_require_trusted "$S6" >/dev/null 2>&1; then bad "source owned by another user accepted"; else ok "layout_require_trusted refuses a source owned by another user"; fi
+# A bundle owned by another unprivileged user is re-cloned, not kept.
+BN="$T/bundle-nobody"; git clone -q --no-hardlinks "$B" "$BN"; chown -R nobody "$BN"
+lib_call "$G" layout_bundle_migrate "$BN" >/dev/null 2>&1 && ok "layout_bundle_migrate ran on a bundle owned by another user" || bad "migrate failed on other-user bundle"
+[[ "$(stat -c %U "$BN/.git/config")" == "root" ]] && ls -d "$BN.legacy-"* >/dev/null 2>&1 && ok "bundle owned by another user was re-cloned root-owned" || bad "other-user bundle kept: $(stat -c %U "$BN/.git/config")"
+# A legacy bundle on a commit the remote does not have fails closed and is left in place.
+BM="$T/bundle-missing"; git clone -q --no-hardlinks "$B" "$BM"; ( cd "$BM" && echo local > local.txt && git add . && git -c user.email=t@t -c user.name=t commit -qm local-only ); missing_head="$(git -C "$BM" rev-parse HEAD)"; chown -R "$APP_USER:$APP_USER" "$BM"
+if lib_call "$G" layout_bundle_migrate "$BM" >/dev/null 2>&1; then bad "migration adopted the remote tip for a commit the remote lacks"; else ok "layout_bundle_migrate fails closed when the old commit is not on the remote"; fi
+[[ "$(stat -c %U "$BM/.git")" == "$APP_USER" && -f "$BM/local.txt" ]] && ok "the un-migratable bundle was left untouched" || bad "un-migratable bundle changed"
+[[ -z "$(ls -d "$BM.fresh."* 2>/dev/null)" ]] && ok "no temporary clone left behind" || bad "temporary clone left behind"
+: "$missing_head"
 # A legacy bundle with a planted hook is re-cloned root-owned, hook gone.
 BD="$T/bundle"; git clone -q --no-hardlinks "$B" "$BD"; printf '#!/bin/sh\ntouch %s/hooked\n' "$T" > "$BD/.git/hooks/post-merge"; chmod +x "$BD/.git/hooks/post-merge"; chown -R "$APP_USER:$APP_USER" "$BD"
 lib_call "$G" layout_bundle_migrate "$BD" >/dev/null 2>&1 && ok "layout_bundle_migrate ran" || bad "layout_bundle_migrate failed"

@@ -759,16 +759,18 @@ live outside the paths `update.sh` replaces.
 > the root-owned source checkout directly:
 >
 > ```bash
-> # every path in the checkout must be root's and unwritable by others
-> sudo find /opt/auth-src \( ! -user root -o -perm /022 \) | head   # must print nothing
+> # the checkout, everything in it and every directory above it must be
+> # root's, unwritable by others, with no symlinks
+> stat -c '%U %a %n' / /opt /opt/auth-src                              # root, 755 (or stricter)
+> sudo find /opt/auth-src \( ! -user root -o -perm /022 -o -type l \) | head   # must print nothing
 > cd /opt/auth-src && sudo git -c core.hooksPath=/dev/null pull --ff-only
 > sudo env AUTH_UPDATE_NO_PULL=1 bash scripts/update.sh
 > sudo auth env check                               # reports the layout
 > ```
 >
-> If the `find` prints anything, fix it first (`sudo chown -R root:root
-> /opt/auth-src && sudo chmod -R go-w /opt/auth-src`) or re-clone the
-> repository as root.
+> If either command shows anything else, fix it first (`sudo chown -R
+> root:root /opt/auth-src && sudo chmod -R go-w /opt/auth-src`, remove any
+> symlink) or re-clone the repository as root.
 >
 > The script verifies the checkout is root's alone before it sources
 > anything, migrates the tree (and a client bundle checkout, which is

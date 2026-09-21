@@ -165,8 +165,8 @@ require_trusted_checkout() {
     [[ "$p" == "/" ]] && break
     p="$(dirname "$p")"
   done
-  stray="$(find "$(readlink -f -- "$1")" \( ! -user root -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null)"
-  [[ -z "$stray" ]] || die "$stray is not root's or is writable by group/others; fix the checkout first (chown -R root:root $1 && chmod -R go-w $1)"
+  stray="$(find "$(readlink -f -- "$1")" \( ! -user root -o -perm -g+w -o -perm -o+w -o -type l \) -print -quit 2>/dev/null)"
+  [[ -z "$stray" ]] || die "$stray is not root's, is writable by group/others, or is a symlink; fix the checkout first (chown -R root:root $1 && chmod -R go-w $1)"
 }
 require_trusted_checkout "$SRC_DIR"
 # shellcheck disable=SC1091
