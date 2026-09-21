@@ -94,6 +94,26 @@ fi
 exec /usr/bin/rsync "\$@"
 STUB
 chmod 0755 "$T/stub/rsync"
+# install stub: refuses to replace one named binary when asked, to prove a
+# failure in the middle of bootstrap's swap puts the previous files back.
+cat > "$T/stub/install" <<STUB
+#!/usr/bin/env bash
+if [[ -n "\${LT_FAIL_INSTALL:-}" ]]; then
+  for a in "\$@"; do for f in \$LT_FAIL_INSTALL; do [[ "\$a" == "\$f" ]] && { echo "install stub: refusing \$a" >&2; exit 1; }; done; done
+fi
+# LT_FAIL_INSTALL_SECOND: the first install to this target succeeds (the
+# swap), the second is refused (the restore).
+if [[ -n "\${LT_FAIL_INSTALL_SECOND:-}" ]]; then
+  for a in "\$@"; do
+    if [[ "\$a" == "\$LT_FAIL_INSTALL_SECOND" ]]; then
+      n=\$(( \$(cat "$T/stub/second.count" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "$T/stub/second.count"
+      [[ "\$n" -ge 2 ]] && { echo "install stub: refusing second install of \$a" >&2; exit 1; }
+    fi
+  done
+fi
+exec /usr/bin/install "\$@"
+STUB
+chmod 0755 "$T/stub/install"
 
 # A client bundle: a bare remote, one commit, and a checkout the service user
 # owns that carries a planted post-merge hook (the previous layout).
@@ -251,6 +271,43 @@ S2="$T/staging2"; mkdir -p "$S2/bin"; cp "$APP/bin/auth-server" "$APP/bin/auth-a
 lib_call "$G" layout_install_tree "$SRC" "$S2" >/dev/null 2>&1 && ok "layout_install_tree ran" || bad "layout_install_tree failed"
 check test ! -e "$G/scripts/lib/evil.sh"
 check test -f "$G/scripts/lib/layout.sh"
+# A staged binary that is a symlink to a root-only file (planted by the
+# service user between build and install) must never be installed; nor one
+# the service user still owns.
+echo "root-only sentinel" > "$T/rootsecret"; chmod 0600 "$T/rootsecret"
+S7="$T/staging-link"; mkdir -p "$S7/bin"; cp "$APP/bin/auth-admin" "$S7/bin/auth-admin"; ln -s "$T/rootsecret" "$S7/bin/auth-server"; chown -R root:root "$S7"
+G7="$T/guard-link"; mkdir -p "$G7/data"; write_env "$G7/.env.local"
+if lib_call "$G7" layout_install_tree "$SRC" "$S7" >/dev/null 2>&1; then bad "a symlinked staged binary was installed"; else ok "layout_install_tree refuses a symlinked staged binary"; fi
+if [[ -e "$G7/bin/auth-server" ]] && grep -q "root-only sentinel" "$G7/bin/auth-server" 2>/dev/null; then bad "the root-only sentinel was copied into bin/"; else ok "no root-only content reached bin/"; fi
+# A service-owned staged regular file is what a build produces; it is read
+# as the service user and installed root-owned (content the service could
+# read anyway, so nothing root-only can be laundered through it).
+S8="$T/staging-owned"; mkdir -p "$S8/bin"; cp "$APP/bin/auth-server" "$APP/bin/auth-admin" "$S8/bin/"; chown -R "$APP_USER" "$S8"
+if lib_call "$G7" layout_install_tree "$SRC" "$S8" >/dev/null 2>&1; then ok "layout_install_tree installs a staged binary read as the service user"; else bad "service-owned staged binary refused"; fi
+[[ "$(stat -c '%U:%G %a' "$G7/bin/auth-server")" == "root:root 755" ]] && cmp -s "$G7/bin/auth-server" "$APP/bin/auth-server" && ok "installed copy is root:root 755 with the staged content" || bad "installed copy: $(stat -c '%U:%G %a' "$G7/bin/auth-server" 2>&1)"
+# A staged output swapped for a FIFO (would block forever) or for a device
+# (would never end) is refused, and quickly.
+SF="$T/staging-fifo"; mkdir -p "$SF/bin"; cp "$APP/bin/auth-admin" "$SF/bin/auth-admin"; mkfifo "$SF/bin/auth-server"; chown -R root:root "$SF"; chmod -R a+rX "$SF"
+started=$(date +%s)
+if lib_call "$G7" layout_install_tree "$SRC" "$SF" >/dev/null 2>&1; then bad "a FIFO staged output was installed"; else ok "layout_install_tree refuses a FIFO staged output"; fi
+[[ $(( $(date +%s) - started )) -lt 100 ]] && ok "the refusal did not hang" || bad "refusal took too long"
+SD="$T/staging-dev"; mkdir -p "$SD/bin"; cp "$APP/bin/auth-admin" "$SD/bin/auth-admin"; ln -s /dev/zero "$SD/bin/auth-server"; chown -R -h root:root "$SD"
+if LAYOUT_MAX_BINARY_BYTES=1048576 lib_call "$G7" layout_install_tree "$SRC" "$SD" >/dev/null 2>&1; then bad "an endless staged output was installed"; else ok "layout_install_tree refuses an endless staged output"; fi
+# Regular files that pass the shape guard but fail the content checks: a
+# non-ELF file, and an ELF-headed file larger than the cap.
+SN="$T/staging-notelf"; mkdir -p "$SN/bin"; cp "$APP/bin/auth-admin" "$SN/bin/auth-admin"; printf '#!/bin/sh\necho not a binary\n' > "$SN/bin/auth-server"; chown -R root:root "$SN"; chmod -R a+rX "$SN"
+if lib_call "$G7" layout_install_tree "$SRC" "$SN" >/dev/null 2>&1; then bad "a non-ELF staged output was installed"; else ok "layout_install_tree refuses a non-ELF staged output"; fi
+if [[ -e "$G7/bin/auth-server" ]] && grep -q "not a binary" "$G7/bin/auth-server" 2>/dev/null; then bad "the non-ELF file reached bin/"; else ok "no non-ELF content reached bin/"; fi
+SB="$T/staging-big"; mkdir -p "$SB/bin"; { printf '\x7fELF'; head -c 1020 /dev/zero; } > "$SB/bin/auth-admin"; { printf '\x7fELF'; head -c 4092 /dev/zero; } > "$SB/bin/auth-server"; chown -R root:root "$SB"; chmod -R a+rX "$SB"
+if LAYOUT_MAX_BINARY_BYTES=2048 lib_call "$G7" layout_install_tree "$SRC" "$SB" >/dev/null 2>&1; then bad "a staged output over the cap was installed"; else ok "layout_install_tree refuses a staged output over the byte cap"; fi
+LAYOUT_MAX_BINARY_BYTES=8192 lib_call "$G7" layout_install_tree "$SRC" "$SB" >/dev/null 2>&1 && ok "the same file installs under a cap that fits it (the cap is what refused it)" || bad "cap-fitting install failed"
+[[ "$(stat -c %s "$G7/bin/auth-server")" == 4096 ]] && ok "installed copy is the full 4096 bytes" || bad "installed copy size $(stat -c %s "$G7/bin/auth-server")"
+# After a real build the staging copy belongs to root again.
+S9="$(mktemp -d /var/lib/auth-layout-stage.XXXXXX)"
+lib_call "$G7" layout_build "$SRC" "$S9" >/dev/null 2>&1 && ok "layout_build ran" || bad "layout_build failed"
+[[ -z "$(find "$S9" \( ! -user root -o -perm /022 \) -print -quit)" ]] && ok "staging copy is root's and unwritable by others after the build" || bad "staging copy still service-owned or writable after the build"
+runuser -u "$APP_USER" -- "$S9/bin/auth-server" -check-config -env "$APP/.env.local" >/dev/null 2>&1 && ok "service user can still run the staged binary for the pre-flight" || bad "pre-flight cannot execute the staged binary"
+rm -rf "$S9"
 # A service-owned source tree is refused as an install source.
 S3="$T/src-owned"; mkdir -p "$S3"; chown "$APP_USER" "$S3"
 if lib_call "$G" layout_require_trusted "$S3" >/dev/null 2>&1; then bad "service-owned source accepted"; else ok "layout_require_trusted refuses a service-owned source"; fi
@@ -318,13 +375,21 @@ if lib_call "$G" layout_bundle_migrate "$BM" >/dev/null 2>&1; then bad "migratio
 [[ -z "$(ls -d "$BM.fresh."* 2>/dev/null)" ]] && ok "no temporary clone left behind" || bad "temporary clone left behind"
 : "$missing_head"
 # A legacy bundle with a planted hook is re-cloned root-owned, hook gone.
-BD="$T/bundle"; git clone -q --no-hardlinks "$B" "$BD"; printf '#!/bin/sh\ntouch %s/hooked\n' "$T" > "$BD/.git/hooks/post-merge"; chmod +x "$BD/.git/hooks/post-merge"; chown -R "$APP_USER:$APP_USER" "$BD"
+BD="$T/bundle"; git clone -q --no-hardlinks "$B" "$BD"; git -C "$BD" reset -q --hard HEAD~1; printf '#!/bin/sh\ntouch %s/hooked\n' "$T" > "$BD/.git/hooks/post-merge"; chmod +x "$BD/.git/hooks/post-merge"; chown -R "$APP_USER:$APP_USER" "$BD"
 lib_call "$G" layout_bundle_migrate "$BD" >/dev/null 2>&1 && ok "layout_bundle_migrate ran" || bad "layout_bundle_migrate failed"
 [[ "$(stat -c %U "$BD/.git")" == "root" ]] && ok "bundle re-cloned root-owned" || bad "bundle .git owner $(stat -c %U "$BD/.git")"
 check test ! -e "$BD/.git/hooks/post-merge"
 ls -d "$BD.legacy-"* >/dev/null 2>&1 && ok "legacy bundle kept beside for inspection" || bad "legacy bundle not kept"
+bd_before="$(git -C "$BD" rev-parse HEAD)"
 lib_call "$G" layout_bundle_git "$BD" pull --ff-only --quiet >/dev/null 2>&1 && ok "root pull in migrated bundle" || bad "pull failed"
 check test ! -e "$T/hooked"
+# A run that advanced the bundle and then failed puts it back where the
+# service had it; a bundle already there, or no recorded commit, is left alone.
+[[ "$(git -C "$BD" rev-parse HEAD)" != "$bd_before" ]] && ok "pull moved the bundle" || bad "pull did not move the bundle"
+lib_call "$G" layout_bundle_restore "$BD" "$bd_before" >/dev/null 2>&1 && ok "layout_bundle_restore ran" || bad "layout_bundle_restore failed"
+[[ "$(git -C "$BD" rev-parse HEAD)" == "$bd_before" ]] && ok "bundle back on the commit the service had" || bad "bundle at $(git -C "$BD" rev-parse HEAD), wanted $bd_before"
+lib_call "$G" layout_bundle_restore "$BD" "" >/dev/null 2>&1 && [[ "$(git -C "$BD" rev-parse HEAD)" == "$bd_before" ]] && ok "restore with no recorded commit is a no-op" || bad "empty restore changed the bundle"
+if lib_call "$G" layout_bundle_restore "$BD" "0000000000000000000000000000000000000000" >/dev/null 2>&1; then bad "restore to an unknown commit reported success"; else ok "restore to an unknown commit fails"; fi
 
 # ── 7. fresh install through bootstrap (dry run, non-interactive) ──────
 section "bootstrap fresh install (DRY_RUN, non-interactive, password mode)"
@@ -333,8 +398,12 @@ if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb 
    APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_LOGIN_MODE=password AUTH_BOOTSTRAP_SETUP_CADDY=n \
-   AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   AUTH_BOOTSTRAP_COOKIE_SECURE=n AUTH_BOOTSTRAP_BRAND_NAME='North "Wind" \ Co' \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap.log" 2>&1; then ok "bootstrap succeeded"; else bad "bootstrap failed"; tail -25 "$T/bootstrap.log"; fi
+# The brand name round-trips exactly through the env file, quotes and
+# backslash included, as the server reads it and as the re-run reader does.
+grep -qF 'AUTH_BRAND_NAME="North \"Wind\" \\ Co"' "$APP2/.env.local" && ok "brand written with the file's escaping" || bad "brand line: $(grep '^AUTH_BRAND_NAME=' "$APP2/.env.local")"
+[[ "$( { APP_DIR="$APP2" APP_USER="$APP_USER"; . "$SRC/scripts/lib/layout.sh"; layout_read_env "$APP2/.env.local"; printf '%s' "$AUTH_BRAND_NAME"; } 2>/dev/null)" == 'North "Wind" \ Co' ]] && ok "re-run reader decodes the escaped brand exactly" || bad "reader decoded: $( { APP_DIR="$APP2" APP_USER="$APP_USER"; . "$SRC/scripts/lib/layout.sh"; layout_read_env "$APP2/.env.local"; printf '%s' "$AUTH_BRAND_NAME"; } 2>/dev/null)"
 ( APP_DIR="$APP2" APP_USER="$APP_USER" DATA_DIR="$APP2/data" ENV_FILE="$APP2/.env.local" BUILD_CACHE="$CACHE"
   # shellcheck disable=SC1091
   . "$SRC/scripts/lib/layout.sh"; layout_check ) && ok "fresh install follows the layout" || bad "fresh install layout"
@@ -349,7 +418,95 @@ if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb 
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap2.log" 2>&1; then ok "bootstrap re-run succeeded"; else bad "bootstrap re-run failed"; tail -25 "$T/bootstrap2.log"; fi
 grep -q '^AUTH_RETURN_TO_HOSTS="a.example.com"' "$APP2/.env.local" && ok "re-run kept an unknown setting" || bad "re-run lost AUTH_RETURN_TO_HOSTS"
 grep -q '^AUTH_HOSTNAME="localhost"' "$APP2/.env.local" && ok "re-run kept the hostname from the env file (read as data)" || bad "re-run hostname"
+grep -qF 'AUTH_BRAND_NAME="North \"Wind\" \\ Co"' "$APP2/.env.local" && ok "re-run kept the escaped brand byte for byte" || bad "re-run brand line: $(grep '^AUTH_BRAND_NAME=' "$APP2/.env.local")"
 [[ "$(owner_mode "$APP2/.env.local")" == "root:$APP_USER 640" ]] && ok "re-run env root:$APP_USER 640" || bad "re-run env $(owner_mode "$APP2/.env.local")"
+
+# A value with a line break cannot be written to the line-oriented env file:
+# the run dies before writing, the live env is untouched, and the rejected
+# value (it could be a secret) is not echoed.
+cp "$APP2/.env.local" "$T/env2.before"
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n AUTH_BOOTSTRAP_BRAND_NAME=$'Fine\nAUTH_LOGIN_MODE=magic' \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap3.log" 2>&1; then bad "bootstrap accepted a brand with a line break"; else ok "bootstrap refuses a value with a line break"; fi
+grep -q 'BRAND_ANSWER contains a line break' "$T/bootstrap3.log" && ok "the refusal names the setting" || bad "no refusal message: $(tail -3 "$T/bootstrap3.log")"
+grep -q 'Fine' "$T/bootstrap3.log" && bad "the rejected value was echoed" || ok "the rejected value was not echoed"
+cmp -s "$APP2/.env.local" "$T/env2.before" && ok "live env untouched after the refusal" || bad "live env changed after the refusal"
+[[ -z "$(ls "$APP2"/.env.local.new.* 2>/dev/null)" ]] && ok "no candidate env left behind" || bad "candidate env left behind"
+# The pre-flight checks the candidate env, not the settings this shell
+# exported from the previous env file (the server lets the process
+# environment shadow the file): a re-run with a new hostname must report it.
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=auth.northwind.test AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=y \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap5.log" 2>&1; then ok "bootstrap re-run with a new hostname succeeded"; else bad "re-run with a new hostname failed"; tail -8 "$T/bootstrap5.log"; fi
+grep -q 'configuration OK (hostname=auth.northwind.test,' "$T/bootstrap5.log" && ok "pre-flight validated the candidate env, not the exported old one" || bad "pre-flight line: $(grep 'configuration OK' "$T/bootstrap5.log")"
+grep -q '^AUTH_HOSTNAME="auth.northwind.test"' "$APP2/.env.local" && ok "new hostname written" || bad "hostname not written"
+# Put the hostname back so the checks below compare against a known file.
+env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap6.log" 2>&1 || bad "restoring localhost failed"
+cp "$APP2/.env.local" "$T/env2.before"
+# A failure in the middle of the swap (here: the second binary cannot be
+# replaced) puts the previous env file and binaries back, so the box is not
+# left with a new env beside half-replaced binaries.
+echo "previous-build-marker" >> "$APP2/bin/auth-server"
+cp "$APP2/.env.local" "$T/env2.swap"
+mkdir -p "$T/tmp7"
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP2/bin/auth-admin" TMPDIR="$T/tmp7" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=auth.northwind.test AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=y \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap7.log" 2>&1; then bad "bootstrap reported success with an unreplaceable binary"; else ok "bootstrap fails when a binary cannot be replaced"; fi
+grep -q 'install stub: refusing' "$T/bootstrap7.log" && ok "the failure was the second binary's install" || bad "failure elsewhere: $(grep -v '^$' "$T/bootstrap7.log" | tail -3)"
+grep -q 'previous env file and binaries were put back' "$T/bootstrap7.log" && ok "the swap failure reports the restore" || bad "no restore message: $(tail -4 "$T/bootstrap7.log")"
+cmp -s "$APP2/.env.local" "$T/env2.swap" && ok "live env put back after the mid-swap failure" || bad "live env differs after the mid-swap failure"
+grep -q "previous-build-marker" "$APP2/bin/auth-server" && ok "previous auth-server put back after the mid-swap failure" || bad "auth-server was left replaced"
+[[ "$(owner_mode "$APP2/.env.local")" == "root:$APP_USER 640" && "$(owner_mode "$APP2/bin/auth-server")" == "root:root 755" ]] && ok "restored files keep the layout's ownership" || bad "restored ownership $(owner_mode "$APP2/.env.local") $(owner_mode "$APP2/bin/auth-server")"
+[[ -z "$(ls -A "$T/tmp7")" ]] && ok "snapshot and staging removed after a successful restore (no secrets left in TMPDIR)" || bad "left in TMPDIR: $(ls -A "$T/tmp7" | tr '\n' ' ')"
+# When the restore itself fails, the snapshot (the only copy of the previous
+# env) is kept root-only and named, instead of being removed. Here the env is
+# swapped, the first binary's install is refused, and the env's restore is
+# refused too.
+mkdir -p "$T/tmp9"; rm -f "$T/stub/second.count"
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP2/bin/auth-server" LT_FAIL_INSTALL_SECOND="$APP2/.env.local" TMPDIR="$T/tmp9" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap9.log" 2>&1; then bad "bootstrap reported success when nothing could be installed"; else ok "bootstrap fails when nothing can be installed"; fi
+grep -q 'could not put .*\.env\.local back' "$T/bootstrap9.log" && ok "the failed restore is reported" || bad "no failed-restore message: $(grep -v '^$' "$T/bootstrap9.log" | tail -4)"
+kept_snap="$(sed 's/\x1b\[[0-9;]*m//g' "$T/bootstrap9.log" | sed -n 's/.*previous files are kept in \([^ ]*\) .*/\1/p' | tail -1)"
+[[ -n "$kept_snap" && -d "$kept_snap" && "$(owner_mode "$kept_snap")" == "root:root 700" ]] && ok "snapshot kept root-only and named: $kept_snap" || bad "snapshot not kept or not named (got '$kept_snap')"
+[[ -n "$kept_snap" ]] && cmp -s "$kept_snap/env" "$T/env2.swap" && ok "kept snapshot holds the previous env byte for byte" || bad "kept snapshot env differs or missing"
+[[ -n "$kept_snap" ]] && [[ -f "$kept_snap/auth-server" && -f "$kept_snap/auth-admin" ]] && ok "kept snapshot holds both previous binaries" || bad "kept snapshot binaries missing"
+! cmp -s "$APP2/.env.local" "$T/env2.swap" && ok "live env is the one the failed restore could not replace" || bad "live env unexpectedly restored"
+grep -q "previous-build-marker" "$APP2/bin/auth-server" && ok "unchanged auth-server was left alone (no needless reinstall)" || bad "auth-server changed"
+# The operator's manual step, as the message says: put the env back, remove the snapshot.
+install -o root -g "$APP_USER" -m 0640 "$kept_snap/env" "$APP2/.env.local"; rm -rf "$kept_snap" "$T/tmp9"; rm -f "$T/stub/second.count"
+cmp -s "$APP2/.env.local" "$T/env2.swap" && ok "env put back by hand from the kept snapshot" || bad "manual restore failed"
+# The same failure on a fresh box removes the files this run created, so
+# the next attempt starts clean instead of finding a half install.
+APP3="$T/app3"
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP3/bin/auth-admin" \
+   APP_DIR="$APP3" APP_USER="$APP_USER" CLI_PATH="$BIN/auth3" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_LOGIN_MODE=password AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap8.log" 2>&1; then bad "fresh bootstrap reported success with an unreplaceable binary"; else ok "fresh bootstrap fails when a binary cannot be installed"; fi
+grep -q 'files this run created were removed again' "$T/bootstrap8.log" && ok "the fresh failure reports the removal" || bad "no removal message: $(grep -v '^$' "$T/bootstrap8.log" | tail -3)"
+[[ ! -e "$APP3/.env.local" && ! -e "$APP3/bin/auth-server" && ! -e "$APP3/bin/auth-admin" ]] && ok "fresh box left without env or binaries after the failure" || bad "fresh box kept: $(ls "$APP3/.env.local" "$APP3"/bin 2>/dev/null | tr '\n' ' ')"
+[[ ! -e "$BIN/auth3" ]] && ok "no CLI installed on the failed fresh box" || bad "CLI installed despite the failure"
+# Only the loopback literal and localhost are local HTTP; a malformed
+# 127.x address is not a hostname at all.
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=127.999.999.999 AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap4.log" 2>&1; then bad "bootstrap accepted 127.999.999.999 as a hostname"; else ok "bootstrap rejects 127.999.999.999"; fi
+cmp -s "$APP2/.env.local" "$T/env2.before" && ok "live env untouched after the bad hostname" || bad "live env changed after the bad hostname"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

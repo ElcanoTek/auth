@@ -76,7 +76,9 @@ func TestUnenrolledAdministratorIsSentToEnrollBeforeSensitiveChanges(t *testing.
 		{"action": {"revoke-sessions"}, "email": {"bob@example.com"}},
 		{"action": {"set-mfa-required"}, "email": {"bob@example.com"}, "required": {"on"}},
 		{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"fleet"}, "admin": {"on"}},
+		{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}},
 		{"action": {"create"}, "email": {"eve@example.com"}, "admin": {"on"}},
+		{"action": {"create"}, "email": {"eve@example.com"}},
 		{"action": {"batch"}, "op": {"signout"}, "emails": {"bob@example.com"}},
 		{"action": {"disable-app"}, "app": {"fleet"}},
 	} {
@@ -94,24 +96,21 @@ func TestUnenrolledAdministratorIsSentToEnrollBeforeSensitiveChanges(t *testing.
 		t.Fatal("bob was signed out by a refused action")
 	}
 	if _, err := st.PasswordAccountByEmail(context.Background(), "eve@example.com"); err == nil {
-		t.Fatal("an administrator account was created by a refused action")
+		t.Fatal("an account was created by a refused action")
+	}
+	if ok, _ := st.HasApplicationAccess(context.Background(), bob.ID, "explorer"); ok {
+		t.Fatal("application access was granted by a refused action")
 	}
 	if app, _ := st.ApplicationByID(context.Background(), "fleet"); app.DisabledAt != nil {
 		t.Fatal("application disabled by a refused action")
 	}
-	// Non-sensitive work is still open to them: tagging, application access,
-	// creating a plain account, and signing themself out.
+	// The one console write that stays open to them is the team tag, alone
+	// or in a batch, plus signing themself out.
 	if _, page := alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {"Ops"}}); !strings.Contains(page, "bob@example.com is tagged Ops.") {
 		t.Fatalf("team by unenrolled admin:\n%s", page)
 	}
 	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {"Trading"}, "emails": {"bob@example.com"}}); !strings.Contains(page, "Tagged Trading: bob@example.com (1).") {
 		t.Fatalf("batch team by unenrolled admin:\n%s", page)
-	}
-	if _, page := alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}}); !strings.Contains(page, "added explorer") {
-		t.Fatalf("access by unenrolled admin:\n%s", page)
-	}
-	if _, page := alice.post(url.Values{"action": {"create"}, "email": {"eve@example.com"}}); !strings.Contains(page, "Created eve@example.com") {
-		t.Fatalf("plain create by unenrolled admin:\n%s", page)
 	}
 }
 

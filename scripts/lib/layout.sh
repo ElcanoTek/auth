@@ -30,6 +30,8 @@ BUILD_CACHE="${BUILD_CACHE:-/var/cache/auth-build}"
 # The rsync exclusions shared by every sync of the source tree: state,
 # secrets and binaries never travel with the source.
 LAYOUT_SYNC_EXCLUDES=(--exclude='/.git' --exclude='/data' --exclude='/.env.local' --exclude='/bin')
+# Upper bound for one staged binary (a Go build here is well under 100 MB).
+LAYOUT_MAX_BINARY_BYTES="${LAYOUT_MAX_BINARY_BYTES:-268435456}"
 
 # layout_die reports a refusal and fails the calling function (return 1, not
 # exit: inside update.sh's guarded swap block an exit would skip the
@@ -111,7 +113,7 @@ layout_require_data_dir() {
 # the previous layout, so it is data, never shell. Quoting rules match the
 # server's loader (one matched quote pair, a trailing comment on bare values).
 layout_read_env() {
-  local file="$1" line key v q
+  local file="$1" line key v
   [[ -f "$file" ]] || return 0
   layout_require_real "$file" || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -124,16 +126,38 @@ layout_read_env() {
       AUTH_*|SENDGRID_API_KEY) ;;
       *) continue ;;
     esac
-    v="${v#"${v%%[![:space:]]*}"}"
-    v="${v%"${v##*[![:space:]]}"}"
-    case "$v" in
-      \"*|\'*) q="${v:0:1}"; v="${v:1}"; v="${v%%"$q"*}"
-             [[ "$q" == '"' ]] && { v="${v//\\\"/\"}"; v="${v//\\\\/\\}"; } ;;
-      *)       v="${v%%#*}"; v="${v%"${v##*[![:space:]]}"}" ;;
-    esac
-    export "$key=$v"
+    export "$key=$(env_unquote "$v")"
   done < "$file"
 }
+
+# env_unquote RAW prints the value of one env-file assignment the way the
+# server's loader reads it: surrounding whitespace trimmed; a double-quoted
+# value ends at the first unescaped quote and unescapes \" and \; a
+# single-quoted value ends at the next quote; a bare value ends at the first
+# " #". Shared shape with internal/config's envFileValue.
+env_unquote() {
+  local v="$1" out="" i c n
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
+    \"*)
+      i=1
+      while (( i < ${#v} )); do
+        c="${v:i:1}"
+        if [[ "$c" == "\\" ]]; then
+          n="${v:i+1:1}"
+          if [[ "$n" == '"' || "$n" == "\\" ]]; then out+="$n"; (( i += 2 )); continue; fi
+          out+="$c"; (( i++ )); continue
+        fi
+        [[ "$c" == '"' ]] && break
+        out+="$c"; (( i++ ))
+      done
+      printf '%s' "$out" ;;
+    \'*) v="${v:1}"; printf '%s' "${v%%\'*}" ;;
+    *) v="${v%%#*}"; printf '%s' "${v%"${v##*[![:space:]]}"}" ;;
+  esac
+}
+
 
 # layout_build_cache makes the service user's build cache directory (its
 # parent must be root's; /var/cache is).
@@ -164,6 +188,13 @@ layout_build() {
       mkdir -p bin
       go build -o bin/auth-server ./cmd/auth-server
       go build -o bin/auth-admin  ./cmd/auth-admin" || return 1
+  # From here on root owns the staging copy again: the service user can no
+  # longer swap a built binary for a symlink (or anything else) between the
+  # build and the install that follows, but can still execute the staged
+  # binary for the pre-flight (root-owned, world-traversable, unwritable).
+  chown -R -h root:root "$staging" || return 1
+  chmod 0755 "$staging" || return 1
+  chmod -R go-w "$staging" || return 1
 }
 
 # layout_install_tree SRC STAGING syncs the source tree from root's trusted
@@ -178,8 +209,42 @@ layout_install_tree() {
   install -d -m 0755 -o root -g root "$APP_DIR" || return 1
   rsync -a --delete --no-owner --no-group --chmod=go-w "${LAYOUT_SYNC_EXCLUDES[@]}" "$src/" "$APP_DIR/" || return 1
   install -d -m 0755 -o root -g root "$APP_DIR/bin" || return 1
-  install -o root -g root -m 0755 "$staging/bin/auth-server" "$APP_DIR/bin/auth-server" || return 1
-  install -o root -g root -m 0755 "$staging/bin/auth-admin"  "$APP_DIR/bin/auth-admin" || return 1
+  # The staged outputs are read AS THE SERVICE USER into a root-private
+  # directory and installed from there. Whatever that read follows (a
+  # symlink or a swapped file planted in the staging copy by a compromised
+  # service account) can only be something the service user could already
+  # read, so no root-only file can be laundered into a world-readable copy
+  # under bin/, however the staging copy is raced. Root touches only the
+  # private copy afterwards.
+  local bin p private
+  private="$(mktemp -d)" || return 1
+  chmod 0700 "$private" || { rm -rf "$private"; return 1; }
+  for bin in auth-server auth-admin; do
+    p="$staging/bin/$bin"
+    if [[ -L "$p" || ! -f "$p" ]]; then
+      rm -rf "$private"
+      layout_die "$p is not a regular file; refusing to install it" || return 1
+    fi
+    # Bounded in bytes and time: a staged path swapped for a FIFO or a
+    # device must not hang the updater or fill the disk. A Go binary here
+    # is a few tens of MB; the cap is generous.
+    if ! timeout 120 runuser -u "$APP_USER" -- head -c "$LAYOUT_MAX_BINARY_BYTES" -- "$p" > "$private/$bin"; then
+      rm -rf "$private"
+      layout_die "could not read $p as $APP_USER; refusing to install it" || return 1
+    fi
+    local size
+    size="$(stat -c %s "$private/$bin")"
+    if [[ "$size" -eq 0 || "$size" -ge "$LAYOUT_MAX_BINARY_BYTES" ]]; then
+      rm -rf "$private"
+      layout_die "$p read back $size bytes (empty or over the ${LAYOUT_MAX_BINARY_BYTES}-byte cap); refusing to install it" || return 1
+    fi
+    if ! head -c 4 -- "$private/$bin" | cmp -s - <(printf '\x7fELF'); then
+      rm -rf "$private"
+      layout_die "$p is not an ELF executable; refusing to install it" || return 1
+    fi
+    install -o root -g root -m 0755 "$private/$bin" "$APP_DIR/bin/$bin" || { rm -rf "$private"; return 1; }
+  done
+  rm -rf "$private"
 }
 
 # layout_apply enforces the ownership model on whatever is at APP_DIR now,
@@ -216,6 +281,19 @@ layout_apply() {
 layout_bundle_git() {
   local dir="$1"; shift
   git -c safe.directory="$dir" -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$dir" "$@"
+}
+
+# layout_bundle_restore DIR COMMIT puts a bundle checkout back on COMMIT
+# when a run that advanced it did not complete, so the running service is
+# not left with a bundle it never accepted. A checkout already on COMMIT is
+# left alone; an empty COMMIT (nothing was recorded) is a no-op.
+layout_bundle_restore() {
+  local dir="$1" commit="$2"
+  [[ -n "$commit" && -d "$dir/.git" ]] || return 0
+  [[ "$(layout_bundle_git "$dir" rev-parse HEAD 2>/dev/null)" != "$commit" ]] || return 0
+  layout_bundle_git "$dir" reset --hard --quiet "$commit" 2>/dev/null \
+    || { layout_die "could not put the bundle in $dir back on ${commit:0:12}; check it before restarting the service" || return 1; }
+  printf 'layout: client bundle in %s put back on %s (the run did not complete)\n' "$dir" "${commit:0:12}" >&2
 }
 
 # layout_bundle_migrate DIR re-clones a bundle checkout that is not root's

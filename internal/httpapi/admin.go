@@ -123,11 +123,15 @@ type adminResult struct {
 }
 
 // sensitiveActions are the console actions that lock people out, take over
-// an account or widen privilege. They need the acting administrator's own
-// authenticator code, entered within the re-verification window: a stolen
-// admin browser session must not be enough to disable accounts, reset
-// passwords or change who is an administrator.
+// an account, create one, or change what an account may reach. They need
+// the acting administrator's own authenticator code, entered within the
+// re-verification window: a stolen admin browser session must not be enough
+// to disable accounts, reset passwords, mint an account with a known
+// password, grant applications or change who is an administrator. Team
+// tags are the one console write that is not gated.
 var sensitiveActions = map[string]string{
+	"create":           "creating an account",
+	"set-access":       "changing application access or administrator status",
 	"disable":          "disabling an account",
 	"enable":           "enabling an account",
 	"reset-password":   "resetting a password",
@@ -367,12 +371,6 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 
 	if action == "create" {
 		res.Reopen = "add-user"
-		if r.FormValue("admin") == "on" {
-			// Creating an administrator widens privilege like promoting one.
-			if r, ok := gate("creating an administrator"); !ok {
-				return r
-			}
-		}
 		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
 			res.Error = "Team must be at most 40 characters."
@@ -626,10 +624,9 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		// The Access popup saves applications and the Admin flag in one store
 		// transaction: a refusal of any part changes nothing. Console-level
 		// rules that the store does not know (self-demotion, a server without
-		// an MFA key) are checked first, so no write is even attempted. A
-		// change of the Admin flag is a sensitive action (gate above applies
-		// only when the flag actually changes, so saving applications alone
-		// stays a password-level action).
+		// an MFA key) are checked first, so no write is even attempted. Every
+		// Access save is a sensitive action (gate above): applications are
+		// what an account may reach.
 		wantAdmin := r.FormValue("admin") == "on"
 		adminChange := wantAdmin != target.IsAdmin
 		policy := s.mfaPolicy(r)
@@ -637,11 +634,6 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		if adminChange && self && !wantAdmin {
 			res.Error = "You cannot remove your own administrator access."
 			return res
-		}
-		if adminChange {
-			if r, ok := gate("changing who is an administrator"); !ok {
-				return r
-			}
 		}
 		if promotionNeedsFactor && !s.mfaAvailable() {
 			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset), so nothing can be required of anyone yet."

@@ -82,6 +82,22 @@ func Open(dataDir string) (*Store, error) {
 	return s, nil
 }
 
+// Ping runs a trivial query so a health check proves the database answers,
+// not merely that the process is up.
+func (s *Store) Ping(ctx context.Context) error {
+	// A real table read (the migration markers), not SELECT 1: SQLite answers
+	// a constant without touching a page, which would prove nothing about a
+	// damaged or unreadable file.
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
+		return err
+	}
+	if n < 1 {
+		return errors.New("schema markers missing")
+	}
+	return nil
+}
+
 // OpenReadOnly opens an existing database without migrating or writing it,
 // for pre-flight checks (auth-server -check-config) that must not touch
 // the live database a running server owns. The file must exist.

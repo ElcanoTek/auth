@@ -75,13 +75,34 @@ func TestCorruptCiphertextFailsClosed(t *testing.T) {
 	secret, seeded := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
 	f, _ := st.ActiveAuthenticator(context.Background(), a.ID)
-	// Corrupt the stored ciphertext through the re-seal path.
+	// The test spans three consecutive steps; keep clear of a boundary so a
+	// step change between the calls below cannot move the window.
+	if until := mfa.Period*time.Second - time.Duration(time.Now().Unix()%int64(mfa.Period))*time.Second; until < 5*time.Second {
+		time.Sleep(until)
+	}
+	// Control first, with the previous step's code (inside the window): with
+	// intact ciphertext it signs in, so the refusal below is about the
+	// ciphertext and not about the code.
+	control := newBrowser(t, ts)
+	control.login("alice@example.com", plain)
+	if resp, _ := control.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now().Add(-mfa.Period*time.Second))}}); resp.StatusCode != http.StatusSeeOther || !control.has(cfg.PasswordCookieName) {
+		t.Fatalf("control sign-in with intact ciphertext: %d", resp.StatusCode)
+	}
+	// Corrupt the stored ciphertext through the re-seal path, recording the
+	// current step. The next step (now+30s) stays unused and inside the
+	// window, so replay protection cannot be what refuses it below.
+	f, _ = st.ActiveAuthenticator(context.Background(), a.ID)
+	if f.LastAcceptedStep != mfa.StepAt(time.Now().Add(-mfa.Period*time.Second)) {
+		t.Fatalf("control did not record the previous step: %d", f.LastAcceptedStep)
+	}
 	if ok, err := st.RecordAcceptedStep(context.Background(), f.ID, f.LastAcceptedStep+1, []byte("not an envelope"), "test"); err != nil || !ok {
 		t.Fatalf("corrupt: %v %v", ok, err)
 	}
+	// An unused code inside the accepted window (the next step) is refused
+	// now, and no session exists.
 	alice := newBrowser(t, ts)
 	alice.login("alice@example.com", plain)
-	if resp, page := alice.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now().Add(2*mfa.Period*time.Second))}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not work") || alice.has(cfg.PasswordCookieName) {
+	if resp, page := alice.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not work") || alice.has(cfg.PasswordCookieName) {
 		t.Fatalf("corrupt ciphertext: %d session=%v", resp.StatusCode, alice.has(cfg.PasswordCookieName))
 	}
 	// Recovery codes still work: they never depended on the sealed secret.

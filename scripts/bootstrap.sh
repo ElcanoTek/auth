@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # scripts/bootstrap.sh — interactive one-shot installer for auth-server.
 #
-# Drops deploy complexity to three answers:
-#   1. The hostname (e.g. auth.example.com)
-#   2. The cookie domain (autoguessed from hostname; just confirm)
-#   3. SendGrid API key + verified sender (or "skip — use stdout for now")
-#
-# Everything else (secrets, systemd, Caddy, firewalld) is generated or
-# handled for you. Safe to re-run — it picks up where it left off.
+# A password-mode install (the default for a new client) asks for the
+# hostname, an optional client branding bundle, the brand name and whether
+# to put Caddy with automatic TLS in front. Legacy magic-link mode adds the
+# cookie domain, the email allowlist and an email provider. Everything else
+# (signing and two-factor keys, the root-owned install layout, systemd,
+# firewalld) is generated or handled for you. Safe to re-run: existing
+# settings, keys and data are kept.
 #
 # Usage:
 #   sudo bash scripts/bootstrap.sh
@@ -106,6 +106,36 @@ confirm() {
 
 genbase64() { openssl rand -base64 "$1" | tr -d '=\n' | tr '/+' '_-'; }
 
+# envq VALUE prints VALUE as a double-quoted env-file literal, escaping the
+# two characters the server's loader unescapes (backslash and double quote),
+# so any answer round-trips exactly. Used for every value written below.
+envq() { local v="$1"; v="${v//\\/\\\\}"; v="${v//\"/\\\"}"; printf '"%s"' "$v"; }
+
+# On any exit before the install completed, put a bundle this run advanced
+# back on its previous commit (see the pull below).
+BOOTSTRAP_DONE=0
+BUNDLE_BEFORE=""
+BUNDLE_DIR_FOR_RESTORE=""
+restore_bundle_on_failure() {
+  if [[ "$BOOTSTRAP_DONE" != "1" && -n "$BUNDLE_BEFORE" && -n "$BUNDLE_DIR_FOR_RESTORE" ]]; then
+    layout_bundle_restore "$BUNDLE_DIR_FOR_RESTORE" "$BUNDLE_BEFORE" || true
+  fi
+}
+trap restore_bundle_on_failure EXIT
+
+# require_single_line NAME... dies, naming only the variable, when a value
+# carries a line break: the env file is line-oriented and a check inside the
+# heredoc's command substitution could not stop the write. Secret values are
+# never echoed.
+require_single_line() {
+  local name
+  for name in "$@"; do
+    if [[ "${!name:-}" == *$'\n'* || "${!name:-}" == *$'\r'* ]]; then
+      die "the value for $name contains a line break, which the env file cannot carry"
+    fi
+  done
+}
+
 # guess_cookie_domain HOSTNAME → derives the cookie domain. For
 # "auth.example.com" → "example.com"; for "auth.example.co.uk" we err
 # on the conservative side and return "example.co.uk" (the public-
@@ -130,12 +160,12 @@ ${c_bold}Elcano Auth — interactive install${c_reset}
 ${c_dim}Fedora / RHEL 9+  •  systemd  •  SQLite  •  optional Caddy${c_reset}
 
 This will:
-  • install system deps (git, go, openssl, caddy?, sqlite, bind-utils)
-  • create an '${APP_USER}' system user + ${APP_DIR}
-  • build the auth-server + auth-admin binaries
-  • generate an Ed25519 signing keypair
-  • seed .env.local with your hostname + cookie domain + email provider
-  • install the systemd unit and (optionally) Caddy with automatic TLS
+  • install system deps (git, go, rsync, openssl, sqlite, bind-utils; Caddy if asked)
+  • create an '${APP_USER}' system user; root owns ${APP_DIR}, the service owns only data/
+  • build the auth-server + auth-admin binaries as the service user
+  • generate the Ed25519 signing keypair and, in password mode, the two-factor key
+  • write .env.local from your answers (hostname, mode, branding, TLS)
+  • install the systemd units and (optionally) Caddy with automatic TLS
   • drop /usr/local/bin/auth — the operator CLI
 
 Safe to re-run: existing .env.local and data/ are preserved.
@@ -172,14 +202,28 @@ require_trusted_checkout "$SRC_DIR"
 # shellcheck disable=SC1091
 . "$SRC_DIR/scripts/lib/layout.sh"
 layout_require_trusted "$SRC_DIR"
+# `auth update` pulls and rebuilds from /opt/auth-src; a checkout elsewhere
+# installs fine but the first update would not find it.
+if [[ "$(readlink -f -- "$SRC_DIR")" != "/opt/auth-src" ]]; then
+  warn "this checkout is $SRC_DIR; 'auth update' expects /opt/auth-src. Either move it there afterwards or run updates with SRC_DIR=$SRC_DIR."
+fi
+# Git must never stop for a username or token in the middle of the install:
+# a bundle repository the box has no credential for is reported instead.
+export GIT_TERMINAL_PROMPT=0
+# A small box builds one package at a time so the Go compiler does not get
+# killed for memory.
+if [[ "$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)" -lt 2500000 ]]; then
+  export LAYOUT_BUILD_GOFLAGS="${LAYOUT_BUILD_GOFLAGS:-} -p=1"
+fi
 
 # ── 1. system packages ──────────────────────────────────────────────
 step "1/6  Installing system dependencies via dnf"
-PKGS=(git curl jq golang openssl sqlite bind-utils)
+PKGS=(git curl golang rsync openssl sqlite bind-utils)
 if [[ "${AUTH_BOOTSTRAP_SKIP_PACKAGES:-0}" == "1" ]]; then
   info "AUTH_BOOTSTRAP_SKIP_PACKAGES=1: not running dnf (test harness)"
 else
-  dnf install -y "${PKGS[@]}" >/dev/null
+  info "dnf install ${PKGS[*]} (a few minutes on a fresh box; Go is large)"
+  dnf install -y "${PKGS[@]}" >/dev/null || die "dnf install failed; run 'dnf install -y ${PKGS[*]}' by hand to see why"
 fi
 need_cmd go
 need_cmd sqlite3
@@ -216,26 +260,52 @@ if [[ -f "$ENV_FILE" ]]; then
   layout_read_env "$ENV_FILE"
 fi
 
-# 3a — hostname
+# Re-ask instead of dying on a typo: an interactive install should not lose
+# every earlier answer to one slip. Non-interactive runs still fail fast.
+ask_until_valid() {  # VAR ENVVAR LABEL DEFAULT VALIDATOR-FUNCTION
+  local var="$1" envvar="$2" label="$3" default="$4" validate="$5" answer
+  while :; do
+    answer="$(prompt "$envvar" "$label" "$default")"
+    if "$validate" "$answer"; then
+      printf -v "$var" '%s' "$answer"
+      return 0
+    fi
+    [[ "$NON_INTERACTIVE" == "1" || -n "${!envvar:-}" ]] && die "$label: '$answer' is not valid"
+    warn "'$answer' is not valid; try again"
+  done
+}
+valid_hostname() {
+  local h="${1,,}"
+  [[ "$h" == "localhost" || "$h" == "127.0.0.1" ]] && return 0
+  # A DNS name whose last label is all digits is not a name but a (broken)
+  # numeric address, e.g. 127.999.999.999; the only address accepted is above.
+  [[ "$h" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ && ! "$h" =~ \.[0-9]+$ ]]
+}
+valid_login_mode() { [[ "$1" == "password" || "$1" == "magic" ]]; }
+
+# 3a — hostname. A fresh box has no sensible default: the operator names the
+# host (a re-run offers the previous one).
 say
 say "  How will people reach this auth service in the browser?"
-say "    • ${c_dim}localhost${c_reset}             — dev laptop, no TLS"
 say "    • ${c_dim}auth.example.com${c_reset}      — real DNS, we'll offer auto-TLS via Caddy"
-HOSTNAME_ANSWER="$(prompt AUTH_BOOTSTRAP_HOSTNAME "Hostname" "${AUTH_HOSTNAME:-localhost}")"
+say "    • ${c_dim}localhost${c_reset}             — dev laptop only, no TLS"
+ask_until_valid HOSTNAME_ANSWER AUTH_BOOTSTRAP_HOSTNAME "Hostname (no https://, no path)" "${AUTH_HOSTNAME:-}" valid_hostname
+HOSTNAME_ANSWER="${HOSTNAME_ANSWER,,}"
 
-# 3b — login mode. Existing installs keep magic unless explicitly changed;
-# new client installations choose password and register each application.
+# 3b — login mode. A new install is a password-mode client; an existing
+# install keeps whatever it runs unless explicitly changed.
 say
 say "  Login mode:"
-say "    • ${c_dim}password${c_reset} — admin-created email/password accounts + app handoff"
+say "    • ${c_dim}password${c_reset} — admin-created email/password accounts, two-factor, app handoff (new installs)"
 say "    • ${c_dim}magic${c_reset}    — legacy shared-domain magic links"
-LOGIN_MODE_ANSWER="$(prompt AUTH_BOOTSTRAP_LOGIN_MODE "Login mode" "${AUTH_LOGIN_MODE:-magic}")"
-case "$LOGIN_MODE_ANSWER" in
-  password|magic) ;;
-  *) die "unknown login mode: $LOGIN_MODE_ANSWER (want password or magic)" ;;
-esac
+if [[ -f "$ENV_FILE" ]]; then
+  MODE_DEFAULT="${AUTH_LOGIN_MODE:-magic}"
+else
+  MODE_DEFAULT="password"
+fi
+ask_until_valid LOGIN_MODE_ANSWER AUTH_BOOTSTRAP_LOGIN_MODE "Login mode" "$MODE_DEFAULT" valid_login_mode
 
-# 3b — client branding bundle (optional). The same repository Fleet consumes
+# 3c — client branding bundle (optional). The same repository Fleet consumes
 # (FLEET_CLIENT_CONFIG_DIR); Auth reads only its `branding:` block. A git URL
 # is cloned to $CLIENT_CHECKOUT (a sibling of $APP_DIR, deliberately outside
 # it: the source sync below runs rsync --delete over $APP_DIR) with the box's
@@ -265,8 +335,21 @@ if [[ -n "$CLIENT_CONFIG_ANSWER" ]]; then
     http://*|https://*|git@*|ssh://*)
       CLIENT_CONFIG_DIR="$CLIENT_CHECKOUT"
       if [[ "$DRY_RUN" != "1" ]]; then
+        # Reach the repository before anything is written, so a missing
+        # credential is a clear message now rather than a failure after the
+        # build. Tokens live in the box's git credential store (see
+        # docs/DEPLOY.md, "Branding from the client bundle").
+        if ! git -c core.hooksPath=/dev/null ls-remote --exit-code --quiet "$CLIENT_CONFIG_ANSWER" HEAD >/dev/null 2>&1; then
+          die "cannot reach the bundle repository $CLIENT_CONFIG_ANSWER: store a read-only token for its host with 'git config --global credential.helper store' and one authenticated 'git ls-remote $CLIENT_CONFIG_ANSWER', then re-run"
+        fi
         if [[ -d "$CLIENT_CONFIG_DIR/.git" ]]; then
           layout_bundle_migrate "$CLIENT_CONFIG_DIR"
+          # Remember where the live bundle was: if this run fails later (a
+          # refused configuration, a failed build) the checkout goes back,
+          # so the running service is not left with a bundle it never
+          # accepted.
+          BUNDLE_BEFORE="$(layout_bundle_git "$CLIENT_CONFIG_DIR" rev-parse HEAD 2>/dev/null || true)"
+          BUNDLE_DIR_FOR_RESTORE="$CLIENT_CONFIG_DIR"
           layout_bundle_git "$CLIENT_CONFIG_DIR" pull --ff-only --quiet || die "could not fast-forward $CLIENT_CONFIG_DIR"
         else
           git -c core.hooksPath=/dev/null clone --quiet "$CLIENT_CONFIG_ANSWER" "$CLIENT_CONFIG_DIR" || die "could not clone the bundle (does the box's git credential cover that repository?)"
@@ -288,6 +371,21 @@ if [[ -n "$CLIENT_CONFIG_ANSWER" ]]; then
     "$APP_DIR"/*) die "the client bundle must live outside $APP_DIR (it is synced with rsync --delete); use $CLIENT_CHECKOUT or another path" ;;
   esac
 fi
+
+# 3d — brand name: the sentence form used in prose ("Your Northwind sign-in").
+# Defaults to the bundle's wordmark when a bundle was given, else the
+# previous value, else the default look's name. A colon is refused: the
+# two-factor issuer label is built from it.
+BRAND_DEFAULT="${AUTH_BRAND_NAME:-}"
+if [[ -z "$BRAND_DEFAULT" && -n "$CLIENT_CONFIG_DIR" && -f "$CLIENT_CONFIG_DIR/manifest.yaml" ]]; then
+  BRAND_DEFAULT="$(sed -n 's/^[[:space:]]*app_name:[[:space:]]*"\{0,1\}\([^"#]*\)"\{0,1\}[[:space:]]*$/\1/p' "$CLIENT_CONFIG_DIR/manifest.yaml" | head -n1 | sed 's/[[:space:]]*$//')"
+fi
+BRAND_DEFAULT="${BRAND_DEFAULT:-Elcano}"
+valid_brand() { [[ -n "$1" && "$1" != *:* && "${#1}" -le 64 ]]; }
+say
+say "  Brand name — the sentence form used on pages and in notices"
+say "  (\"Your ${BRAND_DEFAULT} sign-in\"). No colon."
+ask_until_valid BRAND_ANSWER AUTH_BOOTSTRAP_BRAND_NAME "Brand name" "$BRAND_DEFAULT" valid_brand
 
 COOKIE_DOMAIN_ANSWER=""
 ALLOWED_DOMAINS_ANSWER=""
@@ -418,7 +516,7 @@ SETUP_CADDY="n"
 USE_LETSENCRYPT="n"
 LE_EMAIL=""
 COOKIE_SECURE="true"
-if [[ "$HOSTNAME_ANSWER" == "localhost" || "$HOSTNAME_ANSWER" == 127.* ]]; then
+if [[ "$HOSTNAME_ANSWER" == "localhost" || "$HOSTNAME_ANSWER" == "127.0.0.1" ]]; then
   COOKIE_SECURE="false"
 else
   # DNS pre-check so a misconfigured A record fails BEFORE we ask ACME.
@@ -449,7 +547,12 @@ else
     SETUP_CADDY="y"
     if confirm AUTH_BOOTSTRAP_USE_LETSENCRYPT "Use Let's Encrypt (requires public reachability on 80/443)?" y; then
       USE_LETSENCRYPT="y"
-      LE_EMAIL="$(prompt AUTH_BOOTSTRAP_LE_EMAIL "LE contact email for renewal warnings (blank to skip)" "")"
+      if [[ "$NON_INTERACTIVE" == "1" && -z "${AUTH_BOOTSTRAP_LE_EMAIL+set}" ]]; then
+        LE_EMAIL=""
+      else
+        LE_EMAIL="$(prompt AUTH_BOOTSTRAP_LE_EMAIL "LE contact email for renewal warnings (blank to skip)" "")"
+        [[ -z "$LE_EMAIL" || "$LE_EMAIL" == *@* ]] || die "LE contact email '$LE_EMAIL' does not look like an address"
+      fi
     fi
   fi
 fi
@@ -488,6 +591,9 @@ fi
 # Written to a temporary file and installed over the live one in one step,
 # so a failure mid-way never leaves a half-written env file, and the result
 # is root:auth 0640 from the moment it exists.
+require_single_line HOSTNAME_ANSWER LOGIN_MODE_ANSWER ISSUER_AUTHORITY AUTH_SIGNING_KEY COOKIE_DOMAIN_ANSWER \
+  PASSWORD_COOKIE_NAME AUTH_MFA_KEY AUTH_MFA_KEY_ID AUTH_MFA_PREVIOUS_KEYS ALLOWED_DOMAINS_ANSWER CLIENT_CONFIG_DIR \
+  EMAIL_DRIVER_ANSWER EMAIL_FROM_ANSWER SENDGRID_KEY_ANSWER SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS BRAND_ANSWER
 ENV_OUT="$(mktemp "$APP_DIR/.env.local.new.XXXXXX")"
 OLD_UMASK="$(umask)"
 umask 077
@@ -497,73 +603,69 @@ cat > "$ENV_OUT" <<EOF
 
 # ── Transport ────────────────────────────────────────────────────
 AUTH_ADDR="127.0.0.1:9000"
-AUTH_HOSTNAME="$HOSTNAME_ANSWER"
-AUTH_DATA_DIR="$APP_DIR/data"
-AUTH_LOGIN_MODE="$LOGIN_MODE_ANSWER"
-AUTH_ISSUER_URL="$ISSUER_SCHEME://$ISSUER_AUTHORITY"
+AUTH_HOSTNAME=$(envq "$HOSTNAME_ANSWER")
+AUTH_DATA_DIR=$(envq "$APP_DIR/data")
+AUTH_LOGIN_MODE=$(envq "$LOGIN_MODE_ANSWER")
+AUTH_ISSUER_URL=$(envq "$ISSUER_SCHEME://$ISSUER_AUTHORITY")
 
 # ── Crypto ───────────────────────────────────────────────────────
 # Private signing seed — auth host only. AUTH_SIGNING_PUBKEY (below, in a
 # comment) is the public half: copy it to each verifying service.
-AUTH_SIGNING_KEY="$AUTH_SIGNING_KEY"
+AUTH_SIGNING_KEY=$(envq "$AUTH_SIGNING_KEY")
 # AUTH_SIGNING_PUBKEY (give this to verifying services): $AUTH_SIGNING_PUBKEY
 
 # ── Cookie ───────────────────────────────────────────────────────
 AUTH_COOKIE_NAME="elcano_auth"
-AUTH_COOKIE_DOMAIN="$COOKIE_DOMAIN_ANSWER"
-AUTH_COOKIE_SECURE="$COOKIE_SECURE"
+AUTH_COOKIE_DOMAIN=$(envq "$COOKIE_DOMAIN_ANSWER")
+AUTH_COOKIE_SECURE=$(envq "$COOKIE_SECURE")
 
 # ── Password application handoff ────────────────────────────────
-AUTH_PASSWORD_COOKIE_NAME="$PASSWORD_COOKIE_NAME"
+AUTH_PASSWORD_COOKIE_NAME=$(envq "$PASSWORD_COOKIE_NAME")
 AUTH_CODE_TTL_SECONDS="60"
 AUTH_ASSERTION_TTL_MINUTES="5"
 # Second factor: AES-256 key sealing authenticator secrets at rest (password
 # mode). Rotate with 'auth mfa keygen'; keep the old one under
 # AUTH_MFA_PREVIOUS_KEYS as id:key until every factor has been re-sealed.
-AUTH_MFA_KEY="$AUTH_MFA_KEY"
-AUTH_MFA_KEY_ID="$AUTH_MFA_KEY_ID"
-AUTH_MFA_PREVIOUS_KEYS="$AUTH_MFA_PREVIOUS_KEYS"
+AUTH_MFA_KEY=$(envq "$AUTH_MFA_KEY")
+AUTH_MFA_KEY_ID=$(envq "$AUTH_MFA_KEY_ID")
+AUTH_MFA_PREVIOUS_KEYS=$(envq "$AUTH_MFA_PREVIOUS_KEYS")
 
 # ── Tenancy / allowlist ──────────────────────────────────────────
-AUTH_ALLOWED_DOMAINS="$ALLOWED_DOMAINS_ANSWER"
+AUTH_ALLOWED_DOMAINS=$(envq "$ALLOWED_DOMAINS_ANSWER")
 
 # ── Branding ─────────────────────────────────────────────────────
 # Wordmark, mark, colours and login copy come from the client bundle's
 # branding: block when set (see DEPLOY.md). Prose keeps AUTH_BRAND_NAME above.
-AUTH_CLIENT_CONFIG_DIR="$CLIENT_CONFIG_DIR"
+AUTH_CLIENT_CONFIG_DIR=$(envq "$CLIENT_CONFIG_DIR")
 
 # ── Email delivery ───────────────────────────────────────────────
-AUTH_EMAIL_DRIVER="$EMAIL_DRIVER_ANSWER"
-AUTH_EMAIL_FROM="$EMAIL_FROM_ANSWER"
+AUTH_EMAIL_DRIVER=$(envq "$EMAIL_DRIVER_ANSWER")
+AUTH_EMAIL_FROM=$(envq "$EMAIL_FROM_ANSWER")
 EOF
 
 case "$EMAIL_DRIVER_ANSWER" in
   sendgrid)
     cat >> "$ENV_OUT" <<EOF
-SENDGRID_API_KEY="$SENDGRID_KEY_ANSWER"
+SENDGRID_API_KEY=$(envq "$SENDGRID_KEY_ANSWER")
 EOF
     ;;
   smtp)
     cat >> "$ENV_OUT" <<EOF
-AUTH_SMTP_HOST="$SMTP_HOST"
-AUTH_SMTP_PORT="$SMTP_PORT"
-AUTH_SMTP_USER="$SMTP_USER"
-AUTH_SMTP_PASS="$SMTP_PASS"
+AUTH_SMTP_HOST=$(envq "$SMTP_HOST")
+AUTH_SMTP_PORT=$(envq "$SMTP_PORT")
+AUTH_SMTP_USER=$(envq "$SMTP_USER")
+AUTH_SMTP_PASS=$(envq "$SMTP_PASS")
 EOF
     ;;
 esac
 
-# The brand name is written double-quoted; a quote or backslash inside it
-# would break the file, so escape both.
-BRAND_ESCAPED="${AUTH_BRAND_NAME:-Elcano}"
-BRAND_ESCAPED="${BRAND_ESCAPED//\\/\\\\}"
-BRAND_ESCAPED="${BRAND_ESCAPED//\"/\\\"}"
 cat >> "$ENV_OUT" <<EOF
 
 # ── UX ───────────────────────────────────────────────────────────
-AUTH_BRAND_NAME="$BRAND_ESCAPED"
-# Post-login landing. Defaults to https://home.${COOKIE_DOMAIN_ANSWER:-<cookie-domain>}
-# (the stack's home service) when unset; uncomment to override.
+AUTH_BRAND_NAME=$(envq "$BRAND_ANSWER")
+# Post-login landing for a direct visit (an application visit goes back to
+# the application). Unset: password mode lands on the signed-in page at
+# /account; magic mode lands on https://home.${COOKIE_DOMAIN_ANSWER:-<cookie-domain>}.
 # AUTH_DEFAULT_RETURN_TO=""
 EOF
 
@@ -581,6 +683,14 @@ if [[ -n "$OLD_ENV_FILE" ]]; then
   for key in AUTH_ADDR AUTH_DATA_DIR AUTH_COOKIE_NAME AUTH_PASSWORD_COOKIE_NAME AUTH_CODE_TTL_SECONDS AUTH_ASSERTION_TTL_MINUTES; do
     [[ -n "${old_line[$key]:-}" ]] || continue
     grep -q "^${key}=" "$ENV_OUT" || continue
+    # The password cookie's name follows the cookie mode (__Host- only with
+    # secure cookies): a previous name from the other mode is not kept, or
+    # the server would refuse the file after a move between localhost and
+    # a public hostname.
+    if [[ "$key" == "AUTH_PASSWORD_COOKIE_NAME" ]]; then
+      if [[ "$COOKIE_SECURE" == "true" && "${old_line[$key]}" != *"=\"__Host-"* && "${old_line[$key]}" != *"=__Host-"* ]]; then continue; fi
+      if [[ "$COOKIE_SECURE" != "true" && "${old_line[$key]}" == *"__Host-"* ]]; then continue; fi
+    fi
     REPL="${old_line[$key]}" KEY="$key" awk '
       index($0, ENVIRON["KEY"] "=") == 1 && !done { print ENVIRON["REPL"]; done = 1; next } { print }
     ' "$ENV_OUT" > "$ENV_OUT.tmp" && cat "$ENV_OUT.tmp" > "$ENV_OUT" && rm -f "$ENV_OUT.tmp"
@@ -600,11 +710,11 @@ if [[ -n "$OLD_ENV_FILE" ]]; then
 fi
 umask "$OLD_UMASK"
 
-# Root writes it, the service reads it: root:auth 0640, installed over the
-# live file in one step.
-install -o root -g "$APP_USER" -m 0640 "$ENV_OUT" "$ENV_FILE"
-rm -f "$ENV_OUT"
-ok "env seeded"
+# The candidate stays beside the live file until the new build has accepted
+# it (step 5); it is readable by the service user for that pre-flight.
+chown root:"$APP_USER" "$ENV_OUT"
+chmod 0640 "$ENV_OUT"
+ok "env prepared (installed after the pre-flight)"
 
 # Surface the public key so the operator can wire up verifying services.
 # Safe to display/copy — it cannot mint tokens, only verify them.
@@ -617,14 +727,90 @@ step "5/6  Building auth-server + auth-admin"
 # The service user builds in a staging copy with its own caches; root then
 # installs root-owned source and binaries into $APP_DIR (scripts/lib/layout.sh).
 STAGING="$(mktemp -d)"
-trap 'rm -rf "$STAGING"' EXIT
+trap 'rm -rf "$STAGING" "$ENV_OUT"; restore_bundle_on_failure' EXIT
 layout_build "$SRC_DIR" "$STAGING"
+
+# Pre-flight before anything live is replaced: the staged build must accept
+# the candidate configuration (the same check `auth update` runs). On a
+# re-run a bad answer therefore leaves the running install exactly as it was.
+# With a scrubbed environment: this shell exported the previous env file's
+# settings (to offer them as defaults) and the server lets the process
+# environment shadow the file, so without env -i the check would validate
+# the old settings, not the candidate. The unit starts the server with only
+# the -env file and no AUTH_* environment, which this mirrors.
+if ! runuser -u "$APP_USER" -- env -i PATH="$PATH" HOME=/ "$STAGING/bin/auth-server" -check-config -env "$ENV_OUT"; then
+  die "the new build refuses the configuration above (see its message); the current install was not touched"
+fi
+ok "configuration accepted by the new build"
+
+# Root writes the env file, the service reads it: root:auth 0640, installed
+# over the live file in one step, then source, binaries and CLI. The live
+# env and binaries are snapshotted first (root-private), so a failure in
+# the middle of this swap puts them back together with the bundle instead
+# of leaving a new env beside half-replaced binaries.
+# Files that did not exist (a fresh box) are recorded instead, and removed
+# on failure, so a re-run starts from the same clean state.
+SNAP="$(mktemp -d)"; chmod 0700 "$SNAP"
+# The snapshot holds the live secrets: from this moment a failure removes it
+# (nothing has been swapped yet, so there is nothing to put back).
+trap 'restore_bundle_on_failure || true; rm -rf "$SNAP" "$STAGING" "$ENV_OUT" 2>/dev/null || true' EXIT
+SNAP_CREATED=()
+if [[ -f "$ENV_FILE" ]]; then cp -p "$ENV_FILE" "$SNAP/env"; else SNAP_CREATED+=("$ENV_FILE"); fi
+for b in auth-server auth-admin; do
+  if [[ -f "$APP_DIR/bin/$b" ]]; then cp -p "$APP_DIR/bin/$b" "$SNAP/$b"; else SNAP_CREATED+=("$APP_DIR/bin/$b"); fi
+done
+restore_install_on_failure() {
+  [[ "$BOOTSTRAP_DONE" != "1" && -n "${SNAP:-}" && -d "$SNAP" ]] || return 0
+  local b p restored=0 removed=0 failed=0
+  # Each step is independent and best-effort: one failure must not stop
+  # the others (this runs from the EXIT trap, under set -e).
+  # A file the swap never reached is left alone (byte-identical to its
+  # snapshot); only changed files are put back.
+  if [[ -f "$SNAP/env" ]] && ! cmp -s "$SNAP/env" "$ENV_FILE"; then
+    if install -o root -g "$APP_USER" -m 0640 "$SNAP/env" "$ENV_FILE"; then restored=1; else failed=1; warn "could not put $ENV_FILE back; the previous copy is in $SNAP/env"; fi
+  fi
+  for b in auth-server auth-admin; do
+    if [[ -f "$SNAP/$b" ]] && ! cmp -s "$SNAP/$b" "$APP_DIR/bin/$b"; then
+      if install -o root -g root -m 0755 "$SNAP/$b" "$APP_DIR/bin/$b"; then restored=1; else failed=1; warn "could not put $APP_DIR/bin/$b back; the previous copy is in $SNAP/$b"; fi
+    fi
+  done
+  for p in "${SNAP_CREATED[@]}"; do
+    [[ -e "$p" ]] || continue
+    if rm -f -- "$p"; then removed=1; else failed=1; warn "could not remove $p, which this run created"; fi
+  done
+  [[ "$restored" == "1" ]] && warn "the previous env file and binaries were put back (this run did not complete)"
+  [[ "$removed" == "1" ]] && warn "files this run created were removed again (it did not complete)"
+  # The snapshot (it holds the live secrets) is kept only while something
+  # could not be put back, and then named; otherwise it goes.
+  if [[ "$failed" == "1" ]]; then
+    warn "the previous files are kept in $SNAP (root only); put them back by hand, then remove it"
+  else
+    rm -rf "$SNAP" 2>/dev/null || warn "could not remove the snapshot $SNAP"
+  fi
+  return 0
+}
+# Restores first, each best-effort; cleanup last, so a failing rm cannot
+# skip a restore.
+trap 'restore_install_on_failure || true; restore_bundle_on_failure || true; rm -rf "$STAGING" "$ENV_OUT" 2>/dev/null || true' EXIT
+install -o root -g "$APP_USER" -m 0640 "$ENV_OUT" "$ENV_FILE"
+rm -f "$ENV_OUT"
 layout_install_tree "$SRC_DIR" "$STAGING"
 layout_apply
-rm -rf "$STAGING"
+# From here the install is the new one and the bundle it was checked against
+# stays: a later failure (Caddy, motd, or this cleanup) must not move
+# anything back.
+BOOTSTRAP_DONE=1
 trap - EXIT
+rm -rf "$STAGING" "$SNAP" 2>/dev/null || warn "could not remove the temporary directories $STAGING $SNAP"
+ok "env seeded"
 
 install -o root -g root -m 0755 "$APP_DIR/deploy/auth-cli" "$CLI_PATH"
+
+# The listen address the server will use (default 127.0.0.1:9000; a re-run
+# keeps a tuned one), for the health check below.
+layout_read_env "$ENV_FILE"
+HEALTH_ADDR="${AUTH_ADDR:-127.0.0.1:9000}"
+case "${HEALTH_ADDR%:*}" in ""|"0.0.0.0"|"[::]"|"::"|"*") HEALTH_ADDR="127.0.0.1:${HEALTH_ADDR##*:}" ;; esac
 
 if [[ "$DRY_RUN" == "1" ]]; then
   info "DRY_RUN: skipping systemd install + start"
@@ -634,14 +820,17 @@ else
   systemctl daemon-reload
   systemctl enable auth.target >/dev/null 2>&1 || true
   systemctl restart auth-server.service
-  ok "systemd units + ${CLI_PATH} installed; auth-server is running"
+  # Declared installed only once it answers.
+  healthy=0
+  for _ in $(seq 1 30); do
+    curl -fsS --max-time 1 "http://$HEALTH_ADDR/healthz" >/dev/null 2>&1 && { healthy=1; break; }
+    sleep 0.5
+  done
+  if [[ "$healthy" != "1" ]] || ! systemctl is-active --quiet auth-server.service; then
+    die "auth-server did not come up on http://$HEALTH_ADDR (see: journalctl -u auth-server -n 50 --no-pager)"
+  fi
+  ok "systemd units + ${CLI_PATH} installed; auth-server is healthy on $HEALTH_ADDR"
 fi
-
-# Wait for /healthz before continuing.
-for _ in $(seq 1 20); do
-  curl -fsS --max-time 1 http://127.0.0.1:9000/healthz >/dev/null 2>&1 && break
-  sleep 0.5
-done
 
 # Seed the DB-side domain allowlist from .env.local (auth-server does
 # this at startup too, but doing it here means `auth domain list`
@@ -662,7 +851,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
   info "DRY_RUN: skipping Caddy / firewalld"
 elif [[ "$SETUP_CADDY" == "y" ]]; then
   info "installing Caddy"
-  dnf install -y caddy >/dev/null
+  # RHEL and its rebuilds ship Caddy through EPEL; Fedora has it directly.
+  if [[ -f /etc/redhat-release && ! -f /etc/fedora-release ]]; then
+    dnf install -y epel-release >/dev/null 2>&1 || warn "could not enable EPEL; if the Caddy install fails, enable it by hand"
+  fi
+  dnf install -y caddy >/dev/null || die "dnf install caddy failed (on RHEL, Caddy comes from EPEL)"
 
   tmp=$(mktemp)
   if [[ -n "$LE_EMAIL" ]]; then
@@ -671,6 +864,12 @@ elif [[ "$SETUP_CADDY" == "y" ]]; then
   sed "s/auth\.example\.com/$HOSTNAME_ANSWER/" "$APP_DIR/deploy/Caddyfile" >> "$tmp"
   if [[ "$USE_LETSENCRYPT" != "y" ]]; then
     sed -i '/^'"${HOSTNAME_ANSWER//./\\.}"' {/a\\ttls internal' "$tmp"
+  fi
+  # A hand-edited Caddyfile (trusted proxies, other sites on the box) is
+  # never overwritten silently: the previous one is kept beside it.
+  if [[ -f /etc/caddy/Caddyfile ]] && ! cmp -s "$tmp" /etc/caddy/Caddyfile; then
+    cp -p /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak-$(date +%Y%m%d%H%M%S)"
+    warn "replaced /etc/caddy/Caddyfile; the previous one is kept as /etc/caddy/Caddyfile.bak-<timestamp>. Re-apply any hand edits (trusted proxies, other sites)."
   fi
   install -m 0644 "$tmp" /etc/caddy/Caddyfile
   rm -f "$tmp"
@@ -705,11 +904,16 @@ elif [[ "$SETUP_CADDY" == "y" ]]; then
     fi
   fi
 else
-  info "skipping Caddy — reach the app at http://${HOSTNAME_ANSWER}:9000"
+  if [[ "$COOKIE_SECURE" == "true" ]]; then
+    warn "no Caddy: auth-server listens on 127.0.0.1:9000 only and expects HTTPS at https://${HOSTNAME_ANSWER}."
+    warn "  Put your own TLS reverse proxy in front (see deploy/Caddyfile for the headers it must pass) before anyone signs in."
+  else
+    info "skipping Caddy — reach the app at http://${HOSTNAME_ANSWER}:9000"
+  fi
 fi
 
 # ── motd ────────────────────────────────────────────────────────────
-[[ "$DRY_RUN" == "1" ]] || tee /etc/motd > /dev/null <<'MOTD'
+[[ "$DRY_RUN" == "1" || -s /etc/motd ]] || tee /etc/motd > /dev/null <<'MOTD'
      ╔══════════════════╗
      ║   ELCANO  AUTH   ║
      ║   ──────────     ║
@@ -728,6 +932,8 @@ printf '%s═══════════════════════�
 say
 if [[ "$SETUP_CADDY" == "y" ]]; then
   say "  URL          ${c_bold}https://${HOSTNAME_ANSWER}${c_reset}"
+elif [[ "$COOKIE_SECURE" == "true" ]]; then
+  say "  URL          ${c_bold}https://${HOSTNAME_ANSWER}${c_reset} ${c_dim}(once your own TLS proxy fronts 127.0.0.1:9000)${c_reset}"
 else
   say "  URL          ${c_bold}http://${HOSTNAME_ANSWER}:9000${c_reset}"
 fi
@@ -740,9 +946,16 @@ if [[ "$LOGIN_MODE_ANSWER" == "magic" ]]; then
   say "  Allowlist    ${c_dim}${ALLOWED_DOMAINS_ANSWER:-(empty — open enrollment)}${c_reset}"
   say "  Email        ${c_dim}${EMAIL_DRIVER_ANSWER}${c_reset}"
 fi
+say "  Brand        ${c_dim}${BRAND_ANSWER}${c_reset}"
 say "  Data dir     ${DATA_DIR} ${c_dim}(the only path the service user owns)${c_reset}"
-say "  Logs         ${c_dim}journalctl -fu auth-server${c_reset}"
-say "  CLI          ${c_dim}auth domain add …  •  auth user list  •  auth restart${c_reset}"
+say "  Logs         ${c_dim}auth logs${c_reset}"
+if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
+  say "  CLI          ${c_dim}auth user list  •  auth app list  •  auth env check  •  auth restart${c_reset}"
+else
+  say "  CLI          ${c_dim}auth domain add …  •  auth user list  •  auth restart${c_reset}"
+fi
+say "  Public key   ${c_dim}AUTH_SIGNING_PUBKEY=${AUTH_SIGNING_PUBKEY}${c_reset}"
+say "               ${c_dim}(again later with 'auth pubkey'; Fleet does NOT need it in password mode)${c_reset}"
 say
 if [[ "$LOGIN_MODE_ANSWER" == "magic" && "$EMAIL_DRIVER_ANSWER" == "stdout" ]]; then
   say "  ${c_yellow}heads up:${c_reset} email driver is 'stdout' — magic links print to the journal."
@@ -750,9 +963,20 @@ if [[ "$LOGIN_MODE_ANSWER" == "magic" && "$EMAIL_DRIVER_ANSWER" == "stdout" ]]; 
   say
 fi
 if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
-  say "  Next: create an account and register an application:"
-  say "    ${c_dim}auth user create admin@example.com${c_reset}"
-  say "    ${c_dim}auth app create explorer https://explorer.example.com/auth/callback https://explorer.example.com/signed-out${c_reset}"
+  APP_URL="https://${HOSTNAME_ANSWER}"; [[ "$COOKIE_SECURE" == "true" ]] || APP_URL="http://${HOSTNAME_ANSWER}:9000"
+  [[ "$SETUP_CADDY" == "y" || "$COOKIE_SECURE" != "true" ]] || say "  ${c_yellow}Before step 3, put an HTTPS reverse proxy for ${HOSTNAME_ANSWER} in front of 127.0.0.1:9000.${c_reset}"
+  say "  ${c_bold}Next steps${c_reset} (full checklist: docs/DEPLOY.md, \"First password-mode client\")"
+  say "    1. First administrator (a temporary password is shown once; they change it at first sign-in):"
+  say "       ${c_dim}auth user create you@${HOSTNAME_ANSWER#auth.}${c_reset}"
+  say "       ${c_dim}auth user admin you@${HOSTNAME_ANSWER#auth.} on${c_reset}"
+  say "    2. Register each application (client id, its callback URL, its signed-out page), then grant access:"
+  say "       ${c_dim}auth app create fleet https://fleet.${HOSTNAME_ANSWER#auth.}/api/auth/oidc/callback https://fleet.${HOSTNAME_ANSWER#auth.}/login?manual=1${c_reset}"
+  say "       ${c_dim}auth app set-backchannel fleet https://fleet.${HOSTNAME_ANSWER#auth.}/api/auth/backchannel-logout${c_reset}"
+  say "       ${c_dim}auth user access you@${HOSTNAME_ANSWER#auth.} fleet on${c_reset}"
+  say "       ${c_dim}(the secret printed by 'app create' goes into the application's config; it is shown once)${c_reset}"
+  say "    3. Sign in at ${APP_URL}, change the temporary password, then set up your authenticator"
+  say "       at ${APP_URL}/account/security. Administrators need it before any sensitive console action."
+  say "    4. Once every administrator has one: ${c_dim}auth mfa policy admins${c_reset}"
 else
   say "  Next: drop the forward_auth snippet from deploy/Caddyfile into"
   say "  each downstream service's Caddyfile to gate it on this cookie."
