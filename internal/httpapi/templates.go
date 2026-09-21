@@ -345,9 +345,34 @@ ul.plain li { margin: 0.2rem 0; }
 .seg-opt.locked { cursor: not-allowed; }
 .seg-opt.locked input { cursor: not-allowed; }
 .seg-group { margin-bottom: var(--space-4); }
+.section-head > div:first-child { flex: 1 1 22rem; min-width: 0; }
+.head-actions { flex: 0 0 auto; align-items: center; margin-top: 0.15rem; }
+.head-actions .btn-ghost { min-height: 2.25rem; }
+.btn-add { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; padding: 0; border: 0; border-radius: 50%; background: #15803d; color: #fff; font-size: 1.35rem; line-height: 1; font-weight: 600; cursor: pointer; transition: background var(--transition-fast), transform var(--transition-fast); }
+.btn-add:hover { background: #166534; }
+.btn-add:active { transform: scale(0.96); }
+.btn-add:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+:root[data-theme="dark"] .btn-add { background: #22c55e; color: #052e16; }
+:root[data-theme="dark"] .btn-add:hover { background: #16a34a; color: #fff; }
 .list th.sel, .list td.sel { width: 1.6rem; padding-right: 0; }
-.list td.sel input, .list th.sel input { width: 1rem; height: 1rem; margin: 0; accent-color: var(--color-primary); cursor: pointer; }
-.batch { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-2); }
+/* Quiet until used: an outline in the muted text colour (opaque, so it
+   keeps a 3:1 contrast against the card) that fills only when checked. */
+.list td.sel input, .list th.sel input { appearance: none; -webkit-appearance: none; width: 1rem; height: 1rem; margin: 0; border: 1.5px solid var(--color-text-muted); border-radius: 0.25rem; background: transparent; cursor: pointer; display: inline-grid; place-content: center; transition: background var(--transition-fast), border-color var(--transition-fast); }
+.list tr:hover td.sel input, .list td.sel input:focus-visible, .list th.sel input:hover, .list th.sel input:focus-visible { border-color: var(--color-text-primary); }
+.list td.sel input:checked, .list th.sel input:checked, .list th.sel input:indeterminate { opacity: 1; background: var(--color-primary); border-color: var(--color-primary); }
+.list td.sel input:checked::after, .list th.sel input:checked::after { content: ""; width: 0.28rem; height: 0.55rem; border: solid var(--color-on-primary); border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
+.list th.sel input:indeterminate::after { content: ""; width: 0.55rem; height: 2px; background: var(--color-on-primary); }
+.list td.sel input:focus-visible, .list th.sel input:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The batch bar (below the table, so it follows the checkboxes in tab
+   order) exists only while something is ticked: shown by the count script
+   (.on) or, where the browser supports it, by :has() alone. Each rule stands
+   alone so a browser that cannot parse :has() still honours .on, and
+   without script the noscript style keeps the bar visible. */
+.batch { display: none; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-3) 0 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-2); }
+.batch.on { display: flex; }
+@supports selector(:has(*)) {
+  .section:has([data-select]:checked) .batch { display: flex; }
+}
 .batch-count { font-size: var(--font-size-caption); color: var(--color-text-muted); min-width: 5.5rem; }
 .batch select, .batch input[type=text] { min-height: 2.25rem; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-caption); color: var(--color-text-primary); background: var(--color-surface-1); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
 .batch input[type=text] { flex: 1; min-width: 12rem; }
@@ -692,9 +717,11 @@ const adminScript = `
   var all = document.querySelector("[data-select-all]");
   var boxes = Array.prototype.slice.call(document.querySelectorAll("[data-select]"));
   var count = document.querySelector("[data-batch-count]");
+  var bar = document.querySelector("[data-batch]");
   function refresh() {
     var n = boxes.filter(function (b) { return b.checked; }).length;
     if (count) { count.textContent = n + " selected"; }
+    if (bar) { bar.classList.toggle("on", n > 0); }
     if (all) { all.checked = n > 0 && n === boxes.length; all.indeterminate = n > 0 && n < boxes.length; }
   }
   if (all) { all.addEventListener("change", function () { boxes.forEach(function (b) { b.checked = all.checked; }); refresh(); }); }
@@ -771,25 +798,12 @@ const adminHTML = `<!doctype html>
           <h2 id="accounts-heading">Accounts</h2>
           <p class="muted">Who can sign in, to which applications, and whether they can open this console. Two-factor policy: <strong>{{.MFAPolicy}}</strong>. Tick accounts to change several at once.</p>
         </div>
-        <div class="row-actions">
-          <button class="btn-ghost" type="button" popovertarget="mfa-policy">Two-factor policy</button>
-          <button class="btn inline" type="button" popovertarget="add-user">Add user</button>
+        <div class="row-actions head-actions">
+          <button class="btn-ghost" type="button" popovertarget="mfa-policy" title="Two-factor policy" aria-label="Two-factor policy">2FA</button>
+          <button class="btn-add" type="button" popovertarget="add-user" title="Add user" aria-label="Add user">+</button>
         </div>
       </div>
       {{if .Accounts}}
-      <form id="batch-form" class="batch" method="post" action="/admin" aria-label="Change the selected accounts">
-        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="batch">
-        <span class="batch-count" data-batch-count aria-live="polite">0 selected</span>
-        <label class="sr-only" for="batch-op">What to do with the selected accounts</label>
-        <select id="batch-op" name="op">
-          <option value="team">Set team</option>
-          <option value="signout">Sign out everywhere</option>
-          <option value="require-mfa">Require two-factor</option>
-          <option value="unrequire-mfa">Stop requiring two-factor</option>
-        </select>
-        <input name="team" type="text" list="teams" maxlength="40" placeholder="Team (for Set team; blank removes it)" aria-label="Team for the selected accounts">
-        <button class="btn-ghost" type="submit">Apply to selected</button>
-      </form>
       <div class="table-wrap"><table class="list">
         <thead><tr><th class="sel"><input type="checkbox" data-select-all aria-label="Select every account"></th><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th></th></tr></thead>
         <tbody>
@@ -909,7 +923,22 @@ const adminHTML = `<!doctype html>
           </div></td>
         </tr>{{end}}
         </tbody>
-      </table></div>{{else}}<p class="empty">No accounts yet. Add the first one with the button above.</p>{{end}}
+      </table></div>
+      <form id="batch-form" class="batch" method="post" action="/admin" aria-label="Change the selected accounts" data-batch>
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="batch">
+        <span class="batch-count" data-batch-count aria-live="polite">0 selected</span>
+        <label class="sr-only" for="batch-op">What to do with the selected accounts</label>
+        <select id="batch-op" name="op">
+          <option value="team">Set team</option>
+          <option value="signout">Sign out everywhere</option>
+          <option value="require-mfa">Require two-factor</option>
+          <option value="unrequire-mfa">Stop requiring two-factor</option>
+        </select>
+        <input name="team" type="text" list="teams" maxlength="40" placeholder="Team (for Set team; blank removes it)" aria-label="Team for the selected accounts">
+        <button class="btn-ghost" type="submit">Apply to selected</button>
+      </form>
+      <noscript><style nonce="{{.Nonce}}">.batch { display: flex; } .batch-count { display: none; }</style></noscript>
+      {{else}}<p class="empty">No accounts yet. Add the first one with the button above.</p>{{end}}
       <datalist id="teams">{{range .Teams}}<option value="{{.}}">{{end}}</datalist>
     </section>
 
