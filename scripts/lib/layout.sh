@@ -255,31 +255,36 @@ layout_bundle_migrate() {
       layout_require_trusted "${url#file://}" || return 1 ;;
     *) layout_die "the client bundle remote $url is not an https, ssh or root-owned local repository; re-clone it by hand into a root-owned directory"; return 1 ;;
   esac
-  # The old checkout's commit is read as data (HEAD and its ref file, never
-  # a git command in the untrusted repository) and the fresh clone is put
-  # back on it, so the running service keeps exactly the bundle it had and
-  # the update that follows treats the remote's tip as an ordinary pull
-  # with the usual rollback baseline. A commit the remote no longer has
-  # leaves the clone at the tip, with a warning.
+  # The old checkout's commit and branch are read as data (HEAD and its ref
+  # file, never a git command in the untrusted repository) and the fresh
+  # clone is put back on them, so the running service keeps exactly the
+  # bundle it had and the update that follows treats the remote's tip as an
+  # ordinary pull with the usual rollback baseline.
   # Fail closed: if the running service's commit or branch cannot be
-  # identified, the branch is gone from the remote, or the commit is, nothing
-  # is replaced and the operator re-clones by hand. A silent jump to another
-  # branch or the tip would change what the service serves.
+  # identified, the checkout is detached, the branch is gone from the
+  # remote, or the commit is, nothing is replaced and the operator re-clones
+  # by hand. A silent jump to another branch or the tip would change what
+  # the service serves, and a detached checkout that could not pull before
+  # must not start pulling after.
   local old_head old_branch
   old_head="$(layout_git_head_as_data "$dir")"
   old_branch="$(layout_git_branch_as_data "$dir")"
   [[ -n "$old_head" ]] || { layout_die "cannot read the commit the client bundle at $dir is on; re-clone it by hand into a root-owned directory at the commit the service should serve"; return 1; }
+  [[ -n "$old_branch" ]] || { layout_die "the client bundle at $dir is a detached checkout (commit ${old_head:0:12}); re-clone it by hand into a root-owned directory at that commit"; return 1; }
   fresh="$(mktemp -d "${dir}.fresh.XXXXXX")" || return 1
   git -c core.hooksPath=/dev/null clone --quiet "$url" "$fresh/checkout" || { rm -rf "$fresh"; layout_die "could not re-clone the client bundle from its remote (does the box's git credential cover it?)"; return 1; }
-  if [[ -n "$old_branch" ]]; then
-    # The same branch as before, tracking the remote, so the pulls that
-    # follow fast-forward the branch the operator chose.
-    if ! git -C "$fresh/checkout" -c core.hooksPath=/dev/null rev-parse --verify --quiet "origin/$old_branch" >/dev/null; then
-      rm -rf "$fresh"
-      layout_die "the client bundle at $dir is on branch $old_branch, which its remote no longer has; re-clone it by hand into a root-owned directory (the service keeps running on the current checkout)" || return 1
-    fi
-    git -C "$fresh/checkout" -c core.hooksPath=/dev/null checkout --quiet -B "$old_branch" "origin/$old_branch" || { rm -rf "$fresh"; return 1; }
+  # The same branch as before, tracking the remote, so the pulls that follow
+  # fast-forward the branch the operator chose. The remote ref is named in
+  # full: the shorthand "origin/NAME" would also match a tag of that name.
+  if ! git -C "$fresh/checkout" -c core.hooksPath=/dev/null rev-parse --verify --quiet "refs/remotes/origin/$old_branch" >/dev/null; then
+    rm -rf "$fresh"
+    layout_die "the client bundle at $dir is on branch $old_branch, which its remote no longer has; re-clone it by hand into a root-owned directory (the service keeps running on the current checkout)" || return 1
   fi
+  git -C "$fresh/checkout" -c core.hooksPath=/dev/null checkout --quiet -B "$old_branch" "refs/remotes/origin/$old_branch" || { rm -rf "$fresh"; return 1; }
+  git -C "$fresh/checkout" -c core.hooksPath=/dev/null branch --quiet --set-upstream-to="origin/$old_branch" "$old_branch" || { rm -rf "$fresh"; return 1; }
+  [[ "$(git -C "$fresh/checkout" -c core.hooksPath=/dev/null rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" == "origin/$old_branch" ]] \
+    || { rm -rf "$fresh"; layout_die "could not make the re-cloned bundle track origin/$old_branch"; return 1; }
+  # The old commit must exist on the remote's history; otherwise fail closed.
   if ! git -C "$fresh/checkout" -c core.hooksPath=/dev/null cat-file -e "$old_head^{commit}" 2>/dev/null; then
     rm -rf "$fresh"
     layout_die "the client bundle at $dir is on commit ${old_head:0:12}, which its remote no longer has; re-clone it by hand into a root-owned directory (the service keeps running on the current checkout)" || return 1

@@ -298,6 +298,16 @@ BM="$T/bundle-missing"; git clone -q --no-hardlinks "$B" "$BM"; ( cd "$BM" && ec
 BB="$T/bundle-branch"; git clone -q --no-hardlinks "$B" "$BB"; git -C "$BB" checkout -q -b local-only-branch; chown -R "$APP_USER:$APP_USER" "$BB"
 if lib_call "$G" layout_bundle_migrate "$BB" >/dev/null 2>&1; then bad "migration silently moved a bundle whose branch the remote lacks"; else ok "layout_bundle_migrate fails closed when the old branch is not on the remote"; fi
 [[ "$(stat -c %U "$BB/.git")" == "$APP_USER" ]] && ok "the branch-less bundle was left untouched" || bad "branch-less bundle changed"
+# A tag named like the missing remote branch must not satisfy the branch check.
+git -C "$W" tag "origin/local-only-branch" 2>/dev/null; git -C "$W" push -q origin "refs/tags/origin/local-only-branch" 2>/dev/null
+if lib_call "$G" layout_bundle_migrate "$BB" >/dev/null 2>&1; then bad "a tag named origin/<branch> satisfied the branch check"; else ok "a tag named like the remote branch does not satisfy the branch check"; fi
+[[ "$(stat -c %U "$BB/.git")" == "$APP_USER" ]] && ok "still untouched after the tag-collision attempt" || bad "bundle changed on tag collision"
+# A detached legacy checkout is refused (it could not pull before; it must not start).
+BDH="$T/bundle-detached"; git clone -q --no-hardlinks "$B" "$BDH"; git -C "$BDH" checkout -q --detach; chown -R "$APP_USER:$APP_USER" "$BDH"
+if lib_call "$G" layout_bundle_migrate "$BDH" >/dev/null 2>&1; then bad "a detached legacy bundle was migrated onto a branch"; else ok "layout_bundle_migrate refuses a detached legacy checkout"; fi
+[[ "$(stat -c %U "$BDH/.git")" == "$APP_USER" ]] && ok "the detached bundle was left untouched" || bad "detached bundle changed"
+# The migrated bundle tracks its remote branch explicitly.
+[[ "$(git -C "$BENV" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" == origin/* ]] && ok "migrated bundle tracks its remote branch" || bad "migrated bundle has no upstream"
 if lib_call "$G" layout_bundle_migrate "$BM" >/dev/null 2>&1; then bad "migration adopted the remote tip for a commit the remote lacks"; else ok "layout_bundle_migrate fails closed when the old commit is not on the remote"; fi
 [[ "$(stat -c %U "$BM/.git")" == "$APP_USER" && -f "$BM/local.txt" ]] && ok "the un-migratable bundle was left untouched" || bad "un-migratable bundle changed"
 [[ -z "$(ls -d "$BM.fresh."* 2>/dev/null)" ]] && ok "no temporary clone left behind" || bad "temporary clone left behind"
