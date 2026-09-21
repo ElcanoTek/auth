@@ -94,6 +94,16 @@ fi
 exec /usr/bin/rsync "\$@"
 STUB
 chmod 0755 "$T/stub/rsync"
+# install stub: refuses to replace one named binary when asked, to prove a
+# failure in the middle of bootstrap's swap puts the previous files back.
+cat > "$T/stub/install" <<STUB
+#!/usr/bin/env bash
+if [[ -n "\${LT_FAIL_INSTALL:-}" ]]; then
+  for a in "\$@"; do [[ "\$a" == "\$LT_FAIL_INSTALL" ]] && { echo "install stub: refusing \$a" >&2; exit 1; }; done
+fi
+exec /usr/bin/install "\$@"
+STUB
+chmod 0755 "$T/stub/install"
 
 # A client bundle: a bare remote, one commit, and a checkout the service user
 # owns that carries a planted post-merge hook (the previous layout).
@@ -273,6 +283,15 @@ if lib_call "$G7" layout_install_tree "$SRC" "$SF" >/dev/null 2>&1; then bad "a 
 [[ $(( $(date +%s) - started )) -lt 100 ]] && ok "the refusal did not hang" || bad "refusal took too long"
 SD="$T/staging-dev"; mkdir -p "$SD/bin"; cp "$APP/bin/auth-admin" "$SD/bin/auth-admin"; ln -s /dev/zero "$SD/bin/auth-server"; chown -R -h root:root "$SD"
 if LAYOUT_MAX_BINARY_BYTES=1048576 lib_call "$G7" layout_install_tree "$SRC" "$SD" >/dev/null 2>&1; then bad "an endless staged output was installed"; else ok "layout_install_tree refuses an endless staged output"; fi
+# Regular files that pass the shape guard but fail the content checks: a
+# non-ELF file, and an ELF-headed file larger than the cap.
+SN="$T/staging-notelf"; mkdir -p "$SN/bin"; cp "$APP/bin/auth-admin" "$SN/bin/auth-admin"; printf '#!/bin/sh\necho not a binary\n' > "$SN/bin/auth-server"; chown -R root:root "$SN"; chmod -R a+rX "$SN"
+if lib_call "$G7" layout_install_tree "$SRC" "$SN" >/dev/null 2>&1; then bad "a non-ELF staged output was installed"; else ok "layout_install_tree refuses a non-ELF staged output"; fi
+if [[ -e "$G7/bin/auth-server" ]] && grep -q "not a binary" "$G7/bin/auth-server" 2>/dev/null; then bad "the non-ELF file reached bin/"; else ok "no non-ELF content reached bin/"; fi
+SB="$T/staging-big"; mkdir -p "$SB/bin"; { printf '\x7fELF'; head -c 1020 /dev/zero; } > "$SB/bin/auth-admin"; { printf '\x7fELF'; head -c 4092 /dev/zero; } > "$SB/bin/auth-server"; chown -R root:root "$SB"; chmod -R a+rX "$SB"
+if LAYOUT_MAX_BINARY_BYTES=2048 lib_call "$G7" layout_install_tree "$SRC" "$SB" >/dev/null 2>&1; then bad "a staged output over the cap was installed"; else ok "layout_install_tree refuses a staged output over the byte cap"; fi
+LAYOUT_MAX_BINARY_BYTES=8192 lib_call "$G7" layout_install_tree "$SRC" "$SB" >/dev/null 2>&1 && ok "the same file installs under a cap that fits it (the cap is what refused it)" || bad "cap-fitting install failed"
+[[ "$(stat -c %s "$G7/bin/auth-server")" == 4096 ]] && ok "installed copy is the full 4096 bytes" || bad "installed copy size $(stat -c %s "$G7/bin/auth-server")"
 # After a real build the staging copy belongs to root again.
 S9="$(mktemp -d /var/lib/auth-layout-stage.XXXXXX)"
 lib_call "$G7" layout_build "$SRC" "$S9" >/dev/null 2>&1 && ok "layout_build ran" || bad "layout_build failed"
@@ -422,6 +441,21 @@ env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
    AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap6.log" 2>&1 || bad "restoring localhost failed"
 cp "$APP2/.env.local" "$T/env2.before"
+# A failure in the middle of the swap (here: the second binary cannot be
+# replaced) puts the previous env file and binaries back, so the box is not
+# left with a new env beside half-replaced binaries.
+echo "previous-build-marker" >> "$APP2/bin/auth-server"
+cp "$APP2/.env.local" "$T/env2.swap"
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP2/bin/auth-admin" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=auth.northwind.test AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=y \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap7.log" 2>&1; then bad "bootstrap reported success with an unreplaceable binary"; else ok "bootstrap fails when a binary cannot be replaced"; fi
+grep -q 'install stub: refusing' "$T/bootstrap7.log" && ok "the failure was the second binary's install" || bad "failure elsewhere: $(grep -v '^$' "$T/bootstrap7.log" | tail -3)"
+grep -q 'previous env file and binaries were put back' "$T/bootstrap7.log" && ok "the swap failure reports the restore" || bad "no restore message: $(tail -4 "$T/bootstrap7.log")"
+cmp -s "$APP2/.env.local" "$T/env2.swap" && ok "live env put back after the mid-swap failure" || bad "live env differs after the mid-swap failure"
+grep -q "previous-build-marker" "$APP2/bin/auth-server" && ok "previous auth-server put back after the mid-swap failure" || bad "auth-server was left replaced"
+[[ "$(owner_mode "$APP2/.env.local")" == "root:$APP_USER 640" && "$(owner_mode "$APP2/bin/auth-server")" == "root:root 755" ]] && ok "restored files keep the layout's ownership" || bad "restored ownership $(owner_mode "$APP2/.env.local") $(owner_mode "$APP2/bin/auth-server")"
 # Only the loopback literal and localhost are local HTTP; a malformed
 # 127.x address is not a hostname at all.
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \

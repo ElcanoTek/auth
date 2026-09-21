@@ -736,20 +736,37 @@ layout_build "$SRC_DIR" "$STAGING"
 # With a scrubbed environment: this shell exported the previous env file's
 # settings (to offer them as defaults) and the server lets the process
 # environment shadow the file, so without env -i the check would validate
-# the old settings, not the candidate. The service runs from a unit with
-# only its EnvironmentFile, which this mirrors.
+# the old settings, not the candidate. The unit starts the server with only
+# the -env file and no AUTH_* environment, which this mirrors.
 if ! runuser -u "$APP_USER" -- env -i PATH="$PATH" HOME=/ "$STAGING/bin/auth-server" -check-config -env "$ENV_OUT"; then
   die "the new build refuses the configuration above (see its message); the current install was not touched"
 fi
 ok "configuration accepted by the new build"
 
 # Root writes the env file, the service reads it: root:auth 0640, installed
-# over the live file in one step, then source, binaries and CLI.
+# over the live file in one step, then source, binaries and CLI. The live
+# env and binaries are snapshotted first (root-private), so a failure in
+# the middle of this swap puts them back together with the bundle instead
+# of leaving a new env beside half-replaced binaries.
+SNAP="$(mktemp -d)"; chmod 0700 "$SNAP"
+[[ -f "$ENV_FILE" ]] && cp -p "$ENV_FILE" "$SNAP/env"
+for b in auth-server auth-admin; do [[ -f "$APP_DIR/bin/$b" ]] && cp -p "$APP_DIR/bin/$b" "$SNAP/$b"; done
+restore_install_on_failure() {
+  [[ "$BOOTSTRAP_DONE" != "1" && -n "${SNAP:-}" && -d "$SNAP" ]] || return 0
+  local b restored=0
+  if [[ -f "$SNAP/env" ]]; then install -o root -g "$APP_USER" -m 0640 "$SNAP/env" "$ENV_FILE" && restored=1; fi
+  for b in auth-server auth-admin; do
+    [[ -f "$SNAP/$b" ]] && install -o root -g root -m 0755 "$SNAP/$b" "$APP_DIR/bin/$b" && restored=1
+  done
+  [[ "$restored" == "1" ]] && warn "the previous env file and binaries were put back (this run did not complete)"
+  rm -rf "$SNAP"
+}
+trap 'rm -rf "$STAGING" "$ENV_OUT"; restore_install_on_failure; restore_bundle_on_failure' EXIT
 install -o root -g "$APP_USER" -m 0640 "$ENV_OUT" "$ENV_FILE"
 rm -f "$ENV_OUT"
 layout_install_tree "$SRC_DIR" "$STAGING"
 layout_apply
-rm -rf "$STAGING"
+rm -rf "$STAGING" "$SNAP"
 # From here the install is the new one and the bundle it was checked against
 # stays: a later failure (Caddy, motd) must not move the bundle back.
 BOOTSTRAP_DONE=1

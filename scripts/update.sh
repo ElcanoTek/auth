@@ -342,8 +342,9 @@ layout_apply
 # The new binary must accept the live configuration and client bundle before
 # anything is swapped. A refusal here costs nothing: the service is still
 # running on the old build, and the bundle goes back to where it was.
-# env -i: the check must see only the env file, as the systemd unit does; an
-# AUTH_* variable in the operator's shell would otherwise shadow the file.
+# env -i: the check must see only the env file, as the unit's ExecStart
+# gives the server; an AUTH_* variable in the operator's shell would
+# otherwise shadow the file.
 if ! runuser -u "$APP_USER" -- env -i PATH="$PATH" HOME=/ "$STAGING/bin/auth-server" -check-config -env "$APP_DIR/.env.local" >/dev/null 2>&1; then
   die "the new build refuses the live configuration (run: sudo runuser -u $APP_USER -- $STAGING/bin/auth-server -check-config -env $APP_DIR/.env.local); nothing was swapped, bundle being reset"
 fi
