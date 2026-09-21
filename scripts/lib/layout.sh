@@ -281,8 +281,8 @@ layout_bundle_migrate() {
     layout_die "the client bundle at $dir is on branch $old_branch, which its remote no longer has; re-clone it by hand into a root-owned directory (the service keeps running on the current checkout)" || return 1
   fi
   git -C "$fresh/checkout" -c core.hooksPath=/dev/null checkout --quiet -B "$old_branch" "refs/remotes/origin/$old_branch" || { rm -rf "$fresh"; return 1; }
-  git -C "$fresh/checkout" -c core.hooksPath=/dev/null branch --quiet --set-upstream-to="origin/$old_branch" "$old_branch" || { rm -rf "$fresh"; return 1; }
-  [[ "$(git -C "$fresh/checkout" -c core.hooksPath=/dev/null rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" == "origin/$old_branch" ]] \
+  git -C "$fresh/checkout" -c core.hooksPath=/dev/null branch --quiet --set-upstream-to="refs/remotes/origin/$old_branch" "$old_branch" || { rm -rf "$fresh"; return 1; }
+  [[ "$(git -C "$fresh/checkout" -c core.hooksPath=/dev/null rev-parse --symbolic-full-name '@{upstream}' 2>/dev/null)" == "refs/remotes/origin/$old_branch" ]] \
     || { rm -rf "$fresh"; layout_die "could not make the re-cloned bundle track origin/$old_branch"; return 1; }
   # The old commit must exist on the remote's history; otherwise fail closed.
   if ! git -C "$fresh/checkout" -c core.hooksPath=/dev/null cat-file -e "$old_head^{commit}" 2>/dev/null; then
