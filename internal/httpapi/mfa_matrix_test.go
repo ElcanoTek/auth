@@ -16,7 +16,7 @@ import (
 // password step of a factor-gated login.
 func TestHalfSignedInBrowserIsRefusedEverywhere(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
-	enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	alice := newBrowser(t, ts)
 	if resp, _ := alice.login("alice@example.com", plain); resp.Header.Get("Location") != "/login/verify" {
 		t.Fatalf("login: %q", resp.Header.Get("Location"))
@@ -72,7 +72,7 @@ func TestPolicyTightenedBetweenAuthorizeAndTokenVoidsTheCode(t *testing.T) {
 // longer has) fails closed: the code is refused, nothing is minted.
 func TestCorruptCiphertextFailsClosed(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
-	secret, seeded := enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	secret, seeded := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
 	f, _ := st.ActiveAuthenticator(context.Background(), a.ID)
 	// Corrupt the stored ciphertext through the re-seal path.
@@ -90,9 +90,9 @@ func TestCorruptCiphertextFailsClosed(t *testing.T) {
 	}
 }
 
-// Fresh enrolment secrets are capped per account; a cancelled sign-in drops
+// Fresh enrollment secrets are capped per account; a cancelled sign-in drops
 // the pending secret so the next attempt generates (and counts) a new one.
-func TestEnrolmentSecretGenerationIsCapped(t *testing.T) {
+func TestEnrollmentSecretGenerationIsCapped(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	if _, _, err := st.SetMFAPolicy(context.Background(), mfa.ModeAdmins, "test", time.Now().Unix()); err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestEnrolmentSecretGenerationIsCapped(t *testing.T) {
 		}
 		resp, page := alice.get("/login/enroll")
 		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("enrol page %d: %d", i, resp.StatusCode)
+			t.Fatalf("enroll page %d: %d", i, resp.StatusCode)
 		}
 		secret := extractSecret(t, page)
 		if string(secret) == string(previous) {
@@ -130,12 +130,12 @@ func TestAdministratorResetsAreCapped(t *testing.T) {
 	alice, _ := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
 	ctx := context.Background()
 	for i := 1; i <= 10; i++ {
-		enrolViaStore(t, ts, st, cfg.MFAKeyring, "bob@example.com")
+		enrollViaStore(t, ts, st, cfg.MFAKeyring, "bob@example.com")
 		if _, page := alice.post("/admin", url.Values{"action": {"reset-mfa"}, "email": {"bob@example.com"}, "reason": {"test"}}); !strings.Contains(page, "Reset two-factor for bob@example.com") {
 			t.Fatalf("reset %d:\n%s", i, page)
 		}
 	}
-	enrolViaStore(t, ts, st, cfg.MFAKeyring, "bob@example.com")
+	enrollViaStore(t, ts, st, cfg.MFAKeyring, "bob@example.com")
 	if _, page := alice.post("/admin", url.Values{"action": {"reset-mfa"}, "email": {"bob@example.com"}, "reason": {"test"}}); !strings.Contains(page, "Too many resets") {
 		t.Fatalf("eleventh reset:\n%s", page)
 	}
@@ -149,7 +149,7 @@ func TestAdministratorResetsAreCapped(t *testing.T) {
 // checks to everyone.
 func TestLocallyLimitedAttemptsDoNotConsumeTheGlobalBudget(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
-	_, seeded := enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	_, seeded := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	srv := New(cfg, st, &captureSender{})
 	alice := newBrowser(t, ts)
 	alice.login("alice@example.com", plain)

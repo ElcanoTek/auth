@@ -95,7 +95,7 @@ USERS
   auth-admin user revoke-sessions <email> revoke every central session
   auth-admin user list                    show password accounts + legacy login audit
   auth-admin user mfa-required <email> on|off  require (or stop requiring) two-factor sign-in for one account
-  auth-admin user mfa-reset <email> --reason "<text>"  remove a lost authenticator; they enrol again at next sign-in
+  auth-admin user mfa-reset <email> --reason "<text>"  remove a lost authenticator; they enroll again at next sign-in
   auth-admin user del <email>             remove a user from the audit log
 
 AUDIT
@@ -366,7 +366,7 @@ func userCmd(dataDir string, args []string) {
 		grant := args[2] == "on"
 		if grant {
 			// Under "Required for administrators" promotion requires a factor
-			// of the new administrator; without a key nobody could enrol.
+			// of the new administrator; without a key nobody could enroll.
 			policy, err := st.MFAPolicy(ctx)
 			if err != nil {
 				fatalf("admin on: read two-factor policy: %v", err)
@@ -377,7 +377,7 @@ func userCmd(dataDir string, args []string) {
 					fatalf("admin on: %v", err)
 				}
 				if !a.MFAEnrolled {
-					requireMFAKeyConfigured("promoting an account that must then enrol")
+					requireMFAKeyConfigured("promoting an account that must then enroll")
 				}
 			}
 		}
@@ -460,7 +460,7 @@ func userCmd(dataDir string, args []string) {
 		case args[2] == "off":
 			fmt.Printf("✓ two-factor sign-in is no longer required for %s (an enrolled authenticator stays)\n", email)
 		case signedOut > 0:
-			fmt.Printf("✓ two-factor sign-in required for %s; they were signed out and enrol at their next sign-in\n", email)
+			fmt.Printf("✓ two-factor sign-in required for %s; they were signed out and enroll at their next sign-in\n", email)
 		default:
 			fmt.Printf("✓ two-factor sign-in required for %s\n", email)
 		}
@@ -468,7 +468,7 @@ func userCmd(dataDir string, args []string) {
 		// The box operator's emergency path (a locked-out administrator, or
 		// nobody else enrolled to reset from the console): removes the
 		// authenticator, recovery codes and incomplete logins, signs the
-		// account out everywhere, and leaves it required to enrol again.
+		// account out everywhere, and leaves it required to enroll again.
 		// A reason is mandatory and lands in the audit log.
 		if len(args) != 4 || args[2] != "--reason" || strings.TrimSpace(args[3]) == "" {
 			fatalf("usage: auth-admin user mfa-reset <email> --reason \"<how you verified it was them>\"")
@@ -940,7 +940,7 @@ func mfaPolicyCmd(dataDir string, args []string) {
 			if err != nil {
 				fatalf("mfa policy: %v", err)
 			}
-			fmt.Printf("  %-9s %-28s %d account(s) would have to enrol\n", mode, mode.Label(), n)
+			fmt.Printf("  %-9s %-28s %d account(s) would have to enroll\n", mode, mode.Label(), n)
 		}
 		return
 	}
@@ -955,7 +955,7 @@ func mfaPolicyCmd(dataDir string, args []string) {
 	if err != nil {
 		fatalf("mfa policy: %v", err)
 	}
-	fmt.Printf("✓ two-factor policy is now %s (%s); %d account(s) without an authenticator signed out, they enrol at their next sign-in\n", policy.Mode, policy.Mode.Label(), signedOut)
+	fmt.Printf("✓ two-factor policy is now %s (%s); %d account(s) without an authenticator signed out, they enroll at their next sign-in\n", policy.Mode, policy.Mode.Label(), signedOut)
 }
 
 // cliActor names the operator in audit metadata: the sudo caller when the
@@ -976,7 +976,7 @@ func cliActor() string {
 // .env.local, so AUTH_MFA_KEY is in the environment when configured.
 func requireMFAKeyConfigured(what string) {
 	if strings.TrimSpace(os.Getenv("AUTH_MFA_KEY")) == "" {
-		fatalf("%s needs AUTH_MFA_KEY in .env.local first (generate one with `auth mfa keygen`, then `auth restart`); otherwise the affected accounts could not enrol and would be locked out", what)
+		fatalf("%s needs AUTH_MFA_KEY in .env.local first (generate one with `auth mfa keygen`, then `auth restart`); otherwise the affected accounts could not enroll and would be locked out", what)
 	}
 	// The same parse the server does: a present but malformed key would
 	// pass a non-empty check here and then stop the server at its next

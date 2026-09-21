@@ -13,11 +13,11 @@ import (
 	"github.com/elcanotek/auth/internal/store"
 )
 
-// adminSignedInWithFactor enrols the account through the store and signs it
+// adminSignedInWithFactor enrolls the account through the store and signs it
 // in with a real code, so the session carries otp evidence and is fresh.
 func adminSignedInWithFactor(t *testing.T, ts *httptest.Server, st *store.Store, ring *mfa.Keyring, email, plain string) (*browser, []byte) {
 	t.Helper()
-	secret, _ := enrolViaStore(t, ts, st, ring, email)
+	secret, _ := enrollViaStore(t, ts, st, ring, email)
 	b := newBrowser(t, ts)
 	b.login(email, plain)
 	if resp, _ := b.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now())}}); resp.Header.Get("Location") != "/account" {
@@ -36,44 +36,82 @@ func TestConsoleShowsTwoFactorStatusAndPolicyControls(t *testing.T) {
 		`<input type="radio" name="mode" value="optional" checked> Optional`,
 		`<input type="radio" name="mode" value="admins"> Required for administrators`,
 		`<input type="radio" name="mode" value="everyone"> Required for everyone`,
-		`<strong>Required for administrators</strong>: 1 account without an authenticator is signed out now`,
-		`<strong>Required for everyone</strong>: 2 accounts without an authenticator are signed out now`,
+		`<strong>Required for administrators</strong>: Everyone who can open this console must sign in with an authenticator app; other accounts may set one up but are not made to. Choosing it now signs out 1 account without an authenticator`,
+		`<strong>Required for everyone</strong>: Every account must sign in with an authenticator app. Choosing it now signs out 2 accounts without an authenticator`,
+		`<strong>Optional</strong>: Nobody is made to.`,
 		`title="Two-factor sign-in">2FA: Not enrolled</span>`,
-		`<input type="checkbox" name="mfa_required" value="on"> Require 2FA`,
+		// The requirement lives in Settings now, beside the reset, and the
+		// session count sits in the Settings header next to the created date.
+		`<strong>Two-factor sign-in</strong>`, `name="action" value="set-mfa-required"`, `name="required" value="on"`,
+		`aria-label="Require two-factor: bob@example.com"`,
 		`<strong>Reset two-factor</strong>`, `No authenticator is set up (Not enrolled).`,
+		`<span class="dot">&middot;</span> 1 active session</p>`,
 		`name="revision" value="0"`,
+		// Batch controls.
+		`id="batch-form" class="batch"`, `<option value="signout">Sign out everywhere</option>`, `<option value="require-mfa">Require two-factor</option>`,
+		`name="emails" value="bob@example.com" form="batch-form"`, `data-select-all`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("console lacks %q:\n%s", want, body)
 		}
 	}
+	for _, gone := range []string{`name="mfa_required"`, `Require 2FA`, `<th class="num">Sessions</th>`} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("console still has %q", gone)
+		}
+	}
 	_ = st
 }
 
-func TestPolicyChangeSignsOutTheUnenrolledActorWithANotice(t *testing.T) {
+// An administrator without an authenticator cannot make sensitive changes:
+// the console sends them to set one up, and nothing is written.
+func TestUnenrolledAdministratorIsSentToEnrollBeforeSensitiveChanges(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
-	// alice is fresh (just signed in) but has no factor: choosing "admins"
-	// requires one of her, so she is signed out with an explanation.
-	resp, _ := alice.post(url.Values{"action": {"set-policy"}, "mode": {"admins"}, "revision": {"0"}})
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?notice=mfa_required" {
-		t.Fatalf("set admins as unenrolled admin: %d %q", resp.StatusCode, resp.Header.Get("Location"))
-	}
-	if _, page := (&browser{t: t, base: ts.URL, cookies: map[string]*http.Cookie{}}).get("/?notice=mfa_required"); !strings.Contains(page, "Two-factor sign-in required.") {
-		t.Fatal("notice text missing")
+	bobSession := loginAdmin(t, ts, cfg, "bob@example.com", plain)
+	for _, form := range []url.Values{
+		{"action": {"set-policy"}, "mode": {"admins"}, "revision": {"0"}},
+		{"action": {"disable"}, "email": {"bob@example.com"}},
+		{"action": {"reset-password"}, "email": {"bob@example.com"}},
+		{"action": {"revoke-sessions"}, "email": {"bob@example.com"}},
+		{"action": {"set-mfa-required"}, "email": {"bob@example.com"}, "required": {"on"}},
+		{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"fleet"}, "admin": {"on"}},
+		{"action": {"create"}, "email": {"eve@example.com"}, "admin": {"on"}},
+		{"action": {"batch"}, "op": {"signout"}, "emails": {"bob@example.com"}},
+		{"action": {"disable-app"}, "app": {"fleet"}},
+	} {
+		resp, page := alice.post(form)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Set up two-factor sign-in first.") || !strings.Contains(page, `href="/account/security?return_to=%2Fadmin"`) || !strings.Contains(page, "Set up two-factor sign-in on your own account before") {
+			t.Fatalf("%v by an unenrolled admin: %d\n%s", form, resp.StatusCode, page)
+		}
 	}
 	policy, _ := st.MFAPolicy(context.Background())
-	if policy.Mode != mfa.ModeAdmins {
-		t.Fatalf("policy = %s", policy.Mode)
+	bob, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com")
+	if policy.Mode != mfa.ModeOptional || bob.DisabledAt != nil || bob.MFARequired || bob.IsAdmin || bob.MustChangePassword {
+		t.Fatalf("something was written: policy=%s bob=%+v", policy.Mode, bob)
 	}
-	// Her next sign-in goes straight to enrolment; bob is untouched.
-	b := newBrowser(t, ts)
-	if resp, _ := b.login("alice@example.com", plain); resp.Header.Get("Location") != "/login/enroll" {
-		t.Fatalf("alice after policy: %q", resp.Header.Get("Location"))
+	if resp, _ := bobSession.get("/account"); resp.StatusCode != http.StatusOK {
+		t.Fatal("bob was signed out by a refused action")
 	}
-	bob := newBrowser(t, ts)
-	if resp, _ := bob.login("bob@example.com", plain); resp.Header.Get("Location") != "/account" {
-		t.Fatalf("bob after admins policy: %q", resp.Header.Get("Location"))
+	if _, err := st.PasswordAccountByEmail(context.Background(), "eve@example.com"); err == nil {
+		t.Fatal("an administrator account was created by a refused action")
+	}
+	if app, _ := st.ApplicationByID(context.Background(), "fleet"); app.DisabledAt != nil {
+		t.Fatal("application disabled by a refused action")
+	}
+	// Non-sensitive work is still open to them: tagging, application access,
+	// creating a plain account, and signing themself out.
+	if _, page := alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {"Ops"}}); !strings.Contains(page, "bob@example.com is tagged Ops.") {
+		t.Fatalf("team by unenrolled admin:\n%s", page)
+	}
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {"Trading"}, "emails": {"bob@example.com"}}); !strings.Contains(page, "Tagged Trading: bob@example.com (1).") {
+		t.Fatalf("batch team by unenrolled admin:\n%s", page)
+	}
+	if _, page := alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}}); !strings.Contains(page, "added explorer") {
+		t.Fatalf("access by unenrolled admin:\n%s", page)
+	}
+	if _, page := alice.post(url.Values{"action": {"create"}, "email": {"eve@example.com"}}); !strings.Contains(page, "Created eve@example.com") {
+		t.Fatalf("plain create by unenrolled admin:\n%s", page)
 	}
 }
 
@@ -101,12 +139,15 @@ func TestPolicyRequireAndResetFromTheConsole(t *testing.T) {
 	if resp, _ := bobBrowser.login("bob@example.com", plain); resp.Header.Get("Location") != "/login/enroll" {
 		t.Fatalf("bob after everyone: %q", resp.Header.Get("Location"))
 	}
-	// Back to optional; require bob individually from Access.
+	// Back to optional; require bob individually from Settings.
 	if _, page := post(url.Values{"action": {"set-policy"}, "mode": {"optional"}, "revision": {"1"}}); !strings.Contains(page, "Two-factor policy is now optional.") {
 		t.Fatalf("set optional:\n%s", page)
 	}
-	if _, page := post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"fleet"}, "mfa_required": {"on"}}); !strings.Contains(page, "Two-factor sign-in is now required for them. They were signed out") || !strings.Contains(page, `2FA: Enrollment required`) {
+	if _, page := post(url.Values{"action": {"set-mfa-required"}, "email": {"bob@example.com"}, "required": {"on"}}); !strings.Contains(page, "Two-factor sign-in is now required for bob@example.com. They were signed out") || !strings.Contains(page, `2FA: Enrollment required`) || !strings.Contains(page, `aria-label="Stop requiring two-factor: bob@example.com"`) {
 		t.Fatalf("require bob:\n%s", page)
+	}
+	if _, page := post(url.Values{"action": {"set-mfa-required"}, "email": {"bob@example.com"}, "required": {"on"}}); !strings.Contains(page, "No change: two-factor sign-in is already required for bob@example.com.") {
+		t.Fatalf("require bob again:\n%s", page)
 	}
 	bob, _ := st.PasswordAccountByEmail(ctx, "bob@example.com")
 	if !bob.MFARequired {
@@ -116,7 +157,7 @@ func TestPolicyRequireAndResetFromTheConsole(t *testing.T) {
 	if _, page := post(url.Values{"action": {"reset-mfa"}, "email": {"bob@example.com"}, "reason": {"x"}}); !strings.Contains(page, "has no authenticator to reset") {
 		t.Fatalf("reset unenrolled bob:\n%s", page)
 	}
-	enrolViaStore(t, ts, st, cfg.MFAKeyring, "bob@example.com")
+	enrollViaStore(t, ts, st, cfg.MFAKeyring, "bob@example.com")
 	if _, page := post(url.Values{"action": {"reset-mfa"}, "email": {"bob@example.com"}}); !strings.Contains(page, "Give a short reason") {
 		t.Fatalf("reset without reason:\n%s", page)
 	}
@@ -146,34 +187,47 @@ func TestPolicyRequireAndResetFromTheConsole(t *testing.T) {
 func TestConsoleTwoFactorChangesNeedAFreshFactorProof(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	// An unenrolled administrator cannot reset anyone.
-	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
-	enrolViaStore(t, ts, st, cfg.MFAKeyring, "bob@example.com")
-	if _, page := alice.post(url.Values{"action": {"reset-mfa"}, "email": {"bob@example.com"}, "reason": {"x"}}); !strings.Contains(page, "Set up your own authenticator (Security) before resetting") {
+	unenrolled := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	enrollViaStore(t, ts, st, cfg.MFAKeyring, "bob@example.com")
+	if _, page := unenrolled.post(url.Values{"action": {"reset-mfa"}, "email": {"bob@example.com"}, "reason": {"x"}}); !strings.Contains(page, "Set up two-factor sign-in on your own account before resetting someone") {
 		t.Fatalf("unenrolled admin reset:\n%s", page)
 	}
-	// A sign-in older than the window (shrunk to nothing here) must step up.
+	// An enrolled administrator whose sign-in is older than the window
+	// (shrunk to nothing here) must step up, for every sensitive action.
+	secret, seeded := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	alice := newBrowser(t, ts)
+	alice.login("alice@example.com", plain)
+	if resp, _ := alice.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now())}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("alice factor login: %d", resp.StatusCode)
+	}
 	cfg.MFAReauthWindow = time.Nanosecond
-	if _, page := alice.post(url.Values{"action": {"set-policy"}, "mode": {"admins"}, "revision": {"0"}}); !strings.Contains(page, "Confirm it is you.") || !strings.Contains(page, `href="/account/security/verify?return_to=%2Fadmin"`) {
-		t.Fatalf("stale sign-in policy change:\n%s", page)
+	for _, form := range []url.Values{
+		{"action": {"set-policy"}, "mode": {"admins"}, "revision": {"0"}},
+		{"action": {"set-mfa-required"}, "email": {"bob@example.com"}, "required": {"on"}},
+		{"action": {"disable"}, "email": {"bob@example.com"}},
+		{"action": {"batch"}, "op": {"require-mfa"}, "emails": {"bob@example.com"}},
+	} {
+		if _, page := alice.post("/admin", form); !strings.Contains(page, "Confirm it is you.") || !strings.Contains(page, `href="/account/security/verify?return_to=%2Fadmin"`) {
+			t.Fatalf("stale sign-in %v:\n%s", form, page)
+		}
 	}
 	if p, _ := st.MFAPolicy(context.Background()); p.Mode != mfa.ModeOptional {
 		t.Fatal("policy changed without fresh verification")
 	}
-	if _, page := alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"fleet"}, "mfa_required": {"on"}}); !strings.Contains(page, "Confirm it is you.") {
-		t.Fatalf("stale sign-in require change:\n%s", page)
+	if b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); b.MFARequired || b.DisabledAt != nil {
+		t.Fatal("bob changed without fresh verification")
 	}
-	if b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); b.MFARequired {
-		t.Fatal("requirement applied without fresh verification")
-	}
-	// The step-up page returns to the console when asked to.
-	b := &browser{t: t, base: ts.URL, cookies: map[string]*http.Cookie{cfg.PasswordCookieName: alice.session, "auth_csrf": alice.csrf}}
+	// The step-up page (password and code) returns to the console when
+	// asked to, and the change then goes through.
 	cfg.MFAReauthWindow = 0
-	resp, _ := b.post("/account/security/verify", url.Values{"return_to": {"/admin"}, "password": {plain}})
+	resp, _ := alice.post("/account/security/verify", url.Values{"return_to": {"/admin"}, "password": {plain}, "code": {codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))}})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/admin" {
 		t.Fatalf("step-up return: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
+	if _, page := alice.post("/admin", url.Values{"action": {"disable"}, "email": {"bob@example.com"}}); !strings.Contains(page, "Disabled bob@example.com") {
+		t.Fatalf("disable after step-up:\n%s", page)
+	}
 	// A recovery-code sign-in is not a TOTP proof for an enrolled admin.
-	_, seeded := enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	rc := newBrowser(t, ts)
 	rc.login("alice@example.com", plain)
 	rc.post("/login/verify", url.Values{"recovery_code": {seeded[0]}})
@@ -223,21 +277,135 @@ func TestConsoleRefusesWhatWouldLockPeopleOut(t *testing.T) {
 	if bob.IsAdmin || bob.MFARequired {
 		t.Fatalf("partial write after a refused Access save: admin=%v required=%v", bob.IsAdmin, bob.MFARequired)
 	}
-	// Without a key on the server nothing can be required of anyone.
+	// Without a key on the server nothing sensitive can be done from the
+	// console at all (the CLI on the box remains).
 	ring := cfg.MFAKeyring
 	cfg.MFAKeyring = nil
-	if _, page := alice.post("/admin", url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"fleet"}, "mfa_required": {"on"}}); !strings.Contains(page, "AUTH_MFA_KEY is unset") {
+	if _, page := alice.post("/admin", url.Values{"action": {"set-mfa-required"}, "email": {"bob@example.com"}, "required": {"on"}}); !strings.Contains(page, "AUTH_MFA_KEY is unset") {
 		t.Fatalf("require without key:\n%s", page)
 	}
 	if _, page := alice.post("/admin", url.Values{"action": {"set-policy"}, "mode": {"everyone"}, "revision": {"0"}}); !strings.Contains(page, "AUTH_MFA_KEY is unset") {
 		t.Fatalf("policy without key:\n%s", page)
 	}
-	if _, page := alice.get("/admin"); !strings.Contains(page, `<input type="checkbox" disabled> Require 2FA`) {
-		t.Fatalf("Require pill not locked without a key:\n%s", page)
+	if _, page := alice.get("/admin"); !strings.Contains(page, `Not set up on this server (AUTH_MFA_KEY).`) || strings.Contains(page, `value="set-mfa-required"`) {
+		t.Fatalf("Settings still offers Require without a key:\n%s", page)
 	}
 	cfg.MFAKeyring = ring
 	// Saving the current policy again changes nothing (revision stays 0).
 	if _, page := alice.post("/admin", url.Values{"action": {"set-policy"}, "mode": {"optional"}, "revision": {"0"}}); !strings.Contains(page, `name="revision" value="0"`) {
 		t.Fatalf("same-mode save bumped the revision:\n%s", page)
+	}
+}
+
+// The batch bar applies one change to every ticked account and reports what
+// it skipped: tagging needs only a signed-in administrator, signing out and
+// two-factor requirements need the administrator's fresh code.
+func TestBatchActionsOnSelectedAccounts(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	if _, err := st.CreatePasswordAccount(ctx, "carol@example.com", mustHash(t, plain), false, now); err != nil {
+		t.Fatal(err)
+	}
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
+	bobSession := loginAdmin(t, ts, cfg, "bob@example.com", plain)
+	carolSession := loginAdmin(t, ts, cfg, "carol@example.com", plain)
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}}); !strings.Contains(page, "Select at least one account first") {
+		t.Fatalf("batch without a selection:\n%s", page)
+	}
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {"Trading"}, "emails": {"bob@example.com", "carol@example.com", "ghost@example.com"}}); !strings.Contains(page, "Tagged Trading: bob@example.com, carol@example.com (2). Skipped: ghost@example.com (no such account).") {
+		t.Fatalf("batch team:\n%s", page)
+	}
+	for _, e := range []string{"bob@example.com", "carol@example.com"} {
+		if a, _ := st.PasswordAccountByEmail(ctx, e); a.Team != "Trading" {
+			t.Fatalf("%s team = %q", e, a.Team)
+		}
+	}
+	// Sign out: bob and carol lose their sessions; alice is skipped.
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"signout"}, "emails": {"bob@example.com", "carol@example.com", "alice@example.com"}}); !strings.Contains(page, "Signed out everywhere: bob@example.com, carol@example.com (2). Skipped: Alice@Example.com (you; use your own row to sign yourself out).") {
+		t.Fatalf("batch sign out:\n%s", page)
+	}
+	if resp, _ := bobSession.get("/account"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatal("bob's session survived the batch sign-out")
+	}
+	if resp, _ := carolSession.get("/account"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatal("carol's session survived the batch sign-out")
+	}
+	if resp, _ := alice.get("/admin"); resp.StatusCode != http.StatusOK {
+		t.Fatal("alice was signed out by her own batch")
+	}
+	// Require two-factor of both; requiring again is a no-op per account.
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"require-mfa"}, "emails": {"bob@example.com", "carol@example.com"}}); !strings.Contains(page, "Two-factor sign-in now required (unenrolled accounts were signed out and set up an authenticator at their next sign-in): bob@example.com, carol@example.com (2).") {
+		t.Fatalf("batch require:\n%s", page)
+	}
+	for _, e := range []string{"bob@example.com", "carol@example.com"} {
+		if a, _ := st.PasswordAccountByEmail(ctx, e); !a.MFARequired {
+			t.Fatalf("%s not required", e)
+		}
+	}
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"require-mfa"}, "emails": {"bob@example.com"}}); !strings.Contains(page, "Nothing changed. Skipped: bob@example.com (no change).") {
+		t.Fatalf("batch require again:\n%s", page)
+	}
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"unrequire-mfa"}, "emails": {"bob@example.com", "carol@example.com"}}); !strings.Contains(page, "Two-factor sign-in no longer required: bob@example.com, carol@example.com (2).") {
+		t.Fatalf("batch unrequire:\n%s", page)
+	}
+	if a, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); a.MFARequired {
+		t.Fatal("bob still required")
+	}
+	// Every account gets its own audit trail entry.
+	bob, _ := st.PasswordAccountByEmail(ctx, "bob@example.com")
+	events, _ := st.RecentAuditEvents(ctx, bob.ID, 20)
+	var types []string
+	for _, e := range events {
+		if strings.HasPrefix(e.EventType, "admin.") {
+			types = append(types, e.EventType)
+		}
+	}
+	joined := strings.Join(types, " ")
+	for _, want := range []string{"admin.team_set", "admin.sessions_revoked", "admin.mfa_required_set", "admin.mfa_required_cleared"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("bob's audit lacks %s: %v", want, types)
+		}
+	}
+	// An unknown operation or an oversized selection is not a console request.
+	if resp, _ := alice.post(url.Values{"action": {"batch"}, "op": {"delete"}, "emails": {"bob@example.com"}}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown batch op: %d", resp.StatusCode)
+	}
+}
+
+// "Sign yourself out" is exempt from the factor gate, and "yourself" is
+// decided by account identity: two different addresses that compare equal
+// under Unicode case folding (final and medial sigma) must not let an
+// administrator sign the other one out without their code.
+func TestSelfSignOutExemptionIsByIdentityNotCaseFolding(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	admin, victim := "sig\u03c3@example.com", "sig\u03c2@example.com"
+	// The two must compare equal under case folding yet be distinct store
+	// keys (the store lowercases; it does not fold).
+	lowerAdmin, lowerVictim := strings.ToLower(admin), strings.ToLower(victim)
+	if !strings.EqualFold(admin, victim) || lowerAdmin == lowerVictim {
+		t.Fatalf("fixture: addresses must fold equal but lowercase distinct")
+	}
+	for _, e := range []string{admin, victim} {
+		if _, err := st.CreatePasswordAccount(ctx, e, mustHash(t, plain), false, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SetAccountAdmin(ctx, admin, true, now); err != nil {
+		t.Fatal(err)
+	}
+	attacker := loginAdmin(t, ts, cfg, admin, plain) // unenrolled: no sensitive action allowed
+	victimSession := loginAdmin(t, ts, cfg, victim, plain)
+	if _, page := attacker.post(url.Values{"action": {"revoke-sessions"}, "email": {victim}}); !strings.Contains(page, "Set up two-factor sign-in first.") {
+		t.Fatalf("case-fold-equal address bypassed the factor gate:\n%s", page)
+	}
+	if resp, _ := victimSession.get("/account"); resp.StatusCode != http.StatusOK {
+		t.Fatal("the other account was signed out without the administrator's factor")
+	}
+	// Signing yourself out still needs no factor.
+	if resp, _ := attacker.post(url.Values{"action": {"revoke-sessions"}, "email": {admin}}); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?notice=signed_out" {
+		t.Fatalf("own sign-out: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 }

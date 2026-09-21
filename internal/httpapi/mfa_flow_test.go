@@ -123,9 +123,9 @@ func codeFor(t *testing.T, secret []byte, at time.Time) string {
 	return code
 }
 
-// enrolViaStore gives an account a factor with a known secret, the way the
+// enrollViaStore gives an account a factor with a known secret, the way the
 // UI would, without driving the pages (for tests about what comes after).
-func enrolViaStore(t *testing.T, ts *httptest.Server, st *store.Store, ring *mfa.Keyring, email string) ([]byte, []string) {
+func enrollViaStore(t *testing.T, ts *httptest.Server, st *store.Store, ring *mfa.Keyring, email string) ([]byte, []string) {
 	t.Helper()
 	ctx := context.Background()
 	a, err := st.PasswordAccountByEmail(ctx, email)
@@ -157,7 +157,7 @@ func enrolViaStore(t *testing.T, ts *httptest.Server, st *store.Store, ring *mfa
 	return secret, codes
 }
 
-func TestEnrolFromSecurityPageThenLoginNeedsTheCode(t *testing.T) {
+func TestEnrollFromSecurityPageThenLoginNeedsTheCode(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	grantAccess(t, st, "alice@example.com", "fleet")
 	alice := newBrowser(t, ts)
@@ -174,7 +174,7 @@ func TestEnrolFromSecurityPageThenLoginNeedsTheCode(t *testing.T) {
 		t.Fatalf("start: %d\n%s", resp.StatusCode, page)
 	}
 	if resp.Header.Get("Cache-Control") != "no-store" {
-		t.Fatalf("enrolment page Cache-Control = %q", resp.Header.Get("Cache-Control"))
+		t.Fatalf("enrollment page Cache-Control = %q", resp.Header.Get("Cache-Control"))
 	}
 	secret := extractSecret(t, page)
 	// Wrong code: still pending, page re-rendered with the same key.
@@ -189,10 +189,10 @@ func TestEnrolFromSecurityPageThenLoginNeedsTheCode(t *testing.T) {
 	codes := extractRecoveryCodes(t, page)
 	// The enrolling session survives, upgraded.
 	if resp, page := alice.get("/account/security"); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Enabled") || !strings.Contains(page, "10 recovery codes left") {
-		t.Fatalf("after enrolment: %d\n%s", resp.StatusCode, page)
+		t.Fatalf("after enrollment: %d\n%s", resp.StatusCode, page)
 	}
 	if _, me := alice.get("/me"); !strings.Contains(me, `"amr":["pwd","otp"]`) {
-		t.Fatalf("/me after enrolment: %s", me)
+		t.Fatalf("/me after enrollment: %s", me)
 	}
 
 	// A new browser: the password alone no longer signs in.
@@ -258,7 +258,7 @@ func TestEnrolFromSecurityPageThenLoginNeedsTheCode(t *testing.T) {
 	}
 }
 
-func TestRequiredPolicyForcesEnrolmentDuringLogin(t *testing.T) {
+func TestRequiredPolicyForcesEnrollmentDuringLogin(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	if _, _, err := st.SetMFAPolicy(context.Background(), mfa.ModeAdmins, "test", time.Now().Unix()); err != nil {
 		t.Fatal(err)
@@ -268,7 +268,7 @@ func TestRequiredPolicyForcesEnrolmentDuringLogin(t *testing.T) {
 	if resp, _ := bob.login("bob@example.com", plain); resp.Header.Get("Location") != "/account" || !bob.has(cfg.PasswordCookieName) {
 		t.Fatalf("non-admin under admins policy: %q", resp.Header.Get("Location"))
 	}
-	// alice must enrol before any session exists.
+	// alice must enroll before any session exists.
 	alice := newBrowser(t, ts)
 	resp, _ := alice.login("alice@example.com", plain)
 	if resp.Header.Get("Location") != "/login/enroll" || alice.has(cfg.PasswordCookieName) {
@@ -281,11 +281,11 @@ func TestRequiredPolicyForcesEnrolmentDuringLogin(t *testing.T) {
 	silent, _ := anon.Get(ts.URL + "/authorize?" + q.Encode())
 	_ = silent.Body.Close()
 	if !strings.Contains(silent.Header.Get("Location"), "error=login_required") {
-		t.Fatalf("prompt=none mid-enrolment: %q", silent.Header.Get("Location"))
+		t.Fatalf("prompt=none mid-enrollment: %q", silent.Header.Get("Location"))
 	}
 	resp, page := alice.get("/login/enroll")
 	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Your account requires a second step") {
-		t.Fatalf("enrol page: %d\n%s", resp.StatusCode, page)
+		t.Fatalf("enroll page: %d\n%s", resp.StatusCode, page)
 	}
 	secret := extractSecret(t, page)
 	// Reloading keeps the same pending secret (the QR does not change under
@@ -295,11 +295,11 @@ func TestRequiredPolicyForcesEnrolmentDuringLogin(t *testing.T) {
 	}
 	resp, page = alice.post("/login/enroll", url.Values{"code": {codeFor(t, secret, time.Now())}})
 	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Authenticator set up") || !alice.has(cfg.PasswordCookieName) || alice.has("auth_login") {
-		t.Fatalf("enrol confirm: %d session=%v tx=%v\n%s", resp.StatusCode, alice.has(cfg.PasswordCookieName), alice.has("auth_login"), page)
+		t.Fatalf("enroll confirm: %d session=%v tx=%v\n%s", resp.StatusCode, alice.has(cfg.PasswordCookieName), alice.has("auth_login"), page)
 	}
 	extractRecoveryCodes(t, page)
 	if resp, _ := alice.get("/admin"); resp.StatusCode != http.StatusOK {
-		t.Fatalf("/admin after enrolment = %d", resp.StatusCode)
+		t.Fatalf("/admin after enrollment = %d", resp.StatusCode)
 	}
 	if _, me := alice.get("/me"); !strings.Contains(me, `"amr":["pwd","otp"]`) {
 		t.Fatalf("/me: %s", me)
@@ -317,7 +317,7 @@ func TestRequiredPolicyForcesEnrolmentDuringLogin(t *testing.T) {
 
 func TestForcedPasswordChangeRunsUnderTheLoginTransaction(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, true) // alice must change her password
-	secret, _ := enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	secret, _ := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	alice := newBrowser(t, ts)
 	resp, _ := alice.login("alice@example.com", plain)
 	if resp.Header.Get("Location") != "/login/verify" || alice.has(cfg.PasswordCookieName) {
@@ -357,7 +357,7 @@ func TestForcedPasswordChangeRunsUnderTheLoginTransaction(t *testing.T) {
 
 func TestFactorAttemptCapAbandonsTheLogin(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
-	_, _ = enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	_, _ = enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	alice := newBrowser(t, ts)
 	alice.login("alice@example.com", plain)
 	for i := 1; i <= 4; i++ {
@@ -384,7 +384,7 @@ func TestFactorAttemptCapAbandonsTheLogin(t *testing.T) {
 
 func TestSecurityPageStepUpDisableAndRegenerate(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
-	secret, seeded := enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	secret, seeded := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	alice := newBrowser(t, ts)
 	alice.login("alice@example.com", plain)
 	alice.post("/login/verify", url.Values{"recovery_code": {seeded[0]}})
@@ -458,7 +458,7 @@ func TestMagicModeHasNoSecondFactorRoutes(t *testing.T) {
 	_ = otpauthSecretRe
 }
 
-func TestEnrolmentAttemptCapCancelCSRFAndLogoutClearTheTransaction(t *testing.T) {
+func TestEnrollmentAttemptCapCancelCSRFAndLogoutClearTheTransaction(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	if _, _, err := st.SetMFAPolicy(context.Background(), mfa.ModeAdmins, "test", time.Now().Unix()); err != nil {
 		t.Fatal(err)
@@ -468,11 +468,11 @@ func TestEnrolmentAttemptCapCancelCSRFAndLogoutClearTheTransaction(t *testing.T)
 	alice.get("/login/enroll")
 	for i := 1; i <= 4; i++ {
 		if resp, page := alice.post("/login/enroll", url.Values{"code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not match") {
-			t.Fatalf("enrol attempt %d: %d", i, resp.StatusCode)
+			t.Fatalf("enroll attempt %d: %d", i, resp.StatusCode)
 		}
 	}
 	if resp, _ := alice.post("/login/enroll", url.Values{"code": {"000000"}}); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?err=mfa_locked" || alice.has("auth_login") {
-		t.Fatalf("fifth enrol failure: %d %q tx=%v", resp.StatusCode, resp.Header.Get("Location"), alice.has("auth_login"))
+		t.Fatalf("fifth enroll failure: %d %q tx=%v", resp.StatusCode, resp.Header.Get("Location"), alice.has("auth_login"))
 	}
 	// Cancel without a valid CSRF token changes nothing.
 	alice.login("alice@example.com", plain)
@@ -491,7 +491,7 @@ func TestEnrolmentAttemptCapCancelCSRFAndLogoutClearTheTransaction(t *testing.T)
 
 func TestStepUpCodeGuessesAreRateLimited(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
-	_, seeded := enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	_, seeded := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	alice := newBrowser(t, ts)
 	alice.login("alice@example.com", plain)
 	alice.post("/login/verify", url.Values{"recovery_code": {seeded[0]}})
@@ -539,12 +539,12 @@ func TestForcedChangeSessionForAnEnrolledAccountStartsOver(t *testing.T) {
 		t.Fatalf("after forced change: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	if resp, _ := alice.get("/account"); resp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("a session exists before enrolment: %d", resp.StatusCode)
+		t.Fatalf("a session exists before enrollment: %d", resp.StatusCode)
 	}
 	_, page := alice.get("/login/enroll")
 	secret := extractSecret(t, page)
 	if resp, _ := alice.post("/login/enroll", url.Values{"code": {codeFor(t, secret, time.Now())}}); resp.StatusCode != http.StatusOK || !alice.has(cfg.PasswordCookieName) {
-		t.Fatalf("enrol after forced change: %d session=%v", resp.StatusCode, alice.has(cfg.PasswordCookieName))
+		t.Fatalf("enroll after forced change: %d session=%v", resp.StatusCode, alice.has(cfg.PasswordCookieName))
 	}
 	if _, me := alice.get("/me"); !strings.Contains(me, `"amr":["pwd","otp"]`) {
 		t.Fatalf("/me: %s", me)
@@ -560,7 +560,7 @@ func TestEnrolledPasswordChangeKeepsTheSession(t *testing.T) {
 	if err := st.SetAccountAdmin(context.Background(), "alice@example.com", true, time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
-	secret, _ := enrolViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	secret, _ := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
 	laptop := newBrowser(t, ts)
 	laptop.login("alice@example.com", plain)
 	if resp, _ := laptop.post("/login/verify", url.Values{"code": {codeFor(t, secret, time.Now())}}); resp.StatusCode != http.StatusSeeOther || !laptop.has(cfg.PasswordCookieName) {
@@ -606,10 +606,10 @@ func TestEnrolledPasswordChangeKeepsTheSession(t *testing.T) {
 	}
 }
 
-// Confirming an enrolment from the Security page is a code check like any
+// Confirming an enrollment from the Security page is a code check like any
 // other: it is metered per account, and the eleventh wrong code is refused
 // before it is compared.
-func TestSecurityPageEnrolmentConfirmIsRateLimited(t *testing.T) {
+func TestSecurityPageEnrollmentConfirmIsRateLimited(t *testing.T) {
 	ts, _, cfg, plain := newPasswordTestServer(t, false)
 	alice := newBrowser(t, ts)
 	if resp, _ := alice.login("alice@example.com", plain); !alice.has(cfg.PasswordCookieName) {

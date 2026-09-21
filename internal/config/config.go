@@ -383,7 +383,7 @@ func (c *Config) Validate() error {
 		if c.MFAIssuer == "" {
 			c.MFAIssuer = c.BrandName
 		}
-		// Only a deployment that can enrol factors needs a usable issuer
+		// Only a deployment that can enroll factors needs a usable issuer
 		// label; a brand with a colon must not stop a box that has no key.
 		if err := mfa.ValidateIssuer(c.MFAIssuer); err != nil && c.MFAKeyring != nil {
 			return fmt.Errorf("AUTH_MFA_ISSUER (or AUTH_BRAND_NAME) %q: must be non-empty and contain no ':'", c.MFAIssuer)

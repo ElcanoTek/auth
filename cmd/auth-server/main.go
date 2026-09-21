@@ -219,7 +219,7 @@ func pickSender(cfg *config.Config) email.Sender {
 
 // mfaKeyStartCheck refuses to serve a password-mode database that needs
 // AUTH_MFA_KEY without it: enrolled factors could not be verified, and
-// accounts a policy requires to enrol could not. That is a misconfiguration,
+// accounts a policy requires to enroll could not. That is a misconfiguration,
 // not a downgrade, and running would sign people out into a flow that
 // cannot complete (an administrators policy would lock the console).
 func mfaKeyStartCheck(cfg *config.Config, st *store.Store) error {

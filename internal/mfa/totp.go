@@ -7,7 +7,7 @@
 // The TOTP parameters are fixed to the values every authenticator app
 // implements identically: SHA-1, six digits, a thirty-second period and a
 // 160-bit secret. They are constants, not settings, because an operator who
-// changes them silently breaks enrolment for some apps and gains nothing.
+// changes them silently breaks enrollment for some apps and gains nothing.
 package mfa
 
 import (
@@ -71,7 +71,7 @@ func ValidateIssuer(issuer string) error {
 }
 
 // Key builds the provisioning key (otpauth:// URI and QR source) for one
-// enrolment. The library escapes the label and parameters; we only supply
+// enrollment. The library escapes the label and parameters; we only supply
 // the fixed parameters explicitly so the contract is visible here.
 func Key(issuer, account string, secret []byte) (*otp.Key, error) {
 	if err := ValidateIssuer(issuer); err != nil {

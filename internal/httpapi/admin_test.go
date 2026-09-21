@@ -68,6 +68,19 @@ func loginAdmin(t *testing.T, ts *httptest.Server, cfg *config.Config, email, pl
 	return &adminClient{t: t, ts: ts, session: session, csrf: csrf}
 }
 
+// loginAdminWithFactor enrolls the account through the store and signs in
+// with password and code, the way an administrator must before sensitive
+// console actions.
+func loginAdminWithFactor(t *testing.T, ts *httptest.Server, st *store.Store, cfg *config.Config, email, plain string) *adminClient {
+	t.Helper()
+	b, _ := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, email, plain)
+	session, csrf := b.cookies[cfg.PasswordCookieName], b.cookies["auth_csrf"]
+	if session == nil || csrf == nil {
+		t.Fatalf("factor login as %s did not issue session + CSRF cookies", email)
+	}
+	return &adminClient{t: t, ts: ts, session: session, csrf: csrf}
+}
+
 func (c *adminClient) get(path string) (*http.Response, string) {
 	c.t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, c.ts.URL+path, nil)
@@ -248,7 +261,7 @@ func TestAdminCreatesAccountWithAccessAndOneTimePassword(t *testing.T) {
 func TestAdminResetRevokeDisableEnableBob(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	ctx := context.Background()
-	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	bobSession := loginAdmin(t, ts, cfg, "bob@example.com", plain)
 	bob, _ := st.PasswordAccountByEmail(ctx, "bob@example.com")
 
@@ -318,7 +331,7 @@ func TestAdminResetRevokeDisableEnableBob(t *testing.T) {
 
 func TestAdminGuardsSelfAndLastAdministrator(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
-	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	for action, want := range map[string]string{
 		"reset-password": "Use Change password for your own account.",
 		"disable":        "You cannot disable your own account.",
@@ -339,7 +352,7 @@ func TestAdminGuardsSelfAndLastAdministrator(t *testing.T) {
 	if _, body := alice.post(url.Values{"action": {"grant-admin"}, "email": {"bob@example.com"}}); !strings.Contains(body, "bob@example.com can now open this console.") {
 		t.Fatalf("grant:\n%s", body)
 	}
-	bob := loginAdmin(t, ts, cfg, "bob@example.com", plain)
+	bob := loginAdminWithFactor(t, ts, st, cfg, "bob@example.com", plain)
 	if resp, _ := bob.get("/admin"); resp.StatusCode != http.StatusOK {
 		t.Fatalf("bob cannot open the console after grant: %d", resp.StatusCode)
 	}
@@ -409,7 +422,7 @@ func TestAdminSetsAccessAndSignsOutOfRemovedApp(t *testing.T) {
 func TestAdminApplicationTabToggleAndSignIns(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	ctx := context.Background()
-	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	// Bob signs in to fleet through the real flow so the tab has history.
 	grantAccess(t, st, "bob@example.com", "fleet")
 	_, bobSession, _ := passwordLogin(t, ts, cfg, "bob@example.com", plain)
@@ -679,7 +692,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 // when the flag change is refused.
 func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
-	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	_, body := alice.get("/admin")
 	if !strings.Contains(body, `<label class="seg-opt locked"><input type="checkbox" checked disabled> Admin</label><input type="hidden" name="admin" value="on">`) {
 		t.Fatalf("own row does not lock the admin pill:\n%s", body)
@@ -727,7 +740,7 @@ func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
 	}
 	// Last admin: bob (admin again) tries to remove alice while alice is the only other... make alice the last.
 	alice.post(url.Values{"action": {"set-access"}, "email": {"bob@example.com"}, "apps": {"explorer"}, "admin": {"on"}})
-	bobClient := loginAdmin(t, ts, cfg, "bob@example.com", plain)
+	bobClient := loginAdminWithFactor(t, ts, st, cfg, "bob@example.com", plain)
 	bobClient.post(url.Values{"action": {"set-access"}, "email": {"alice@example.com"}, "apps": {}})
 	// alice demoted by bob (allowed: bob remains). Now bob is last; alice cannot open the console any more,
 	// and bob removing himself is refused as self.
@@ -771,7 +784,7 @@ func TestAdminOwnRowSignsOutEverywhereAndShowsCreated(t *testing.T) {
 // section, and a member created without it is a plain account.
 func TestAddUserAdminPill(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
-	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	_, body := alice.post(url.Values{"action": {"create"}, "email": {"hana@example.com"}, "apps": {"fleet"}, "admin": {"on"}})
 	if !strings.Contains(body, "Created hana@example.com") {
 		t.Fatalf("create:\n%s", body)

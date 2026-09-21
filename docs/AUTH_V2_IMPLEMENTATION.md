@@ -181,7 +181,7 @@ the same shape, and any future service should too:
 - Branding from a client bundle (`AUTH_CLIENT_CONFIG_DIR`).
 - `prompt=none` silent sign-in and RP-initiated `GET /logout?client_id`.
 
-- Authenticator-app (TOTP) two-factor sign-in: voluntary enrolment,
+- Authenticator-app (TOTP) two-factor sign-in: voluntary enrollment,
   deployment policy (Optional / Required for administrators / Required for
   everyone), per-account requirement, recovery codes, administrator and CLI
   reset, sealed secrets with key rotation, truthful `amr`/`acr`.
