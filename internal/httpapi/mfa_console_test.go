@@ -372,3 +372,40 @@ func TestBatchActionsOnSelectedAccounts(t *testing.T) {
 		t.Fatalf("unknown batch op: %d", resp.StatusCode)
 	}
 }
+
+// "Sign yourself out" is exempt from the factor gate, and "yourself" is
+// decided by account identity: two different addresses that compare equal
+// under Unicode case folding (final and medial sigma) must not let an
+// administrator sign the other one out without their code.
+func TestSelfSignOutExemptionIsByIdentityNotCaseFolding(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	admin, victim := "sig\u03c3@example.com", "sig\u03c2@example.com"
+	// The two must compare equal under case folding yet be distinct store
+	// keys (the store lowercases; it does not fold).
+	lowerAdmin, lowerVictim := strings.ToLower(admin), strings.ToLower(victim)
+	if !strings.EqualFold(admin, victim) || lowerAdmin == lowerVictim {
+		t.Fatalf("fixture: addresses must fold equal but lowercase distinct")
+	}
+	for _, e := range []string{admin, victim} {
+		if _, err := st.CreatePasswordAccount(ctx, e, mustHash(t, plain), false, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SetAccountAdmin(ctx, admin, true, now); err != nil {
+		t.Fatal(err)
+	}
+	attacker := loginAdmin(t, ts, cfg, admin, plain) // unenrolled: no sensitive action allowed
+	victimSession := loginAdmin(t, ts, cfg, victim, plain)
+	if _, page := attacker.post(url.Values{"action": {"revoke-sessions"}, "email": {victim}}); !strings.Contains(page, "Set up two-factor sign-in first.") {
+		t.Fatalf("case-fold-equal address bypassed the factor gate:\n%s", page)
+	}
+	if resp, _ := victimSession.get("/account"); resp.StatusCode != http.StatusOK {
+		t.Fatal("the other account was signed out without the administrator's factor")
+	}
+	// Signing yourself out still needs no factor.
+	if resp, _ := attacker.post(url.Values{"action": {"revoke-sessions"}, "email": {admin}}); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?notice=signed_out" {
+		t.Fatalf("own sign-out: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}

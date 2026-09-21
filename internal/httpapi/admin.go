@@ -260,14 +260,14 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		}
 		return res, true
 	}
-	if what, sensitive := sensitiveActions[action]; sensitive {
-		// Signing yourself out is not a takeover of anyone; every other
-		// sensitive action, and any other target, needs the factor.
-		selfSignOut := action == "revoke-sessions" && strings.EqualFold(strings.TrimSpace(r.FormValue("email")), actor.Email)
-		if !selfSignOut {
-			if r, ok := gate(what); !ok {
-				return r
-			}
+	if what, sensitive := sensitiveActions[action]; sensitive && action != "revoke-sessions" {
+		// revoke-sessions is gated below, once the target is resolved by
+		// account ID: signing yourself out is not a takeover of anyone, and
+		// "yourself" must be decided by identity, not by comparing the typed
+		// address (two distinct addresses can compare equal under case
+		// folding).
+		if r, ok := gate(what); !ok {
+			return r
 		}
 	}
 	// Attribution is written after the mutation commits, on a context that
@@ -479,6 +479,12 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	case "revoke-sessions":
 		// Allowed on one's own row too: it is "sign out everywhere", which
 		// ends this session as well, so the browser goes to the sign-in page.
+		// Anyone else's sessions are a sensitive change.
+		if !self {
+			if r, ok := gate(sensitiveActions[action]); !ok {
+				return r
+			}
+		}
 		n, err := s.store.RevokeAllAuthSessions(ctx, target.ID, now.Unix(), "admin_revoked")
 		if err != nil {
 			return res.failed("revoke sessions", err)
@@ -641,7 +647,6 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset), so nothing can be required of anyone yet."
 			return res
 		}
-		mfaChange := false
 		// An empty selection is a real instruction ("no applications"), not
 		// "leave as is": the popup always posts the full set.
 		apps := r.Form["apps"]
@@ -686,7 +691,6 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 				mfaNote = " Administrators must use two-factor sign-in here, so they were signed out and set up an authenticator at their next sign-in."
 			}
 		}
-		_ = mfaChange
 		added, removed := outcome.Added, outcome.Removed
 		switch {
 		case len(added) == 0 && len(removed) == 0:
@@ -745,6 +749,14 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 	policy := s.mfaPolicy(r)
 	var done, skipped []string
 	skip := func(email, why string) { skipped = append(skipped, email+" ("+why+")") }
+	// Each account commits on its own, so a failure part-way is reported
+	// with what already changed rather than as a bare error page: the
+	// administrator must not repeat sign-outs and audits blindly.
+	stopped := func(email, what string, err error) adminResult {
+		logUnlessCancelled("batch "+what, err)
+		res.Error = fmt.Sprintf("Stopped at %s: something went wrong. Already done before that: %s. Skipped: %s. Review the table before repeating.", email, orNone(done), orNone(skipped))
+		return res
+	}
 	for _, raw := range emails {
 		email, ok := validAdminEmail(raw)
 		if !ok {
@@ -756,12 +768,12 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 			continue
 		}
 		if err != nil {
-			return res.failed("batch lookup", err)
+			return stopped(email, "lookup", err)
 		}
 		switch op {
 		case "team":
 			if err := s.store.SetAccountTeam(ctx, target.Email, team, now.Unix()); err != nil {
-				return res.failed("batch team", err)
+				return stopped(target.Email, "team", err)
 			}
 			audit("admin.team_set", target.ID, "")
 			done = append(done, target.Email)
@@ -771,7 +783,7 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 				continue
 			}
 			if _, err := s.store.RevokeAllAuthSessions(ctx, target.ID, now.Unix(), "admin_revoked"); err != nil {
-				return res.failed("batch revoke", err)
+				return stopped(target.Email, "revoke", err)
 			}
 			audit("admin.sessions_revoked", target.ID, "")
 			done = append(done, target.Email)
@@ -792,10 +804,10 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 			if _, err := s.store.SetAccountMFARequiredBy(ctx, target.Email, want, actor.ID, proof, now.Unix()); err != nil {
 				if errors.Is(err, store.ErrActorNotFresh) {
 					res.NeedVerify = true
-					res.Error = "Confirm it is you before changing two-factor requirements."
+					res.Error = fmt.Sprintf("Confirm it is you before changing two-factor requirements. Already done: %s.", orNone(done))
 					return res
 				}
-				return res.failed("batch mfa required", err)
+				return stopped(target.Email, "mfa required", err)
 			}
 			if want {
 				audit("admin.mfa_required_set", target.ID, "")
@@ -998,6 +1010,14 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 	if err := s.render(w, "admin.html", data); err != nil {
 		log.Printf("render admin: %v", err)
 	}
+}
+
+// orNone joins a list for a notice, or says "none".
+func orNone(items []string) string {
+	if len(items) == 0 {
+		return "none"
+	}
+	return strings.Join(items, ", ")
 }
 
 // mfaModeDescription is the console's one-line explanation of each policy.
