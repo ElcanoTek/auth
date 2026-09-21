@@ -125,10 +125,13 @@ the new `update.sh` runs; see [Upgrading](#upgrading)):
 | `/var/cache/auth-build/` | `auth:auth` | `0700` | Go caches for the unprivileged build |
 | `/opt/auth-client/` (bundle checkout) | `root:root` | `go-w` | root pulls it with hooks disabled; a service-writable `.git/hooks` would run as root at the next pull |
 
-`AUTH_DATA_DIR` may stay at `/opt/auth/data` or point outside `/opt/auth`
-(then add that path to the unit's `ReadWritePaths` with a drop-in); any other
-path inside `/opt/auth` is refused, because the source sync and the
-ownership pass could not protect it.
+`AUTH_DATA_DIR` may stay at `/opt/auth/data` or point outside `/opt/auth`.
+An outside directory is never created or claimed by the installer (the
+setting comes from a file the service user could once write): it must
+already exist, owned by `auth`, under root-owned parents, and the unit needs
+a drop-in adding it to `ReadWritePaths`. Any other path inside `/opt/auth`
+is refused, because the source sync and the ownership pass could not
+protect it.
 
 Builds run as `auth` in a throwaway staging copy with those caches, and root
 installs the result. `auth user|domain|app|audit|mfa|keygen|pubkey` and
@@ -756,11 +759,16 @@ live outside the paths `update.sh` replaces.
 > the root-owned source checkout directly:
 >
 > ```bash
-> stat -c '%U %a' /opt/auth-src                    # must be root and not group/world-writable
-> cd /opt/auth-src && sudo git pull --ff-only
+> # every path in the checkout must be root's and unwritable by others
+> sudo find /opt/auth-src \( ! -user root -o -perm /022 \) | head   # must print nothing
+> cd /opt/auth-src && sudo git -c core.hooksPath=/dev/null pull --ff-only
 > sudo env AUTH_UPDATE_NO_PULL=1 bash scripts/update.sh
 > sudo auth env check                               # reports the layout
 > ```
+>
+> If the `find` prints anything, fix it first (`sudo chown -R root:root
+> /opt/auth-src && sudo chmod -R go-w /opt/auth-src`) or re-clone the
+> repository as root.
 >
 > The script verifies the checkout is root's alone before it sources
 > anything, migrates the tree (and a client bundle checkout, which is

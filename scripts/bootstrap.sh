@@ -160,13 +160,13 @@ require_trusted_checkout() {
   while :; do
     owner="$(stat -c '%U' "$p")" || die "cannot stat $p"
     mode="$(stat -c '%a' "$p")"
-    [[ "$owner" != "$APP_USER" ]] || die "$p is owned by the service user $APP_USER; run bootstrap from a root-owned checkout"
+    [[ "$owner" == "root" ]] || die "$p is owned by $owner; the source checkout and everything above it must be root's (chown -R root:root)"
     [[ "$((8#$mode & 8#022))" -eq 0 ]] || die "$p is writable by group or others; run bootstrap from a checkout only root can write"
     [[ "$p" == "/" ]] && break
     p="$(dirname "$p")"
   done
-  stray="$(find "$(readlink -f -- "$1")" \( -user "$APP_USER" -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null)"
-  [[ -z "$stray" ]] || die "$stray is owned by the service user or writable by group/others; chmod -R go-w the checkout first"
+  stray="$(find "$(readlink -f -- "$1")" \( ! -user root -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null)"
+  [[ -z "$stray" ]] || die "$stray is not root's or is writable by group/others; fix the checkout first (chown -R root:root $1 && chmod -R go-w $1)"
 }
 require_trusted_checkout "$SRC_DIR"
 # shellcheck disable=SC1091

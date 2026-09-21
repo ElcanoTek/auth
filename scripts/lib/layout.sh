@@ -59,7 +59,7 @@ layout_require_trusted_path() {
   while :; do
     owner="$(stat -c '%U' "$p")" || { layout_die "cannot stat $p"; return 1; }
     mode="$(stat -c '%a' "$p")"
-    [[ "$owner" != "$APP_USER" ]] || { layout_die "$p is owned by the service user $APP_USER; root must own it"; return 1; }
+    [[ "$owner" == "root" ]] || { layout_die "$p is owned by $owner; root must own it and everything above it"; return 1; }
     [[ "$((8#$mode & 8#022))" -eq 0 ]] || { layout_die "$p is writable by group or others"; return 1; }
     [[ "$p" == "/" ]] && break
     p="$(dirname "$p")"
@@ -74,9 +74,9 @@ layout_require_trusted_path() {
 layout_require_trusted() {
   local dir="$1" stray
   layout_require_trusted_path "$dir" || return 1
-  stray="$(find "$(readlink -f -- "$dir")" \( -user "$APP_USER" -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null)"
+  stray="$(find "$(readlink -f -- "$dir")" \( ! -user root -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null)"
   if [[ -n "$stray" ]]; then
-    layout_die "$stray is owned by the service user or writable by group/others; the source checkout must be root's alone" || return 1
+    layout_die "$stray is not root's or is writable by group/others; the source checkout must be root's alone (chown -R root:root, chmod -R go-w)" || return 1
   fi
   return 0
 }
@@ -86,6 +86,11 @@ layout_require_trusted() {
 # and the ownership pass prunes it; any other nested path would be deleted
 # by the sync or locked by the pass). A directory outside APP_DIR is fine
 # for the layout, but the unit's ReadWritePaths must name it.
+# An external path comes from .env.local, which the service user could
+# write under the previous layout, so it is never created or claimed here:
+# it must already exist as a real directory the service user owns, below
+# root-owned parents. Anything else (a system directory, a path the operator
+# has not prepared) is refused, and the operator prepares it by hand.
 layout_require_data_dir() {
   local app data
   app="$(readlink -m -- "$APP_DIR")"; data="$(readlink -m -- "$DATA_DIR")"
@@ -93,6 +98,9 @@ layout_require_data_dir() {
     "$app/data") return 0 ;;
     "$app"|"$app"/*) layout_die "AUTH_DATA_DIR=$DATA_DIR is inside $APP_DIR but is not $APP_DIR/data; only that path is supported inside the install" || return 1 ;;
   esac
+  [[ -d "$data" && ! -L "$DATA_DIR" ]] || { layout_die "AUTH_DATA_DIR=$DATA_DIR is outside $APP_DIR and does not exist as a real directory; create it as root (install -d -m 0700 -o $APP_USER -g $APP_USER $DATA_DIR) first"; return 1; }
+  [[ "$(stat -c '%U' "$data")" == "$APP_USER" ]] || { layout_die "AUTH_DATA_DIR=$DATA_DIR is outside $APP_DIR and is not owned by $APP_USER; the layout never claims a directory it did not create"; return 1; }
+  layout_require_trusted_path "$(dirname "$data")" || return 1
   return 0
 }
 
@@ -189,8 +197,13 @@ layout_apply() {
     chown root:"$APP_USER" "$ENV_FILE" || return 1
     chmod 0640 "$ENV_FILE" || return 1
   fi
+  layout_require_data_dir || return 1
   install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR" || return 1
-  chown -R -h "$APP_USER:$APP_USER" "$DATA_DIR" || return 1
+  # Reclaim the service's own files (a root-run CLI left root-owned WAL
+  # files under the previous layout) without following symlinks and without
+  # touching hard links: a file with more than one name may be a system file
+  # linked in from elsewhere, and its ownership is not this directory's.
+  find "$DATA_DIR" -xdev \( -type d -o \( -type f -links 1 \) \) ! -user "$APP_USER" -exec chown -h "$APP_USER:$APP_USER" {} + || return 1
   chmod 0700 "$DATA_DIR" || return 1
   layout_build_cache || return 1
 }
@@ -232,13 +245,51 @@ layout_bundle_migrate() {
       layout_require_trusted "${url#file://}" || return 1 ;;
     *) layout_die "the client bundle remote $url is not an https, ssh or root-owned local repository; re-clone it by hand into a root-owned directory"; return 1 ;;
   esac
+  # The old checkout's commit is read as data (HEAD and its ref file, never
+  # a git command in the untrusted repository) and the fresh clone is put
+  # back on it, so the running service keeps exactly the bundle it had and
+  # the update that follows treats the remote's tip as an ordinary pull
+  # with the usual rollback baseline. A commit the remote no longer has
+  # leaves the clone at the tip, with a warning.
+  local old_head
+  old_head="$(layout_git_head_as_data "$dir")"
   fresh="$(mktemp -d "${dir}.fresh.XXXXXX")" || return 1
   git -c core.hooksPath=/dev/null clone --quiet "$url" "$fresh/checkout" || { rm -rf "$fresh"; layout_die "could not re-clone the client bundle from its remote (does the box's git credential cover it?)"; return 1; }
+  if [[ -n "$old_head" ]]; then
+    if git -C "$fresh/checkout" -c core.hooksPath=/dev/null cat-file -e "$old_head^{commit}" 2>/dev/null; then
+      git -C "$fresh/checkout" -c core.hooksPath=/dev/null reset --hard --quiet "$old_head" || { rm -rf "$fresh"; return 1; }
+    else
+      printf 'layout: the previous bundle commit %s is not on the remote; the re-clone stays at the remote tip\n' "${old_head:0:12}" >&2
+    fi
+  fi
   mv "$dir" "${dir}.legacy-$(date +%Y%m%d%H%M%S)" || return 1
   mv "$fresh/checkout" "$dir" || return 1
   rmdir "$fresh" || true
   layout_bundle "$dir" || return 1
   printf 'layout: re-cloned the client bundle at %s (previous checkout kept beside it)\n' "$dir" >&2
+}
+
+# layout_git_head_as_data DIR prints the commit a checkout is on by reading
+# .git/HEAD and the ref it names as plain files (packed-refs included), so
+# no git command runs in a repository whose config cannot be trusted.
+# Prints nothing when it cannot tell.
+layout_git_head_as_data() {
+  local dir="$1" head ref line
+  head="$(head -c 200 "$dir/.git/HEAD" 2>/dev/null | tr -d '\n')" || return 0
+  case "$head" in
+    ref:*)
+      ref="${head#ref:}"; ref="${ref#"${ref%%[![:space:]]*}"}"
+      [[ "$ref" =~ ^refs/[A-Za-z0-9._/-]+$ ]] || return 0
+      if [[ -f "$dir/.git/$ref" ]]; then
+        line="$(head -c 40 "$dir/.git/$ref")"
+      elif [[ -f "$dir/.git/packed-refs" ]]; then
+        line="$(awk -v r="$ref" '$2 == r { print $1; exit }' "$dir/.git/packed-refs")"
+      fi
+      ;;
+    *) line="$head" ;;
+  esac
+  [[ "$line" =~ ^[0-9a-f]{40}$ ]] && printf '%s' "$line"
+  return 0
 }
 
 # layout_bundle DIR makes a client bundle checkout root-owned and readable:

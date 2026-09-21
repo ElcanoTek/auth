@@ -17,7 +17,7 @@
 #   sudo bash scripts/test/layout_test.sh
 
 # The A && B || C form and subshell-scoped variables are the harness idiom.
-# shellcheck disable=SC2015,SC2030,SC2031,SC2034,SC2012,SC2269,SC2016
+# shellcheck disable=SC2015,SC2030,SC2031,SC2034,SC2012,SC2269,SC2016,SC1091
 set -euo pipefail
 
 [[ $EUID -eq 0 ]] || { echo "run as root" >&2; exit 1; }
@@ -101,7 +101,12 @@ B="$T/bundle-remote"; git init -q --bare "$B"
 W="$T/bundle-work"; git clone -q "$B" "$W" 2>/dev/null
 ( cd "$W" && echo 'branding: {}' > manifest.yaml && git add . && git -c user.email=t@t -c user.name=t commit -qm init && git push -q origin HEAD 2>/dev/null )
 BENV="$T/bundle-env"; git clone -q --no-hardlinks "$B" "$BENV"  # no shared inodes: the chown below must not touch the remote
+BUNDLE_X="$(git -C "$BENV" rev-parse HEAD)"   # before the chown: git refuses a repository owned by someone else
 printf '#!/bin/sh\ntouch %s/hooked-env\n' "$T" > "$BENV/.git/hooks/post-merge"; chmod +x "$BENV/.git/hooks/post-merge"; chown -R "$APP_USER:$APP_USER" "$BENV"
+# The remote moves on after the legacy checkout was made: the migration must
+# keep the running service on X, not silently jump to the tip.
+( cd "$W" && echo 'branding: {app_name: Later}' > manifest.yaml && git add . && git -c user.email=t@t -c user.name=t commit -qm later && git push -q origin HEAD 2>/dev/null )
+BUNDLE_Y="$(git -C "$W" rev-parse HEAD)"
 
 SEED="$(head -c 32 /dev/urandom | base64)"
 MFAKEY="$(head -c 32 /dev/urandom | base64)"
@@ -180,6 +185,7 @@ check healthy
 check test ! -e "$BENV/.git/hooks/post-merge"
 check test ! -e "$T/hooked-env"
 ls -d "$BENV.legacy-"* >/dev/null 2>&1 && ok "legacy bundle checkout kept beside for inspection" || bad "legacy bundle not kept"
+[[ "$(git -C "$BENV" rev-parse HEAD)" == "$BUNDLE_X" && "$BUNDLE_X" != "$BUNDLE_Y" ]] && ok "re-cloned bundle stays on the commit the service had, not the remote tip" || bad "bundle at $(git -C "$BENV" rev-parse HEAD), had $BUNDLE_X, remote $BUNDLE_Y"
 if pgrep -u "$APP_USER" -f "$APP/bin/auth-server" >/dev/null; then ok "auth-server runs as $APP_USER"; else bad "auth-server is not running as $APP_USER"; fi
 if pgrep -u root -f "^$APP/bin/auth-server" >/dev/null; then bad "an auth-server process runs as root"; else ok "no auth-server process runs as root"; fi
 check runuser -u "$APP_USER" -- test -r "$APP/.env.local"
@@ -253,7 +259,24 @@ check test ! -e "$T/executed"
 out="$(lib_call "$G" eval 'layout_read_env "$APP/.env.local"; printf "%s|%s|%s" "${LD_PRELOAD:-unset}" "${BASH_ENV:-unset}" "$AUTH_HOSTNAME"' 2>/dev/null || true)"
 [[ "$out" == "unset|unset|localhost" ]] && ok "layout_read_env exports AUTH_* only (LD_PRELOAD, BASH_ENV dropped)" || bad "layout_read_env control keys: '$out'"
 if lib_call "$G" env DATA_DIR="$G/data/nested" bash -c 'true' >/dev/null 2>&1 && ( APP_DIR="$G" APP_USER="$APP_USER" DATA_DIR="$G/data/nested"; . "$SRC/scripts/lib/layout.sh"; layout_require_data_dir ) >/dev/null 2>&1; then bad "nested data dir accepted"; else ok "layout_require_data_dir refuses a nested data dir"; fi
-( APP_DIR="$G" APP_USER="$APP_USER" DATA_DIR="$T/outside-data"; . "$SRC/scripts/lib/layout.sh"; layout_require_data_dir ) >/dev/null 2>&1 && ok "layout_require_data_dir accepts a data dir outside the install" || bad "outside data dir refused"
+if ( APP_DIR="$G" APP_USER="$APP_USER" DATA_DIR="$T/outside-missing"; . "$SRC/scripts/lib/layout.sh"; layout_require_data_dir ) >/dev/null 2>&1; then bad "missing external data dir accepted"; else ok "layout_require_data_dir refuses an external data dir that does not exist"; fi
+# A legacy env pointing AUTH_DATA_DIR at a system directory must be refused
+# before anything is chowned or chmodded there.
+V="$T/victim"; mkdir -p "$V"; echo secret > "$V/shadow"; chmod 0755 "$V"; chmod 0644 "$V/shadow"
+vbefore="$(stat -c '%U:%G %a' "$V" "$V/shadow")"
+if ( APP_DIR="$G" APP_USER="$APP_USER" DATA_DIR="$V" ENV_FILE="$G/.env.local" BUILD_CACHE="$CACHE"; . "$SRC/scripts/lib/layout.sh"; layout_apply ) >/dev/null 2>&1; then bad "layout_apply accepted a root-owned external data dir"; else ok "layout_apply refuses an external data dir the service does not own"; fi
+[[ "$(stat -c '%U:%G %a' "$V" "$V/shadow")" == "$vbefore" ]] && ok "the refused directory was not touched" || bad "victim directory changed"
+# A prepared external data dir (owned by the service, root-owned parents) is accepted.
+X="$T/ext-data"; install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$X"
+( APP_DIR="$G" APP_USER="$APP_USER" DATA_DIR="$X"; . "$SRC/scripts/lib/layout.sh"; layout_require_data_dir ) >/dev/null 2>&1 && ok "layout_require_data_dir accepts a prepared external data dir" || bad "prepared external data dir refused"
+# A hard link into the data dir is not re-owned (it may be a system file).
+H="$G/data/linked"; echo other > "$T/other-owner-file"; chown root:root "$T/other-owner-file"; ln "$T/other-owner-file" "$H" 2>/dev/null || cp "$T/other-owner-file" "$H"
+( APP_DIR="$G" APP_USER="$APP_USER" DATA_DIR="$G/data" ENV_FILE="$G/.env.local" BUILD_CACHE="$CACHE"; . "$SRC/scripts/lib/layout.sh"; layout_apply ) >/dev/null 2>&1 || true
+if [[ "$(stat -c %h "$H")" -gt 1 ]]; then
+  [[ "$(stat -c %U "$T/other-owner-file")" == "root" ]] && ok "a hard-linked file inside data/ keeps its owner" || bad "hard-linked file re-owned to the service"
+else
+  ok "hard links unavailable here; skipped"
+fi
 S4="$T/src-groupw"; mkdir -p "$S4/scripts"; echo x > "$S4/scripts/x.sh"; chmod g+w "$S4/scripts/x.sh"
 if lib_call "$G" layout_require_trusted "$S4" >/dev/null 2>&1; then bad "group-writable file in source accepted"; else ok "layout_require_trusted refuses a group-writable file in the source"; fi
 # A legacy bundle with a planted hook is re-cloned root-owned, hook gone.
