@@ -99,7 +99,8 @@ chmod 0755 "$T/stub/rsync"
 # owns that carries a planted post-merge hook (the previous layout).
 B="$T/bundle-remote"; git init -q --bare "$B"
 W="$T/bundle-work"; git clone -q "$B" "$W" 2>/dev/null
-( cd "$W" && echo 'branding: {}' > manifest.yaml && git add . && git -c user.email=t@t -c user.name=t commit -qm init && git push -q origin HEAD 2>/dev/null )
+# A tracked working-tree symlink, as the real bundles ship (CLAUDE.md -> AGENTS.md).
+( cd "$W" && echo 'branding: {}' > manifest.yaml && echo notes > AGENTS.md && ln -s AGENTS.md CLAUDE.md && git add . && git -c user.email=t@t -c user.name=t commit -qm init && git push -q origin HEAD 2>/dev/null )
 BENV="$T/bundle-env"; git clone -q --no-hardlinks "$B" "$BENV"  # no shared inodes: the chown below must not touch the remote
 BUNDLE_X="$(git -C "$BENV" rev-parse HEAD)"   # before the chown: git refuses a repository owned by someone else
 printf '#!/bin/sh\ntouch %s/hooked-env\n' "$T" > "$BENV/.git/hooks/post-merge"; chmod +x "$BENV/.git/hooks/post-merge"; chown -R "$APP_USER:$APP_USER" "$BENV"
@@ -200,6 +201,8 @@ before="$(tree_state)"
 if run_update >"$T/update2.log" 2>&1; then ok "second update.sh succeeded"; else bad "second update.sh failed"; tail -20 "$T/update2.log"; fi
 after="$(tree_state)"
 [[ "$before" == "$after" ]] && ok "re-run changed no owner, mode or path outside data/" || bad "re-run changed the tree"
+[[ "$(ls -d "$BENV.legacy-"* | wc -l)" -eq 1 ]] && ok "a root-owned bundle with a tracked symlink is kept on re-run, not re-cloned again" || bad "bundle re-cloned again on re-run: $(ls -d "$BENV.legacy-"* | wc -l) legacy copies"
+[[ -L "$BENV/CLAUDE.md" && "$(stat -c %U "$BENV/CLAUDE.md")" == "root" ]] && ok "tracked symlink present and root-owned in the migrated bundle" || bad "tracked symlink missing or not root's"
 check layout_ok
 check healthy
 
@@ -291,6 +294,10 @@ lib_call "$G" layout_bundle_migrate "$BN" >/dev/null 2>&1 && ok "layout_bundle_m
 [[ "$(stat -c %U "$BN/.git/config")" == "root" ]] && ls -d "$BN.legacy-"* >/dev/null 2>&1 && ok "bundle owned by another user was re-cloned root-owned" || bad "other-user bundle kept: $(stat -c %U "$BN/.git/config")"
 # A legacy bundle on a commit the remote does not have fails closed and is left in place.
 BM="$T/bundle-missing"; git clone -q --no-hardlinks "$B" "$BM"; ( cd "$BM" && echo local > local.txt && git add . && git -c user.email=t@t -c user.name=t commit -qm local-only ); missing_head="$(git -C "$BM" rev-parse HEAD)"; chown -R "$APP_USER:$APP_USER" "$BM"
+# A legacy bundle on a branch the remote does not have fails closed too.
+BB="$T/bundle-branch"; git clone -q --no-hardlinks "$B" "$BB"; git -C "$BB" checkout -q -b local-only-branch; chown -R "$APP_USER:$APP_USER" "$BB"
+if lib_call "$G" layout_bundle_migrate "$BB" >/dev/null 2>&1; then bad "migration silently moved a bundle whose branch the remote lacks"; else ok "layout_bundle_migrate fails closed when the old branch is not on the remote"; fi
+[[ "$(stat -c %U "$BB/.git")" == "$APP_USER" ]] && ok "the branch-less bundle was left untouched" || bad "branch-less bundle changed"
 if lib_call "$G" layout_bundle_migrate "$BM" >/dev/null 2>&1; then bad "migration adopted the remote tip for a commit the remote lacks"; else ok "layout_bundle_migrate fails closed when the old commit is not on the remote"; fi
 [[ "$(stat -c %U "$BM/.git")" == "$APP_USER" && -f "$BM/local.txt" ]] && ok "the un-migratable bundle was left untouched" || bad "un-migratable bundle changed"
 [[ -z "$(ls -d "$BM.fresh."* 2>/dev/null)" ]] && ok "no temporary clone left behind" || bad "temporary clone left behind"

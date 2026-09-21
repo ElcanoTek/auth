@@ -218,13 +218,14 @@ layout_bundle_git() {
   git -c safe.directory="$dir" -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$dir" "$@"
 }
 
-# layout_bundle_migrate DIR re-clones a bundle checkout whose .git the
-# service user could write under the previous layout. Ownership alone would
-# not make it safe to run git in as root: .git/config can name commands
-# (credential helpers, fsmonitor, ssh command) and hooks may be planted, so
-# the remote URL is read as data and a fresh root-owned clone replaces the
-# directory; the old one is kept beside it for inspection. A checkout that
-# root already owns is only re-tightened.
+# layout_bundle_migrate DIR re-clones a bundle checkout that is not root's
+# alone (the previous layout gave it to the service user). Ownership alone
+# would not make it safe to run git in as root: .git/config can name
+# commands (credential helpers, fsmonitor, ssh command) and hooks may be
+# planted, so the remote URL, the old commit and the old branch are read as
+# data, a fresh root-owned clone is put back on that branch and commit, and
+# it replaces the directory; the old one is kept beside it for inspection.
+# A checkout that is already root's alone is only re-tightened.
 layout_bundle_migrate() {
   local dir="$1" url fresh
   [[ -d "$dir/.git" ]] || return 0
@@ -232,10 +233,14 @@ layout_bundle_migrate() {
   # The checkout's parents must be root's: a service-writable parent could
   # replace a root-owned checkout wholesale.
   layout_require_trusted_path "$(dirname "$(readlink -f -- "$dir")")" || return 1
-  # Only a checkout that is already root's alone (every path root-owned,
-  # nothing group/world-writable, no symlinks) is kept; anything else could
-  # carry git metadata root must not run with, and is re-cloned.
-  if [[ -z "$(find "$dir" \( ! -user root -o -perm -g+w -o -perm -o+w -o -type l \) -print -quit)" ]]; then
+  # Only a checkout that is already root's alone is kept: every path
+  # root-owned, nothing group/world-writable, and no symlink anywhere under
+  # .git (git metadata root runs with). Tracked symlinks in the working tree
+  # are allowed: bundles ship them (a CLAUDE.md -> AGENTS.md alias) and the
+  # server resolves branding paths inside the bundle itself. Anything else
+  # is re-cloned.
+  if [[ -z "$(find "$dir" \( ! -user root -o \( ! -type l -a \( -perm -g+w -o -perm -o+w \) \) \) -print -quit)" \
+        && -z "$(find "$dir/.git" -type l -print -quit)" ]]; then
     layout_bundle "$dir" || return 1
     return 0
   fi
@@ -256,18 +261,23 @@ layout_bundle_migrate() {
   # the update that follows treats the remote's tip as an ordinary pull
   # with the usual rollback baseline. A commit the remote no longer has
   # leaves the clone at the tip, with a warning.
-  # Fail closed: if the running service's commit cannot be identified or is
-  # no longer on the remote, nothing is replaced and the operator re-clones
-  # by hand (a silent jump to the tip would change what the service serves).
+  # Fail closed: if the running service's commit or branch cannot be
+  # identified, the branch is gone from the remote, or the commit is, nothing
+  # is replaced and the operator re-clones by hand. A silent jump to another
+  # branch or the tip would change what the service serves.
   local old_head old_branch
   old_head="$(layout_git_head_as_data "$dir")"
   old_branch="$(layout_git_branch_as_data "$dir")"
   [[ -n "$old_head" ]] || { layout_die "cannot read the commit the client bundle at $dir is on; re-clone it by hand into a root-owned directory at the commit the service should serve"; return 1; }
   fresh="$(mktemp -d "${dir}.fresh.XXXXXX")" || return 1
   git -c core.hooksPath=/dev/null clone --quiet "$url" "$fresh/checkout" || { rm -rf "$fresh"; layout_die "could not re-clone the client bundle from its remote (does the box's git credential cover it?)"; return 1; }
-  if [[ -n "$old_branch" ]] && git -C "$fresh/checkout" -c core.hooksPath=/dev/null rev-parse --verify --quiet "origin/$old_branch" >/dev/null; then
+  if [[ -n "$old_branch" ]]; then
     # The same branch as before, tracking the remote, so the pulls that
     # follow fast-forward the branch the operator chose.
+    if ! git -C "$fresh/checkout" -c core.hooksPath=/dev/null rev-parse --verify --quiet "origin/$old_branch" >/dev/null; then
+      rm -rf "$fresh"
+      layout_die "the client bundle at $dir is on branch $old_branch, which its remote no longer has; re-clone it by hand into a root-owned directory (the service keeps running on the current checkout)" || return 1
+    fi
     git -C "$fresh/checkout" -c core.hooksPath=/dev/null checkout --quiet -B "$old_branch" "origin/$old_branch" || { rm -rf "$fresh"; return 1; }
   fi
   if ! git -C "$fresh/checkout" -c core.hooksPath=/dev/null cat-file -e "$old_head^{commit}" 2>/dev/null; then
