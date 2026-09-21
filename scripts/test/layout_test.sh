@@ -456,6 +456,17 @@ grep -q 'previous env file and binaries were put back' "$T/bootstrap7.log" && ok
 cmp -s "$APP2/.env.local" "$T/env2.swap" && ok "live env put back after the mid-swap failure" || bad "live env differs after the mid-swap failure"
 grep -q "previous-build-marker" "$APP2/bin/auth-server" && ok "previous auth-server put back after the mid-swap failure" || bad "auth-server was left replaced"
 [[ "$(owner_mode "$APP2/.env.local")" == "root:$APP_USER 640" && "$(owner_mode "$APP2/bin/auth-server")" == "root:root 755" ]] && ok "restored files keep the layout's ownership" || bad "restored ownership $(owner_mode "$APP2/.env.local") $(owner_mode "$APP2/bin/auth-server")"
+# The same failure on a fresh box removes the files this run created, so
+# the next attempt starts clean instead of finding a half install.
+APP3="$T/app3"
+if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP3/bin/auth-admin" \
+   APP_DIR="$APP3" APP_USER="$APP_USER" CLI_PATH="$BIN/auth3" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_LOGIN_MODE=password AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap8.log" 2>&1; then bad "fresh bootstrap reported success with an unreplaceable binary"; else ok "fresh bootstrap fails when a binary cannot be installed"; fi
+grep -q 'files this run created were removed again' "$T/bootstrap8.log" && ok "the fresh failure reports the removal" || bad "no removal message: $(grep -v '^$' "$T/bootstrap8.log" | tail -3)"
+[[ ! -e "$APP3/.env.local" && ! -e "$APP3/bin/auth-server" && ! -e "$APP3/bin/auth-admin" ]] && ok "fresh box left without env or binaries after the failure" || bad "fresh box kept: $(ls "$APP3/.env.local" "$APP3"/bin 2>/dev/null | tr '\n' ' ')"
+[[ ! -e "$BIN/auth3" ]] && ok "no CLI installed on the failed fresh box" || bad "CLI installed despite the failure"
 # Only the loopback literal and localhost are local HTTP; a malformed
 # 127.x address is not a hostname at all.
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \

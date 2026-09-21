@@ -748,29 +748,50 @@ ok "configuration accepted by the new build"
 # env and binaries are snapshotted first (root-private), so a failure in
 # the middle of this swap puts them back together with the bundle instead
 # of leaving a new env beside half-replaced binaries.
+# Files that did not exist (a fresh box) are recorded instead, and removed
+# on failure, so a re-run starts from the same clean state.
 SNAP="$(mktemp -d)"; chmod 0700 "$SNAP"
-[[ -f "$ENV_FILE" ]] && cp -p "$ENV_FILE" "$SNAP/env"
-for b in auth-server auth-admin; do [[ -f "$APP_DIR/bin/$b" ]] && cp -p "$APP_DIR/bin/$b" "$SNAP/$b"; done
+SNAP_CREATED=()
+if [[ -f "$ENV_FILE" ]]; then cp -p "$ENV_FILE" "$SNAP/env"; else SNAP_CREATED+=("$ENV_FILE"); fi
+for b in auth-server auth-admin; do
+  if [[ -f "$APP_DIR/bin/$b" ]]; then cp -p "$APP_DIR/bin/$b" "$SNAP/$b"; else SNAP_CREATED+=("$APP_DIR/bin/$b"); fi
+done
 restore_install_on_failure() {
   [[ "$BOOTSTRAP_DONE" != "1" && -n "${SNAP:-}" && -d "$SNAP" ]] || return 0
-  local b restored=0
-  if [[ -f "$SNAP/env" ]]; then install -o root -g "$APP_USER" -m 0640 "$SNAP/env" "$ENV_FILE" && restored=1; fi
+  local b p restored=0 removed=0
+  # Each step is independent and best-effort: one failure must not stop
+  # the others (this runs from the EXIT trap, under set -e).
+  if [[ -f "$SNAP/env" ]]; then
+    if install -o root -g "$APP_USER" -m 0640 "$SNAP/env" "$ENV_FILE"; then restored=1; else warn "could not put $ENV_FILE back; the previous copy is in $SNAP/env"; fi
+  fi
   for b in auth-server auth-admin; do
-    [[ -f "$SNAP/$b" ]] && install -o root -g root -m 0755 "$SNAP/$b" "$APP_DIR/bin/$b" && restored=1
+    if [[ -f "$SNAP/$b" ]]; then
+      if install -o root -g root -m 0755 "$SNAP/$b" "$APP_DIR/bin/$b"; then restored=1; else warn "could not put $APP_DIR/bin/$b back; the previous copy is in $SNAP/$b"; fi
+    fi
+  done
+  for p in "${SNAP_CREATED[@]}"; do
+    [[ -e "$p" ]] || continue
+    if rm -f -- "$p"; then removed=1; else warn "could not remove $p, which this run created"; fi
   done
   [[ "$restored" == "1" ]] && warn "the previous env file and binaries were put back (this run did not complete)"
-  rm -rf "$SNAP"
+  [[ "$removed" == "1" ]] && warn "files this run created were removed again (it did not complete)"
+  # The snapshot is kept when anything could not be put back.
+  [[ "$restored$removed" == "00" || -z "$(ls -A "$SNAP")" ]] && rm -rf "$SNAP" 2>/dev/null
+  return 0
 }
-trap 'rm -rf "$STAGING" "$ENV_OUT"; restore_install_on_failure; restore_bundle_on_failure' EXIT
+# Restores first, each best-effort; cleanup last, so a failing rm cannot
+# skip a restore.
+trap 'restore_install_on_failure || true; restore_bundle_on_failure || true; rm -rf "$STAGING" "$ENV_OUT" 2>/dev/null || true' EXIT
 install -o root -g "$APP_USER" -m 0640 "$ENV_OUT" "$ENV_FILE"
 rm -f "$ENV_OUT"
 layout_install_tree "$SRC_DIR" "$STAGING"
 layout_apply
-rm -rf "$STAGING" "$SNAP"
 # From here the install is the new one and the bundle it was checked against
-# stays: a later failure (Caddy, motd) must not move the bundle back.
+# stays: a later failure (Caddy, motd, or this cleanup) must not move
+# anything back.
 BOOTSTRAP_DONE=1
 trap - EXIT
+rm -rf "$STAGING" "$SNAP" 2>/dev/null || warn "could not remove the temporary directories $STAGING $SNAP"
 ok "env seeded"
 
 install -o root -g root -m 0755 "$APP_DIR/deploy/auth-cli" "$CLI_PATH"
