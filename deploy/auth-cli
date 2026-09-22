@@ -106,22 +106,32 @@ else
   c_reset='' c_dim='' c_bold='' c_cyan='' c_red='' c_green='' c_yellow=''
 fi
 
-# Source the env helpers if present; otherwise fall back to a minimal
-# redacted-show for `auth env show` so the CLI keeps working before
-# the next `sudo auth update` lands the helper file.
-# shellcheck source=/dev/null
-if [[ -f "$APP_DIR/scripts/lib/envfile.sh" ]]; then
-  . "$APP_DIR/scripts/lib/envfile.sh"
-else
-  env_show_redacted() {
-    awk '
-      /^[[:space:]]*#/ { next } /^[[:space:]]*$/ { next }
-      { eq = index($0, "="); if (eq == 0) { print; next }
-        key = substr($0, 1, eq - 1); sub(/^[[:space:]]+/, "", key)
-        if (key ~ /TOKEN|KEY|SECRET|PASS/) printf "%s=[REDACTED]\n", key; else print }
-    ' "$1"
-  }
-fi
+# Loaded only for commands that need it. `auth doctor` runs as root and must
+# not source the service tree: that tree is writable by the service user.
+load_env_helpers() {
+  # shellcheck source=/dev/null
+  if [[ -f "$APP_DIR/scripts/lib/envfile.sh" ]]; then
+    . "$APP_DIR/scripts/lib/envfile.sh"
+  else
+    env_show_redacted() {
+      awk '
+        /^[[:space:]]*#/ { next } /^[[:space:]]*$/ { next }
+        { eq = index($0, "="); if (eq == 0) { print; next }
+          key = substr($0, 1, eq - 1); sub(/^[[:space:]]+/, "", key)
+          if (key ~ /TOKEN|KEY|SECRET|PASS/) printf "%s=[REDACTED]\n", key; else print }
+      ' "$1"
+    }
+  fi
+}
+
+# A script root may execute: not a symlink, owned by root, not group/world writable.
+script_root_owned() {
+  local p="$1" owner mode
+  [[ -f "$p" && ! -L "$p" ]] || return 1
+  owner="$(stat -c '%U' "$p" 2>/dev/null || echo "")"
+  mode="$(stat -c '%a' "$p" 2>/dev/null || echo 666)"
+  [[ "$owner" == root && $((8#$mode & 022)) -eq 0 ]]
+}
 
 env_cmd() {
   local sub="${1:-show}"
@@ -337,6 +347,10 @@ _env_check() {
 cmd="${1:-}"
 shift || true
 
+if [[ "$cmd" != "doctor" ]]; then
+  load_env_helpers
+fi
+
 case "$cmd" in
   domain|user|audit|app|mfa|keygen|pubkey)
     # domain: the magic-link allowlist. user: password accounts and the
@@ -394,15 +408,33 @@ case "$cmd" in
     env_cmd "$@"
     ;;
   doctor)
-    # Read-only unless --repair, which the script itself rejects for
-    # non-root. Do not source .env.local here.
-    doctor_sh="$APP_DIR/scripts/doctor.sh"
-    if [[ ! -f "$doctor_sh" ]]; then
-      doctor_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/doctor.sh"
+    # .env.local is root:auth 0640, so the check re-execs through sudo. The
+    # script it execs is the root-owned copy, never the service-writable tree.
+    root_doctor=/usr/local/lib/auth/doctor.sh
+    repo_doctor="$APP_DIR/scripts/doctor.sh"
+    if [[ ! -f "$repo_doctor" ]]; then
+      repo_doctor="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/doctor.sh"
     fi
-    if [[ ! -f "$doctor_sh" ]]; then
-      echo "doctor script not found (expected $APP_DIR/scripts/doctor.sh — run auth update)" >&2
+    doctor_sh=""
+    if script_root_owned "$root_doctor" && script_root_owned "$(dirname "$root_doctor")/lib/envfile.sh"; then
+      doctor_sh="$root_doctor"
+    elif script_root_owned "$repo_doctor" && script_root_owned "$(dirname "$repo_doctor")/lib/envfile.sh"; then
+      doctor_sh="$repo_doctor"
+    fi
+    if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+      help_sh="${doctor_sh:-$repo_doctor}"
+      if [[ ! -f "$help_sh" || -L "$help_sh" ]]; then
+        echo "doctor script not found" >&2
+        exit 1
+      fi
+      exec bash "$help_sh" --help
+    fi
+    if [[ -z "$doctor_sh" ]]; then
+      echo "refusing to run doctor as root from a service-writable script; run auth update to install /usr/local/lib/auth/doctor.sh" >&2
       exit 1
+    fi
+    if [[ $EUID -ne 0 ]]; then
+      exec sudo "$doctor_sh" "$@"
     fi
     exec bash "$doctor_sh" "$@"
     ;;

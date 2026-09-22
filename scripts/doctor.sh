@@ -14,8 +14,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/lib/envfile.sh"
 
 APP_DIR="${AUTH_APP_DIR:-${APP_DIR:-/opt/auth}}"
 SRC_DIR="${AUTH_SRC_DIR:-${SRC_DIR:-/opt/auth-src}}"
@@ -109,8 +107,121 @@ have() { command -v "$1" >/dev/null 2>&1; }
 file_mode() { stat -c '%a' "$1" 2>/dev/null || true; }
 file_owner() { stat -c '%U:%G' "$1" 2>/dev/null || true; }
 
+# Refuse to run as root from a script the service user could have written.
+assert_root_may_run() {
+  [[ $EUID -eq 0 ]] || return 0
+  local p owner mode
+  for p in "$@"; do
+    [[ -e "$p" ]] || continue
+    if [[ -L "$p" ]]; then
+      echo "doctor: refusing to run symlink $p as root" >&2
+      return 1
+    fi
+    owner="$(stat -c '%U' "$p" 2>/dev/null || echo unknown)"
+    mode="$(stat -c '%a' "$p" 2>/dev/null || echo 666)"
+    if [[ "$owner" != root || $((8#$mode & 022)) -ne 0 ]]; then
+      echo "doctor: refusing to run as root; $p is $owner mode $mode (install the root-owned copy under /usr/local/lib)" >&2
+      return 1
+    fi
+  done
+}
+
+# fchown/fchmod the inode opened with O_NOFOLLOW on every path component.
+priv_chown() {
+  python3 - "$@" <<'PY'
+import os, stat, sys, pwd, grp
+path, user, group, mode = sys.argv[1:]
+if not path.startswith("/") or "\x00" in path:
+    raise SystemExit(2)
+parts = [p for p in path.split("/") if p]
+if not parts or any(p in (".", "..") for p in parts):
+    raise SystemExit(2)
+fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+try:
+    try:
+        for part in parts:
+            nxt = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        st = os.fstat(fd)
+        if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+            raise SystemExit(2)
+        os.fchown(fd, pwd.getpwnam(user).pw_uid, grp.getgrnam(group).gr_gid)
+        os.fchmod(fd, int(mode, 8))
+    except OSError:
+        raise SystemExit(2)
+finally:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+PY
+}
+
+# mkdir the final component with O_NOFOLLOW. install -d follows a symlink
+# planted in a service-writable parent and would chown the target.
+priv_mkdir() {
+  python3 - "$@" <<'PY'
+import os, sys, pwd, grp
+path, user, group, mode = sys.argv[1:]
+if not path.startswith("/") or "\x00" in path:
+    raise SystemExit(2)
+parts = [p for p in path.split("/") if p]
+if len(parts) < 2 or any(p in (".", "..") for p in parts):
+    raise SystemExit(2)
+fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+try:
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        last = parts[-1]
+        os.mkdir(last, 0o700, dir_fd=fd)
+        child = os.open(last, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+        os.close(fd)
+        fd = child
+        os.fchown(fd, pwd.getpwnam(user).pw_uid, grp.getgrnam(group).gr_gid)
+        os.fchmod(fd, int(mode, 8))
+    except OSError:
+        raise SystemExit(2)
+finally:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+PY
+}
+
+# A data directory taken from an env file may be attacker-controlled.
+# Only APP_DIR/data, or an existing directory the service user already owns
+# under root-owned parents, may be chowned.
+data_dir_claimable() {
+  local data="$1" app parent owner mode
+  [[ "$data" == /* && "$data" != *..* ]] || return 1
+  app="${APP_DIR%/}"
+  if [[ "$data" == "$app/data" ]]; then
+    [[ -L "$app" || -L "$data" ]] && return 1
+    return 0
+  fi
+  [[ -d "$data" && ! -L "$data" ]] || return 1
+  [[ "$(stat -c '%U' "$data" 2>/dev/null || echo "")" == "$APP_USER" ]] || return 1
+  parent="$(dirname "$data")"
+  while :; do
+    [[ -L "$parent" ]] && return 1
+    owner="$(stat -c '%U' "$parent" 2>/dev/null || echo "")"
+    mode="$(stat -c '%a' "$parent" 2>/dev/null || echo 777)"
+    [[ "$owner" == root ]] || return 1
+    [[ $((8#$mode & 022)) -eq 0 ]] || return 1
+    [[ "$parent" == / ]] && break
+    parent="$(dirname "$parent")"
+  done
+}
+
 b64_len() {
-  printf '%s' "$1" | base64 -d 2>/dev/null | wc -c | tr -d '[:space:]' || true
+  local n
+  n="$(printf '%s' "$1" | base64 -d 2>/dev/null | wc -c | tr -d '[:space:]')" || return 1
+  printf '%s' "$n"
 }
 
 print_report() {
@@ -186,7 +297,7 @@ check_env() {
   # auth-server is in group auth and would be locked out of a root-owned 0600 file.
   if [[ "$owner" == "$want_owner" && "$mode" == "640" ]]; then
     add pass env-perms "$ENV_FILE is $owner mode $mode"
-  elif [[ "$REPAIR" == 1 ]] && chown "root:$APP_USER" "$ENV_FILE" && chmod 640 "$ENV_FILE"; then
+  elif [[ "$REPAIR" == 1 ]] && priv_chown "$ENV_FILE" root "$APP_USER" 640; then
     mode="$(file_mode "$ENV_FILE")"
     owner="$(file_owner "$ENV_FILE")"
     if [[ "$owner" == "$want_owner" && "$mode" == "640" ]]; then
@@ -203,7 +314,7 @@ check_env() {
     return
   fi
   signing="$(env_get AUTH_SIGNING_KEY "$ENV_FILE" 2>/dev/null || true)"
-  bytes="$(b64_len "$signing")"
+  bytes="$(b64_len "$signing" || true)"
   if [[ "$bytes" != "32" ]]; then
     missing+=("AUTH_SIGNING_KEY")
   fi
@@ -221,7 +332,7 @@ check_env() {
   driver="$(env_get AUTH_EMAIL_DRIVER "$ENV_FILE" 2>/dev/null || true)"
   driver="${driver,,}"
   [[ -n "$driver" ]] || driver="stdout"
-  if [[ "$login" == "magic" && "$driver" == "sendgrid" ]]; then
+  if [[ "$driver" == "sendgrid" ]]; then
     sendgrid="$(env_get SENDGRID_API_KEY "$ENV_FILE" 2>/dev/null || true)"
     if [[ -z "$sendgrid" ]]; then
       missing+=("SENDGRID_API_KEY")
@@ -235,7 +346,7 @@ check_env() {
   if [[ -z "$mfa" && -n "$previous" ]]; then
     missing+=("AUTH_MFA_KEY")
   elif [[ -n "$mfa" ]]; then
-    bytes="$(b64_len "$mfa")"
+    bytes="$(b64_len "$mfa" || true)"
     if [[ "$bytes" != "32" ]]; then
       missing+=("AUTH_MFA_KEY")
     fi
@@ -268,7 +379,11 @@ check_unit() {
     return
   fi
   if systemctl is-active --quiet "$unit"; then
-    add pass "$name" "$unit active"
+    if systemctl is-enabled --quiet "$unit"; then
+      add pass "$name" "$unit active and enabled"
+    else
+      add warn "$name" "$unit is active but not enabled — it will not start on boot"
+    fi
     return
   fi
   if systemctl is-enabled --quiet "$unit"; then
@@ -292,6 +407,9 @@ check_health() {
   local addr url code
   addr="$(env_get AUTH_ADDR "$ENV_FILE" 2>/dev/null || true)"
   [[ -n "$addr" ]] || addr="127.0.0.1:9000"
+  case "${addr%:*}" in
+    ""|0.0.0.0|"[::]"|"::"|"*") addr="127.0.0.1:${addr##*:}" ;;
+  esac
   if [[ "$addr" != *:* ]]; then
     addr="127.0.0.1:$addr"
   fi
@@ -322,7 +440,13 @@ caddy_hostname() {
 }
 
 check_tls() {
-  local host line epoch now days
+  local host line epoch now days tls_port=443 secure
+  secure="$(env_get AUTH_COOKIE_SECURE "$ENV_FILE" 2>/dev/null || true)"
+  secure="${secure,,}"
+  if [[ "$secure" == false || "$secure" == 0 || "$secure" == no || "$secure" == off ]]; then
+    add warn tls "AUTH_COOKIE_SECURE is disabled; skipping the TLS probe"
+    return
+  fi
   host="$(env_get AUTH_HOSTNAME "$ENV_FILE" 2>/dev/null || true)"
   if [[ ! "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ || "$host" == "localhost" ]]; then
     host="$(caddy_hostname || true)"
@@ -337,9 +461,11 @@ check_tls() {
   fi
   # Connect to loopback with the public name as SNI so the check is the
   # certificate Caddy is serving, not DNS or hairpin NAT.
-  line="$(timeout 15 openssl s_client -servername "$host" -connect "127.0.0.1:443" </dev/null 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null || true)"
+  # -verify_hostname and -verify_return_error make a wrong host or a bad
+  # chain a failed handshake, not a certificate we then trust by expiry alone.
+  line="$(timeout 15 openssl s_client -verify_hostname "$host" -verify_return_error -servername "$host" -connect "127.0.0.1:${tls_port}" </dev/null 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null || true)"
   if [[ "$line" != notAfter=* ]]; then
-    add fail tls "no certificate from 127.0.0.1:443 for $host — is Caddy running?"
+    add fail tls "no verified certificate from 127.0.0.1:${tls_port} for $host — is Caddy running?"
     return
   fi
   line="${line#notAfter=}"
@@ -349,9 +475,13 @@ check_tls() {
     add fail tls "could not parse the certificate expiry for $host"
     return
   fi
+  if [[ "$epoch" -le "$now" ]]; then
+    add fail tls "certificate for $host is expired"
+    return
+  fi
   days="$(( (epoch - now) / 86400 ))"
   if [[ "$days" -lt 0 ]]; then
-    add fail tls "certificate for $host expired ${days#-} day(s) ago"
+    add fail tls "certificate for $host is expired"
   elif [[ "$days" -lt 30 ]]; then
     add warn tls "certificate for $host expires in $days day(s)"
   else
@@ -374,15 +504,17 @@ check_caddy_config() {
 }
 
 probe_sqlite() {
-  local db="$1"
+  local db="$1" out
   if ! have sqlite3; then
     return 2
   fi
+  # PRAGMA quick_check reads pages. SELECT 1 succeeds on a non-database file.
   if [[ "$EUID" -eq 0 ]] && id "$APP_USER" >/dev/null 2>&1; then
-    runuser -u "$APP_USER" -- sqlite3 "$db" "SELECT 1;" >/dev/null 2>&1
-    return
+    out="$(runuser -u "$APP_USER" -- sqlite3 "$db" "PRAGMA quick_check;" 2>/dev/null)" || return 1
+  else
+    out="$(sqlite3 "$db" "PRAGMA quick_check;" 2>/dev/null)" || return 1
   fi
-  sqlite3 "$db" "SELECT 1;" >/dev/null 2>&1
+  [[ "$out" == "ok" ]]
 }
 
 check_data() {
@@ -392,18 +524,33 @@ check_data() {
   if [[ "$data" != /* ]]; then
     data="$APP_DIR/$data"
   fi
-  if [[ -L "$data" ]]; then
-    add fail database "$data is a symlink; refusing to follow it"
+  DISK_PATH="$data"
+  if [[ -L "$data" || "$data" == *..* ]]; then
+    add fail database "refusing $data (symlink or ..)"
+    return
+  fi
+  if ! data_dir_claimable "$data"; then
+    add fail database "refusing AUTH_DATA_DIR $data — not $APP_DIR/data and not a directory $APP_USER already owns under root-owned parents"
     return
   fi
   if [[ ! -d "$data" ]]; then
-    add fail database "$data is missing — rerun bootstrap (doctor does not create the database)"
-    return
+    if [[ -e "$data" || -L "$data" ]]; then
+      add fail database "$data exists but is not a directory"
+      return
+    fi
+    # The directory only. state.db is the server's; doctor does not create it.
+    # This still happens before the unit is started.
+    if [[ "$REPAIR" == 1 && "$data" == "${APP_DIR%/}/data" ]] && priv_mkdir "$data" "$APP_USER" "$APP_USER" 700; then
+      n_fixed=$((n_fixed + 1))
+    else
+      add fail database "$data is missing — rerun bootstrap (doctor does not create the database)"
+      return
+    fi
   fi
   owner="$(file_owner "$data")"
   mode="$(file_mode "$data")"
   if [[ "$owner" != "$APP_USER:$APP_USER" || "$mode" != "700" ]]; then
-    if [[ "$REPAIR" == 1 ]] && chown "$APP_USER:$APP_USER" "$data" && chmod 700 "$data"; then
+    if [[ "$REPAIR" == 1 ]] && priv_chown "$data" "$APP_USER" "$APP_USER" 700; then
       owner="$(file_owner "$data")"
       mode="$(file_mode "$data")"
       if [[ "$owner" == "$APP_USER:$APP_USER" && "$mode" == "700" ]]; then
@@ -425,11 +572,11 @@ check_data() {
   rc=0
   probe_sqlite "$db" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
-    add pass database "SQLite answers SELECT 1"
+    add pass database "SQLite quick_check ok"
   elif [[ "$rc" -eq 2 ]]; then
     add fail database "sqlite3 is not installed; cannot probe state.db"
   else
-    add fail database "state.db did not answer SELECT 1"
+    add fail database "state.db failed PRAGMA quick_check"
   fi
 }
 
@@ -571,18 +718,47 @@ print(max(nums))' 2>/dev/null || true)"
   fi
 }
 
-gitc() { git -c "safe.directory=$SRC_DIR" -C "$SRC_DIR" "$@"; }
+# Never disable Git's ownership check. A service-owned checkout can set
+# core.fsmonitor; running that as root is code execution. Inspect as the owner.
+gitc() {
+  local owner
+  if [[ $EUID -eq 0 ]]; then
+    owner="$(stat -c '%U' "$SRC_DIR" 2>/dev/null || true)"
+    if [[ -n "$owner" && "$owner" != root ]]; then
+      runuser -u "$owner" -- git -C "$SRC_DIR" "$@"
+      return
+    fi
+  fi
+  git -C "$SRC_DIR" "$@"
+}
+
+gitc_timeout() {
+  local secs="$1"
+  shift
+  local owner
+  if [[ $EUID -eq 0 ]]; then
+    owner="$(stat -c '%U' "$SRC_DIR" 2>/dev/null || true)"
+    if [[ -n "$owner" && "$owner" != root ]]; then
+      timeout "$secs" runuser -u "$owner" -- git -C "$SRC_DIR" "$@"
+      return
+    fi
+  fi
+  timeout "$secs" git -C "$SRC_DIR" "$@"
+}
 
 check_git() {
-  local dirty branch counts behind ahead fetch_rc
+  local dirty branch counts behind ahead fetch_rc dirty_rc remote_sha head_sha
   if [[ ! -d "$SRC_DIR/.git" ]]; then
     add warn git-clean "no git checkout at $SRC_DIR (auth update needs it)"
     add warn git-branch "no git checkout at $SRC_DIR"
     add warn git-upstream "no git checkout at $SRC_DIR; doctor does not fetch or pull"
     return
   fi
-  dirty="$(gitc status --porcelain 2>/dev/null || true)"
-  if [[ -n "$dirty" ]]; then
+  dirty_rc=0
+  dirty="$(gitc status --porcelain 2>/dev/null)" || dirty_rc=$?
+  if [[ "$dirty_rc" -ne 0 ]]; then
+    add warn git-clean "cannot inspect $SRC_DIR (git status exited $dirty_rc)"
+  elif [[ -n "$dirty" ]]; then
     add warn git-clean "checkout at $SRC_DIR is dirty; auth update will refuse"
   else
     add pass git-clean "clean at $SRC_DIR"
@@ -595,17 +771,26 @@ check_git() {
   else
     add warn git-branch "detached HEAD at $SRC_DIR, not main"
   fi
-  # A local origin/main can be months stale. Fetch the branch tip only
-  # (FETCH_HEAD); do not merge or pull. Any failure is "could not reach
-  # origin" rather than a false "level".
+  # ls-remote does not write FETCH_HEAD or remote-tracking refs, so --check
+  # cannot change the checkout. A missing object locally still reports drift.
   fetch_rc=0
-  GIT_TERMINAL_PROMPT=0 \
-    timeout 10 git -c "safe.directory=${SRC_DIR}" -C "$SRC_DIR" fetch --quiet origin main >/dev/null 2>&1 || fetch_rc=$?
-  if [[ "$fetch_rc" -ne 0 ]] || ! gitc rev-parse --verify --quiet FETCH_HEAD >/dev/null 2>&1; then
+  remote_sha="$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=5' gitc_timeout 10 ls-remote origin refs/heads/main 2>/dev/null)" || fetch_rc=$?
+  remote_sha="${remote_sha%%$'\t'*}"
+  remote_sha="${remote_sha%% *}"
+  if [[ "$fetch_rc" -ne 0 || ! "$remote_sha" =~ ^[0-9a-f]{40}$ ]]; then
     add warn git-upstream "could not reach origin"
     return
   fi
-  counts="$(gitc rev-list --left-right --count FETCH_HEAD...HEAD 2>/dev/null || true)"
+  head_sha="$(gitc rev-parse HEAD 2>/dev/null || true)"
+  if [[ "$head_sha" == "$remote_sha" ]]; then
+    add pass git-upstream "level with origin/main"
+    return
+  fi
+  if ! gitc cat-file -e "${remote_sha}^{commit}" >/dev/null 2>&1; then
+    add warn git-upstream "not at origin/main (${remote_sha:0:12}); $UPDATE_CMD"
+    return
+  fi
+  counts="$(gitc rev-list --left-right --count "${remote_sha}...HEAD" 2>/dev/null || true)"
   counts="${counts//$'\t'/ }"
   # shellcheck disable=SC2086
   read -r behind ahead <<<"$counts"
@@ -628,15 +813,64 @@ check_git() {
   fi
 }
 
+assert_root_may_run "${BASH_SOURCE[0]}" "$SCRIPT_DIR/lib/envfile.sh" || exit 1
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/envfile.sh"
+# Doctor's reader matches the server (whitespace around =, trailing comments).
+# The sourced env_get does not, and the env file must never be executed.
+env_get() {
+  local key="$1" file="$2" line k v found=0
+  [[ -f "$file" && ! -L "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "${line:0:1}" == "#" ]] && continue
+    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]] || continue
+    k="${BASH_REMATCH[1]}"
+    [[ "$k" == "$key" ]] || continue
+    v="${BASH_REMATCH[2]}"
+    v="${v#"${v%%[![:space:]]*}"}"
+    found=1
+    if [[ ${#v} -ge 2 && ( "${v:0:1}" == '"' || "${v:0:1}" == "'" ) ]]; then
+      local q="${v:0:1}" inner="" i=1 c
+      while (( i < ${#v} )); do
+        c="${v:i:1}"
+        if [[ "$q" == '"' && "$c" == $'\\' ]]; then
+          i=$((i + 1))
+          inner+="${v:i:1}"
+          i=$((i + 1))
+          continue
+        fi
+        if [[ "$c" == "$q" ]]; then
+          local rest="${v:i+1}"
+          rest="${rest#"${rest%%[![:space:]]*}"}"
+          if [[ -z "$rest" || "${rest:0:1}" == "#" ]]; then
+            v="$inner"
+          fi
+          break
+        fi
+        inner+="$c"
+        i=$((i + 1))
+      done
+    else
+      v="${v%% \#*}"
+      v="${v%%$'\t'#*}"
+      v="${v%"${v##*[![:space:]]}"}"
+    fi
+  done < "$file"
+  [[ "$found" -eq 1 ]] || return 1
+  printf '%s' "$v"
+}
+
 check_install
 check_env
+check_data
 check_unit service "$SERVICE" core
 check_unit caddy caddy.service optional
 check_health
 check_tls
 check_caddy_config
-check_data
-check_disk "$APP_DIR"
+check_disk "${DISK_PATH:-$APP_DIR}"
 check_updates
 check_reboot
 check_fedora

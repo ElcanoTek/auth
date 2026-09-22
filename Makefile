@@ -23,6 +23,7 @@ tidy:
 ## test: go test all packages
 test:
 	GOTOOLCHAIN=auto go test ./...
+	bash scripts/test/doctor_test.sh
 
 ## lint: gofmt -s check + golangci-lint (matches the CI lint gate)
 lint:

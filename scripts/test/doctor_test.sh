@@ -14,12 +14,22 @@ trap 'rm -rf "$TMP"' EXIT
 SIGNING="$(python3 -c 'import base64,os; print(base64.b64encode(os.urandom(32)).decode())')"
 MFA="$(python3 -c 'import base64,os; print(base64.b64encode(os.urandom(32)).decode())')"
 APP_USER="$(id -un)"
+TEST_USER="$APP_USER"
 BIN="$TMP/bin"
 APP="$TMP/app"
 SRC="$TMP/src"
 DATA="$APP/data"
 LOG="$TMP/systemctl.log"
 mkdir -p "$BIN" "$DATA" "$SRC"
+cat > "$BIN/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *fetch* ]]; then
+  echo "git fetch is not allowed during doctor --check" >&2
+  exit 99
+fi
+exec /usr/bin/git "$@"
+EOF
+chmod 755 "$BIN/git"
 chmod 700 "$DATA"
 if getent group "$APP_USER" >/dev/null 2>&1; then
   chgrp "$APP_USER" "$DATA" 2>/dev/null || true
@@ -113,13 +123,18 @@ cat > "$BIN/openssl" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$*" == *x509* ]]; then
   date -u -d '+90 days' '+notAfter=%b %e %H:%M:%S %Y GMT'
+  exit 0
 fi
+[[ "$*" == *-verify_hostname* && "$*" == *-verify_return_error* ]] || exit 1
 exit 0
 EOF
 cat > "$BIN/sqlite3" <<'EOF'
 #!/usr/bin/env bash
 [[ -f "$1" && ! -L "$1" ]] || exit 1
-exit 0
+case "$*" in
+  *quick_check*) printf 'ok\n'; exit 0 ;;
+esac
+exit 1
 EOF
 chmod 755 "$BIN"/*
 
@@ -198,19 +213,23 @@ echo "== cli dispatch"
 cli_out="$(bash "$REPO/deploy/auth-cli" doctor --help)"
 [[ "$cli_out" == *"read-only"* ]]
 
-echo "== repair refused when not root"
-before="$(/usr/bin/stat -c '%a' "$APP/.env.local")"
-chmod 644 "$APP/.env.local"
-set +e
-doctor --repair --json >"$TMP/repair.out" 2>"$TMP/repair.err"
-rc=$?
-set -e
-[[ "$rc" -eq 1 ]]
-[[ "$(cat "$TMP/repair.err")" == *"sudo auth doctor --repair"* ]]
-[[ "$(/usr/bin/stat -c '%a' "$APP/.env.local")" == "644" ]]
-[[ ! -s "$LOG" ]]
-assert_clean "$(cat "$TMP/repair.out" "$TMP/repair.err")"
-chmod "$before" "$APP/.env.local"
+if [[ "$EUID" -ne 0 ]]; then
+  echo "== repair refused when not root"
+  before="$(/usr/bin/stat -c '%a' "$APP/.env.local")"
+  chmod 644 "$APP/.env.local"
+  set +e
+  doctor --repair --json >"$TMP/repair.out" 2>"$TMP/repair.err"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 1 ]]
+  [[ "$(cat "$TMP/repair.err")" == *"sudo auth doctor --repair"* ]]
+  [[ "$(/usr/bin/stat -c '%a' "$APP/.env.local")" == "644" ]]
+  [[ ! -s "$LOG" ]]
+  assert_clean "$(cat "$TMP/repair.out" "$TMP/repair.err")"
+  chmod "$before" "$APP/.env.local"
+else
+  echo "== repair refusal skipped (already root)"
+fi
 
 echo "== symlink env is not read"
 printf 'AUTH_SIGNING_KEY=%s\n' "$SIGNING" > "$TMP/real.env"
@@ -289,8 +308,10 @@ import json, sys
 doc = json.loads(sys.argv[1])
 git = next(c for c in doc["checks"] if c["name"] == "git-upstream")
 assert git["status"] == "warn", git
-assert git["detail"] == "1 commit behind — auth update", git
+assert git["detail"].startswith("not at origin/main"), git
+assert "auth update" in git["detail"]
 PY
+[[ ! -e "$SRC/.git/FETCH_HEAD" ]]
 
 echo "== reboot falls back to the installed kernel"
 cat > "$BIN/dnf" <<'EOF'
@@ -333,5 +354,254 @@ reboot = next(c for c in doc["checks"] if c["name"] == "reboot")
 assert reboot["status"] == "warn" and "could not determine" in reboot["detail"], reboot
 PY
 fi
+
+write_env() {
+  cat > "$APP/.env.local" <<EOF
+AUTH_ADDR=${1:-127.0.0.1:9000}
+AUTH_HOSTNAME=${2:-auth.example.com}
+AUTH_DATA_DIR=${3:-$DATA}
+AUTH_LOGIN_MODE=${4:-password}
+AUTH_EMAIL_DRIVER=${5:-stdout}
+AUTH_SIGNING_KEY=${6:-$SIGNING}
+AUTH_MFA_KEY=${7:-$MFA}
+AUTH_COOKIE_SECURE=${8:-true}
+${9:-}
+EOF
+  chmod 640 "$APP/.env.local"
+}
+
+echo "== repairs run before units, and --check does not fetch"
+awk '
+  /^check_data$/ { if (!d) d = NR }
+  /^check_unit / { if (!u) u = NR }
+  END { exit !(d && u && d < u) }
+' "$REPO/scripts/doctor.sh"
+! grep -q 'safe\.directory' "$REPO/scripts/doctor.sh"
+! grep -q 'git fetch' "$REPO/scripts/doctor.sh"
+grep -q 'ls-remote' "$REPO/scripts/doctor.sh"
+grep -q 'quick_check' "$REPO/scripts/doctor.sh"
+grep -q -- '-verify_hostname' "$REPO/scripts/doctor.sh"
+
+echo "== whitespace and a trailing comment still parse"
+cat > "$APP/.env.local" <<EOF
+AUTH_ADDR = ":9000"
+AUTH_HOSTNAME = "auth.example.com" # public name
+AUTH_DATA_DIR = "$DATA"
+AUTH_LOGIN_MODE = password
+AUTH_SIGNING_KEY = "$SIGNING"
+AUTH_MFA_KEY = "$MFA"
+EOF
+chmod 640 "$APP/.env.local"
+out="$(doctor --json)" || true
+assert_clean "$out"
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+keys = next(c for c in doc["checks"] if c["name"] == "env-keys")
+health = next(c for c in doc["checks"] if c["name"] == "health")
+assert keys["status"] == "pass", keys
+assert "http://127.0.0.1:9000/healthz" in health["detail"], health
+PY
+
+echo "== bad base64 is not accepted on length alone"
+write_env 127.0.0.1:9000 auth.example.com "$DATA" password stdout '****'
+set +e
+out="$(doctor --json)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+assert_clean "$out"
+[[ "$out" != *'****'* ]]
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+keys = next(c for c in doc["checks"] if c["name"] == "env-keys")
+assert keys["status"] == "fail" and "AUTH_SIGNING_KEY" in keys["detail"], keys
+PY
+
+echo "== SendGrid is required in password mode too"
+write_env 127.0.0.1:9000 auth.example.com "$DATA" password sendgrid
+set +e
+out="$(doctor --json)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+keys = next(c for c in doc["checks"] if c["name"] == "env-keys")
+assert keys["status"] == "fail" and "SENDGRID_API_KEY" in keys["detail"], keys
+PY
+
+echo "== AUTH_COOKIE_SECURE=false skips TLS"
+write_env 127.0.0.1:9000 auth.example.com "$DATA" password stdout "$SIGNING" "$MFA" false
+export DOCTOR_OPENSSL_LOG="$TMP/openssl.log"
+: > "$DOCTOR_OPENSSL_LOG"
+cat > "$BIN/openssl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOCTOR_OPENSSL_LOG:?}"
+exit 1
+EOF
+chmod 755 "$BIN/openssl"
+out="$(doctor --json)" || true
+assert_clean "$out"
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+tls = next(c for c in doc["checks"] if c["name"] == "tls")
+assert tls["status"] == "warn" and "AUTH_COOKIE_SECURE" in tls["detail"], tls
+PY
+[[ ! -s "$DOCTOR_OPENSSL_LOG" ]]
+
+echo "== a just-expired certificate fails"
+write_env
+cat > "$BIN/openssl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *x509* ]]; then
+  date -u -d '1 hour ago' '+notAfter=%b %e %H:%M:%S %Y GMT'
+  exit 0
+fi
+[[ "$*" == *-verify_hostname* && "$*" == *-verify_return_error* ]] || exit 1
+exit 0
+EOF
+chmod 755 "$BIN/openssl"
+set +e
+out="$(doctor --json)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+tls = next(c for c in doc["checks"] if c["name"] == "tls")
+assert tls["status"] == "fail" and "expired" in tls["detail"], tls
+assert "expires in" not in tls["detail"]
+PY
+
+echo "== AUTH_DATA_DIR /etc is refused"
+write_env 127.0.0.1:9000 auth.example.com /etc
+set +e
+out="$(doctor --json)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+db = next(c for c in doc["checks"] if c["name"] == "database")
+disk = next(c for c in doc["checks"] if c["name"] == "disk")
+assert db["status"] == "fail" and "/etc" in db["detail"], db
+assert "/etc" in disk["detail"], disk
+PY
+
+echo "== active but disabled unit is a warning"
+cat > "$BIN/systemctl" <<'EOF'
+#!/usr/bin/env bash
+unit=""
+for a in "$@"; do
+  case "$a" in
+    *.service|*.target|*.timer) unit="$a" ;;
+  esac
+done
+case "$1" in
+  is-active) [[ "$unit" == "auth-server.service" ]] ;;
+  is-enabled) exit 1 ;;
+  cat) [[ "$unit" == "auth-server.service" ]] ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 755 "$BIN/systemctl"
+write_env
+out="$(doctor --json)" || true
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+svc = next(c for c in doc["checks"] if c["name"] == "service")
+assert svc["status"] == "warn" and "not enabled" in svc["detail"], svc
+PY
+
+echo "== git status failure is not a clean tree"
+cat > "$BIN/git" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  [[ "$a" == fetch ]] && exit 99
+  [[ "$a" == status ]] && exit 7
+done
+exec /usr/bin/git "$@"
+EOF
+chmod 755 "$BIN/git"
+out="$(doctor --json)" || true
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+git = next(c for c in doc["checks"] if c["name"] == "git-clean")
+assert git["status"] == "warn" and "cannot inspect" in git["detail"], git
+PY
+
+echo "== chown and mkdir do not follow symlinks"
+# shellcheck disable=SC1090
+eval "$(sed -n '/^priv_chown()/,/^}/p' "$REPO/scripts/doctor.sh")"
+# shellcheck disable=SC1090
+eval "$(sed -n '/^priv_mkdir()/,/^}/p' "$REPO/scripts/doctor.sh")"
+printf 'x\n' > "$TMP/chown-target"
+chmod 600 "$TMP/chown-target"
+ln -s "$TMP/chown-target" "$TMP/chown-link"
+set +e
+priv_chown "$TMP/chown-link" "$TEST_USER" "$(id -gn)" 640
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]]
+[[ "$(/usr/bin/stat -c '%a' "$TMP/chown-target")" == 600 ]]
+printf 'owned\n' > "$TMP/chown-file"
+chmod 644 "$TMP/chown-file"
+priv_chown "$TMP/chown-file" "$TEST_USER" "$(id -gn)" 600
+[[ "$(/usr/bin/stat -c '%a' "$TMP/chown-file")" == 600 ]]
+mkdir -p "$TMP/real-parent"
+ln -s "$TMP/real-parent" "$TMP/link-parent"
+set +e
+priv_mkdir "$TMP/link-parent/newdir" "$TEST_USER" "$(id -gn)" 700
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]]
+[[ ! -e "$TMP/real-parent/newdir" ]]
+priv_mkdir "$TMP/real-parent/newdir" "$TEST_USER" "$(id -gn)" 700
+[[ -d "$TMP/real-parent/newdir" && ! -L "$TMP/real-parent/newdir" ]]
+[[ "$(/usr/bin/stat -c '%a' "$TMP/real-parent/newdir")" == 700 ]]
+
+echo "== installer replaces a symlink and refuses a symlink source"
+# shellcheck disable=SC1090
+eval "$(sed -n '/^install_root_script()/,/^}/p' "$REPO/scripts/bootstrap.sh")"
+printf '#!/bin/sh\necho installed\n' > "$TMP/cli-src"
+chmod 755 "$TMP/cli-src"
+ln -s "$TMP/cli-src" "$TMP/cli-link"
+mkdir -p "$TMP/prefix/bin"
+set +e
+install_root_script "$TMP/cli-link" "$TMP/prefix/bin/auth"
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]]
+[[ ! -e "$TMP/prefix/bin/auth" ]]
+printf 'original\n' > "$TMP/prefix/bin/original"
+ln -s "$TMP/prefix/bin/original" "$TMP/prefix/bin/auth"
+install_root_script "$TMP/cli-src" "$TMP/prefix/bin/auth"
+[[ ! -L "$TMP/prefix/bin/auth" ]]
+[[ "$(cat "$TMP/prefix/bin/auth")" == *"installed"* ]]
+[[ "$(cat "$TMP/prefix/bin/original")" == original ]]
+
+echo "== cli does not sudo a service-writable doctor"
+mkdir -p "$TMP/sudo-bin"
+cat > "$TMP/sudo-bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+echo "sudo should not run" >&2
+exit 99
+EOF
+chmod 755 "$TMP/sudo-bin/sudo"
+set +e
+cli_out="$(PATH="$TMP/sudo-bin:/usr/bin:/bin" bash "$REPO/deploy/auth-cli" doctor --check 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+[[ "$cli_out" == *"service-writable"* ]]
+[[ "$cli_out" != *"sudo should not run"* ]]
 
 echo "ok"
