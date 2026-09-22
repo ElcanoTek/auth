@@ -21,6 +21,49 @@ APP_DIR="${APP_DIR:-/opt/auth}"
 APP_USER="${APP_USER:-auth}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}" # overridable for tests
 CLI_BIN="${CLI_BIN:-/usr/local/bin/auth}"         # overridable for tests
+
+# Copy SRC onto DEST as a root-owned regular file. A symlink destination is
+# replaced; a symlink source is refused. GNU install would follow either.
+# The doctor copy follows CLI_BIN's prefix so a layout test stays inside its
+# temporary directory (/usr/local/bin/auth -> /usr/local/lib/auth).
+install_root_script() {
+  local src="$1" dest="$2" mode="${3:-0755}" dir tmp
+  if [[ -L "$src" || ! -f "$src" ]]; then
+    echo "refusing to install $dest: $src is missing or a symlink" >&2
+    return 1
+  fi
+  dir="$(dirname -- "$dest")"
+  if [[ -L "$dir" ]]; then
+    echo "refusing to install under symlink $dir" >&2
+    return 1
+  fi
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p -- "$dir"
+    if [[ $EUID -eq 0 ]]; then
+      chown root:root -- "$dir"
+      chmod 0755 -- "$dir"
+    fi
+  fi
+  if [[ -L "$dir" || ! -d "$dir" ]]; then
+    echo "refusing to install under $dir" >&2
+    return 1
+  fi
+  tmp="$(mktemp "$dir/.install.XXXXXX")"
+  cp -f -- "$src" "$tmp"
+  if [[ $EUID -eq 0 ]]; then
+    chown root:root -- "$tmp"
+  fi
+  chmod "$mode" -- "$tmp"
+  mv -Tf -- "$tmp" "$dest"
+}
+
+install_auth_operator() {
+  local prefix
+  prefix="$(dirname -- "$(dirname -- "$CLI_BIN")")"
+  install_root_script "$APP_DIR/deploy/auth-cli" "$CLI_BIN"
+  install_root_script "$APP_DIR/scripts/doctor.sh" "$prefix/lib/auth/doctor.sh"
+  install_root_script "$APP_DIR/scripts/lib/envfile.sh" "$prefix/lib/auth/lib/envfile.sh" 0644
+}
 LOCK_FILE="${LOCK_FILE:-/run/auth-update.lock}"   # overridable for tests
 
 if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
@@ -429,7 +472,7 @@ if ! {
   layout_apply &&
   install -m 0644 "$APP_DIR/deploy/auth-server.service" "$SYSTEMD_DIR/" &&
   install -m 0644 "$APP_DIR/deploy/auth.target"         "$SYSTEMD_DIR/" &&
-  install -m 0755 "$APP_DIR/deploy/auth-cli"            "$CLI_BIN" &&
+  install_auth_operator &&
   systemctl daemon-reload
 }; then
   rollback_and_die "swap failed mid-install (${after_sha:0:12})"
