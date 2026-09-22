@@ -493,11 +493,12 @@ can reach. Team tags (alone or in a batch) and signing yourself out are the
 only console writes that are not gated. On a server without `AUTH_MFA_KEY`
 the sensitive actions are only available from the `auth` CLI on the box.
 
-An administrator who has no authenticator yet sets one up without leaving the
-console: their own row's **Settings** opens with **Your authenticator** and a
-**Set up** button (it reads **Manage** once they have one), and the two-factor
-policy popup offers the same where it explains that it cannot be saved without
-one. Both lead to the Security page and back to the console.
+An administrator who has no authenticator yet is pointed at one from the
+console itself: their own row's **Settings** opens with **Your authenticator**
+and a **Set up** button (it reads **Manage** once they have one), and where the
+server has a key the two-factor policy popup offers the same beneath the
+sentence that says it cannot be saved without one. Both open the Security page
+with a way back, so enrollment ends where it started.
 
 Tabs:
 

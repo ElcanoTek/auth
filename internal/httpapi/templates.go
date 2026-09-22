@@ -848,7 +848,7 @@ const adminHTML = `<!doctype html>
             </form>
             {{if $row.Self}}
             <div class="setting">
-              <div><strong>Your authenticator</strong><p class="muted">{{if not $.MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.{{else if $row.MFAEnrolled}}Set up. Sensitive changes here need a code from it entered less than five minutes ago.{{end}}{{if and $.MFAAvailable (not $row.MFAEnrolled)}}Not set up. Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need one, so set it up before you need it.{{end}}</p></div>
+              <div><strong>Your authenticator</strong><p class="muted">{{if not $.MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.{{else if $row.MFAEnrolled}}Set up. Sensitive changes here need a code from it entered less than five minutes ago.{{end}}{{if and $.MFAAvailable (not $row.MFAEnrolled)}}Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one, so set it up before you need it.{{end}}</p></div>
               {{if $.MFAAvailable}}<a class="{{if $row.MFAEnrolled}}btn-ghost{{else}}btn inline{{end}}" href="/account/security?return_to=%2Fadmin" aria-label="{{if $row.MFAEnrolled}}Manage your authenticator{{else}}Set up your authenticator{{end}}">{{if $row.MFAEnrolled}}Manage{{else}}Set up{{end}}</a>{{end}}
             </div>
             {{end}}
