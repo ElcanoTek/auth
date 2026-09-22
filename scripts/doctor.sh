@@ -883,14 +883,15 @@ env_get() {
     v="${v#"${v%%[![:space:]]*}"}"
     found=1
     if [[ ${#v} -ge 2 && ( "${v:0:1}" == '"' || "${v:0:1}" == "'" ) ]]; then
-      local q="${v:0:1}" inner="" i=1 c
+      # bs is one backslash. A single-quoted '\' is SC1003 under the CI shellcheck.
+      local q="${v:0:1}" inner="" i=1 c n bs=$'\\'
       while (( i < ${#v} )); do
         c="${v:i:1}"
-        if [[ "$q" == '"' && "$c" == '\' ]]; then
+        if [[ "$q" == '"' && "$c" == "$bs" ]]; then
           # Match envFileValue: only \" and \\ are unescaped. Any other
           # backslash stays, so doctor and the server see the same path.
-          local n="${v:i+1:1}"
-          if [[ "$n" == '"' || "$n" == '\' ]]; then
+          n="${v:i+1:1}"
+          if [[ "$n" == '"' || "$n" == "$bs" ]]; then
             inner+="$n"
             i=$((i + 2))
             continue
