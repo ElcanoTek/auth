@@ -276,7 +276,7 @@ a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .corner-actions .theme-toggle { position: static; }
 .corner-bottom { position: fixed; left: var(--space-5); bottom: var(--space-5); display: flex; gap: var(--space-3); align-items: center; z-index: 3; }
 .corner-bottom form { margin: 0; }
-a.btn-ghost { text-decoration: none; }
+a.btn-ghost, a.btn { text-decoration: none; }
 .icon-btn {
   width: 2.5rem; height: 2.5rem; display: inline-flex; align-items: center; justify-content: center;
   font-size: 1.25rem; line-height: 1; text-decoration: none;
@@ -324,7 +324,7 @@ a.btn-ghost { text-decoration: none; }
 .setting strong { display: block; color: var(--color-text-primary); font-size: var(--font-size-caption); }
 .setting .muted { margin: 0; font-size: var(--font-size-caption); }
 .setting .confirm .pane { left: auto; right: 0; border-radius: var(--radius-md) 0 var(--radius-md) var(--radius-md); }
-.setting .confirm > summary, .setting .btn-ghost { white-space: nowrap; }
+.setting .confirm > summary, .setting .btn-ghost, .setting .btn { white-space: nowrap; }
 .modal .checks { margin-top: var(--space-2); }
 /* Segmented pills, copied from Fleet's Segmented control: a hairline-bordered
    pill group whose selected options fill with the primary colour. Here each
@@ -846,6 +846,12 @@ const adminHTML = `<!doctype html>
                 <p class="hint">A tag for grouping accounts. Leave blank to remove it.</p>
               </div>
             </form>
+            {{if $row.Self}}
+            <div class="setting">
+              <div><strong>Your authenticator</strong><p class="muted">{{if not $.MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.{{else if $row.MFAEnrolled}}Set up. Sensitive changes here need a code from it entered less than five minutes ago.{{end}}{{if and $.MFAAvailable (not $row.MFAEnrolled)}}Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one, so set it up before you need it.{{end}}</p></div>
+              {{if $.MFAAvailable}}<a class="{{if $row.MFAEnrolled}}btn-ghost{{else}}btn inline{{end}}" href="/account/security?return_to=%2Fadmin" aria-label="{{if $row.MFAEnrolled}}Manage your authenticator{{else}}Set up your authenticator{{end}}">{{if $row.MFAEnrolled}}Manage{{else}}Set up{{end}}</a>{{end}}
+            </div>
+            {{end}}
             {{if not $row.Self}}
             <div class="setting">
               <div><strong>Reset password</strong><p class="muted">Signs them out of every app and device; shows a new temporary password they must change.</p></div>
@@ -979,7 +985,8 @@ const adminHTML = `<!doctype html>
         </div>
         {{if .MFACountError}}<div class="err">The affected-account counts could not be loaded, so the policy cannot be changed from here right now. Reload and try again.</div>{{else}}
         <ul class="plain">{{range .MFAOptions}}<li><strong>{{.Label}}</strong>: {{.Describe}} {{if eq .ToEnroll 0}}Choosing it now makes nobody new enroll.{{else if eq .ToEnroll 1}}Choosing it now signs out 1 account without an authenticator; they set one up at their next sign-in.{{else}}Choosing it now signs out {{.ToEnroll}} accounts without an authenticator; they set one up at their next sign-in.{{end}}</li>{{end}}</ul>
-        <p class="hint">Relaxing the policy never removes anyone's authenticator. Changes take effect immediately{{if not .ActorFresh}} and need your authenticator code entered less than five minutes ago{{end}}.</p>
+        <p class="hint">Relaxing the policy never removes anyone's authenticator. Changes take effect immediately{{if not .ActorEnrolled}} and need your own authenticator, which you have not set up yet{{else if not .ActorFresh}} and need your authenticator code entered less than five minutes ago{{end}}.</p>
+        {{if not .ActorEnrolled}}<p class="hint"><a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up yours</a></p>{{end}}
         <button class="btn" type="submit">Save policy</button>{{end}}
       </form>{{end}}
     </div>

@@ -63,6 +63,116 @@ func TestConsoleShowsTwoFactorStatusAndPolicyControls(t *testing.T) {
 	_ = st
 }
 
+// settingsPopover returns the Settings popup of the row for email. The popup
+// is the last element in that row's cell, so the cell's end closes it.
+func settingsPopover(t *testing.T, body, email string) string {
+	t.Helper()
+	for _, chunk := range strings.Split(body, `<div id="settings-`)[1:] {
+		if end := strings.Index(chunk, "</td>"); end >= 0 {
+			chunk = chunk[:end]
+		}
+		if strings.Contains(strings.ToLower(chunk), `<p class="who">`+strings.ToLower(email)+" ") {
+			return chunk
+		}
+	}
+	t.Fatalf("no Settings popup for %s in:\n%s", email, body)
+	return ""
+}
+
+// The console gives the signed-in administrator their own way in: the button
+// is in their own Settings (and in the policy popup, which cannot be saved
+// without an authenticator), and following it unlocks the sensitive changes
+// that were refused a moment earlier.
+func TestAdministratorSetsUpTheirOwnAuthenticatorFromTheConsole(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := newBrowser(t, ts)
+	if resp, _ := alice.login("alice@example.com", plain); !alice.has(cfg.PasswordCookieName) {
+		t.Fatalf("sign-in: %q", resp.Header.Get("Location"))
+	}
+	_, body := alice.get("/admin")
+	mine := settingsPopover(t, body, "alice@example.com")
+	for _, want := range []string{
+		`<strong>Your authenticator</strong>`,
+		`Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one`,
+		`<a class="btn inline" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up</a>`,
+	} {
+		if !strings.Contains(mine, want) {
+			t.Fatalf("the administrator's own Settings lacks %q:\n%s", want, mine)
+		}
+	}
+	// The policy popup says why it would refuse the save, and offers the same
+	// way out.
+	for _, want := range []string{
+		`and need your own authenticator, which you have not set up yet`,
+		`<a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up yours</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("policy popup lacks %q:\n%s", want, body)
+		}
+	}
+	// It is the acting administrator's own row alone: bob's Settings keeps
+	// the controls an administrator uses on someone else, and offers nothing
+	// about an authenticator of theirs.
+	theirs := settingsPopover(t, body, "bob@example.com")
+	if strings.Contains(theirs, "Your authenticator") || strings.Contains(theirs, "/account/security") {
+		t.Fatalf("another account's Settings offers the enrollment:\n%s", theirs)
+	}
+	if !strings.Contains(theirs, `aria-label="Require two-factor: bob@example.com"`) {
+		t.Fatalf("another account's two-factor controls went missing:\n%s", theirs)
+	}
+	// The state the button exists for.
+	if resp, page := alice.post("/admin", url.Values{"action": {"disable"}, "email": {"bob@example.com"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Set up two-factor sign-in first.") {
+		t.Fatalf("disable before enrolling: %d\n%s", resp.StatusCode, page)
+	}
+
+	// Follow it: the security page opens, carries the way back to the
+	// console, and enrollment can be completed from there.
+	resp, page := alice.get("/account/security?return_to=%2Fadmin")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Set up authenticator") || !strings.Contains(page, `<input type="hidden" name="return_to" value="/admin">`) {
+		t.Fatalf("security page from the console button: %d\n%s", resp.StatusCode, page)
+	}
+	resp, page = alice.post("/account/security", url.Values{"action": {"start"}, "return_to": {"/admin"}})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(page, `src="data:image/png;base64,`) {
+		t.Fatalf("start: %d\n%s", resp.StatusCode, page)
+	}
+	secret := extractSecret(t, page)
+	if resp, page = alice.post("/account/security", url.Values{"action": {"confirm"}, "code": {codeFor(t, secret, time.Now())}, "return_to": {"/admin"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Authenticator set up") {
+		t.Fatalf("confirm: %d\n%s", resp.StatusCode, page)
+	}
+
+	// Back in the console: the block reads as set up, the invitations are
+	// gone, and the refused change now goes through.
+	_, body = alice.get("/admin")
+	mine = settingsPopover(t, body, "alice@example.com")
+	if !strings.Contains(mine, "Set up. Sensitive changes here need a code from it entered less than five minutes ago.") ||
+		!strings.Contains(mine, `<a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Manage your authenticator">Manage</a>`) {
+		t.Fatalf("own Settings after enrollment:\n%s", mine)
+	}
+	for _, gone := range []string{`aria-label="Set up your authenticator"`, "which you have not set up yet"} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("console still invites enrollment with %q", gone)
+		}
+	}
+	if resp, page := alice.post("/admin", url.Values{"action": {"disable"}, "email": {"bob@example.com"}}); resp.StatusCode != http.StatusOK || strings.Contains(page, "Set up two-factor sign-in first.") {
+		t.Fatalf("disable after enrolling: %d\n%s", resp.StatusCode, page)
+	}
+	if bob, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); bob.DisabledAt == nil {
+		t.Fatal("the change refused before enrollment did not take effect after it")
+	}
+	// A server without a key has nothing to offer: the block says so and
+	// neither popup shows a way to set one up.
+	ring := cfg.MFAKeyring
+	cfg.MFAKeyring = nil
+	_, body = alice.get("/admin")
+	cfg.MFAKeyring = ring
+	if !strings.Contains(settingsPopover(t, body, "alice@example.com"), "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.") {
+		t.Fatalf("keyless console:\n%s", body)
+	}
+	if strings.Contains(body, "/account/security?return_to=%2Fadmin") {
+		t.Fatalf("keyless console still offers enrollment:\n%s", body)
+	}
+}
+
 // An administrator without an authenticator cannot make sensitive changes:
 // the console sends them to set one up, and nothing is written.
 func TestUnenrolledAdministratorIsSentToEnrollBeforeSensitiveChanges(t *testing.T) {
