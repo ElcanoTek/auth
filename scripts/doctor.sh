@@ -756,6 +756,26 @@ gitc() {
   git -C "$SRC_DIR" "$@"
 }
 
+# Keep core.sshCommand (deploy key and known_hosts) and only add timeouts.
+# GIT_SSH_COMMAND replaces that command entirely, so it must include it.
+git_ssh_command() {
+  local base
+  base="$(gitc config --get core.sshCommand 2>/dev/null || true)"
+  base="${base//$'\n'/ }"
+  base="${base#"${base%%[![:space:]]*}"}"
+  base="${base%"${base##*[![:space:]]}"}"
+  [[ -n "$base" ]] || base="ssh"
+  case "$base" in
+    *BatchMode*) ;;
+    *) base="$base -o BatchMode=yes" ;;
+  esac
+  case "$base" in
+    *ConnectTimeout*) ;;
+    *) base="$base -o ConnectTimeout=5" ;;
+  esac
+  printf '%s' "$base"
+}
+
 gitc_timeout() {
   local secs="$1"
   shift
@@ -763,7 +783,14 @@ gitc_timeout() {
   if [[ $EUID -eq 0 ]]; then
     owner="$(stat -c '%U' "$SRC_DIR" 2>/dev/null || true)"
     if [[ -n "$owner" && "$owner" != root ]]; then
-      timeout "$secs" runuser -u "$owner" -- git -C "$SRC_DIR" "$@"
+      if [[ -n "${GIT_SSH_COMMAND:-}" ]]; then
+        timeout "$secs" runuser -u "$owner" -- env \
+          "GIT_TERMINAL_PROMPT=${GIT_TERMINAL_PROMPT:-0}" \
+          "GIT_SSH_COMMAND=${GIT_SSH_COMMAND}" \
+          git -C "$SRC_DIR" "$@"
+      else
+        timeout "$secs" runuser -u "$owner" -- git -C "$SRC_DIR" "$@"
+      fi
       return
     fi
   fi
@@ -798,7 +825,7 @@ check_git() {
   # ls-remote does not write FETCH_HEAD or remote-tracking refs, so --check
   # cannot change the checkout. A missing object locally still reports drift.
   fetch_rc=0
-  remote_sha="$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=5' gitc_timeout 10 ls-remote origin refs/heads/main 2>/dev/null)" || fetch_rc=$?
+  remote_sha="$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$(git_ssh_command)" gitc_timeout 10 ls-remote origin refs/heads/main 2>/dev/null)" || fetch_rc=$?
   remote_sha="${remote_sha%%$'\t'*}"
   remote_sha="${remote_sha%% *}"
   if [[ "$fetch_rc" -ne 0 || ! "$remote_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -859,9 +886,16 @@ env_get() {
       local q="${v:0:1}" inner="" i=1 c
       while (( i < ${#v} )); do
         c="${v:i:1}"
-        if [[ "$q" == '"' && "$c" == $'\\' ]]; then
-          i=$((i + 1))
-          inner+="${v:i:1}"
+        if [[ "$q" == '"' && "$c" == '\' ]]; then
+          # Match envFileValue: only \" and \\ are unescaped. Any other
+          # backslash stays, so doctor and the server see the same path.
+          local n="${v:i+1:1}"
+          if [[ "$n" == '"' || "$n" == '\' ]]; then
+            inner+="$n"
+            i=$((i + 2))
+            continue
+          fi
+          inner+="$c"
           i=$((i + 1))
           continue
         fi

@@ -409,28 +409,47 @@ case "$cmd" in
     ;;
   doctor)
     # .env.local is root:auth 0640, so the check re-execs through sudo. The
-    # script it execs is the root-owned copy, never the service-writable tree.
-    root_doctor=/usr/local/lib/auth/doctor.sh
+    # script it execs is the root-owned copy, never the service-writable tree,
+    # including --help. The copy is installed next to this CLI.
+    self="${BASH_SOURCE[0]}"
+    case "$self" in
+      /*) ;;
+      *) self="$PWD/$self" ;;
+    esac
+    prefix="$(dirname -- "$(dirname -- "$self")")"
     repo_doctor="$APP_DIR/scripts/doctor.sh"
     if [[ ! -f "$repo_doctor" ]]; then
       repo_doctor="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/doctor.sh"
     fi
     doctor_sh=""
-    if script_root_owned "$root_doctor" && script_root_owned "$(dirname "$root_doctor")/lib/envfile.sh"; then
-      doctor_sh="$root_doctor"
-    elif script_root_owned "$repo_doctor" && script_root_owned "$(dirname "$repo_doctor")/lib/envfile.sh"; then
-      doctor_sh="$repo_doctor"
-    fi
-    if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-      help_sh="${doctor_sh:-$repo_doctor}"
-      if [[ ! -f "$help_sh" || -L "$help_sh" ]]; then
-        echo "doctor script not found" >&2
-        exit 1
+    for candidate in "$prefix/lib/auth/doctor.sh" /usr/local/lib/auth/doctor.sh "$repo_doctor"; do
+      if script_root_owned "$candidate" && script_root_owned "$(dirname -- "$candidate")/lib/envfile.sh"; then
+        doctor_sh="$candidate"
+        break
       fi
-      exec bash "$help_sh" --help
+    done
+    if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+      if [[ -n "$doctor_sh" ]]; then
+        exec bash "$doctor_sh" --help
+      fi
+      if [[ $EUID -ne 0 && -f "$repo_doctor" && ! -L "$repo_doctor" ]]; then
+        exec bash "$repo_doctor" --help
+      fi
+      cat <<'EOF'
+auth doctor — read-only box diagnosis (safe repairs only with --repair)
+
+  auth doctor            inspect only; change nothing
+  auth doctor --check    same as the default
+  auth doctor --json     JSON report on stdout
+  sudo auth doctor --repair
+                         fix env mode and start an inactive unit
+
+Help from the CLI; the checkout script was not executed.
+EOF
+      exit 0
     fi
     if [[ -z "$doctor_sh" ]]; then
-      echo "refusing to run doctor as root from a service-writable script; run auth update to install /usr/local/lib/auth/doctor.sh" >&2
+      echo "refusing to run doctor as root from a service-writable script; run auth update to install the root-owned copy next to this command" >&2
       exit 1
     fi
     if [[ $EUID -ne 0 ]]; then

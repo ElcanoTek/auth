@@ -136,6 +136,19 @@ case "$*" in
 esac
 exit 1
 EOF
+# A real runuser resets PATH, so a root test would miss this stub. This
+# double keeps PATH and still drops the -u user -- prefix.
+cat > "$BIN/runuser" <<'EOF'
+#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -u|--user) shift 2 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+exec "$@"
+EOF
 chmod 755 "$BIN"/*
 
 cat > "$TMP/os-release" <<'EOF'
@@ -143,7 +156,7 @@ ID=fedora
 VERSION_ID=44
 EOF
 
-export PATH="$BIN:/usr/bin:/bin"
+export PATH="$BIN:/usr/sbin:/usr/bin:/sbin:/bin"
 export DOCTOR_STUB_LOG="$LOG"
 export AUTH_APP_DIR="$APP"
 export AUTH_SRC_DIR="$SRC"
@@ -484,6 +497,26 @@ assert tls["status"] == "fail" and "expired" in tls["detail"], tls
 assert "expires in" not in tls["detail"]
 PY
 
+echo "== a backslash that is not an escape is kept"
+printf 'AUTH_ADDR=127.0.0.1:9000\nAUTH_HOSTNAME=auth.example.com\nAUTH_LOGIN_MODE=password\nAUTH_SIGNING_KEY=%s\nAUTH_MFA_KEY=%s\nAUTH_DATA_DIR="%s\\extra"\n' \
+  "$SIGNING" "$MFA" "$DATA" > "$APP/.env.local"
+chmod 640 "$APP/.env.local"
+set +e
+out="$(doctor --json)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+assert_clean "$out"
+python3 - "$out" "${DATA}\\extra" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+want = sys.argv[2]
+stripped = want.replace("\\", "")
+db = next(c for c in doc["checks"] if c["name"] == "database")
+assert want in db["detail"], db
+assert stripped not in db["detail"], db
+PY
+
 echo "== AUTH_DATA_DIR /etc is refused"
 write_env 127.0.0.1:9000 auth.example.com /etc
 set +e
@@ -646,7 +679,10 @@ install_root_script "$TMP/cli-src" "$TMP/prefix/bin/auth"
 [[ "$(cat "$TMP/prefix/bin/auth")" == *"installed"* ]]
 [[ "$(cat "$TMP/prefix/bin/original")" == original ]]
 
-echo "== cli does not sudo a service-writable doctor"
+echo "== cli does not execute a service-writable doctor"
+doctor_src="$REPO/scripts/doctor.sh"
+saved_mode="$(stat -c '%a' "$doctor_src")"
+chmod a+w "$doctor_src"
 mkdir -p "$TMP/sudo-bin"
 cat > "$TMP/sudo-bin/sudo" <<'EOF'
 #!/usr/bin/env bash
@@ -657,9 +693,16 @@ chmod 755 "$TMP/sudo-bin/sudo"
 set +e
 cli_out="$(PATH="$TMP/sudo-bin:/usr/bin:/bin" bash "$REPO/deploy/auth-cli" doctor --check 2>&1)"
 rc=$?
+help_out="$(PATH="$TMP/sudo-bin:/usr/bin:/bin" bash "$REPO/deploy/auth-cli" doctor --help 2>&1)"
+help_rc=$?
 set -e
+chmod "$saved_mode" "$doctor_src"
 [[ "$rc" -eq 1 ]]
 [[ "$cli_out" == *"service-writable"* ]]
 [[ "$cli_out" != *"sudo should not run"* ]]
+if [[ "$EUID" -eq 0 ]]; then
+  [[ "$help_rc" -eq 0 ]]
+  [[ "$help_out" == *"was not executed"* ]]
+fi
 
 echo "ok"
