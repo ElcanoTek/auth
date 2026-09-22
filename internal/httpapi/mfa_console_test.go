@@ -63,6 +63,77 @@ func TestConsoleShowsTwoFactorStatusAndPolicyControls(t *testing.T) {
 	_ = st
 }
 
+// The console gives the signed-in administrator their own way in: the button
+// is in their own Settings (and in the policy popup, which cannot be saved
+// without an authenticator), and following it unlocks the sensitive changes
+// that were refused a moment earlier.
+func TestAdministratorSetsUpTheirOwnAuthenticatorFromTheConsole(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := newBrowser(t, ts)
+	if resp, _ := alice.login("alice@example.com", plain); !alice.has(cfg.PasswordCookieName) {
+		t.Fatalf("sign-in: %q", resp.Header.Get("Location"))
+	}
+	_, body := alice.get("/admin")
+	for _, want := range []string{
+		`<strong>Your authenticator</strong>`,
+		`Not set up. Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need one`,
+		`<a class="btn inline" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up</a>`,
+		// The policy popup says why it would refuse the save, and offers the
+		// same way out.
+		`and need your own authenticator, which you have not set up yet`,
+		`<a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up yours</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("console lacks %q:\n%s", want, body)
+		}
+	}
+	// It is the administrator's own row alone: bob's Settings keeps the
+	// controls an administrator uses on someone else.
+	if n := strings.Count(body, `<strong>Your authenticator</strong>`); n != 1 {
+		t.Fatalf("the block appears %d times; it belongs to the signed-in administrator's row alone", n)
+	}
+	if !strings.Contains(body, `aria-label="Require two-factor: bob@example.com"`) {
+		t.Fatal("another account's two-factor controls went missing")
+	}
+	// The state the button exists for.
+	if resp, page := alice.post("/admin", url.Values{"action": {"disable"}, "email": {"bob@example.com"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Set up two-factor sign-in first.") {
+		t.Fatalf("disable before enrolling: %d\n%s", resp.StatusCode, page)
+	}
+
+	// Follow it: the security page opens, carries the way back to the
+	// console, and enrollment can be completed from there.
+	resp, page := alice.get("/account/security?return_to=%2Fadmin")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Set up authenticator") || !strings.Contains(page, `<input type="hidden" name="return_to" value="/admin">`) {
+		t.Fatalf("security page from the console button: %d\n%s", resp.StatusCode, page)
+	}
+	resp, page = alice.post("/account/security", url.Values{"action": {"start"}, "return_to": {"/admin"}})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(page, `src="data:image/png;base64,`) {
+		t.Fatalf("start: %d\n%s", resp.StatusCode, page)
+	}
+	secret := extractSecret(t, page)
+	if resp, page = alice.post("/account/security", url.Values{"action": {"confirm"}, "code": {codeFor(t, secret, time.Now())}, "return_to": {"/admin"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Authenticator set up") {
+		t.Fatalf("confirm: %d\n%s", resp.StatusCode, page)
+	}
+
+	// Back in the console: the block reads as set up, the invitations are
+	// gone, and the refused change now goes through.
+	_, body = alice.get("/admin")
+	if !strings.Contains(body, "Set up. Sensitive changes here need a code from it entered less than five minutes ago.") || !strings.Contains(body, `aria-label="Manage your authenticator"`) {
+		t.Fatalf("console after enrollment:\n%s", body)
+	}
+	for _, gone := range []string{`aria-label="Set up your authenticator"`, "which you have not set up yet"} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("console still invites enrollment with %q", gone)
+		}
+	}
+	if resp, page := alice.post("/admin", url.Values{"action": {"disable"}, "email": {"bob@example.com"}}); resp.StatusCode != http.StatusOK || strings.Contains(page, "Set up two-factor sign-in first.") {
+		t.Fatalf("disable after enrolling: %d\n%s", resp.StatusCode, page)
+	}
+	if bob, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); bob.DisabledAt == nil {
+		t.Fatal("the change refused before enrollment did not take effect after it")
+	}
+}
+
 // An administrator without an authenticator cannot make sensitive changes:
 // the console sends them to set one up, and nothing is written.
 func TestUnenrolledAdministratorIsSentToEnrollBeforeSensitiveChanges(t *testing.T) {

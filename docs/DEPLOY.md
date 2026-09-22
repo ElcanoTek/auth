@@ -186,9 +186,10 @@ one edit; nothing here is optional for the first sign-in to work.
    that they can open the web admin console at `https://auth.<client>/admin`
    and create every other account from there (see "Admin console" below).
    Before any sensitive console action (creating accounts, granting
-   applications, resets, sign-outs, policy) they set up their authenticator
-   at `/account/security`; once every administrator has one, run
-   `auth mfa policy admins`.
+   applications, resets, sign-outs, policy) they set up their authenticator:
+   **Settings** on their own row in the console has a **Set up** button for
+   it, and the page itself is `/account/security`. Once every administrator
+   has one, run `auth mfa policy admins`.
 5. Register each application with its exact callback and logout URLs, then its
    back-channel endpoint. One client ID and secret per deployment; never share
    a secret between applications or between clients:
@@ -491,6 +492,12 @@ therefore not enough to lock people out, mint an account or widen what one
 can reach. Team tags (alone or in a batch) and signing yourself out are the
 only console writes that are not gated. On a server without `AUTH_MFA_KEY`
 the sensitive actions are only available from the `auth` CLI on the box.
+
+An administrator who has no authenticator yet sets one up without leaving the
+console: their own row's **Settings** opens with **Your authenticator** and a
+**Set up** button (it reads **Manage** once they have one), and the two-factor
+policy popup offers the same where it explains that it cannot be saved without
+one. Both lead to the Security page and back to the console.
 
 Tabs:
 
