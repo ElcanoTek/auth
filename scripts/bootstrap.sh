@@ -78,7 +78,7 @@ install_root_script() {
     chown root:root -- "$tmp"
   fi
   chmod "$mode" -- "$tmp"
-  mv -f -- "$tmp" "$dest"
+  mv -Tf -- "$tmp" "$dest"
 }
 ask()  { printf '%s?%s %s ' "$c_cyan" "$c_reset" "$*" >&2; }
 
@@ -251,7 +251,7 @@ fi
 
 # ── 1. system packages ──────────────────────────────────────────────
 step "1/6  Installing system dependencies via dnf"
-PKGS=(git curl golang rsync openssl sqlite bind-utils)
+PKGS=(git curl golang rsync openssl sqlite bind-utils python3)
 if [[ "${AUTH_BOOTSTRAP_SKIP_PACKAGES:-0}" == "1" ]]; then
   info "AUTH_BOOTSTRAP_SKIP_PACKAGES=1: not running dnf (test harness)"
 else

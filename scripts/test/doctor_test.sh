@@ -678,6 +678,11 @@ install_root_script "$TMP/cli-src" "$TMP/prefix/bin/auth"
 [[ ! -L "$TMP/prefix/bin/auth" ]]
 [[ "$(cat "$TMP/prefix/bin/auth")" == *"installed"* ]]
 [[ "$(cat "$TMP/prefix/bin/original")" == original ]]
+mkdir -p "$TMP/prefix/bin/realdir"
+ln -sfn "$TMP/prefix/bin/realdir" "$TMP/prefix/bin/auth"
+install_root_script "$TMP/cli-src" "$TMP/prefix/bin/auth"
+[[ ! -L "$TMP/prefix/bin/auth" && -f "$TMP/prefix/bin/auth" ]]
+[[ -z "$(find "$TMP/prefix/bin/realdir" -name '.install.*' -print -quit)" ]]
 
 echo "== cli does not execute a service-writable doctor"
 doctor_src="$REPO/scripts/doctor.sh"

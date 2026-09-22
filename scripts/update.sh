@@ -54,7 +54,7 @@ install_root_script() {
     chown root:root -- "$tmp"
   fi
   chmod "$mode" -- "$tmp"
-  mv -f -- "$tmp" "$dest"
+  mv -Tf -- "$tmp" "$dest"
 }
 
 install_auth_operator() {
