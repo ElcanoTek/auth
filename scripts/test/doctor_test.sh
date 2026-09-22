@@ -32,7 +32,9 @@ git -C "$SRC" config user.name t
 printf 'hi\n' > "$SRC/README"
 git -C "$SRC" add README
 git -C "$SRC" commit -q -m init
-git -C "$SRC" update-ref refs/remotes/origin/main HEAD
+git init -q --bare "$TMP/origin.git"
+git -C "$SRC" remote add origin "$TMP/origin.git"
+git -C "$SRC" push -q origin main
 
 cat > "$APP/.env.local" <<EOF
 AUTH_ADDR=127.0.0.1:9000
@@ -104,7 +106,8 @@ exit 0
 EOF
 cat > "$BIN/needs-restarting" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+# Shadow a host binary. 127 means "unusable", so doctor falls through to dnf.
+exit 127
 EOF
 cat > "$BIN/openssl" <<'EOF'
 #!/usr/bin/env bash
@@ -272,5 +275,63 @@ doc = json.loads(sys.argv[1])
 git = next(c for c in doc["checks"] if c["name"] == "git-clean")
 assert git["status"] == "warn" and "dirty" in git["detail"], git
 PY
+
+echo "== fetch reports commits behind origin"
+git -C "$TMP/origin.git" symbolic-ref HEAD refs/heads/main
+git clone -q "$TMP/origin.git" "$TMP/ahead"
+git -C "$TMP/ahead" config user.email t@example.com
+git -C "$TMP/ahead" config user.name t
+git -C "$TMP/ahead" commit -q --allow-empty -m newer
+git -C "$TMP/ahead" push -q origin main
+out="$(doctor --json)" || true
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+git = next(c for c in doc["checks"] if c["name"] == "git-upstream")
+assert git["status"] == "warn", git
+assert git["detail"] == "1 commit behind — auth update", git
+PY
+
+echo "== reboot falls back to the installed kernel"
+cat > "$BIN/dnf" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "needs-restarting" ]]; then
+  exit 2
+fi
+exit 0
+EOF
+cat > "$BIN/rpm" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"--last"* ]]; then
+  printf 'kernel-9.9.9-test.fc44.x86_64 Mon Jan 1 00:00:00 2026\n'
+  exit 0
+fi
+exit 1
+EOF
+chmod 755 "$BIN/dnf" "$BIN/rpm"
+out="$(doctor --json)" || true
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+reboot = next(c for c in doc["checks"] if c["name"] == "reboot")
+assert reboot["status"] == "warn", reboot
+assert "9.9.9-test.fc44.x86_64" in reboot["detail"], reboot
+PY
+
+if [[ ! -e /run/reboot-required && ! -e /var/run/reboot-required ]]; then
+  echo "== reboot unknown when every probe fails"
+  cat > "$BIN/rpm" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod 755 "$BIN/rpm"
+  out="$(doctor --json)" || true
+  python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+reboot = next(c for c in doc["checks"] if c["name"] == "reboot")
+assert reboot["status"] == "warn" and "could not determine" in reboot["detail"], reboot
+PY
+fi
 
 echo "ok"
