@@ -161,8 +161,11 @@ One tiny service, a SQLite file, systemd and journalctl. Containers buy reproduc
 of image builds + registries + extra mental overhead. For a service
 this small, the cost doesn't pay off.
 
-`auth restart`, `auth logs`, `auth backup` is the entire operator
-surface you'll need.
+`auth restart`, `auth logs`, `auth backup`, and `auth doctor` cover the
+operator surface. `auth doctor` is read-only (add `--json` for a machine
+report). `sudo auth doctor --repair` only fixes `.env.local` and data-directory
+ownership and starts a stopped `auth-server`; it does not pull, upgrade, or
+create the database.
 
 ## First password-mode client: rollout checklist
 

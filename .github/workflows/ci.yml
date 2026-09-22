@@ -56,6 +56,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Doctor script
+        run: bash scripts/test/doctor_test.sh
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:

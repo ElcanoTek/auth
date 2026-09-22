@@ -393,6 +393,19 @@ case "$cmd" in
   env)
     env_cmd "$@"
     ;;
+  doctor)
+    # Read-only unless --repair, which the script itself rejects for
+    # non-root. Do not source .env.local here.
+    doctor_sh="$APP_DIR/scripts/doctor.sh"
+    if [[ ! -f "$doctor_sh" ]]; then
+      doctor_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/doctor.sh"
+    fi
+    if [[ ! -f "$doctor_sh" ]]; then
+      echo "doctor script not found (expected $APP_DIR/scripts/doctor.sh — run auth update)" >&2
+      exit 1
+    fi
+    exec bash "$doctor_sh" "$@"
+    ;;
   help|-h|--help|"")
     cat <<'EOF'
 auth — Elcano auth-server operator CLI
@@ -451,6 +464,12 @@ CONFIG
   auth env [show]                   print .env.local (secrets redacted)
   auth env edit                     open .env.local in nano, vim, or helix
   auth env check                    verify .env.local exists + parses cleanly
+
+DIAGNOSIS
+  auth doctor [--check] [--json]    read-only box check (unit, env, /healthz,
+                                    TLS, SQLite, disk, updates, git)
+  sudo auth doctor --repair         fix .env.local mode/owner, data-dir mode,
+                                    and start an inactive auth-server
 
 DATA
   auth backup [dest]                online-backup state.db (default:

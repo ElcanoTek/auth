@@ -222,6 +222,8 @@ auth pubkey                          # print AUTH_SIGNING_PUBKEY for verifiers
 auth restart                         # pick up new .env.local
 auth logs                            # journalctl -fu auth-server
 auth backup                          # online sqlite snapshot
+auth doctor                          # read-only box check; add --json for a machine report
+sudo auth doctor --repair            # fix env and data-dir mode; start a stopped unit
 auth update                          # git pull + rebuild + restart (auto-rolls-back a bad build)
 ```
 
