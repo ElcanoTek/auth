@@ -157,6 +157,43 @@ func enrollViaStore(t *testing.T, ts *httptest.Server, st *store.Store, ring *mf
 	return secret, codes
 }
 
+// The Security page's markup and the rules that lay it out have to stay in
+// step: its buttons are a column, its status pill and the codes-left line sit
+// on one centre line, and its footnote is a footnote. A second `.actions`
+// rule further down the stylesheet used to win on equal specificity and turn
+// the column into a ragged row.
+func TestSecurityPageLayoutRulesMatchItsMarkup(t *testing.T) {
+	if n := strings.Count(componentCSS, "\n.actions {"); n != 1 {
+		t.Fatalf(".actions is declared %d times; a later rule silently overrides the column", n)
+	}
+	for _, want := range []string{
+		".actions { display: flex; flex-direction: column;",
+		".actions .btn { margin-top: 0; }",
+		".status-line .muted { margin: 0;",
+		".card > .hint {",
+	} {
+		if !strings.Contains(componentCSS, want) {
+			t.Fatalf("stylesheet lacks %q", want)
+		}
+	}
+	ts, st, cfg, plain := adminFixture(t)
+	alice := newBrowser(t, ts)
+	alice.login("alice@example.com", plain)
+	_, page := alice.get("/account/security")
+	for _, want := range []string{`<div class="status-line">`, `<div class="actions">`, `<p class="hint muted">`} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("the Security page no longer carries %q, so the rules above target nothing:\n%s", want, page)
+		}
+	}
+	// Enrolled, the codes-left line joins the pill inside the status line
+	// (enrolling ends the other sessions, so this is a fresh sign-in with a
+	// code).
+	enrolled, _ := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
+	if _, page = enrolled.get("/account/security"); !strings.Contains(page, `<div class="status-line"><span class="tag on">Enabled</span><span class="muted">10 recovery codes left</span></div>`) {
+		t.Fatalf("status line when enrolled:\n%s", page)
+	}
+}
+
 func TestEnrollFromSecurityPageThenLoginNeedsTheCode(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	grantAccess(t, st, "alice@example.com", "fleet")

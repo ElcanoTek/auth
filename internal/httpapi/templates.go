@@ -416,12 +416,18 @@ ul.plain li { margin: 0.2rem 0; }
 .codes li { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9rem; letter-spacing: 0.03em; white-space: nowrap; color: var(--color-text-primary); padding: var(--space-2) var(--space-3); background: var(--color-surface-1); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); user-select: all; -webkit-user-select: all; }
 a.btn { text-decoration: none; }
 .actions .btn-ghost { width: 100%; min-height: 2.5rem; font-size: var(--font-size-caption); }
-.status-line { display: flex; align-items: center; gap: var(--space-3); margin: 0 0 var(--space-5); }
+.status-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin: 0 0 var(--space-5); }
+/* .muted carries a bottom margin; inside the status line it would push the
+   text off the pill's centre line. */
+.status-line .muted { margin: 0; font-size: var(--font-size-caption); }
 .status-line .tag.on { color: var(--color-status-success-fg); background: var(--color-status-success-bg); border-color: var(--color-status-success-border); }
 .status-line .tag.need { color: var(--color-status-warning-fg); background: var(--color-status-warning-bg); border-color: var(--color-status-warning-border); }
 input.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 1.35rem; letter-spacing: 0.35em; text-align: center; }
 .actions { display: flex; flex-direction: column; gap: var(--space-2); }
 .actions form { margin: 0; }
+.actions .btn { margin-top: 0; }
+/* A footnote under a card's actions, not another paragraph of body text. */
+.card > .hint { margin: var(--space-5) 0 0; font-size: var(--font-size-caption); }
 .link-row { display: flex; justify-content: space-between; gap: var(--space-4); margin-top: var(--space-4); font-size: var(--font-size-caption); }
 .link-row a, .link-row button.linkish { color: var(--color-accent); background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; }
 .table-wrap { overflow-x: auto; }
@@ -447,7 +453,6 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .chip { display: inline-block; padding: 0.1rem 0.5rem; border-radius: var(--radius-pill); font-size: 0.6875rem; border: 1px solid var(--color-border); color: var(--color-text-secondary); }
 .chip.off { color: var(--color-text-muted); border-style: dashed; text-decoration: line-through; }
-.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: flex-start; }
 .btn-ghost, .confirm > summary {
   display: inline-flex; align-items: center; min-height: 1.9rem; padding: 0.2rem var(--space-3);
   font-family: var(--font-body); font-size: var(--font-size-caption); font-weight: var(--font-weight-bold);
