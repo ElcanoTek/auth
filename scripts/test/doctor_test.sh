@@ -376,8 +376,14 @@ awk '
   /^check_unit / { if (!u) u = NR }
   END { exit !(d && u && d < u) }
 ' "$REPO/scripts/doctor.sh"
-! grep -q 'safe\.directory' "$REPO/scripts/doctor.sh"
-! grep -q 'git fetch' "$REPO/scripts/doctor.sh"
+if grep -q 'safe\.directory' "$REPO/scripts/doctor.sh"; then
+  echo "doctor must not set safe.directory" >&2
+  exit 1
+fi
+if grep -q 'git fetch' "$REPO/scripts/doctor.sh"; then
+  echo "doctor --check must not git fetch" >&2
+  exit 1
+fi
 grep -q 'ls-remote' "$REPO/scripts/doctor.sh"
 grep -q 'quick_check' "$REPO/scripts/doctor.sh"
 grep -q -- '-verify_hostname' "$REPO/scripts/doctor.sh"
@@ -519,6 +525,58 @@ doc = json.loads(sys.argv[1])
 svc = next(c for c in doc["checks"] if c["name"] == "service")
 assert svc["status"] == "warn" and "not enabled" in svc["detail"], svc
 PY
+
+echo "== disabled service wanted by an enabled auth.target passes"
+cat > "$BIN/systemctl" <<'EOF'
+#!/usr/bin/env bash
+unit=""
+prop=""
+for a in "$@"; do
+  case "$a" in
+    *.service|*.target|*.timer) unit="$a" ;;
+    Wants) prop="Wants" ;;
+  esac
+done
+case "$1" in
+  is-active) [[ "$unit" == "auth-server.service" ]] ;;
+  is-enabled)
+    case "$unit" in
+      auth-server.service) exit 1 ;;
+      auth.target) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  show)
+    if [[ "$prop" == "Wants" && "$unit" == "auth.target" ]]; then
+      printf '%s\n' "${AUTH_TARGET_WANTS:-auth-server.service}"
+      exit 0
+    fi
+    exit 1
+    ;;
+  cat) [[ "$unit" == "auth-server.service" ]] ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 755 "$BIN/systemctl"
+write_env
+unset AUTH_TARGET_WANTS
+out="$(doctor --json)" || true
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+svc = next(c for c in doc["checks"] if c["name"] == "service")
+assert svc["status"] == "pass", svc
+assert "auth.target is enabled and wants it" in svc["detail"], svc
+PY
+export AUTH_TARGET_WANTS=caddy.service
+out="$(doctor --json)" || true
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+svc = next(c for c in doc["checks"] if c["name"] == "service")
+assert svc["status"] == "warn" and "not enabled" in svc["detail"], svc
+PY
+unset AUTH_TARGET_WANTS
 
 echo "== git status failure is not a clean tree"
 cat > "$BIN/git" <<'EOF'

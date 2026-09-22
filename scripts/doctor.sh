@@ -363,9 +363,29 @@ check_env() {
   fi
 }
 
+# boot_via UNIT prints "enabled" when the unit itself is enabled, or
+# "auth.target" when that target is enabled and Wants= the service.
+# Bootstrap enables auth.target only. auth-server.service stays disabled
+# on purpose; the target's Wants= is what starts it.
+boot_via() {
+  local unit="$1" wants
+  if systemctl is-enabled --quiet "$unit"; then
+    printf 'enabled\n'
+    return 0
+  fi
+  [[ "$unit" == "$SERVICE" ]] || return 1
+  systemctl is-enabled --quiet auth.target || return 1
+  wants="$(systemctl show -p Wants --value auth.target 2>/dev/null || true)"
+  wants=" ${wants//$'\n'/ } "
+  case "$wants" in
+    *" $unit "*) printf 'auth.target\n'; return 0 ;;
+  esac
+  return 1
+}
+
 check_unit() {
   local name="$1" unit="$2" level="$3"
-  local enabled=0
+  local enabled=0 via=""
   if ! have systemctl; then
     add warn "$name" "systemctl is not installed; skipped $unit"
     return
@@ -379,14 +399,18 @@ check_unit() {
     return
   fi
   if systemctl is-active --quiet "$unit"; then
-    if systemctl is-enabled --quiet "$unit"; then
-      add pass "$name" "$unit active and enabled"
+    if via="$(boot_via "$unit")"; then
+      if [[ "$via" == "enabled" ]]; then
+        add pass "$name" "$unit active and enabled"
+      else
+        add pass "$name" "$unit active; $via is enabled and wants it"
+      fi
     else
       add warn "$name" "$unit is active but not enabled — it will not start on boot"
     fi
     return
   fi
-  if systemctl is-enabled --quiet "$unit"; then
+  if via="$(boot_via "$unit")"; then
     enabled=1
   fi
   if [[ "$REPAIR" == 1 && ( "$level" == "core" || "$enabled" == 1 ) ]]; then
