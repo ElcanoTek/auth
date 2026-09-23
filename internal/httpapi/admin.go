@@ -299,7 +299,11 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		}
 		res.Tab = app.ID
 		disable := action == "disable-app"
-		if err := s.store.SetApplicationDisabled(ctx, app.ID, disable, now.Unix()); err != nil {
+		err = s.store.SetApplicationDisabledBy(ctx, app.ID, disable, actor.ID, proof, now.Unix())
+		if errors.Is(err, store.ErrActorNotFresh) {
+			return needVerify()
+		}
+		if err != nil {
 			return res.failed(action, err)
 		}
 		if disable {

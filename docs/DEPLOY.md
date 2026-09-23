@@ -494,7 +494,9 @@ counts; a recovery-code sign-in does not). A stolen console session is
 therefore not enough to lock people out, mint an account or widen what one
 can reach. Team tags (alone or in a batch) and signing yourself out are the
 only console writes that are not gated. On a server without `AUTH_MFA_KEY`
-the sensitive actions are only available from the `auth` CLI on the box.
+the sensitive actions are only available from the `auth` CLI on the box. An
+application enable/disable repeats the live-session, administrator and fresh
+authenticator checks inside the same transaction as the toggle.
 
 An administrator who has no authenticator yet is pointed at one from the
 console itself: their own row's **Settings** opens with **Your authenticator**

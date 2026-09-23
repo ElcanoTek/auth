@@ -1879,6 +1879,15 @@ func (s *Store) RotateApplicationSecret(ctx context.Context, id, secretHash stri
 }
 
 func (s *Store) SetApplicationDisabled(ctx context.Context, id string, disabled bool, now int64) error {
+	return s.SetApplicationDisabledBy(ctx, id, disabled, "", nil, now)
+}
+
+// SetApplicationDisabledBy is SetApplicationDisabled with an optional
+// in-transaction actor check. Console callers pass a fresh administrator
+// proof so the toggle cannot land after that session is revoked, the actor
+// is demoted, or their authenticator proof expires. The root-only CLI passes
+// nil as the separate operator recovery path.
+func (s *Store) SetApplicationDisabledBy(ctx context.Context, id string, disabled bool, actorID string, proof *ActorProof, now int64) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return errors.New("application id is required")
@@ -1892,6 +1901,9 @@ func (s *Store) SetApplicationDisabled(ctx context.Context, id string, disabled 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE applications SET disabled_at = ?, updated_at = ? WHERE id = ?`, disabledAt, now, id)
 	if err != nil {
 		return err
