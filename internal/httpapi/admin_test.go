@@ -141,11 +141,22 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 		`class="tab active" href="/admin"`, `href="/admin?tab=fleet"`, `href="/admin?tab=explorer"`,
 		"Alice@Example.com", "bob@example.com", `<span class="badge admin">Admin</span>`, `<span class="chip">Fleet</span>`,
 		`name="action" value="create"`, `action="/logout"`,
+		`id="account-search" type="search" placeholder="Search accounts"`, `id="account-filter" data-account-filter`,
+		`data-account-row data-account-search-value="bob@example.com`, `data-account-empty hidden`,
 		// alice has registered apps but no grants: the cell says so.
 		`<span class="chip off">none</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("admin page lacks %s", want)
+		}
+	}
+	for _, gone := range []string{
+		"Who can sign in, to which applications, and whether they can open this console.",
+		"Two-factor policy: <strong>Optional</strong>.",
+		"Tick accounts to change several at once.",
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("admin page still contains removed helper copy %q", gone)
 		}
 	}
 	if resp.Header.Get("Cache-Control") != "no-store" {
@@ -450,9 +461,14 @@ func TestAdminApplicationTabToggleAndSignIns(t *testing.T) {
 		t.Fatalf("token exchange = %d", exch.StatusCode)
 	}
 	_, tab := alice.get("/admin?tab=fleet")
-	for _, want := range []string{`<span class="badge ok">Enabled</span>`, "bob@example.com", `<td class="num">1</td>`, `<code>https://fleet.client.example/api/auth/backchannel-logout</code>`, `value="disable-app"`} {
+	for _, want := range []string{`<span class="badge ok">Enabled</span>`, "bob@example.com", `<td class="num">1</td>`, `<dt>Accounts with access</dt><dd>1</dd>`, `<dt>Registered</dt>`, `value="disable-app"`} {
 		if !strings.Contains(tab, want) {
 			t.Errorf("fleet tab lacks %s", want)
+		}
+	}
+	for _, gone := range []string{"<dt>Client ID</dt>", "<dt>Callback</dt>", "<dt>Signed-out page</dt>", "<dt>Back-channel logout</dt>", "fleet.client.example/api/auth/oidc/callback", "fleet.client.example/api/auth/backchannel-logout"} {
+		if strings.Contains(tab, gone) {
+			t.Errorf("fleet tab still exposes application integration detail %q", gone)
 		}
 	}
 	// Disable from the tab: stays on the tab, gate closes for bob.

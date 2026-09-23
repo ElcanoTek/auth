@@ -31,7 +31,6 @@ func TestConsoleShowsTwoFactorStatusAndPolicyControls(t *testing.T) {
 	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
 	_, body := alice.get("/admin")
 	for _, want := range []string{
-		`Two-factor policy: <strong>Optional</strong>`,
 		`popovertarget="mfa-policy"`, `id="mfa-policy" class="modal" popover`,
 		`<input type="radio" name="mode" value="optional" checked> Optional`,
 		`<input type="radio" name="mode" value="admins"> Required for administrators`,
@@ -55,7 +54,7 @@ func TestConsoleShowsTwoFactorStatusAndPolicyControls(t *testing.T) {
 			t.Fatalf("console lacks %q:\n%s", want, body)
 		}
 	}
-	for _, gone := range []string{`name="mfa_required"`, `Require 2FA`, `<th class="num">Sessions</th>`} {
+	for _, gone := range []string{`name="mfa_required"`, `Require 2FA`, `<th class="num">Sessions</th>`, `Two-factor policy: <strong>Optional</strong>`} {
 		if strings.Contains(body, gone) {
 			t.Fatalf("console still has %q", gone)
 		}

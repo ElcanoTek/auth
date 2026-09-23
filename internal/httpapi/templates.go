@@ -348,6 +348,18 @@ ul.plain li { margin: 0.2rem 0; }
 .section-head > div:first-child { flex: 1 1 22rem; min-width: 0; }
 .head-actions { flex: 0 0 auto; align-items: center; margin-top: 0.15rem; }
 .head-actions .btn-ghost { min-height: 2.25rem; }
+.account-title { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.account-title h2 { margin: 0; }
+.account-tools { display: flex; align-items: center; gap: var(--space-2); flex: 1 1 24rem; }
+.account-tools input[type=search], .account-tools select {
+  min-height: 2.25rem; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-caption);
+  color: var(--color-text-primary); background: var(--color-surface-1);
+  border: 1px solid var(--color-border); border-radius: var(--radius-md); outline: none;
+}
+.account-tools input[type=search] { flex: 1 1 12rem; min-width: 8rem; }
+.account-tools select { flex: 0 1 auto; max-width: 12rem; }
+.account-tools input:focus-visible, .account-tools select:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
+.search-empty { padding: var(--space-5) !important; color: var(--color-text-muted) !important; text-align: center !important; }
 .btn-add { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; padding: 0; border: 0; border-radius: 50%; background: #15803d; color: #fff; font-size: 1.35rem; line-height: 1; font-weight: 600; cursor: pointer; transition: background var(--transition-fast), transform var(--transition-fast); }
 .btn-add:hover { background: #166534; }
 .btn-add:active { transform: scale(0.96); }
@@ -492,6 +504,7 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .empty { margin: 0; padding: var(--space-4); border: 1px dashed var(--color-border); border-radius: var(--radius-md); color: var(--color-text-muted); font-size: var(--font-size-caption); text-align: center; }
 @media (max-width: 40rem) {
   table.list .num { display: none; }
+  .account-title, .account-tools { width: 100%; }
   /* The corner controls would float over a long table on a phone; let them
      end the page instead: body is a flex row for centring the card, so they
      wrap onto their own full-width line below it. */
@@ -723,15 +736,40 @@ const adminScript = `
   var boxes = Array.prototype.slice.call(document.querySelectorAll("[data-select]"));
   var count = document.querySelector("[data-batch-count]");
   var bar = document.querySelector("[data-batch]");
+  var search = document.querySelector("[data-account-search]");
+  var filter = document.querySelector("[data-account-filter]");
+  var accountRows = Array.prototype.slice.call(document.querySelectorAll("[data-account-row]"));
+  var noMatches = document.querySelector("[data-account-empty]");
+  function visibleBoxes() {
+    return boxes.filter(function (box) { var row = box.closest("[data-account-row]"); return !row || !row.hidden; });
+  }
   function refresh() {
-    var n = boxes.filter(function (b) { return b.checked; }).length;
+    var visible = visibleBoxes();
+    var n = visible.filter(function (b) { return b.checked; }).length;
     if (count) { count.textContent = n + " selected"; }
     if (bar) { bar.classList.toggle("on", n > 0); }
-    if (all) { all.checked = n > 0 && n === boxes.length; all.indeterminate = n > 0 && n < boxes.length; }
+    if (all) { all.checked = n > 0 && n === visible.length; all.indeterminate = n > 0 && n < visible.length; all.disabled = visible.length === 0; }
   }
-  if (all) { all.addEventListener("change", function () { boxes.forEach(function (b) { b.checked = all.checked; }); refresh(); }); }
+  function filterAccounts() {
+    var query = search ? search.value.trim().toLocaleLowerCase() : "";
+    var mode = filter ? filter.value : "";
+    var shown = 0;
+    accountRows.forEach(function (row) {
+      var text = (row.getAttribute("data-account-search-value") || "").toLocaleLowerCase();
+      var modes = (row.getAttribute("data-account-filter-values") || "").split(" ");
+      var matches = (!query || text.indexOf(query) !== -1) && (!mode || modes.indexOf(mode) !== -1);
+      row.hidden = !matches;
+      if (!matches) { var box = row.querySelector("[data-select]"); if (box) box.checked = false; }
+      if (matches) shown++;
+    });
+    if (noMatches) noMatches.hidden = shown !== 0;
+    refresh();
+  }
+  if (all) { all.addEventListener("change", function () { visibleBoxes().forEach(function (b) { b.checked = all.checked; }); refresh(); }); }
   boxes.forEach(function (b) { b.addEventListener("change", refresh); });
-  refresh();
+  if (search) { search.addEventListener("input", filterAccounts); }
+  if (filter) { filter.addEventListener("change", filterAccounts); }
+  filterAccounts();
   document.querySelectorAll("[data-generate]").forEach(function (button) {
     button.addEventListener("click", function () {
       var field = document.getElementById(button.getAttribute("data-generate"));
@@ -799,9 +837,22 @@ const adminHTML = `<!doctype html>
     {{if eq .Tab "accounts"}}
     <section class="section" aria-labelledby="accounts-heading">
       <div class="section-head">
-        <div>
+        <div class="account-title">
           <h2 id="accounts-heading">Accounts</h2>
-          <p class="muted">Who can sign in, to which applications, and whether they can open this console. Two-factor policy: <strong>{{.MFAPolicy}}</strong>. Tick accounts to change several at once.</p>
+          {{if .Accounts}}<div class="account-tools" role="search">
+            <label class="sr-only" for="account-search">Search accounts</label>
+            <input id="account-search" type="search" placeholder="Search accounts" autocomplete="off" data-account-search>
+            <label class="sr-only" for="account-filter">Filter accounts</label>
+            <select id="account-filter" data-account-filter>
+              <option value="">All accounts</option>
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+              <option value="admin">Administrators</option>
+              <option value="must-change">Must change password</option>
+              <option value="mfa-enabled">2FA enabled</option>
+              <option value="mfa-missing">2FA not enrolled</option>
+            </select>
+          </div>{{end}}
         </div>
         <div class="row-actions head-actions">
           <button class="btn-ghost" type="button" popovertarget="mfa-policy" title="Two-factor policy" aria-label="Two-factor policy">2FA</button>
@@ -812,7 +863,7 @@ const adminHTML = `<!doctype html>
       <div class="table-wrap"><table class="list">
         <thead><tr><th class="sel"><input type="checkbox" data-select-all aria-label="Select every account"></th><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th></th></tr></thead>
         <tbody>
-        {{range $i, $row := .Accounts}}<tr>
+        {{range $i, $row := .Accounts}}<tr data-account-row data-account-search-value="{{$row.Email}} {{$row.Team}} {{$row.Status}} {{$row.MFAStatus}}{{if $row.IsAdmin}} administrator admin{{end}}{{range $row.Apps}}{{if .Granted}} {{.Name}}{{end}}{{end}}" data-account-filter-values="{{if eq $row.Status "Active"}}active{{else if eq $row.Status "Disabled"}}disabled{{else}}must-change{{end}}{{if $row.IsAdmin}} admin{{end}}{{if $row.MFAEnrolled}} mfa-enabled{{else}} mfa-missing{{end}}">
           <td class="sel"><input type="checkbox" name="emails" value="{{$row.Email}}" form="batch-form" data-select aria-label="Select {{$row.Email}}"></td>
           <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
           <td><div class="chips"><span class="badge {{$row.StatusClass}}">{{$row.Status}}</span><span class="badge {{$row.MFAClass}}" title="Two-factor sign-in">2FA: {{$row.MFAStatus}}</span></div></td>
@@ -933,6 +984,7 @@ const adminHTML = `<!doctype html>
             {{end}}
           </div></td>
         </tr>{{end}}
+        <tr data-account-empty hidden><td class="search-empty" colspan="6">No matching accounts.</td></tr>
         </tbody>
       </table></div>
       <form id="batch-form" class="batch" method="post" action="/admin" aria-label="Change the selected accounts" data-batch>
@@ -1015,10 +1067,6 @@ const adminHTML = `<!doctype html>
         {{end}}
       </div>
       <dl class="kv">
-        <dt>Client ID</dt><dd><code>{{.ID}}</code></dd>
-        <dt>Callback</dt><dd><code>{{.Callback}}</code></dd>
-        <dt>Signed-out page</dt><dd>{{if .Logout}}<code>{{.Logout}}</code>{{else}}<span class="muted">none</span>{{end}}</dd>
-        <dt>Back-channel logout</dt><dd>{{if .Backchannel}}<code>{{.Backchannel}}</code>{{else}}<span class="badge warn">not configured</span> sign-outs elsewhere will not reach this application{{end}}</dd>
         <dt>Accounts with access</dt><dd>{{.Granted}}</dd>
         <dt>Registered</dt><dd>{{.Created}}</dd>
       </dl>
