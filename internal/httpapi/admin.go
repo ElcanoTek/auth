@@ -78,15 +78,12 @@ type adminSignInRow struct {
 }
 
 type adminAppView struct {
-	ID          string
-	Name        string
-	Disabled    bool
-	Callback    string
-	Logout      string
-	Backchannel string
-	Created     string
-	SignIns     []adminSignInRow
-	Granted     int
+	ID       string
+	Name     string
+	Disabled bool
+	Created  string
+	SignIns  []adminSignInRow
+	Granted  int
 }
 
 // adminResult is what one POST leaves for the re-rendered page. Status is
@@ -958,7 +955,6 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		app := appByID[tab]
 		view := adminAppView{
 			ID: app.ID, Name: app.Name, Disabled: app.DisabledAt != nil,
-			Callback: app.RedirectURI, Logout: app.LogoutURI, Backchannel: app.BackchannelLogoutURI,
 			Created: app.CreatedAt.UTC().Format("2006-01-02"),
 		}
 		signIns, err := s.store.ApplicationSignIns(ctx, app.ID, 200)
