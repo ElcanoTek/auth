@@ -314,6 +314,7 @@ func TestConsoleTwoFactorChangesNeedAFreshFactorProof(t *testing.T) {
 		{"action": {"set-policy"}, "mode": {"admins"}, "revision": {"0"}},
 		{"action": {"set-mfa-required"}, "email": {"bob@example.com"}, "required": {"on"}},
 		{"action": {"disable"}, "email": {"bob@example.com"}},
+		{"action": {"disable-app"}, "app": {"fleet"}},
 		{"action": {"batch"}, "op": {"require-mfa"}, "emails": {"bob@example.com"}},
 	} {
 		if _, page := alice.post("/admin", form); !strings.Contains(page, "Confirm it is you.") || !strings.Contains(page, `href="/account/security/verify?return_to=%2Fadmin"`) {
@@ -325,6 +326,9 @@ func TestConsoleTwoFactorChangesNeedAFreshFactorProof(t *testing.T) {
 	}
 	if b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); b.MFARequired || b.DisabledAt != nil {
 		t.Fatal("bob changed without fresh verification")
+	}
+	if app, _ := st.ApplicationByID(context.Background(), "fleet"); app.DisabledAt != nil {
+		t.Fatal("application changed without fresh verification")
 	}
 	// The step-up page (password and code) returns to the console when
 	// asked to, and the change then goes through.

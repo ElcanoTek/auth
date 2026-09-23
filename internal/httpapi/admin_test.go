@@ -125,6 +125,12 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 	if resp, _ := bob.post(url.Values{"action": {"create"}, "email": {"eve@example.com"}}); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("non-admin POST = %d", resp.StatusCode)
 	}
+	if resp, _ := bob.post(url.Values{"action": {"disable-app"}, "app": {"fleet"}}); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("non-admin disable application = %d", resp.StatusCode)
+	}
+	if app, _ := st.ApplicationByID(context.Background(), "fleet"); app.DisabledAt != nil {
+		t.Fatal("non-admin disabled the application")
+	}
 	// Admin: the page, both applications as tabs, both accounts listed.
 	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
 	resp, body := alice.get("/admin")

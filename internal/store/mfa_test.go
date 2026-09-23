@@ -1738,3 +1738,52 @@ func TestActorProofConditionsAreEachNecessary(t *testing.T) {
 		t.Fatal("reset did not happen with a complete proof")
 	}
 }
+
+func TestApplicationToggleRechecksAdministratorProofInTransaction(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateApplication(ctx, "fleet", "Fleet", "https://fleet.example.com/cb", "", "hash", now); err != nil {
+		t.Fatal(err)
+	}
+	evidenceSession(t, s, alice, "alice-app", "pwd otp", now, now)
+	proof := &ActorProof{SessionHash: "alice-app", FreshAfter: now - 60, RequireFactor: true}
+	// Session evidence alone is insufficient: the actor must still own an
+	// active authenticator when the application write begins.
+	if err := s.SetApplicationDisabledBy(ctx, "fleet", true, alice.ID, proof, now+1); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("factorless actor toggled application: %v", err)
+	}
+	if app, _ := s.ApplicationByID(ctx, "fleet"); app.DisabledAt != nil {
+		t.Fatal("application changed after refused factorless proof")
+	}
+
+	enroll(t, s, alice, "alice-app", now+2)
+	if err := s.SetApplicationDisabledBy(ctx, "fleet", true, alice.ID, proof, now+3); err != nil {
+		t.Fatalf("complete administrator proof refused: %v", err)
+	}
+	if app, _ := s.ApplicationByID(ctx, "fleet"); app.DisabledAt == nil {
+		t.Fatal("application stayed enabled after complete proof")
+	}
+	if err := s.SetApplicationDisabled(ctx, "fleet", false, now+4); err != nil {
+		t.Fatal(err)
+	}
+
+	bob, err := s.CreatePasswordAccount(ctx, "bob-admin@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, now+5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAccountAdmin(ctx, bob.Email, true, now+5); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAccountAdmin(ctx, alice.Email, false, now+5); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetApplicationDisabledBy(ctx, "fleet", true, alice.ID, proof, now+6); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("demoted actor toggled application: %v", err)
+	}
+	if app, _ := s.ApplicationByID(ctx, "fleet"); app.DisabledAt != nil {
+		t.Fatal("application changed after actor lost administrator permission")
+	}
+}
