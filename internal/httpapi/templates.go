@@ -1031,14 +1031,6 @@ const adminHTML = `<!doctype html>
         <tbody>{{range .SignIns}}<tr><td class="who">{{.Email}}{{if .Disabled}} <span class="badge off">Disabled</span>{{end}}</td><td class="num">{{.Count}}</td><td>{{.Last}}</td></tr>{{end}}</tbody>
       </table></div>{{else}}<p class="empty">Nobody has signed in to {{.Name}} yet.</p>{{end}}
     </section>
-    <section class="section" aria-labelledby="pending-heading">
-      <h2 id="pending-heading">Pending sign-outs</h2>
-      <p class="muted">Back-channel logouts {{.Name}} has not accepted yet. Empty is healthy.</p>
-      {{if .Pending}}<div class="table-wrap"><table class="list">
-        <thead><tr><th>Reason</th><th>Issued</th><th class="num">Attempts</th><th>Next try</th><th>Last error</th></tr></thead>
-        <tbody>{{range .Pending}}<tr><td>{{.Reason}}{{if .Abandoned}} <span class="badge off">given up</span>{{end}}</td><td>{{.Issued}}</td><td class="num">{{.Attempts}}</td><td>{{.NextAttempt}}</td><td>{{.LastError}}</td></tr>{{end}}</tbody>
-      </table></div>{{else}}<p class="empty">Nothing pending.</p>{{end}}
-    </section>
     {{end}}{{end}}
 
   </main>

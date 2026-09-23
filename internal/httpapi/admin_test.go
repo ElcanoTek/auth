@@ -417,9 +417,13 @@ func TestAdminSetsAccessAndSignsOutOfRemovedApp(t *testing.T) {
 	if revoked != 1 {
 		t.Fatalf("fleet pending = %+v", pending)
 	}
-	// The fleet tab shows that pending delivery and the access count.
+	// Delivery remains an operational concern: the application tab must not
+	// expose queue state or internal delivery reasons to administrators.
 	_, tab := alice.get("/admin?tab=fleet")
-	if !strings.Contains(tab, "access_revoked") || !strings.Contains(tab, `class="tab active" href="/admin?tab=fleet"`) {
+	if strings.Contains(tab, "Pending sign-outs") || strings.Contains(tab, "access_revoked") {
+		t.Fatalf("fleet tab exposes back-channel delivery internals:\n%s", tab)
+	}
+	if !strings.Contains(tab, `class="tab active" href="/admin?tab=fleet"`) {
 		t.Fatalf("fleet tab:\n%s", tab)
 	}
 	// Unticking everything is allowed; unknown IDs are refused.
