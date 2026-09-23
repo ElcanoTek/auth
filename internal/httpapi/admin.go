@@ -77,15 +77,6 @@ type adminSignInRow struct {
 	Disabled bool
 }
 
-type adminDeliveryRow struct {
-	Reason      string
-	Issued      string
-	Attempts    int
-	NextAttempt string
-	LastError   string
-	Abandoned   bool
-}
-
 type adminAppView struct {
 	ID          string
 	Name        string
@@ -95,7 +86,6 @@ type adminAppView struct {
 	Backchannel string
 	Created     string
 	SignIns     []adminSignInRow
-	Pending     []adminDeliveryRow
 	Granted     int
 }
 
@@ -978,18 +968,6 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		}
 		for _, si := range signIns {
 			view.SignIns = append(view.SignIns, adminSignInRow{Email: si.Email, Count: si.Count, Last: si.LastAt.UTC().Format("2006-01-02 15:04 UTC"), Disabled: si.Disabled})
-		}
-		pending, err := s.store.PendingLogoutDeliveries(ctx, app.ID, now.Unix())
-		if err != nil {
-			logUnlessCancelled("admin pending deliveries", err)
-			data["Error"] = joinMessages(result.Error, "Pending sign-outs could not be loaded.")
-		}
-		for _, d := range pending {
-			view.Pending = append(view.Pending, adminDeliveryRow{
-				Reason: d.Reason, Issued: d.IssuedAt.UTC().Format("2006-01-02 15:04 UTC"),
-				Attempts: d.Attempts, NextAttempt: d.NextAttemptAt.UTC().Format("15:04:05 UTC"),
-				LastError: d.LastError, Abandoned: d.Abandoned,
-			})
 		}
 		access, err := s.store.AllApplicationAccess(ctx)
 		if err == nil {
