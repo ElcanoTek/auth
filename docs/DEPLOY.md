@@ -245,10 +245,12 @@ one edit; nothing here is optional for the first sign-in to work.
    `/jwks.json` alone, so the only cost is that Fleet must be able to reach
    the Auth host when a logout arrives (Auth retries failed deliveries for
    seven days).
-7. Grant access to the people who may use that application. Sign-in without a
-   grant is a 403 at the application, not a login failure at Auth:
-   `explorer access grant admin@<client>`, `lens access grant admin@<client>`,
-   and for Fleet add the email to its user list as usual.
+7. Deploy application versions that accept signed application-access events
+   **before** enabling this Auth version. Then grant applications in Auth.
+   Auth durably provisions Explorer/Lens's local allowlist and Fleet's Chat/Ops
+   membership; no second per-host grant is required. Sign-in without an Auth
+   grant remains a 403, not a login failure. Keep each application's local
+   access CLI only as a recovery tool.
 8. Restart the application and sign in once end to end.
 
 **Verify before handing over**
@@ -517,7 +519,7 @@ Tabs:
   Settings popup beside the email). Each row has two
   buttons: **Access** opens a popup with selectable pills, one per
   application (deselecting one signs them out of it now) and, in its own
-  Admin section, an **Admin** pill (the administrator flag; your own and the
+  Admin section, an **Auth Admin** pill (the administrator flag; your own and the
   last enabled administrator's are locked), **Settings** opens a popup with the team tag and the account
   actions: Reset password (generates a new temporary password, shown once,
   signs them out everywhere), Sign out everywhere, Disable / Enable. Destructive actions
@@ -526,7 +528,13 @@ Tabs:
   suggested), a temporary password you type or fill with **Generate** (blank
   means a strong one is generated and shown once; a typed one must meet the
   same 12-character policy), the applications to grant as pills, and an
-  Admin pill. Administrators
+  Auth Admin pill. Selecting Auth Admin initially selects every application,
+  but each application may then be unchecked. When Fleet is selected, its
+  hidden permission section configures **Fleet Admin**, Chat Viewer /
+  Contributor, and Ops None / Viewer / Contributor. Fleet Admin initially
+  selects Chat Contributor and Ops Contributor as its visible effective
+  permissions; unchecking it safely defaults to Chat Contributor and Ops None.
+  Administrators
   cannot reset, disable or demote themselves from a row (their own row's
   Settings links to the change-password form instead, which signs out every
   other device and every application with a back-channel receiver while this
@@ -581,9 +589,14 @@ before issuing a code. A person without access who follows a sign-in link
 sees Auth's own "No access to <application>" page with a link back to their
 apps; a silent check (`prompt=none`) returns `error=access_denied` to the
 application, which Fleet shows as its generic "denied" login message.
-Removing access queues a back-channel logout to that one application, so the
-person is signed out of it within seconds. Disabling an application closes
-the gate for everyone without touching the grants.
+Every grant or role change updates a durable latest-desired-state delivery for
+that application. Removing access does the same with `revoke` and also queues a
+back-channel logout, so the local allowlist is disabled and existing sessions
+end within seconds. Receivers reject stale versions; Auth retries the latest
+state indefinitely until acknowledged. Revocation is non-destructive in the
+application: roles, identity, and owned data remain available for a later
+re-grant. Disabling an application closes the Auth gate for everyone without
+touching the grants.
 
 Upgrading a deployment that predates this: the first start after the update
 grants every existing account every registered application, once, so nothing
