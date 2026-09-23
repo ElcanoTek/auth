@@ -10,8 +10,9 @@ It runs in one of two modes, chosen per deployment:
   sign in with email and password. Applications integrate through an
   OpenID Connect style authorization-code handoff (`/authorize`, `/token`,
   discovery, JWKS) and, if they register a back-channel endpoint, receive a
-  signed logout when a sign-out, password change or disablement revokes the
-  person's sessions. Two-factor sign-in with an authenticator app (TOTP) can
+  signed, versioned desired membership whenever an administrator grants or
+  revokes access, plus a signed logout when a sign-out, password change or
+  disablement revokes the person's sessions. Two-factor sign-in with an authenticator app (TOTP) can
   be turned on by each person or required by policy. A web admin console at
   `/admin` manages accounts, per-application access, two-factor policy and
   sign-outs. See
@@ -58,6 +59,13 @@ replacement, account disablement and sign-out revoke the central session and
 queue one signed back-channel logout per application that registered a
 back-channel endpoint, delivered by a retrying worker. Passive expiry sends
 nothing.
+
+Application grants use a separate latest-desired-state outbox. Auth retries
+them until acknowledged, with a monotonic version per account/application, so
+an application that was offline converges when it returns and an old delivery
+cannot undo a newer administrator choice. Applications still enforce their own
+roles and retain their own data; Auth can carry validated app-specific settings
+such as Fleet's Chat and Ops roles.
 
 **Magic-link mode.** Auth emails a one-time link signed with its Ed25519 key.
 Clicking it sets a signed cookie on `AUTH_COOKIE_DOMAIN`, so it rides to every

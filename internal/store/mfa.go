@@ -1673,17 +1673,18 @@ func (s *Store) ReplacePasswordUnderTransaction(ctx context.Context, transaction
 // AccessSave is what the console's Access popup wants to save for one
 // account; nil pointers mean "leave as is".
 type AccessSave struct {
-	Applications []string
-	Admin        *bool
-	MFARequired  *bool
+	Applications        []string
+	ApplicationSettings map[string]string
+	Admin               *bool
+	MFARequired         *bool
 }
 
 // AccessSaveResult reports what changed.
 type AccessSaveResult struct {
-	Added, Removed []string
-	AdminChanged   bool
-	MFAChanged     bool
-	SignedOut      bool // the target's sessions were revoked (newly required without a factor, or promoted under "admins")
+	Added, Removed, Updated []string
+	AdminChanged            bool
+	MFAChanged              bool
+	SignedOut               bool // the target's sessions were revoked (newly required without a factor, or promoted under "admins")
 }
 
 // SaveAccountAccess applies the Access popup in ONE transaction: the acting
@@ -1721,7 +1722,7 @@ func (s *Store) SaveAccountAccess(ctx context.Context, email string, save Access
 		a.IsAdmin = *save.Admin
 	}
 	if save.Applications != nil {
-		out.Added, out.Removed, err = setApplicationAccessTx(ctx, tx, a.ID, save.Applications, now)
+		out.Added, out.Removed, out.Updated, err = setApplicationAccessTx(ctx, tx, a.ID, save.Applications, save.ApplicationSettings, now)
 		if err != nil {
 			return AccessSaveResult{}, err
 		}

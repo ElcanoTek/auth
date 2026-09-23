@@ -139,7 +139,7 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 	}
 	for _, want := range []string{
 		`class="tab active" href="/admin"`, `href="/admin?tab=fleet"`, `href="/admin?tab=explorer"`,
-		"Alice@Example.com", "bob@example.com", `<span class="badge admin">Admin</span>`, `<span class="chip">Fleet</span>`,
+		"Alice@Example.com", "bob@example.com", `<span class="badge admin">Auth Admin</span>`, `<span class="chip">Fleet</span>`,
 		`name="action" value="create"`, `action="/logout"`,
 		`id="account-search" type="search" placeholder="Search accounts"`, `id="account-filter" data-account-filter`,
 		`data-account-row data-account-search-value="bob@example.com`, `data-account-empty hidden`,
@@ -490,7 +490,7 @@ func TestAdminApplicationTabToggleAndSignIns(t *testing.T) {
 	// The add-user form lists the applications with disabled ones unticked.
 	_ = st.SetApplicationDisabled(ctx, "explorer", true, time.Now().Unix())
 	_, page := alice.get("/admin")
-	if !strings.Contains(page, `<label class="seg-opt"><input type="checkbox" name="apps" value="fleet" checked> Fleet</label>`) || !strings.Contains(page, `<label class="seg-opt off" title="Application disabled"><input type="checkbox" name="apps" value="explorer"> Explorer</label>`) {
+	if !strings.Contains(page, `<label class="seg-opt"><input type="checkbox" name="apps" value="fleet" data-fleet-toggle checked> Fleet</label>`) || !strings.Contains(page, `<label class="seg-opt off" title="Application disabled"><input type="checkbox" name="apps" value="explorer"> Explorer</label>`) {
 		t.Fatalf("add-user choices:\n%s", page)
 	}
 }
@@ -719,20 +719,20 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 }
 
 // The administrator flag is granted from the Access popup alongside the
-// applications: a ticked "Admin console" grants, an unticked one removes,
+// applications: a ticked "Auth Admin" grants, an unticked one removes,
 // with the self and last-admin rules intact and the applications untouched
 // when the flag change is refused.
 func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	_, body := alice.get("/admin")
-	if !strings.Contains(body, `<label class="seg-opt locked"><input type="checkbox" checked disabled> Admin</label><input type="hidden" name="admin" value="on">`) {
+	if !strings.Contains(body, `<label class="seg-opt admin-choice locked"><input type="checkbox" checked disabled> Auth Admin</label><input type="hidden" name="admin" value="on">`) {
 		t.Fatalf("own row does not lock the admin pill:\n%s", body)
 	}
-	if !strings.Contains(body, `<label class="seg-opt"><input type="checkbox" name="admin" value="on"> Admin</label>`) {
+	if !strings.Contains(body, `<label class="seg-opt admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin</label>`) {
 		t.Fatalf("bob's row lacks the admin pill:\n%s", body)
 	}
-	if !strings.Contains(body, `<span class="seg-label">Applications</span>`) || !strings.Contains(body, `<span class="seg-label">Admin</span>`) {
+	if !strings.Contains(body, `<span class="seg-label">Applications</span>`) || !strings.Contains(body, `<span class="seg-label">Auth Admin</span>`) {
 		t.Fatal("Access popup lacks the two pill sections")
 	}
 	if strings.Contains(body, `value="grant-admin"`) || strings.Contains(body, `value="revoke-admin"`) {
@@ -837,5 +837,64 @@ func TestAddUserAdminPill(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(types, " "), "admin.admin_granted") {
 		t.Fatalf("admin grant at creation not audited: %v", types)
+	}
+}
+
+func TestFleetPermissionsAreSavedAndRenderedSeparatelyFromAuthAdmin(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
+	_, body := alice.post(url.Values{
+		"action": {"create"}, "email": {"fleet-user@example.com"}, "apps": {"fleet"},
+		"fleet_chat_role": {"viewer"}, "fleet_ops_role": {"client"},
+	})
+	for _, want := range []string{"Fleet permissions", "Fleet Admin", "Read-only Chat access", "Can view, create, and run Ops Center tasks"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("admin page lacks %q", want)
+		}
+	}
+	account, err := st.PasswordAccountByEmail(context.Background(), "fleet-user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := st.AllApplicationAccessSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := settings[account.ID]["fleet"]; got != `{"chat_role":"viewer","ops_role":"client"}` {
+		t.Fatalf("Fleet settings = %q", got)
+	}
+	state, ok, err := st.AccessProvisioningState(context.Background(), account.ID, "fleet")
+	if err != nil || !ok || state.Settings != `{"chat_role":"viewer","ops_role":"client"}` {
+		t.Fatalf("provisioning state = %+v, ok=%v err=%v", state, ok, err)
+	}
+}
+
+func TestFleetPermissionDefaultsAndUnifiedAdminReachTheProvisioningOutbox(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
+
+	_, _ = alice.post(url.Values{
+		"action": {"create"}, "email": {"default-fleet@example.com"}, "apps": {"fleet"},
+	})
+	defaultAccount, err := st.PasswordAccountByEmail(context.Background(), "default-fleet@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, ok, err := st.AccessProvisioningState(context.Background(), defaultAccount.ID, "fleet")
+	if err != nil || !ok || state.Settings != `{"chat_role":"member","ops_role":"none"}` {
+		t.Fatalf("default Fleet state = %+v, ok=%v err=%v", state, ok, err)
+	}
+
+	_, _ = alice.post(url.Values{
+		"action": {"create"}, "email": {"fleet-admin@example.com"}, "apps": {"fleet"},
+		"fleet_admin": {"on"},
+	})
+	adminAccount, err := st.PasswordAccountByEmail(context.Background(), "fleet-admin@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, ok, err = st.AccessProvisioningState(context.Background(), adminAccount.ID, "fleet")
+	if err != nil || !ok || state.Settings != `{"chat_role":"admin","ops_role":"admin"}` {
+		t.Fatalf("Fleet Admin state = %+v, ok=%v err=%v", state, ok, err)
 	}
 }

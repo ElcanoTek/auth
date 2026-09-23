@@ -62,12 +62,12 @@ should too.
    deems insufficient.
 
 4. **Local membership, then a local session.** Auth answers "who is this" and
-   "may they sign in to this application". Whether they may do anything
-   inside your application is still your decision: keep an allowlist or
-   membership table keyed by Auth's `sub` (stage by normalised email before
-   the first login if you like), and show a clear "no access" page rather
-   than a redirect back to Auth for a signed-in person you don't know. Then
-   mint your own session following the conventions below.
+   "may they sign in to this application". Keep a local allowlist or
+   membership table keyed by Auth's `sub`, but let Auth maintain its enabled
+   state through the signed desired-state event below. The application still
+   owns enforcement, roles, and all application data. Show a clear "no
+   access" page rather than a redirect loop for a signed-in person who is not
+   enabled, then mint your own session following the conventions below.
 
 5. **Sign-out, both directions.**
    - Your logout control revokes your session, clears your cookie, and sends
@@ -90,6 +90,19 @@ should too.
      token names an unknown `kid`, keep the cached set on a failed fetch) so a
      signing-key rotation is a one-sided change on Auth; a static
      `AUTH_SIGNING_PUBKEY` is the bootstrap and offline fallback.
+   - The same endpoint receives exactly one form field: either the logout
+     field above or `access_token`. An access token is an EdDSA JWT with
+     `typ=access+jwt`, exact `iss`/`aud`, live `iat`/`exp`, `sub`, normalized
+     `email`, `jti`, no `nonce`, and an
+     `events["urn:elcanotek:event:application-access"]` object containing
+     `action` (`grant` or `revoke`) and a positive integer `version`.
+     Atomically remember the last version per issuer+subject and ignore the
+     same or an older version. Grant enables or creates local membership;
+     revoke disables it and ends its sessions without deleting roles or owned
+     data. Return 204 only after the local state is durable; return 503 for a
+     retryable failure. The event may include a string-to-string `settings`
+     object whose keys and values are application-defined and strictly
+     validated by that application.
 
 ### Application session conventions
 
@@ -260,14 +273,15 @@ wrong, or a `Secure` cookie is being set over plain HTTP.
 
 ## What auth-server does not do
 
-- **Roles or permissions inside an application.** Auth says "this is
+- **Enforcement of roles or permissions inside an application.** Auth says "this is
   alice@example.com" and, in password mode, "alice may sign in to this
   application" (per-application access, granted in the admin console or with
   `auth user access`; `/authorize` refuses otherwise, with Auth's own "No
   access" page interactively and `error=access_denied` for `prompt=none`).
-  What alice can do inside the application is that application's business.
-  The only role Auth itself knows is its administrator flag, which gates its
-  own console at `/admin`.
+  Auth may transport application-specific settings chosen in its admin UI
+  (currently Fleet Chat/Ops roles), but the receiving application validates,
+  stores, and enforces them. Auth's own administrator flag is separate and
+  gates only its console at `/admin`.
 - **Step-up beyond TOTP.** Magic links are themselves an inbox-possession
   factor. Password mode has authenticator-app (TOTP) two-factor sign-in,
   optional or required by policy, with recovery codes; passkeys and an

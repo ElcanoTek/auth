@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -40,18 +41,22 @@ type adminAppChoice struct {
 }
 
 type adminAccountRow struct {
-	Email       string
-	Status      string // Active | Disabled | Must change password
-	StatusClass string // ok | off | warn
-	IsAdmin     bool
-	Team        string
-	Created     string
-	Sessions    int
-	Apps        []adminAppChoice
-	GrantedApps int
-	Self        bool
-	CanDisable  bool // not self and not the last enabled admin
-	CanDemote   bool
+	Email         string
+	Status        string // Active | Disabled | Must change password
+	StatusClass   string // ok | off | warn
+	IsAdmin       bool
+	Team          string
+	Created       string
+	Sessions      int
+	Apps          []adminAppChoice
+	GrantedApps   int
+	Self          bool
+	CanDisable    bool // not self and not the last enabled admin
+	CanDemote     bool
+	FleetGranted  bool
+	FleetAdmin    bool
+	FleetChatRole string
+	FleetOpsRole  string
 	// Second factor: the console shows the status the issue names and lets
 	// an administrator require it per account or reset a lost one.
 	MFAStatus      string // Enabled | Enrollment required | Not enrolled
@@ -59,6 +64,63 @@ type adminAccountRow struct {
 	MFAEnrolled    bool
 	MFARequired    bool // the per-user flag
 	MFAPolicyBound bool // the deployment policy already requires it (pill locked)
+}
+
+type fleetAccessSettings struct {
+	ChatRole string `json:"chat_role"`
+	OpsRole  string `json:"ops_role"`
+}
+
+func fleetSettingsFromForm(r *http.Request, apps []string) (map[string]string, error) {
+	hasFleet := false
+	for _, id := range apps {
+		if strings.TrimSpace(id) == "fleet" {
+			hasFleet = true
+			break
+		}
+	}
+	if !hasFleet {
+		return nil, nil
+	}
+	settings := fleetAccessSettings{ChatRole: r.FormValue("fleet_chat_role"), OpsRole: r.FormValue("fleet_ops_role")}
+	if r.FormValue("fleet_admin") == "on" {
+		settings.ChatRole, settings.OpsRole = "admin", "admin"
+	} else {
+		if settings.ChatRole == "" {
+			settings.ChatRole = "member"
+		}
+		if settings.OpsRole == "" {
+			settings.OpsRole = "none"
+		}
+		if settings.ChatRole != "member" && settings.ChatRole != "viewer" {
+			return nil, errors.New("invalid Fleet Chat role")
+		}
+		if settings.OpsRole != "none" && settings.OpsRole != "readonly" && settings.OpsRole != "client" {
+			return nil, errors.New("invalid Fleet Ops role")
+		}
+	}
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"fleet": string(raw)}, nil
+}
+
+func decodeFleetSettings(raw string) fleetAccessSettings {
+	settings := fleetAccessSettings{ChatRole: "member", OpsRole: "none"}
+	var stored fleetAccessSettings
+	if json.Unmarshal([]byte(raw), &stored) == nil {
+		if stored.ChatRole == "admin" && stored.OpsRole == "admin" {
+			return stored
+		}
+		if stored.ChatRole == "member" || stored.ChatRole == "viewer" {
+			settings.ChatRole = stored.ChatRole
+		}
+		if stored.OpsRole == "none" || stored.OpsRole == "readonly" || stored.OpsRole == "client" {
+			settings.OpsRole = stored.OpsRole
+		}
+	}
+	return settings
 }
 
 // adminMFAOption is one deployment-policy choice with what it would do.
@@ -367,6 +429,11 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Error = "Team must be at most 40 characters."
 			return res
 		}
+		appSettings, settingsErr := fleetSettingsFromForm(r, r.Form["apps"])
+		if settingsErr != nil {
+			res.Error = "Choose valid Fleet permissions."
+			return res
+		}
 		// The administrator may type the temporary password or leave it blank
 		// to have one generated. Either way it is validated against the same
 		// policy the change-password form applies, with the new account's
@@ -414,7 +481,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 				res.Error = "The account was created, but its team could not be saved. Set it from Settings."
 			}
 		}
-		if _, _, err := s.store.SetApplicationAccess(ctx, account.ID, r.Form["apps"], now.Unix()); err != nil {
+		if _, _, err := s.store.SetApplicationAccessWithSettings(ctx, account.ID, r.Form["apps"], appSettings, now.Unix()); err != nil {
 			// The account exists and its password is in hand, so this is
 			// reported on the page rather than as a 500 that would hide
 			// the one-time password of a committed create.
@@ -636,7 +703,12 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		if apps == nil {
 			apps = []string{}
 		}
-		save := store.AccessSave{Applications: apps}
+		appSettings, err := fleetSettingsFromForm(r, apps)
+		if err != nil {
+			res.Error = "Choose valid Fleet permissions."
+			return res
+		}
+		save := store.AccessSave{Applications: apps, ApplicationSettings: appSettings}
 		var saveProof *store.ActorProof
 		if adminChange {
 			save.Admin = &wantAdmin
@@ -660,6 +732,9 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		}
 		for _, id := range outcome.Removed {
 			audit("admin.access_revoked", target.ID, id)
+		}
+		for _, id := range outcome.Updated {
+			audit("admin.access_settings_changed", target.ID, id)
 		}
 		adminNote, mfaNote := "", ""
 		if outcome.AdminChanged {
@@ -874,6 +949,11 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 			logUnlessCancelled("admin list access", err)
 			data["Error"] = joinMessages(result.Error, "Application access could not be loaded.")
 		}
+		accessSettings, err := s.store.AllApplicationAccessSettings(ctx)
+		if err != nil {
+			logUnlessCancelled("admin list access settings", err)
+			data["Error"] = joinMessages(result.Error, "Application permissions could not be loaded.")
+		}
 		enabledAdmins := 0
 		for _, a := range accounts {
 			if a.IsAdmin && a.DisabledAt == nil {
@@ -913,6 +993,10 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 				row.MFAStatus, row.MFAClass = string(mfa.StatusNotEnrolled), "off"
 			}
 			granted := accessSet(access[a.ID])
+			fleetSettings := decodeFleetSettings(accessSettings[a.ID]["fleet"])
+			row.FleetGranted = granted["fleet"]
+			row.FleetAdmin = fleetSettings.ChatRole == "admin" && fleetSettings.OpsRole == "admin"
+			row.FleetChatRole, row.FleetOpsRole = fleetSettings.ChatRole, fleetSettings.OpsRole
 			for _, app := range apps {
 				row.Apps = append(row.Apps, adminAppChoice{ID: app.ID, Name: app.Name, Granted: granted[app.ID]})
 				if granted[app.ID] {
@@ -924,6 +1008,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		choices := make([]adminAppChoice, 0, len(apps))
 		for _, app := range apps {
 			choices = append(choices, adminAppChoice{ID: app.ID, Name: app.Name, Granted: app.DisabledAt == nil})
+			if app.ID == "fleet" && app.DisabledAt == nil {
+				data["HasFleet"] = true
+			}
 		}
 		teamSet := map[string]bool{}
 		var teams []string

@@ -27,6 +27,7 @@ import (
 	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/email"
 	"github.com/elcanotek/auth/internal/httpapi"
+	"github.com/elcanotek/auth/internal/provisioning"
 	"github.com/elcanotek/auth/internal/store"
 )
 
@@ -109,6 +110,7 @@ func main() {
 	sender := pickSender(cfg)
 	srv := httpapi.New(cfg, st, sender)
 	logoutDeliverer := backchannel.New(st, cfg.SigningKey, cfg.IssuerURL, &http.Client{Timeout: 10 * time.Second})
+	accessDeliverer := provisioning.New(st, cfg.SigningKey, cfg.IssuerURL, &http.Client{Timeout: 10 * time.Second})
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
@@ -162,6 +164,20 @@ func main() {
 			for {
 				if err := logoutDeliverer.RunOnce(ctx, time.Now()); err != nil && ctx.Err() == nil {
 					log.Printf("back-channel logout: %v", err)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
+		go func() {
+			t := time.NewTicker(2 * time.Second)
+			defer t.Stop()
+			for {
+				if err := accessDeliverer.RunOnce(ctx, time.Now()); err != nil && ctx.Err() == nil {
+					log.Printf("application access provisioning: %v", err)
 				}
 				select {
 				case <-ctx.Done():

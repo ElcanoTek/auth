@@ -228,6 +228,16 @@ CREATE TABLE IF NOT EXISTS application_access (
   PRIMARY KEY (user_id, application_id)
 );
 CREATE INDEX IF NOT EXISTS idx_application_access_app ON application_access(application_id);
+-- App-owned permission choices configured from Auth. Rows intentionally
+-- survive access revocation so a non-destructive re-grant restores the prior
+-- role. The application still owns enforcement and all application data.
+CREATE TABLE IF NOT EXISTS application_access_settings (
+  user_id        TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  settings_json  TEXT NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  PRIMARY KEY (user_id, application_id)
+);
 CREATE TABLE IF NOT EXISTS logout_events (
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -248,6 +258,28 @@ CREATE TABLE IF NOT EXISTS logout_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_logout_deliveries_due
   ON logout_deliveries(delivered_at, next_attempt_at, lease_until);
+-- Durable desired application membership. Unlike logout events, these rows
+-- are retained and retried until the application acknowledges the latest
+-- version: an offline application must converge when it returns.
+CREATE TABLE IF NOT EXISTS access_provisioning (
+  user_id         TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  client_id       TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  email           TEXT NOT NULL,
+  allowed         INTEGER NOT NULL CHECK (allowed IN (0, 1)),
+  version         INTEGER NOT NULL,
+  event_id        TEXT NOT NULL,
+  issued_at       INTEGER NOT NULL,
+  endpoint        TEXT NOT NULL DEFAULT '',
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL,
+  lease_until     INTEGER,
+  delivered_at    INTEGER,
+  last_error      TEXT,
+  settings_json   TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY(user_id, client_id)
+);
+CREATE INDEX IF NOT EXISTS idx_access_provisioning_due
+  ON access_provisioning(delivered_at, next_attempt_at, lease_until);
 CREATE TABLE IF NOT EXISTS authorization_codes (
   code_hash          TEXT PRIMARY KEY,
   client_id          TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
@@ -401,7 +433,41 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateApplicationAccess(ctx); err != nil {
 		return err
 	}
-	return s.migrateMFA(ctx)
+	if err := s.migrateMFA(ctx); err != nil {
+		return err
+	}
+	return s.migrateAccessProvisioning(ctx)
+}
+
+// migrateAccessProvisioning is schema v8. It snapshots every existing grant
+// into the durable desired-state outbox, making deployment self-reconciling
+// without rewriting application-specific roles or other local account data.
+func (s *Store) migrateAccessProvisioning(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().Unix()
+	claim, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES(8, ?) ON CONFLICT(version) DO NOTHING`, now)
+	if err != nil {
+		return fmt.Errorf("claim access provisioning schema version: %w", err)
+	}
+	if n, _ := claim.RowsAffected(); n == 0 {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO access_provisioning(user_id, client_id, email, allowed, version, event_id, issued_at, endpoint, next_attempt_at)
+		SELECT aa.user_id, aa.application_id, a.normalized_email, 1, 1,
+		       lower(hex(randomblob(16))), ?, COALESCE(app.backchannel_logout_uri, ''), ?
+		FROM application_access aa
+		JOIN accounts a ON a.id = aa.user_id
+		JOIN applications app ON app.id = aa.application_id`, now, now)
+	if err != nil {
+		return fmt.Errorf("seed access provisioning state: %w", err)
+	}
+	return tx.Commit()
 }
 
 // migrateApplicationAccess is schema v5. Per-application access arrived
@@ -1290,24 +1356,52 @@ func (s *Store) AllApplicationAccess(ctx context.Context) (map[string][]string, 
 // removed gets a back-channel logout for this account so its session there
 // ends now rather than at expiry. It returns what was added and removed.
 func (s *Store) SetApplicationAccess(ctx context.Context, userID string, applicationIDs []string, now int64) (added, removed []string, err error) {
+	return s.SetApplicationAccessWithSettings(ctx, userID, applicationIDs, nil, now)
+}
+
+// SetApplicationAccessWithSettings is SetApplicationAccess plus app-owned,
+// validated JSON settings supplied by a trusted admin surface.
+func (s *Store) SetApplicationAccessWithSettings(ctx context.Context, userID string, applicationIDs []string, settings map[string]string, now int64) (added, removed []string, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	added, removed, err = setApplicationAccessTx(ctx, tx, userID, applicationIDs, now)
+	added, removed, _, err = setApplicationAccessTx(ctx, tx, userID, applicationIDs, settings, now)
 	if err != nil {
 		return nil, nil, err
 	}
 	return added, removed, tx.Commit()
 }
 
+// AllApplicationAccessSettings returns persisted app-specific settings keyed
+// by account then application. Settings survive a temporary access revoke.
+func (s *Store) AllApplicationAccessSettings(ctx context.Context) (map[string]map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT user_id, application_id, settings_json FROM application_access_settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]map[string]string{}
+	for rows.Next() {
+		var userID, appID, settings string
+		if err := rows.Scan(&userID, &appID, &settings); err != nil {
+			return nil, err
+		}
+		if out[userID] == nil {
+			out[userID] = map[string]string{}
+		}
+		out[userID][appID] = settings
+	}
+	return out, rows.Err()
+}
+
 // setApplicationAccessTx is SetApplicationAccess inside a caller's
 // transaction, so the console's Access popup can save it together with the
 // administrator flag and the two-factor requirement.
-func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, applicationIDs []string, now int64) (added, removed []string, err error) {
+func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, applicationIDs []string, settings map[string]string, now int64) (added, removed, updated []string, err error) {
 	if userID == "" {
-		return nil, nil, errors.New("user id is required")
+		return nil, nil, nil, errors.New("user id is required")
 	}
 	want := map[string]bool{}
 	for _, id := range applicationIDs {
@@ -1317,35 +1411,35 @@ func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, appl
 	}
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE id = ?`, userID).Scan(&exists); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if exists == 0 {
-		return nil, nil, ErrAccountNotFound
+		return nil, nil, nil, ErrAccountNotFound
 	}
 	for id := range want {
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM applications WHERE id = ?`, id).Scan(&exists); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if exists == 0 {
-			return nil, nil, fmt.Errorf("%w: %s", ErrApplicationNotFound, id)
+			return nil, nil, nil, fmt.Errorf("%w: %s", ErrApplicationNotFound, id)
 		}
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT application_id FROM application_access WHERE user_id = ?`, userID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	have := map[string]bool{}
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			_ = rows.Close()
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		have[id] = true
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	for id := range want {
 		if !have[id] {
@@ -1359,35 +1453,71 @@ func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, appl
 	}
 	sort.Strings(added)
 	sort.Strings(removed)
+	for id, value := range settings {
+		if !want[id] {
+			continue
+		}
+		var previous string
+		err := tx.QueryRowContext(ctx, `SELECT settings_json FROM application_access_settings WHERE user_id = ? AND application_id = ?`, userID, id).Scan(&previous)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, nil, err
+		}
+		if previous == value {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO application_access_settings(user_id, application_id, settings_json, updated_at)
+			VALUES(?, ?, ?, ?) ON CONFLICT(user_id, application_id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = excluded.updated_at`,
+			userID, id, value, now); err != nil {
+			return nil, nil, nil, err
+		}
+		if have[id] {
+			updated = append(updated, id)
+		}
+	}
+	sort.Strings(updated)
 	for _, id := range added {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO application_access(user_id, application_id, granted_at) VALUES(?, ?, ?)`, userID, id, now); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if err := insertApplicationAudit(ctx, tx, "access.granted", id, userID, now); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
+		}
+		if err := setAccessProvisioningTx(ctx, tx, userID, id, true, now); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	for _, id := range updated {
+		if err := insertApplicationAudit(ctx, tx, "access.settings_changed", id, userID, now); err != nil {
+			return nil, nil, nil, err
+		}
+		if err := setAccessProvisioningTx(ctx, tx, userID, id, true, now); err != nil {
+			return nil, nil, nil, err
 		}
 	}
 	for _, id := range removed {
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM application_access WHERE user_id = ? AND application_id = ?`, userID, id); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if err := insertApplicationAudit(ctx, tx, "access.revoked", id, userID, now); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		// A code minted before the revocation must not become a session
 		// after it. Consumption re-checks the grant too; this just keeps
 		// the table honest.
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM authorization_codes WHERE user_id = ? AND client_id = ? AND consumed_at IS NULL`, userID, id); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if err := enqueueLogoutEventForTx(ctx, tx, userID, id, "access_revoked", now); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
+		}
+		if err := setAccessProvisioningTx(ctx, tx, userID, id, false, now); err != nil {
+			return nil, nil, nil, err
 		}
 	}
-	return added, removed, nil
+	return added, removed, updated, nil
 }
 
 // ── opaque central sessions ─────────────────────────────────────────
@@ -1735,6 +1865,16 @@ func (s *Store) SetApplicationBackchannelLogoutURI(ctx context.Context, id, endp
 		_, err = tx.ExecContext(ctx, `UPDATE logout_deliveries SET endpoint = ?, lease_until = NULL, next_attempt_at = ?
 			WHERE client_id = ? AND delivered_at IS NULL AND endpoint != ?`, endpoint, now, id, endpoint)
 	}
+	if err != nil {
+		return err
+	}
+	// Provisioning rows are desired state, not disposable events. Keep them
+	// when an endpoint is cleared and replay the latest version immediately
+	// when a receiver is configured or rotated.
+	_, err = tx.ExecContext(ctx, `UPDATE access_provisioning
+		SET endpoint = ?, delivered_at = CASE WHEN ? = '' THEN delivered_at ELSE NULL END,
+		    lease_until = NULL, next_attempt_at = ?, last_error = NULL
+		WHERE client_id = ?`, endpoint, endpoint, now, id)
 	if err != nil {
 		return err
 	}

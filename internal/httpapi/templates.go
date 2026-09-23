@@ -345,6 +345,20 @@ ul.plain li { margin: 0.2rem 0; }
 .seg-opt.locked { cursor: not-allowed; }
 .seg-opt.locked input { cursor: not-allowed; }
 .seg-group { margin-bottom: var(--space-4); }
+.fleet-permissions { margin: 0 0 var(--space-4); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-2); }
+.fleet-permissions[hidden] { display: none; }
+.fleet-permissions h4 { margin: 0 0 var(--space-3); font-size: var(--font-size-body); }
+.permission-choice { display: block; padding: var(--space-2); border: 1px solid transparent; border-radius: var(--radius-md); font-size: var(--font-size-caption); color: var(--color-text-secondary); }
+.permission-choice input { margin-right: 0.4rem; accent-color: var(--color-primary); }
+.permission-choice small { display: block; margin: 0.12rem 0 0 1.35rem; color: var(--color-text-muted); }
+.seg-opt.admin-choice:has(input:checked),
+.fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[name="fleet_admin"]),
+.fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[value="member"]),
+.fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[value="client"]) {
+  border: 2px solid transparent;
+  background: linear-gradient(var(--color-surface-2), var(--color-surface-2)) padding-box, var(--gradient-action-primary) border-box;
+  color: var(--color-text-primary);
+}
 .section-head > div:first-child { flex: 1 1 22rem; min-width: 0; }
 .head-actions { flex: 0 0 auto; align-items: center; margin-top: 0.15rem; }
 .head-actions .btn-ghost { min-height: 2.25rem; }
@@ -770,6 +784,35 @@ const adminScript = `
   if (search) { search.addEventListener("input", filterAccounts); }
   if (filter) { filter.addEventListener("change", filterAccounts); }
   filterAccounts();
+  document.querySelectorAll("form").forEach(function (form) {
+    var toggle = form.querySelector('[data-fleet-toggle]');
+    var panel = form.querySelector('[data-fleet-permissions]');
+    if (!toggle || !panel) return;
+    function showFleetPermissions() { panel.hidden = !toggle.checked; }
+    toggle.addEventListener("change", showFleetPermissions);
+    showFleetPermissions();
+  });
+  document.querySelectorAll('input[name="admin"]').forEach(function (toggle) {
+    toggle.addEventListener("change", function () {
+      if (!toggle.checked) return;
+      var form = toggle.closest("form");
+      if (!form) return;
+      form.querySelectorAll('input[name="apps"]').forEach(function (app) {
+        app.checked = true;
+        app.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    });
+  });
+  document.querySelectorAll('input[name="fleet_admin"]').forEach(function (toggle) {
+    toggle.addEventListener("change", function () {
+      var form = toggle.closest("form");
+      if (!form) return;
+      var chat = form.querySelector('input[name="fleet_chat_role"][value="member"]');
+      var ops = form.querySelector('input[name="fleet_ops_role"][value="' + (toggle.checked ? 'client' : 'none') + '"]');
+      if (chat) chat.checked = true;
+      if (ops) ops.checked = true;
+    });
+  });
   document.querySelectorAll("[data-generate]").forEach(function (button) {
     button.addEventListener("click", function () {
       var field = document.getElementById(button.getAttribute("data-generate"));
@@ -797,7 +840,7 @@ const adminHTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{.Wordmark}} — Admin</title>
+<title>{{.Wordmark}} — Auth Admin</title>
 {{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
 <style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
 <script nonce="{{.Nonce}}">` + themeScript + `</script>
@@ -818,7 +861,7 @@ const adminHTML = `<!doctype html>
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
     <div class="topline">
-      <h1>Admin</h1>
+      <h1>Auth Admin</h1>
       <p class="muted">Signed in as <strong>{{.Email}}</strong></p>
     </div>
     <nav class="tabs" aria-label="Admin sections">
@@ -847,7 +890,7 @@ const adminHTML = `<!doctype html>
               <option value="">All accounts</option>
               <option value="active">Active</option>
               <option value="disabled">Disabled</option>
-              <option value="admin">Administrators</option>
+              <option value="admin">Auth administrators</option>
               <option value="must-change">Must change password</option>
               <option value="mfa-enabled">2FA enabled</option>
               <option value="mfa-missing">2FA not enrolled</option>
@@ -865,7 +908,7 @@ const adminHTML = `<!doctype html>
         <tbody>
         {{range $i, $row := .Accounts}}<tr data-account-row data-account-search-value="{{$row.Email}} {{$row.Team}} {{$row.Status}} {{$row.MFAStatus}}{{if $row.IsAdmin}} administrator admin{{end}}{{range $row.Apps}}{{if .Granted}} {{.Name}}{{end}}{{end}}" data-account-filter-values="{{if eq $row.Status "Active"}}active{{else if eq $row.Status "Disabled"}}disabled{{else}}must-change{{end}}{{if $row.IsAdmin}} admin{{end}}{{if $row.MFAEnrolled}} mfa-enabled{{else}} mfa-missing{{end}}">
           <td class="sel"><input type="checkbox" name="emails" value="{{$row.Email}}" form="batch-form" data-select aria-label="Select {{$row.Email}}"></td>
-          <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
+          <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Auth Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
           <td><div class="chips"><span class="badge {{$row.StatusClass}}">{{$row.Status}}</span><span class="badge {{$row.MFAClass}}" title="Two-factor sign-in">2FA: {{$row.MFAStatus}}</span></div></td>
           <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
           <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
@@ -878,17 +921,32 @@ const adminHTML = `<!doctype html>
             <p class="who">{{$row.Email}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{$row.Email}}">
-              <div class="seg-group"><span class="seg-label">Admin</span>
-                <span class="seg" role="group" aria-label="Admin permissions for {{$row.Email}}">
-                  {{if or $row.Self (and $row.IsAdmin (not $row.CanDemote))}}<label class="seg-opt locked"><input type="checkbox" checked disabled> Admin</label><input type="hidden" name="admin" value="on">
-                  {{else}}<label class="seg-opt"><input type="checkbox" name="admin" value="on"{{if $row.IsAdmin}} checked{{end}}> Admin</label>{{end}}
+              <div class="seg-group"><span class="seg-label">Auth Admin</span>
+                <span class="seg" role="group" aria-label="Auth Admin permissions for {{$row.Email}}">
+                  {{if or $row.Self (and $row.IsAdmin (not $row.CanDemote))}}<label class="seg-opt admin-choice locked"><input type="checkbox" checked disabled> Auth Admin</label><input type="hidden" name="admin" value="on">
+                  {{else}}<label class="seg-opt admin-choice"><input type="checkbox" name="admin" value="on"{{if $row.IsAdmin}} checked{{end}}> Auth Admin</label>{{end}}
                 </span>
                 <p class="hint">{{if $row.Self}}You cannot remove your own administrator access.{{else if and $row.IsAdmin (not $row.CanDemote)}}The last enabled administrator cannot be removed.{{else}}Full permissions: opens this console and manages every account.{{end}}</p>
               </div>
               <div class="seg-group"><span class="seg-label">Applications</span>
-                {{if $row.Apps}}<span class="seg" role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}<label class="seg-opt"><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
+                {{if $row.Apps}}<span class="seg" role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}<label class="seg-opt"><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
                 <p class="hint">Selected applications sign in through {{$.Brand}}; deselecting one signs them out of it now.</p>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
               </div>
+              <section class="fleet-permissions" data-fleet-permissions{{if not $row.FleetGranted}} hidden{{end}} aria-label="Fleet permissions for {{$row.Email}}">
+                <h4>Fleet permissions</h4>
+                <div class="seg-group"><span class="seg-label">Fleet Admin</span>
+                  <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"{{if $row.FleetAdmin}} checked{{end}}> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
+                </div>
+                <div class="seg-group"><span class="seg-label">Chat</span>
+                  <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="viewer"{{if eq $row.FleetChatRole "viewer"}} checked{{end}}> Viewer<small>Read-only Chat access: can view but cannot create or change content.</small></label>
+                  <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="member"{{if eq $row.FleetChatRole "member"}} checked{{end}}> Contributor<small>Can actively use Chat, including creating and updating content.</small></label>
+                </div>
+                <div class="seg-group"><span class="seg-label">Ops Center</span>
+                  <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="none"{{if eq $row.FleetOpsRole "none"}} checked{{end}}> None<small>No access to the Ops Center.</small></label>
+                  <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="readonly"{{if eq $row.FleetOpsRole "readonly"}} checked{{end}}> Viewer<small>Can view Ops Center tasks and logs but cannot change them.</small></label>
+                  <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="client"{{if eq $row.FleetOpsRole "client"}} checked{{end}}> Contributor<small>Can view, create, and run Ops Center tasks.</small></label>
+                </div>
+              </section>
               <button class="btn" type="submit">Save access</button>
             </form>
           </div>
@@ -1017,15 +1075,30 @@ const adminHTML = `<!doctype html>
         <div class="field"><label for="new-password">Temporary password</label>
           <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="Leave blank to generate one"><button class="btn-ghost" type="button" data-generate="new-password">Generate</button></div>
           <p class="hint">At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>
-        <div class="seg-group"><span class="seg-label">Admin</span>
-          <span class="seg" role="group" aria-label="Admin permissions"><label class="seg-opt"><input type="checkbox" name="admin" value="on"> Admin</label></span>
+        <div class="seg-group"><span class="seg-label">Auth Admin</span>
+          <span class="seg" role="group" aria-label="Auth Admin permissions"><label class="seg-opt admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin</label></span>
           <p class="hint">Full permissions: opens this console and manages every account.</p>
         </div>
         <div class="seg-group"><span class="seg-label">Applications</span>
-          {{if .AppChoices}}<span class="seg" role="group" aria-label="Applications">{{range .AppChoices}}<label class="seg-opt{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
+          {{if .AppChoices}}<span class="seg" role="group" aria-label="Applications">{{range .AppChoices}}<label class="seg-opt{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
           <p class="hint">Which applications they may sign in to.</p>
           {{else}}<p class="muted">No applications are registered yet; register them with <code>auth app create</code> on the server.</p>{{end}}
         </div>
+        {{if .HasFleet}}<section class="fleet-permissions" data-fleet-permissions hidden aria-label="New user Fleet permissions">
+          <h4>Fleet permissions</h4>
+          <div class="seg-group"><span class="seg-label">Fleet Admin</span>
+            <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
+          </div>
+          <div class="seg-group"><span class="seg-label">Chat</span>
+            <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="viewer"> Viewer<small>Read-only Chat access: can view but cannot create or change content.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="member" checked> Contributor<small>Can actively use Chat, including creating and updating content.</small></label>
+          </div>
+          <div class="seg-group"><span class="seg-label">Ops Center</span>
+            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="none" checked> None<small>No access to the Ops Center.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="readonly"> Viewer<small>Can view Ops Center tasks and logs but cannot change them.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="client"> Contributor<small>Can view, create, and run Ops Center tasks.</small></label>
+          </div>
+        </section>{{end}}
         <button class="btn" type="submit">Create account</button>
       </form>
     </div>
