@@ -491,7 +491,7 @@ func TestAdminApplicationTabToggleAndSignIns(t *testing.T) {
 	// The add-user form lists the applications with disabled ones unticked.
 	_ = st.SetApplicationDisabled(ctx, "explorer", true, time.Now().Unix())
 	_, page := alice.get("/admin")
-	if !strings.Contains(page, `<label class="seg-opt"><input type="checkbox" name="apps" value="fleet" data-fleet-toggle checked> Fleet</label>`) || !strings.Contains(page, `<label class="seg-opt off" title="Application disabled"><input type="checkbox" name="apps" value="explorer"> Explorer</label>`) {
+	if !strings.Contains(page, `<label class="permission-choice application-choice"><input type="checkbox" name="apps" value="fleet" data-fleet-toggle checked> Fleet<small>Can sign in to Fleet.</small></label>`) || !strings.Contains(page, `<label class="permission-choice application-choice off" title="Application disabled"><input type="checkbox" name="apps" value="explorer"> Explorer<small>Explorer is disabled for everyone.</small></label>`) {
 		t.Fatalf("add-user choices:\n%s", page)
 	}
 }
@@ -739,6 +739,9 @@ func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
 	}
 	if !strings.Contains(body, `<span class="seg-label">Applications</span>`) || !strings.Contains(body, `<span class="seg-label">Auth Admin</span>`) {
 		t.Fatal("Access popup lacks the application and Auth Admin sections")
+	}
+	if !strings.Contains(body, `<label class="permission-choice application-choice"><input type="checkbox" name="apps" value="fleet" data-fleet-toggle checked> Fleet<small>Can sign in to Fleet.</small></label>`) {
+		t.Fatal("Access popup lacks the described application checkbox")
 	}
 	if strings.Contains(body, `value="grant-admin"`) || strings.Contains(body, `value="revoke-admin"`) {
 		t.Fatal("Settings still offers the old admin buttons")
