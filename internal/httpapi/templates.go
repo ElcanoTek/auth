@@ -351,7 +351,9 @@ ul.plain li { margin: 0.2rem 0; }
 .permission-choice { display: block; padding: var(--space-2); border: 1px solid transparent; border-radius: var(--radius-md); font-size: var(--font-size-caption); color: var(--color-text-secondary); }
 .permission-choice input { margin-right: 0.4rem; accent-color: var(--color-primary); }
 .permission-choice small { display: block; margin: 0.12rem 0 0 1.35rem; color: var(--color-text-muted); }
-.seg-opt.admin-choice:has(input:checked),
+.permission-choice.locked { cursor: not-allowed; opacity: 0.65; }
+.permission-choice.locked input { cursor: not-allowed; }
+.permission-choice.admin-choice:has(input:checked),
 .fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[name="fleet_admin"]),
 .fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[value="member"]),
 .fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[value="client"]) {
@@ -840,7 +842,7 @@ const adminHTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{.Wordmark}} — Auth Admin</title>
+<title>{{.Wordmark}} — Admin Portal</title>
 {{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
 <style nonce="{{.Nonce}}">` + fontFaceCSS + tokensCSS + componentCSS + `{{.BrandCSS}}</style>
 <script nonce="{{.Nonce}}">` + themeScript + `</script>
@@ -861,7 +863,7 @@ const adminHTML = `<!doctype html>
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
     <div class="topline">
-      <h1>Auth Admin</h1>
+      <h1>Admin Portal</h1>
       <p class="muted">Signed in as <strong>{{.Email}}</strong></p>
     </div>
     <nav class="tabs" aria-label="Admin sections">
@@ -908,7 +910,7 @@ const adminHTML = `<!doctype html>
         <tbody>
         {{range $i, $row := .Accounts}}<tr data-account-row data-account-search-value="{{$row.Email}} {{$row.Team}} {{$row.Status}} {{$row.MFAStatus}}{{if $row.IsAdmin}} administrator admin{{end}}{{range $row.Apps}}{{if .Granted}} {{.Name}}{{end}}{{end}}" data-account-filter-values="{{if eq $row.Status "Active"}}active{{else if eq $row.Status "Disabled"}}disabled{{else}}must-change{{end}}{{if $row.IsAdmin}} admin{{end}}{{if $row.MFAEnrolled}} mfa-enabled{{else}} mfa-missing{{end}}">
           <td class="sel"><input type="checkbox" name="emails" value="{{$row.Email}}" form="batch-form" data-select aria-label="Select {{$row.Email}}"></td>
-          <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Auth Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
+          <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
           <td><div class="chips"><span class="badge {{$row.StatusClass}}">{{$row.Status}}</span><span class="badge {{$row.MFAClass}}" title="Two-factor sign-in">2FA: {{$row.MFAStatus}}</span></div></td>
           <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
           <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
@@ -922,11 +924,9 @@ const adminHTML = `<!doctype html>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{$row.Email}}">
               <div class="seg-group"><span class="seg-label">Auth Admin</span>
-                <span class="seg" role="group" aria-label="Auth Admin permissions for {{$row.Email}}">
-                  {{if or $row.Self (and $row.IsAdmin (not $row.CanDemote))}}<label class="seg-opt admin-choice locked"><input type="checkbox" checked disabled> Auth Admin</label><input type="hidden" name="admin" value="on">
-                  {{else}}<label class="seg-opt admin-choice"><input type="checkbox" name="admin" value="on"{{if $row.IsAdmin}} checked{{end}}> Auth Admin</label>{{end}}
-                </span>
-                <p class="hint">{{if $row.Self}}You cannot remove your own administrator access.{{else if and $row.IsAdmin (not $row.CanDemote)}}The last enabled administrator cannot be removed.{{else}}Full permissions: opens this console and manages every account.{{end}}</p>
+                {{if or $row.Self (and $row.IsAdmin (not $row.CanDemote))}}<label class="permission-choice admin-choice locked"><input type="checkbox" checked disabled> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label><input type="hidden" name="admin" value="on">
+                {{else}}<label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"{{if $row.IsAdmin}} checked{{end}}> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>{{end}}
+                {{if $row.Self}}<p class="hint">You cannot remove your own administrator access.</p>{{else if and $row.IsAdmin (not $row.CanDemote)}}<p class="hint">The last enabled administrator cannot be removed.</p>{{end}}
               </div>
               <div class="seg-group"><span class="seg-label">Applications</span>
                 {{if $row.Apps}}<span class="seg" role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}<label class="seg-opt"><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
@@ -1076,8 +1076,7 @@ const adminHTML = `<!doctype html>
           <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="Leave blank to generate one"><button class="btn-ghost" type="button" data-generate="new-password">Generate</button></div>
           <p class="hint">At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>
         <div class="seg-group"><span class="seg-label">Auth Admin</span>
-          <span class="seg" role="group" aria-label="Auth Admin permissions"><label class="seg-opt admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin</label></span>
-          <p class="hint">Full permissions: opens this console and manages every account.</p>
+          <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>
         </div>
         <div class="seg-group"><span class="seg-label">Applications</span>
           {{if .AppChoices}}<span class="seg" role="group" aria-label="Applications">{{range .AppChoices}}<label class="seg-opt{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
