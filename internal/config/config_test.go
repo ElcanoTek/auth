@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// testSeedB64 is a fixed, valid base64 Ed25519 seed used across config
-// tests (both in struct literals and inside .env file bodies).
-const testSeedB64 = "yjYMLeF987YtUv+SuA1VT9hlIgUS7LfDBx/vB6yu9wE="
+// testSeedB64 is 32 zero bytes: a valid Ed25519 seed with an intentionally
+// obvious, non-secret value. It must never be used by a deployment.
+const testSeedB64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 // testSigningKey decodes testSeedB64 into a full Ed25519 private key.
 func testSigningKey() ed25519.PrivateKey {
@@ -43,7 +43,7 @@ func TestLoadRequiresSigningKey(t *testing.T) {
 
 func TestLoadRejectsMalformedSigningKey(t *testing.T) {
 	clearAllAuthEnv(t)
-	t.Setenv("AUTH_SIGNING_KEY", "bm90LWEtdmFsaWQtMzItYnl0ZS1zZWVk") // valid base64, wrong length
+	t.Setenv("AUTH_SIGNING_KEY", "bm90LWEtdmFsaWQtMzItYnl0ZS1zZWVk") // gitleaks:allow -- base64 for "not-a-valid-32-byte-seed"
 	_, err := Load("")
 	if err == nil || !strings.Contains(err.Error(), "AUTH_SIGNING_KEY") {
 		t.Errorf("Load with wrong-length seed: want AUTH_SIGNING_KEY error, got %v", err)
@@ -211,7 +211,7 @@ func TestLoadFromFile(t *testing.T) {
 	envFile := filepath.Join(dir, ".env.local")
 	body := `
 # leading comment
-AUTH_SIGNING_KEY="yjYMLeF987YtUv+SuA1VT9hlIgUS7LfDBx/vB6yu9wE="
+AUTH_SIGNING_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 AUTH_HOSTNAME=auth.example.com
 AUTH_COOKIE_DOMAIN="example.com"
 AUTH_ALLOWED_DOMAINS="example.com, clientco.com ,  "
@@ -257,7 +257,7 @@ func TestLoadProcessEnvWinsOverFile(t *testing.T) {
 	clearAllAuthEnv(t)
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, ".env.local")
-	body := `AUTH_SIGNING_KEY="yjYMLeF987YtUv+SuA1VT9hlIgUS7LfDBx/vB6yu9wE="
+	body := `AUTH_SIGNING_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 AUTH_HOSTNAME=file.example.com
 `
 	_ = os.WriteFile(envFile, []byte(body), 0o600)

@@ -24,15 +24,24 @@ profile.cov
 go.work
 go.work.sum
 
-# env files (.env.local holds the signing key + SendGrid key), and any
-# backup or variant of them
-.env
-.env.local
-.env.local.*
+# Env files hold signing/MFA keys and provider credentials. Keep the empty
+# reference catalog, ignore every populated variant and backup.
+.env*
+!.env.local.example
 *.bak
+
+# Private-key and certificate bundles
+*.key
+*.pem
+*.p12
+*.pfx
 
 # Local SQLite state (dev data dir — holds login records + magic nonces)
 /.localdata/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
 
 # Build artifacts (Makefile drops binaries here)
 /bin/

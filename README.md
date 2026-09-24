@@ -1,8 +1,34 @@
 # auth
 
-A small, self-hosted login service: one Go binary, one SQLite file, no
-external identity provider. It signs people in once and proves who they are
-to every application behind it.
+[![CI](https://github.com/ElcanoTek/auth/actions/workflows/ci.yml/badge.svg)](https://github.com/ElcanoTek/auth/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**A small, self-hosted identity service: one Go binary, one SQLite file, and
+no external identity provider.**
+
+Auth gives a group of applications one place for sign-in, account access,
+two-factor policy, and global sign-out. Applications receive short-lived,
+Ed25519-signed identity assertions and keep their own host-only sessions,
+roles, and data.
+
+## See it in action
+
+These are real captures from the embedded server-rendered UI. No frontend
+build or external asset host is involved.
+
+**Administrator portal — accounts, application grants, teams, and 2FA state**
+
+![Auth administrator portal showing generic example accounts](docs/screenshots/admin.png)
+
+**Application launcher — one sign-in, only the apps this account can use**
+
+![Auth signed-in application launcher](docs/screenshots/account.png)
+
+**Password sign-in — brandable, responsive, and dark/light aware**
+
+![Auth password sign-in page](docs/screenshots/login.png)
+
+## What it supports
 
 It runs in one of two modes, chosen per deployment:
 
@@ -22,6 +48,16 @@ It runs in one of two modes, chosen per deployment:
   one-time link. The result is one Ed25519-signed cookie on a shared parent
   domain, which every subdomain either verifies natively or has Caddy verify
   for it with `forward_auth`.
+
+Password mode is the recommended choice for new deployments. Magic-link mode
+remains for stacks that intentionally share a parent-domain cookie.
+
+## Contents
+
+- [See it in action](#see-it-in-action) · [What it supports](#what-it-supports) · [Architecture](#architecture)
+- [Quickstart](#quickstart) · [Environment](#environment) · [Tests](#tests) · [Tools](#tools)
+- [Deploying to production](#deploying-to-production) · [Token format](#token-format) · [Layout](#layout)
+- [Security](#security) · [Contributing](#contributing) · [License](#license)
 
 ## Architecture
 
@@ -80,29 +116,50 @@ has the generic patterns and checklists.
 
 ## Quickstart
 
+Prerequisite: Go 1.25.14 or a compatible newer toolchain.
+
 ```bash
-# 1. Install deps + run tests
-go mod download
-make check
+# Build both binaries.
+make build
 
-# 2. Configure
+# Create a local-only configuration, then generate a signing key.
 cp .env.local.example .env.local
-$EDITOR .env.local        # at minimum: set AUTH_SIGNING_KEY (auth-admin keygen)
+./bin/auth-admin keygen
+$EDITOR .env.local
 
-# 3. Boot it
+# For a plain-HTTP password-mode development server, set:
+# AUTH_SIGNING_KEY=<the private seed printed above>
+# AUTH_ADDR=127.0.0.1:9000
+# AUTH_HOSTNAME=localhost:9000
+# AUTH_DATA_DIR=.localdata
+# AUTH_LOGIN_MODE=password
+# AUTH_COOKIE_DOMAIN=
+# AUTH_COOKIE_SECURE=false
+# AUTH_PASSWORD_COOKIE_NAME=auth_session
+# AUTH_EMAIL_DRIVER=stdout
+
+# Create the first account. The password is read without echo and is not
+# placed in shell history.
+mkdir -p .localdata
+AUTH_DATA_DIR=.localdata ./bin/auth-admin user create alice@example.com
+AUTH_DATA_DIR=.localdata ./bin/auth-admin user admin alice@example.com on
+
+# Start the server, then open http://localhost:9000.
 make run
 ```
 
-The default email driver is `stdout`, so in magic-link mode every link prints
-to the terminal and the flow works end to end without an email provider.
+The runtime default email driver is `stdout`, so a local magic-link flow also
+works without an email provider: each one-time link prints to the terminal.
+The reference `.env.local.example` selects SendGrid to make its production
+requirements visible; change it to `stdout` for local development.
 
 ### Password mode and application handoff
 
 Set `AUTH_LOGIN_MODE=password` to use administrator-provisioned email and
 password accounts instead of magic links. For plain-HTTP local development,
 also set `AUTH_COOKIE_SECURE=false` and `AUTH_PASSWORD_COOKIE_NAME=auth_session`;
-production keeps the secure `__Host-auth_session` default. Create an account
-without placing its password in shell history:
+production keeps the secure `__Host-auth_session` default. Create more accounts
+without placing their passwords in shell history:
 
 ```bash
 make build
@@ -307,3 +364,33 @@ provider account serve the whole stack, and avoids the per-user price ramp. If
 a deployment ever requires SAML, an upstream identity provider slots in behind
 the login step without any downstream service noticing: they all still verify
 the same signed tokens.
+
+## Security
+
+Auth keeps private signing material, client secrets, password hashes,
+authenticator seeds, and live sessions out of Git:
+
+- Application secrets are displayed once and stored only as SHA-256 hashes.
+- Passwords are hashed with Argon2id; authenticator seeds are sealed with
+  AES-256-GCM under a separate deployment key.
+- Password-mode browser sessions are opaque, host-only, `HttpOnly`,
+  `SameSite=Lax`, and `Secure` by default.
+- Authorization codes are short-lived, single-use, callback-bound, and require
+  S256 PKCE; signed assertions publish their verification keys through JWKS.
+- CI scans every checked-out file with gitleaks, including documentation-only
+  changes. Local `.env` files, SQLite state, and build outputs are ignored.
+
+The full operational threat model and hardening checklist live in
+[`docs/DEPLOY.md`](docs/DEPLOY.md). Please report vulnerabilities privately as
+described in [`SECURITY.md`](SECURITY.md).
+
+## Contributing
+
+Contributions are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the
+local checks, repository map, and pull-request expectations.
+
+## License
+
+Auth is available under the [MIT License](LICENSE). The embedded Nebula Sans
+font files are distributed separately under the SIL Open Font License 1.1 in
+[`internal/httpapi/fonts/OFL.txt`](internal/httpapi/fonts/OFL.txt).

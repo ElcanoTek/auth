@@ -1,0 +1,18 @@
+# Exact fingerprints of confirmed synthetic fixtures in old commits. These are
+# commit-scoped rather than path/rule allowlists, so a new finding still fails.
+
+# Fixed session-secret string and placeholder SendGrid value in config tests.
+8ea7df22fd90f6feb11fe3a2b0dc3de80aa18018:internal/config/config_test.go:generic-api-key:133
+8ea7df22fd90f6feb11fe3a2b0dc3de80aa18018:internal/config/config_test.go:generic-api-key:200
+8ea7df22fd90f6feb11fe3a2b0dc3de80aa18018:internal/config/config_test.go:generic-api-key:215
+8ea7df22fd90f6feb11fe3a2b0dc3de80aa18018:internal/config/config_test.go:generic-api-key:227
+
+# Intentionally malformed and fixed signing-key values in config tests.
+20922c46f8fec7761e61129d3c8c775bcae7cf84:internal/config/config_test.go:generic-api-key:56
+20922c46f8fec7761e61129d3c8c775bcae7cf84:internal/config/config_test.go:generic-api-key:153
+20922c46f8fec7761e61129d3c8c775bcae7cf84:internal/config/config_test.go:generic-api-key:199
+
+# Fabricated password used to prove typed passwords are stored byte-for-byte.
+2837e337b1c4fe95236a66335b000a64f035ad9c:internal/httpapi/admin_test.go:generic-api-key:602
+2837e337b1c4fe95236a66335b000a64f035ad9c:internal/httpapi/admin_test.go:generic-api-key:614
+2837e337b1c4fe95236a66335b000a64f035ad9c:internal/httpapi/admin_test.go:generic-api-key:617
