@@ -63,6 +63,8 @@ info "starting auth-server on ${BASE} (stdout driver, throwaway DB)"
 AUTH_ADDR="127.0.0.1:${PORT}" \
 AUTH_HOSTNAME="localhost" \
 AUTH_DATA_DIR="$WORK/data" \
+AUTH_LOGIN_MODE="magic" \
+AUTH_ALLOW_INSECURE_DEV="true" \
 AUTH_COOKIE_SECURE="false" \
 AUTH_EMAIL_DRIVER="stdout" \
 AUTH_ALLOWED_DOMAINS="example.com" \

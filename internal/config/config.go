@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"github.com/elcanotek/auth/internal/branding"
 	"github.com/elcanotek/auth/internal/mfa"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -31,8 +32,11 @@ var allowedEnvVars = map[string]bool{
 	"AUTH_ADDR":       true, // default 127.0.0.1:9000; Caddy talks here.
 	"AUTH_HOSTNAME":   true, // public hostname (e.g. auth.example.com).
 	"AUTH_DATA_DIR":   true, // where state.db lives. Default /opt/auth/data.
-	"AUTH_LOGIN_MODE": true, // magic (legacy default) | password.
+	"AUTH_LOGIN_MODE": true, // password (default) | magic.
 	"AUTH_ISSUER_URL": true, // externally visible origin; derived from hostname when empty.
+	// Explicit escape hatch for loopback-only development. Production
+	// deployments must never enable this.
+	"AUTH_ALLOW_INSECURE_DEV": true,
 
 	// Crypto. AUTH_SIGNING_KEY is the base64 Ed25519 private seed that
 	// signs both magic-link tokens and the final session cookie. Only the
@@ -95,8 +99,9 @@ var allowedEnvVars = map[string]bool{
 	//   - "stdout":   print the magic link to stderr (dev only)
 	//   - "smtp":     STARTTLS to AUTH_SMTP_HOST:AUTH_SMTP_PORT with
 	//                 AUTH_SMTP_USER / AUTH_SMTP_PASS
-	// Default is "stdout" so a fresh install proves out end-to-end before
-	// the operator has to pick a provider.
+	// Default is "stdout" so password-mode local development does not require
+	// a provider. Magic-mode validation permits it only behind the explicit,
+	// loopback-only development override.
 	"AUTH_EMAIL_DRIVER": true,
 	"AUTH_EMAIL_FROM":   true, // e.g. "Sign in <login@example.com>"
 	"SENDGRID_API_KEY":  true, // conventional name, so one key can serve a whole stack
@@ -130,6 +135,9 @@ type Config struct {
 	DataDir   string
 	LoginMode string
 	IssuerURL string
+	// AllowInsecureDev permits development-only settings, but Validate still
+	// confines them to a loopback hostname and issuer.
+	AllowInsecureDev bool
 
 	SigningKey         ed25519.PrivateKey // signs tokens (auth host only)
 	PublicKey          ed25519.PublicKey  // verifies tokens; derived from SigningKey
@@ -213,8 +221,9 @@ func Load(envFile string) (*Config, error) {
 		Addr:               envOr("AUTH_ADDR", "127.0.0.1:9000"),
 		Hostname:           envOr("AUTH_HOSTNAME", "localhost"),
 		DataDir:            envOr("AUTH_DATA_DIR", "/opt/auth/data"),
-		LoginMode:          strings.ToLower(envOr("AUTH_LOGIN_MODE", "magic")),
+		LoginMode:          strings.ToLower(envOr("AUTH_LOGIN_MODE", "password")),
 		IssuerURL:          strings.TrimSpace(os.Getenv("AUTH_ISSUER_URL")),
+		AllowInsecureDev:   env.boolean("AUTH_ALLOW_INSECURE_DEV", false),
 		CookieName:         envOr("AUTH_COOKIE_NAME", "elcano_auth"),
 		CookieDomain:       os.Getenv("AUTH_COOKIE_DOMAIN"),
 		CookieSecure:       env.boolean("AUTH_COOKIE_SECURE", true),
@@ -355,6 +364,14 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("unknown AUTH_EMAIL_DRIVER %q (want stdout|sendgrid|smtp)", c.EmailDriver)
 	}
+	if c.AllowInsecureDev && (!isLoopbackHostname(c.Hostname) || !isLoopbackOrigin(c.IssuerURL)) {
+		return fmt.Errorf("AUTH_ALLOW_INSECURE_DEV may only be used with loopback AUTH_HOSTNAME and AUTH_ISSUER_URL")
+	}
+	if !c.CookieSecure {
+		if !c.AllowInsecureDev {
+			return fmt.Errorf("AUTH_COOKIE_SECURE=false requires AUTH_ALLOW_INSECURE_DEV=true for loopback development")
+		}
+	}
 	if mode == "password" {
 		if c.PasswordAbsoluteTTL <= 0 || c.PasswordIdleTTL <= 0 || c.PasswordIdleTTL > c.PasswordAbsoluteTTL {
 			return fmt.Errorf("password session TTLs must be positive and idle must not exceed absolute")
@@ -397,10 +414,57 @@ func (c *Config) Validate() error {
 	if c.MagicRatePerEmail < 0 || c.MagicGlobalLimit < 0 {
 		return fmt.Errorf("magic-link rate limits must not be negative")
 	}
-	if c.CookieSecure && (c.Hostname == "" || c.Hostname == "localhost") {
+	if c.MagicTTL <= 0 || c.MagicTTL > time.Hour {
+		return fmt.Errorf("AUTH_MAGIC_TTL_MINUTES must be between 1 and 60")
+	}
+	if c.SessionTTL <= 0 || c.SessionTTL > 90*24*time.Hour {
+		return fmt.Errorf("AUTH_SESSION_TTL_DAYS must be between 1 and 90")
+	}
+	if c.CookieSecure && (c.Hostname == "" || isLoopbackHostname(c.Hostname)) {
 		return fmt.Errorf("AUTH_HOSTNAME must name the public host when secure cookies are enabled")
 	}
+	if c.EmailDriver == "" || c.EmailDriver == "stdout" {
+		if !c.AllowInsecureDev || !isLoopbackHostname(c.Hostname) || !isLoopbackOrigin(c.IssuerURL) {
+			return fmt.Errorf("AUTH_EMAIL_DRIVER=stdout in magic mode requires AUTH_ALLOW_INSECURE_DEV=true and a loopback host")
+		}
+	}
 	return nil
+}
+
+// ValidateMagicAllowlist completes startup validation once the caller has
+// inspected the persistent allowlist. AUTH_ALLOWED_DOMAINS is only a seed;
+// existing deployments may safely keep all of their domains in SQLite.
+func (c *Config) ValidateMagicAllowlist(hasPersistedDomains bool) error {
+	if c.LoginMode != "magic" || c.AllowInsecureDev || len(c.AllowedDomains) > 0 || hasPersistedDomains {
+		return nil
+	}
+	return fmt.Errorf("magic mode requires a nonempty domain allowlist outside loopback development (set AUTH_ALLOWED_DOMAINS or add one with auth domain add)")
+}
+
+func isLoopbackHostname(raw string) bool {
+	host := strings.TrimSpace(raw)
+	if host == "" {
+		return false
+	}
+	// url.Parse supplies correct bracket/port handling for IPv6 and host:port.
+	u, err := url.Parse("http://" + host)
+	if err != nil {
+		return false
+	}
+	return isLoopbackHost(u.Hostname())
+}
+
+func isLoopbackOrigin(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Host != "" && isLoopbackHost(u.Hostname())
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func validateIssuerURL(raw string, requireHTTPS bool) error {

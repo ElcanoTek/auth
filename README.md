@@ -133,6 +133,7 @@ $EDITOR .env.local
 # AUTH_HOSTNAME=localhost:9000
 # AUTH_DATA_DIR=.localdata
 # AUTH_LOGIN_MODE=password
+# AUTH_ALLOW_INSECURE_DEV=true
 # AUTH_COOKIE_DOMAIN=
 # AUTH_COOKIE_SECURE=false
 # AUTH_PASSWORD_COOKIE_NAME=auth_session
@@ -148,17 +149,22 @@ AUTH_DATA_DIR=.localdata ./bin/auth-admin user admin alice@example.com on
 make run
 ```
 
-The runtime default email driver is `stdout`, so a local magic-link flow also
-works without an email provider: each one-time link prints to the terminal.
+The runtime default email driver is `stdout`, so a local magic-link flow can
+work without an email provider when `AUTH_LOGIN_MODE=magic`,
+`AUTH_ALLOW_INSECURE_DEV=true`, and `AUTH_COOKIE_SECURE=false`: each one-time
+link prints to the terminal. This override is accepted only on a loopback
+hostname and issuer.
 The reference `.env.local.example` selects SendGrid to make its production
 requirements visible; change it to `stdout` for local development.
 
 ### Password mode and application handoff
 
 Set `AUTH_LOGIN_MODE=password` to use administrator-provisioned email and
-password accounts instead of magic links. For plain-HTTP local development,
-also set `AUTH_COOKIE_SECURE=false` and `AUTH_PASSWORD_COOKIE_NAME=auth_session`;
-production keeps the secure `__Host-auth_session` default. Create more accounts
+password accounts instead of magic links. This is also the default when the
+setting is omitted. For plain-HTTP local development, also set
+`AUTH_ALLOW_INSECURE_DEV=true`, `AUTH_COOKIE_SECURE=false`, and
+`AUTH_PASSWORD_COOKIE_NAME=auth_session`; production keeps the secure
+`__Host-auth_session` default. Create more accounts
 without placing their passwords in shell history:
 
 ```bash
@@ -201,6 +207,8 @@ For anything beyond localhost, also set:
   allowlist; empty means open enrollment, never in production), and
   `AUTH_EMAIL_DRIVER` plus `SENDGRID_API_KEY` or the `AUTH_SMTP_*` settings
   with `AUTH_EMAIL_FROM`.
+- Never set `AUTH_ALLOW_INSECURE_DEV=true` outside loopback development. The
+  server rejects it with a public hostname or issuer.
 - Optionally `AUTH_CLIENT_CONFIG_DIR`: a checkout of a client bundle whose
   `branding:` block supplies the wordmark, logo, colours and login copy. Unset
   means the default look.

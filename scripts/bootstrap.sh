@@ -549,8 +549,10 @@ SETUP_CADDY="n"
 USE_LETSENCRYPT="n"
 LE_EMAIL=""
 COOKIE_SECURE="true"
+ALLOW_INSECURE_DEV="false"
 if [[ "$HOSTNAME_ANSWER" == "localhost" || "$HOSTNAME_ANSWER" == "127.0.0.1" ]]; then
   COOKIE_SECURE="false"
+  ALLOW_INSECURE_DEV="true"
 else
   # DNS pre-check so a misconfigured A record fails BEFORE we ask ACME.
   if command -v dig >/dev/null 2>&1; then
@@ -590,6 +592,11 @@ else
   fi
 fi
 
+if [[ "$LOGIN_MODE_ANSWER" == "magic" && "$COOKIE_SECURE" == "true" ]]; then
+  [[ -n "$ALLOWED_DOMAINS_ANSWER" ]] || die "production magic mode requires at least one allowed email domain"
+  [[ "$EMAIL_DRIVER_ANSWER" != "stdout" ]] || die "production magic mode requires sendgrid or smtp; stdout exposes live login links"
+fi
+
 ISSUER_SCHEME="https"
 PASSWORD_COOKIE_NAME="__Host-auth_session"
 ISSUER_AUTHORITY="$HOSTNAME_ANSWER"
@@ -625,7 +632,7 @@ fi
 # so a failure mid-way never leaves a half-written env file, and the result
 # is root:auth 0640 from the moment it exists.
 require_single_line HOSTNAME_ANSWER LOGIN_MODE_ANSWER ISSUER_AUTHORITY AUTH_SIGNING_KEY COOKIE_DOMAIN_ANSWER \
-  PASSWORD_COOKIE_NAME AUTH_MFA_KEY AUTH_MFA_KEY_ID AUTH_MFA_PREVIOUS_KEYS ALLOWED_DOMAINS_ANSWER CLIENT_CONFIG_DIR \
+  ALLOW_INSECURE_DEV PASSWORD_COOKIE_NAME AUTH_MFA_KEY AUTH_MFA_KEY_ID AUTH_MFA_PREVIOUS_KEYS ALLOWED_DOMAINS_ANSWER CLIENT_CONFIG_DIR \
   EMAIL_DRIVER_ANSWER EMAIL_FROM_ANSWER SENDGRID_KEY_ANSWER SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS BRAND_ANSWER
 ENV_OUT="$(mktemp "$APP_DIR/.env.local.new.XXXXXX")"
 OLD_UMASK="$(umask)"
@@ -640,6 +647,7 @@ AUTH_HOSTNAME=$(envq "$HOSTNAME_ANSWER")
 AUTH_DATA_DIR=$(envq "$APP_DIR/data")
 AUTH_LOGIN_MODE=$(envq "$LOGIN_MODE_ANSWER")
 AUTH_ISSUER_URL=$(envq "$ISSUER_SCHEME://$ISSUER_AUTHORITY")
+AUTH_ALLOW_INSECURE_DEV=$(envq "$ALLOW_INSECURE_DEV")
 
 # ── Crypto ───────────────────────────────────────────────────────
 # Private signing seed — auth host only. AUTH_SIGNING_PUBKEY (below, in a
