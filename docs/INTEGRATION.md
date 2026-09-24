@@ -261,7 +261,8 @@ wrong, or a `Secure` cookie is being set over plain HTTP.
   cookie. Keep submission flows on the service that owns the form.
 - **`Secure` cookies on plain HTTP.** With `AUTH_COOKIE_SECURE="true"` (the
   default) a downstream on `http://` never sees the cookie. Fix the downstream
-  to HTTPS, or set `AUTH_COOKIE_SECURE="false"` for development only.
+  to HTTPS, or, for loopback development only, set both
+  `AUTH_ALLOW_INSECURE_DEV="true"` and `AUTH_COOKIE_SECURE="false"`.
 - **Stale `forward_auth` target.** Caddy resolves the Auth hostname once and
   may cache the address; after moving Auth to a new box, restart Caddy.
 - **DNS from the downstream box.** `forward_auth` is server to server. If the

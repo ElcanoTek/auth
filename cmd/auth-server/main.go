@@ -57,12 +57,6 @@ func main() {
 		log.Printf("client branding from %s (wordmark=%q logo=%v palette=%v)",
 			brand.Dir, brand.AppName, len(brand.Logo) > 0, brand.CSS != "")
 	}
-	if cfg.LoginMode == "magic" && cfg.EmailDriver == "stdout" && cfg.CookieSecure {
-		// Every sign-in link goes to the journal, where anyone who can read
-		// it can sign in as the recipient. Loud, because the default is
-		// this and a production box must not run on it.
-		log.Printf("WARNING: AUTH_EMAIL_DRIVER=stdout on a secure magic-link deployment prints live sign-in links to the journal; set sendgrid or smtp")
-	}
 	if checkOnly {
 		// update.sh runs this as the service user before swapping binaries,
 		// while the current build is still serving. The live database is
@@ -72,9 +66,14 @@ func main() {
 			if err := mfaKeyStartCheck(cfg, ro); err != nil {
 				log.Fatalf("%v", err)
 			}
+			if err := magicAllowlistStartCheck(cfg, ro); err != nil {
+				log.Fatalf("%v", err)
+			}
 			_ = ro.Close()
 		} else if !os.IsNotExist(err) {
 			log.Fatalf("open store read-only: %v", err)
+		} else if err := cfg.ValidateMagicAllowlist(false); err != nil {
+			log.Fatalf("%v", err)
 		}
 		log.Printf("configuration OK (hostname=%s, login_mode=%s, branding=%v)", cfg.Hostname, cfg.LoginMode, brand != nil)
 		return
@@ -105,6 +104,9 @@ func main() {
 		if err := st.SeedDomains(context.Background(), cfg.AllowedDomains); err != nil {
 			log.Fatalf("seed domains: %v", err)
 		}
+	}
+	if err := magicAllowlistStartCheck(cfg, st); err != nil {
+		log.Fatalf("%v", err)
 	}
 
 	sender := pickSender(cfg)
@@ -210,6 +212,17 @@ func main() {
 	// almost all of it.
 	srv.WaitSends(shutCtx)
 	log.Printf("shutdown: done")
+}
+
+func magicAllowlistStartCheck(cfg *config.Config, st *store.Store) error {
+	if cfg.LoginMode != "magic" || cfg.AllowInsecureDev || len(cfg.AllowedDomains) > 0 {
+		return nil
+	}
+	domains, err := st.ListDomains(context.Background())
+	if err != nil {
+		return fmt.Errorf("read domain allowlist: %w", err)
+	}
+	return cfg.ValidateMagicAllowlist(len(domains) > 0)
 }
 
 // pickSender wires the email backend by config. Failing to set up

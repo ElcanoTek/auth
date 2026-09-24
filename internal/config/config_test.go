@@ -23,6 +23,23 @@ func testSigningKey() ed25519.PrivateKey {
 	return ed25519.NewKeyFromSeed(seed)
 }
 
+func validMagicConfig() *Config {
+	return &Config{
+		SigningKey:        testSigningKey(),
+		LoginMode:         "magic",
+		Hostname:          "auth.example.com",
+		IssuerURL:         "https://auth.example.com",
+		SessionTTL:        24 * time.Hour,
+		MagicTTL:          15 * time.Minute,
+		MagicRatePerEmail: 10,
+		MagicGlobalLimit:  500,
+		CookieSecure:      true,
+		AllowedDomains:    []string{"example.com"},
+		EmailDriver:       "sendgrid",
+		SendGridAPIKey:    "SG.test",
+	}
+}
+
 func clearAllAuthEnv(t *testing.T) {
 	t.Helper()
 	for k := range allowedEnvVars {
@@ -56,6 +73,7 @@ func TestDefaultReturnToLanding(t *testing.T) {
 	t.Run("derives home.<cookie-domain>", func(t *testing.T) {
 		clearAllAuthEnv(t)
 		t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+		t.Setenv("AUTH_LOGIN_MODE", "magic")
 		t.Setenv("AUTH_COOKIE_DOMAIN", "example.com")
 		cfg, err := Load("")
 		if err != nil {
@@ -70,6 +88,7 @@ func TestDefaultReturnToLanding(t *testing.T) {
 	t.Run("explicit value wins", func(t *testing.T) {
 		clearAllAuthEnv(t)
 		t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+		t.Setenv("AUTH_LOGIN_MODE", "magic")
 		t.Setenv("AUTH_COOKIE_DOMAIN", "example.com")
 		t.Setenv("AUTH_DEFAULT_RETURN_TO", "https://lens.example.com/")
 		cfg, err := Load("")
@@ -86,6 +105,7 @@ func TestDefaultReturnToLanding(t *testing.T) {
 	t.Run("no cookie domain leaves it empty", func(t *testing.T) {
 		clearAllAuthEnv(t)
 		t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+		t.Setenv("AUTH_LOGIN_MODE", "magic")
 		cfg, err := Load("")
 		if err != nil {
 			t.Fatalf("Load: %v", err)
@@ -130,42 +150,42 @@ func TestValidateRejectsMissingKey(t *testing.T) {
 
 func TestValidateChecksEmailDriverCreds(t *testing.T) {
 	cases := []struct {
-		name  string
-		cfg   *Config
-		wantE string
+		name        string
+		driver      string
+		sendGridKey string
+		smtpHost    string
+		localDev    bool
+		wantE       string
 	}{
 		{
-			name:  "sendgrid without key",
-			cfg:   &Config{SigningKey: testSigningKey(), EmailDriver: "sendgrid"},
-			wantE: "SENDGRID_API_KEY",
+			name: "sendgrid without key", driver: "sendgrid", wantE: "SENDGRID_API_KEY",
 		},
 		{
-			name:  "smtp without host",
-			cfg:   &Config{SigningKey: testSigningKey(), EmailDriver: "smtp"},
-			wantE: "AUTH_SMTP_HOST",
+			name: "smtp without host", driver: "smtp", wantE: "AUTH_SMTP_HOST",
 		},
 		{
-			name:  "unknown driver",
-			cfg:   &Config{SigningKey: testSigningKey(), EmailDriver: "carrier-pigeon"},
-			wantE: "unknown AUTH_EMAIL_DRIVER",
+			name: "unknown driver", driver: "carrier-pigeon", wantE: "unknown AUTH_EMAIL_DRIVER",
 		},
 		{
-			name: "sendgrid ok",
-			cfg: &Config{
-				SigningKey: testSigningKey(), EmailDriver: "sendgrid",
-				SendGridAPIKey: "SG.x",
-			},
-			wantE: "",
+			name: "sendgrid ok", driver: "sendgrid", sendGridKey: "SG.x",
 		},
 		{
-			name:  "stdout always ok",
-			cfg:   &Config{SigningKey: testSigningKey(), EmailDriver: "stdout"},
-			wantE: "",
+			name: "stdout local dev ok", driver: "stdout", localDev: true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := tc.cfg.Validate()
+			cfg := validMagicConfig()
+			cfg.EmailDriver = tc.driver
+			cfg.SendGridAPIKey = tc.sendGridKey
+			cfg.SMTPHost = tc.smtpHost
+			if tc.localDev {
+				cfg.Hostname = "localhost"
+				cfg.IssuerURL = "http://localhost:9000"
+				cfg.CookieSecure = false
+				cfg.AllowInsecureDev = true
+			}
+			err := cfg.Validate()
 			switch {
 			case tc.wantE == "" && err != nil:
 				t.Errorf("Validate: want nil, got %v", err)
@@ -212,6 +232,7 @@ func TestLoadFromFile(t *testing.T) {
 	body := `
 # leading comment
 AUTH_SIGNING_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+AUTH_LOGIN_MODE=magic
 AUTH_HOSTNAME=auth.example.com
 AUTH_COOKIE_DOMAIN="example.com"
 AUTH_ALLOWED_DOMAINS="example.com, clientco.com ,  "
@@ -352,8 +373,8 @@ func TestLoadTTLsHaveSensibleDefaults(t *testing.T) {
 	if cfg.MagicTTL.Minutes() != 15 {
 		t.Errorf("MagicTTL = %v, want 15 minutes", cfg.MagicTTL)
 	}
-	if cfg.LoginMode != "magic" {
-		t.Errorf("LoginMode = %q, want legacy-safe magic default", cfg.LoginMode)
+	if cfg.LoginMode != "password" {
+		t.Errorf("LoginMode = %q, want fail-closed password default", cfg.LoginMode)
 	}
 	if cfg.PasswordAbsoluteTTL != 30*24*time.Hour || cfg.PasswordIdleTTL != 7*24*time.Hour {
 		t.Errorf("password TTLs = absolute %v idle %v, want 30d/7d", cfg.PasswordAbsoluteTTL, cfg.PasswordIdleTTL)
@@ -376,6 +397,7 @@ func TestPasswordModeSecurityConfiguration(t *testing.T) {
 	}
 
 	cfg.CookieSecure = false
+	cfg.AllowInsecureDev = true
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "local HTTP") {
 		t.Fatalf("insecure __Host- cookie was accepted: %v", err)
 	}
@@ -532,10 +554,7 @@ func TestValidateChecksEmailDriverInPasswordMode(t *testing.T) {
 }
 
 func TestValidateMagicModeRangesAndHostname(t *testing.T) {
-	base := func() *Config {
-		return &Config{SigningKey: testSigningKey(), LoginMode: "magic", Hostname: "auth.example.com",
-			MagicTTL: 15 * time.Minute, SessionTTL: 24 * time.Hour, MagicRatePerEmail: 10, MagicGlobalLimit: 500, CookieSecure: true}
-	}
+	base := validMagicConfig
 	if err := base().Validate(); err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
@@ -549,9 +568,67 @@ func TestValidateMagicModeRangesAndHostname(t *testing.T) {
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_HOSTNAME") {
 		t.Fatalf("secure magic on localhost: %v", err)
 	}
-	c.CookieSecure = false // plain-HTTP local development stays allowed
+	c.CookieSecure = false
+	c.IssuerURL = "http://localhost:9000"
+	c.EmailDriver = "stdout"
+	c.SendGridAPIKey = ""
+	c.AllowInsecureDev = true // explicit plain-HTTP loopback development
 	if err := c.Validate(); err != nil {
 		t.Fatalf("insecure localhost: %v", err)
+	}
+
+	c = base()
+	c.MagicTTL = 61 * time.Minute
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_MAGIC_TTL_MINUTES") {
+		t.Fatalf("overlong magic TTL: %v", err)
+	}
+	c = base()
+	c.SessionTTL = 91 * 24 * time.Hour
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_SESSION_TTL_DAYS") {
+		t.Fatalf("overlong session TTL: %v", err)
+	}
+	c = base()
+	c.EmailDriver = "stdout"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_EMAIL_DRIVER=stdout") {
+		t.Fatalf("production stdout driver: %v", err)
+	}
+	c = base()
+	c.AllowedDomains = nil
+	if err := c.Validate(); err != nil {
+		t.Fatalf("config validation should defer the persistent allowlist check: %v", err)
+	}
+	if err := c.ValidateMagicAllowlist(false); err == nil || !strings.Contains(err.Error(), "domain allowlist") {
+		t.Fatalf("production open enrollment: %v", err)
+	}
+	if err := c.ValidateMagicAllowlist(true); err != nil {
+		t.Fatalf("persisted production allowlist: %v", err)
+	}
+}
+
+func TestValidateInsecureDevIsExplicitAndLoopbackOnly(t *testing.T) {
+	cfg := &Config{
+		SigningKey:          testSigningKey(),
+		LoginMode:           "password",
+		Hostname:            "localhost:9000",
+		IssuerURL:           "http://localhost:9000",
+		CookieSecure:        false,
+		PasswordCookieName:  "auth_session",
+		PasswordAbsoluteTTL: 2 * time.Hour,
+		PasswordIdleTTL:     time.Hour,
+		CodeTTL:             time.Minute,
+		AssertionTTL:        5 * time.Minute,
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_ALLOW_INSECURE_DEV") {
+		t.Fatalf("implicit insecure development config: %v", err)
+	}
+	cfg.AllowInsecureDev = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("explicit loopback development config: %v", err)
+	}
+	cfg.Hostname = "auth.example.com"
+	cfg.IssuerURL = "http://auth.example.com"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("public insecure development override: %v", err)
 	}
 }
 

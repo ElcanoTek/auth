@@ -127,13 +127,9 @@ jobs:
         run: make smoke
 
   govulncheck:
-    name: govulncheck (advisory)
+    name: govulncheck
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Advisory, not blocking. govulncheck flags stdlib CVEs whose only fix is
-    # bumping the Go toolchain — a separate action that shouldn't redden a PR's
-    # required checks. Treat a red run as "investigate + bump Go", not "blocked".
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
@@ -152,9 +148,18 @@ jobs:
         # not pin the advisories. Bump the pin when the Go toolchain is bumped.
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
-          echo '### govulncheck (advisory)' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          "$(go env GOPATH)/bin/govulncheck" ./... 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          set +e
+          output="$("$(go env GOPATH)/bin/govulncheck" ./... 2>&1)"
+          status=$?
+          set -e
+          {
+            echo '### govulncheck'
+            echo '```'
+            printf '%s\n' "$output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$output"
+          exit "$status"
 
   shellcheck:
     name: ShellCheck (deploy scripts)

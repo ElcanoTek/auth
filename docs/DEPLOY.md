@@ -1081,7 +1081,9 @@ check:
    `example.com` (not `auth.example.com`).
 2. **`Secure` flag.** If `AUTH_COOKIE_SECURE="true"` (the default),
    the cookie only rides on HTTPS. A downstream service running on
-   plain HTTP won't see it.
+   plain HTTP won't see it. Loopback development may explicitly set
+   `AUTH_ALLOW_INSECURE_DEV="true"` and `AUTH_COOKIE_SECURE="false"`;
+   the server rejects that override for public hostnames and issuers.
 3. **Caddy on the downstream side.** Confirm its `forward_auth` block
    is pointing at `https://auth.example.com/verify` and is doing
    `copy_headers X-User-Email X-User-Tenant`. See

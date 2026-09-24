@@ -6,9 +6,9 @@ Auth v2 is a small, self-hosted identity service for one organization. It
 authenticates people centrally while each application retains its own
 memberships, roles, and host-only sessions.
 
-New deployments choose password mode (`AUTH_LOGIN_MODE=password`). The
-configuration default stays `magic`, so existing magic-link installations are
-unchanged until they are migrated separately.
+New deployments choose password mode (`AUTH_LOGIN_MODE=password`), and it is
+the fail-closed configuration default. Existing magic-link installations must
+keep `AUTH_LOGIN_MODE=magic` explicit when updating.
 
 This document records the design decisions and the delivered shape. The
 operator-facing behaviour is in [`DEPLOY.md`](DEPLOY.md) and the application

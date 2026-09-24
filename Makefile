@@ -43,10 +43,9 @@ smoke:
 	bash scripts/smoke.sh
 	bash scripts/smoke-password.sh
 
-## run: build + start with the local .env.local (creates one if missing).
-##      Talks to whatever AUTH_EMAIL_DRIVER is set to — default 'stdout'
-##      prints magic links to the console so you can develop without
-##      configuring a provider.
+## run: build + start with the local .env.local. Magic-link development with
+##      the stdout driver also requires the explicit loopback-only
+##      AUTH_ALLOW_INSECURE_DEV setting documented in the example env file.
 run: build
 	./bin/auth-server -env .env.local
 
