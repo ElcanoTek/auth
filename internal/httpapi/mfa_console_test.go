@@ -32,12 +32,9 @@ func TestConsoleShowsTwoFactorStatusAndPolicyControls(t *testing.T) {
 	_, body := alice.get("/admin")
 	for _, want := range []string{
 		`popovertarget="mfa-policy"`, `id="mfa-policy" class="modal" popover`,
-		`<input type="radio" name="mode" value="optional" checked> Optional`,
-		`<input type="radio" name="mode" value="admins"> Required for administrators`,
-		`<input type="radio" name="mode" value="everyone"> Required for everyone`,
-		`<strong>Required for administrators</strong>: Everyone who can open this console must sign in with an authenticator app; other accounts may set one up but are not made to. Choosing it now signs out 1 account without an authenticator`,
-		`<strong>Required for everyone</strong>: Every account must sign in with an authenticator app. Choosing it now signs out 2 accounts without an authenticator`,
-		`<strong>Optional</strong>: Nobody is made to.`,
+		`<label class="permission-choice"><input type="radio" name="mode" value="optional" checked> Optional<small>Nobody is made to. Anyone may set up an authenticator from their Security page, and once they have, they always use it. Choosing it now makes nobody new enroll.</small></label>`,
+		`<label class="permission-choice"><input type="radio" name="mode" value="admins"> Required for administrators<small>Everyone who can open this console must sign in with an authenticator app; other accounts may set one up but are not made to. Choosing it now signs out 1 account without an authenticator; they set one up at their next sign-in.</small></label>`,
+		`<label class="permission-choice"><input type="radio" name="mode" value="everyone"> Required for everyone<small>Every account must sign in with an authenticator app. Choosing it now signs out 2 accounts without an authenticator; they set one up at their next sign-in.</small></label>`,
 		`title="Two-factor sign-in">2FA: Not enrolled</span>`,
 		// The requirement lives in Settings now, beside the reset, and the
 		// session count sits in the Settings header next to the created date.
@@ -54,7 +51,7 @@ func TestConsoleShowsTwoFactorStatusAndPolicyControls(t *testing.T) {
 			t.Fatalf("console lacks %q:\n%s", want, body)
 		}
 	}
-	for _, gone := range []string{`name="mfa_required"`, `Require 2FA`, `<th class="num">Sessions</th>`, `Two-factor policy: <strong>Optional</strong>`} {
+	for _, gone := range []string{`name="mfa_required"`, `Require 2FA`, `<th class="num">Sessions</th>`, `Two-factor policy: <strong>Optional</strong>`, `<span class="seg" role="radiogroup" aria-label="Two-factor policy">`, `Current: Optional.`} {
 		if strings.Contains(body, gone) {
 			t.Fatalf("console still has %q", gone)
 		}
