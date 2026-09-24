@@ -363,6 +363,12 @@ case "$cmd" in
     run_admin "$cmd" "$@"
     ;;
   update)
+    # sudo starts with a clean environment on the supported hosts, so forward
+    # the one documented control flag explicitly. Never preserve the caller's
+    # environment wholesale: this wrapper crosses a privilege boundary.
+    if [[ "${AUTH_UPDATE_YES:-0}" == "1" ]]; then
+      exec sudo env AUTH_UPDATE_YES=1 bash "$APP_DIR/scripts/update.sh" "$@"
+    fi
     exec sudo bash "$APP_DIR/scripts/update.sh" "$@"
     ;;
   rebuild)
