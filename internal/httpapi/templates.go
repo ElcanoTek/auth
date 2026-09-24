@@ -1117,11 +1117,9 @@ const adminHTML = `<!doctype html>
       <form method="post" action="/admin">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="set-policy"><input type="hidden" name="revision" value="{{.MFARevision}}">
         <div class="seg-group"><span class="seg-label">Policy</span>
-          <span class="seg" role="radiogroup" aria-label="Two-factor policy">{{range .MFAOptions}}<label class="seg-opt"><input type="radio" name="mode" value="{{.Mode}}"{{if .Current}} checked{{end}}> {{.Label}}</label>{{end}}</span>
-          <p class="hint">{{range .MFAOptions}}{{if .Current}}Current: {{.Label}}.{{end}}{{end}}</p>
+          <div role="radiogroup" aria-label="Two-factor policy">{{range .MFAOptions}}<label class="permission-choice"><input type="radio" name="mode" value="{{.Mode}}"{{if .Current}} checked{{end}}> {{.Label}}<small>{{.Describe}}{{if not $.MFACountError}} {{if eq .ToEnroll 0}}Choosing it now makes nobody new enroll.{{else if eq .ToEnroll 1}}Choosing it now signs out 1 account without an authenticator; they set one up at their next sign-in.{{else}}Choosing it now signs out {{.ToEnroll}} accounts without an authenticator; they set one up at their next sign-in.{{end}}{{end}}</small></label>{{end}}</div>
         </div>
         {{if .MFACountError}}<div class="err">The affected-account counts could not be loaded, so the policy cannot be changed from here right now. Reload and try again.</div>{{else}}
-        <ul class="plain">{{range .MFAOptions}}<li><strong>{{.Label}}</strong>: {{.Describe}} {{if eq .ToEnroll 0}}Choosing it now makes nobody new enroll.{{else if eq .ToEnroll 1}}Choosing it now signs out 1 account without an authenticator; they set one up at their next sign-in.{{else}}Choosing it now signs out {{.ToEnroll}} accounts without an authenticator; they set one up at their next sign-in.{{end}}</li>{{end}}</ul>
         <p class="hint">Relaxing the policy never removes anyone's authenticator. Changes take effect immediately{{if not .ActorEnrolled}} and need your own authenticator, which you have not set up yet{{else if not .ActorFresh}} and need your authenticator code entered less than five minutes ago{{end}}.</p>
         {{if not .ActorEnrolled}}<p class="hint"><a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up yours</a></p>{{end}}
         <button class="btn" type="submit">Save policy</button>{{end}}
