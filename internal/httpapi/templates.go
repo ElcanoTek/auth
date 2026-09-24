@@ -351,11 +351,7 @@ ul.plain li { margin: 0.2rem 0; }
 .permission-choice.off { opacity: 0.55; }
 .permission-choice.locked { cursor: not-allowed; opacity: 0.65; }
 .permission-choice.locked input { cursor: not-allowed; }
-.permission-choice.admin-choice:has(input:checked),
-.permission-choice.application-choice:has(input:checked),
-.fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[name="fleet_admin"]),
-.fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[value="member"]),
-.fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[value="client"]) {
+.permission-choice:has(input:checked) {
   border: 2px solid transparent;
   background: linear-gradient(var(--color-surface-2), var(--color-surface-2)) padding-box, var(--gradient-action-primary) border-box;
   color: var(--color-text-primary);
@@ -793,15 +789,20 @@ const adminScript = `
     toggle.addEventListener("change", showFleetPermissions);
     showFleetPermissions();
   });
-  document.querySelectorAll('input[name="admin"]').forEach(function (toggle) {
+  document.querySelectorAll('input[name="admin"][type="checkbox"]').forEach(function (toggle) {
     toggle.addEventListener("change", function () {
-      if (!toggle.checked) return;
       var form = toggle.closest("form");
       if (!form) return;
       form.querySelectorAll('input[name="apps"]').forEach(function (app) {
-        app.checked = true;
+        if (["explorer", "fleet"].indexOf(app.value) === -1) return;
+        app.checked = toggle.checked;
         app.dispatchEvent(new Event("change", { bubbles: true }));
       });
+      var fleetAdmin = form.querySelector('input[name="fleet_admin"]');
+      if (fleetAdmin) {
+        fleetAdmin.checked = toggle.checked;
+        fleetAdmin.dispatchEvent(new Event("change", { bubbles: true }));
+      }
     });
   });
   document.querySelectorAll('input[name="fleet_admin"]').forEach(function (toggle) {
@@ -812,6 +813,15 @@ const adminScript = `
       var ops = form.querySelector('input[name="fleet_ops_role"][value="' + (toggle.checked ? 'client' : 'none') + '"]');
       if (chat) chat.checked = true;
       if (ops) ops.checked = true;
+    });
+  });
+  document.querySelectorAll('input[name="fleet_chat_role"], input[name="fleet_ops_role"]').forEach(function (choice) {
+    choice.addEventListener("change", function () {
+      if (!choice.checked) return;
+      var form = choice.closest("form");
+      if (!form) return;
+      var fleetAdmin = form.querySelector('input[name="fleet_admin"]');
+      if (fleetAdmin) fleetAdmin.checked = false;
     });
   });
   document.querySelectorAll("[data-generate]").forEach(function (button) {
