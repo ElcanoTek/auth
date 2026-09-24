@@ -261,14 +261,15 @@ make clean     # rm -rf bin
 
 ## Deploying to production
 
-On a fresh Fedora box:
+On a fresh Fedora/RHEL box:
 
 ```bash
-sudo dnf install -y git
-sudo git config --global credential.helper store   # cache the clone creds so `auth update` can fetch later without re-prompting
-sudo git clone https://github.com/elcanotek/auth.git /opt/auth-src
-sudo bash /opt/auth-src/scripts/bootstrap.sh
+curl -fsSL https://raw.githubusercontent.com/ElcanoTek/auth/main/install.sh | sudo bash
 ```
+
+The installer adds Git and CA certificates, clones `main` into
+`/opt/auth-src`, and starts the interactive bootstrap. If you prefer to inspect
+it first, download [`install.sh`](install.sh) and run it with `sudo bash`.
 
 `bootstrap.sh` is interactive. It asks for the hostname and login mode; magic
 mode additionally asks for its cookie domain and email provider:
