@@ -19,11 +19,12 @@ model assumes:
 On a fresh Fedora box:
 
 ```bash
-sudo dnf install -y git
-sudo git config --global credential.helper store   # cache the clone creds so `auth update` can fetch later without re-prompting
-sudo git clone https://github.com/elcanotek/auth.git /opt/auth-src
-sudo bash /opt/auth-src/scripts/bootstrap.sh
+curl -fsSL https://raw.githubusercontent.com/ElcanoTek/auth/main/install.sh | sudo bash
 ```
+
+That installs Git and CA certificates, clones `main` into `/opt/auth-src`, and
+hands off to the interactive bootstrap below. To inspect before running,
+download [`install.sh`](../install.sh) and execute it with `sudo bash`.
 
 `bootstrap.sh` is interactive by default. It asks for:
 

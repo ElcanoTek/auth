@@ -181,4 +181,7 @@ jobs:
           curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
             | tar -xJf - --strip-components=1 "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
           ./shellcheck --version
-          ./shellcheck scripts/*.sh scripts/lib/*.sh scripts/test/*.sh deploy/auth-cli
+          ./shellcheck install.sh scripts/*.sh scripts/lib/*.sh scripts/test/*.sh deploy/auth-cli
+
+      - name: Test the public installer
+        run: sudo bash scripts/test/install_test.sh
