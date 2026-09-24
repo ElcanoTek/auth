@@ -326,10 +326,7 @@ a.btn-ghost, a.btn { text-decoration: none; }
 .setting .confirm .pane { left: auto; right: 0; border-radius: var(--radius-md) 0 var(--radius-md) var(--radius-md); }
 .setting .confirm > summary, .setting .btn-ghost, .setting .btn { white-space: nowrap; }
 .modal .checks { margin-top: var(--space-2); }
-/* Segmented pills, copied from Fleet's Segmented control: a hairline-bordered
-   pill group whose selected options fill with the primary colour. Here each
-   option is a real checkbox (multi-select for applications, a single toggle
-   for Admin) so the form posts without script; :has() paints the state. */
+/* Segmented pills used for compact single-choice controls such as 2FA policy. */
 .seg-label { display: block; margin-bottom: 0.3rem; font-size: 0.64rem; font-weight: var(--font-weight-bold); letter-spacing: 0.07em; text-transform: uppercase; color: var(--color-text-muted); }
 .seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--color-border); border-radius: var(--radius-pill); overflow: hidden; }
 .seg-opt { position: relative; display: inline-flex; align-items: center; margin: 0; padding: 0.18rem 0.6rem; font-size: 0.72rem; font-weight: 500; color: var(--color-text-muted); cursor: pointer; user-select: none; transition: color var(--transition-fast), background var(--transition-fast); }
@@ -351,9 +348,11 @@ ul.plain li { margin: 0.2rem 0; }
 .permission-choice { display: block; padding: var(--space-2); border: 1px solid transparent; border-radius: var(--radius-md); font-size: var(--font-size-caption); color: var(--color-text-secondary); }
 .permission-choice input { margin-right: 0.4rem; accent-color: var(--color-primary); }
 .permission-choice small { display: block; margin: 0.12rem 0 0 1.35rem; color: var(--color-text-muted); }
+.permission-choice.off { opacity: 0.55; }
 .permission-choice.locked { cursor: not-allowed; opacity: 0.65; }
 .permission-choice.locked input { cursor: not-allowed; }
 .permission-choice.admin-choice:has(input:checked),
+.permission-choice.application-choice:has(input:checked),
 .fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[name="fleet_admin"]),
 .fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[value="member"]),
 .fleet-permissions:has(input[name="fleet_admin"]:checked) .permission-choice:has(input[value="client"]) {
@@ -929,8 +928,8 @@ const adminHTML = `<!doctype html>
                 {{if $row.Self}}<p class="hint">You cannot remove your own administrator access.</p>{{else if and $row.IsAdmin (not $row.CanDemote)}}<p class="hint">The last enabled administrator cannot be removed.</p>{{end}}
               </div>
               <div class="seg-group"><span class="seg-label">Applications</span>
-                {{if $row.Apps}}<span class="seg" role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}<label class="seg-opt"><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
-                <p class="hint">Selected applications sign in through {{$.Brand}}; deselecting one signs them out of it now.</p>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
+                {{if $row.Apps}}<div role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}<label class="permission-choice application-choice"><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}<small>Can sign in to {{.Name}}.</small></label>{{end}}</div>
+                <p class="hint">Deselecting an application signs them out of it now.</p>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
               </div>
               <section class="fleet-permissions" data-fleet-permissions{{if not $row.FleetGranted}} hidden{{end}} aria-label="Fleet permissions for {{$row.Email}}">
                 <h4>Fleet permissions</h4>
@@ -1079,8 +1078,7 @@ const adminHTML = `<!doctype html>
           <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>
         </div>
         <div class="seg-group"><span class="seg-label">Applications</span>
-          {{if .AppChoices}}<span class="seg" role="group" aria-label="Applications">{{range .AppChoices}}<label class="seg-opt{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}</label>{{end}}</span>
-          <p class="hint">Which applications they may sign in to.</p>
+          {{if .AppChoices}}<div role="group" aria-label="Applications">{{range .AppChoices}}<label class="permission-choice application-choice{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}<small>{{if .Granted}}Can sign in to {{.Name}}.{{else}}{{.Name}} is disabled for everyone.{{end}}</small></label>{{end}}</div>
           {{else}}<p class="muted">No applications are registered yet; register them with <code>auth app create</code> on the server.</p>{{end}}
         </div>
         {{if .HasFleet}}<section class="fleet-permissions" data-fleet-permissions hidden aria-label="New user Fleet permissions">
