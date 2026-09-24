@@ -9,8 +9,9 @@ import (
 )
 
 func TestDerivePublicKey(t *testing.T) {
-	// A fixed, valid base64 Ed25519 seed (same one the config tests use).
-	const seedB64 = "yjYMLeF987YtUv+SuA1VT9hlIgUS7LfDBx/vB6yu9wE="
+	// Thirty-two zero bytes: valid Ed25519 input with an intentionally obvious,
+	// non-secret value that must never be used by a deployment.
+	const seedB64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 	got, err := derivePublicKey(seedB64)
 	if err != nil {

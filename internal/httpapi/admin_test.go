@@ -644,7 +644,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	if err != nil || !dan.MustChangePassword || dan.Team != "Trading" {
 		t.Fatalf("dan = %+v (%v)", dan, err)
 	}
-	if ok, _, _ := passwordauth.Verify(dan.PasswordHash, "Quartz-Harbor-Lantern-4471"); !ok {
+	if ok, _, _ := passwordauth.Verify(dan.PasswordHash, "Quartz-Harbor-Lantern-4471"); !ok { // gitleaks:allow -- synthetic test password
 		t.Fatal("typed password not stored")
 	}
 	if !strings.Contains(body, `<span class="tag">Trading</span>`) || !strings.Contains(body, `<option value="Trading">`) {
@@ -656,10 +656,10 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		t.Fatalf("spaced typed create:\n%s", body)
 	}
 	gil, _ := st.PasswordAccountByEmail(context.Background(), "gil@example.com")
-	if ok, _, _ := passwordauth.Verify(gil.PasswordHash, "  Quartz-Harbor-Lantern-4471  "); !ok {
+	if ok, _, _ := passwordauth.Verify(gil.PasswordHash, "  Quartz-Harbor-Lantern-4471  "); !ok { // gitleaks:allow -- synthetic test password
 		t.Fatal("typed password with spaces was not stored as typed")
 	}
-	if ok, _, _ := passwordauth.Verify(gil.PasswordHash, "Quartz-Harbor-Lantern-4471"); ok {
+	if ok, _, _ := passwordauth.Verify(gil.PasswordHash, "Quartz-Harbor-Lantern-4471"); ok { // gitleaks:allow -- synthetic test password
 		t.Fatal("typed password was trimmed before hashing")
 	}
 	// Team text is untrusted and appears in three contexts: the tag, the
