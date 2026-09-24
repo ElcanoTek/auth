@@ -138,8 +138,9 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 		t.Fatalf("admin GET = %d\n%s", resp.StatusCode, body)
 	}
 	for _, want := range []string{
+		`— Admin Portal</title>`, `<h1>Admin Portal</h1>`,
 		`class="tab active" href="/admin"`, `href="/admin?tab=fleet"`, `href="/admin?tab=explorer"`,
-		"Alice@Example.com", "bob@example.com", `<span class="badge admin">Auth Admin</span>`, `<span class="chip">Fleet</span>`,
+		"Alice@Example.com", "bob@example.com", `<span class="badge admin">Admin</span>`, `<span class="chip">Fleet</span>`,
 		`name="action" value="create"`, `action="/logout"`,
 		`id="account-search" type="search" placeholder="Search accounts"`, `id="account-filter" data-account-filter`,
 		`data-account-row data-account-search-value="bob@example.com`, `data-account-empty hidden`,
@@ -726,14 +727,18 @@ func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	_, body := alice.get("/admin")
-	if !strings.Contains(body, `<label class="seg-opt admin-choice locked"><input type="checkbox" checked disabled> Auth Admin</label><input type="hidden" name="admin" value="on">`) {
-		t.Fatalf("own row does not lock the admin pill:\n%s", body)
+	if !strings.Contains(body, `<label class="permission-choice admin-choice locked"><input type="checkbox" checked disabled> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label><input type="hidden" name="admin" value="on">`) {
+		t.Fatalf("own row does not lock the admin choice:\n%s", body)
 	}
-	if !strings.Contains(body, `<label class="seg-opt admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin</label>`) {
-		t.Fatalf("bob's row lacks the admin pill:\n%s", body)
+	if !strings.Contains(body, `<label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>`) {
+		t.Fatalf("bob's row lacks the admin choice:\n%s", body)
+	}
+	if !strings.Contains(body, `<span class="seg-label">Auth Admin</span>
+          <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>`) {
+		t.Fatalf("add-user form lacks the described admin choice:\n%s", body)
 	}
 	if !strings.Contains(body, `<span class="seg-label">Applications</span>`) || !strings.Contains(body, `<span class="seg-label">Auth Admin</span>`) {
-		t.Fatal("Access popup lacks the two pill sections")
+		t.Fatal("Access popup lacks the application and Auth Admin sections")
 	}
 	if strings.Contains(body, `value="grant-admin"`) || strings.Contains(body, `value="revoke-admin"`) {
 		t.Fatal("Settings still offers the old admin buttons")
