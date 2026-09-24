@@ -861,6 +861,10 @@ Skip the confirm prompt with `AUTH_UPDATE_YES=1`:
 sudo env AUTH_UPDATE_YES=1 auth update
 ```
 
+The wrapper forwards only this control flag across its internal `sudo`
+boundary; it deliberately does not preserve arbitrary caller environment
+variables.
+
 ### Rolling back
 
 If a bad update slipped through:
