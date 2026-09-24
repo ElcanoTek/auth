@@ -114,6 +114,9 @@ type Params struct {
 	KeyLength   uint32
 }
 
+// Recommended is the cost for new hashes. Raising costs or lengths permits
+// opportunistic upgrades; changing Parallelism requires a separate migration
+// policy because lane counts cannot be ordered by strength.
 var Recommended = Params{
 	Memory:      64 * 1024,
 	Iterations:  3,
@@ -293,6 +296,17 @@ func HashWithParams(plain string, p Params) (string, error) {
 	if err := Validate(plain); err != nil {
 		return "", err
 	}
+	return hashWithParams(plain, p)
+}
+
+// RehashVerified encodes an already verified password at the current cost.
+// Call only after Verify succeeds and requests an upgrade. Existing passwords
+// remain valid when the policy for choosing NEW passwords changes.
+func RehashVerified(plain string) (string, error) {
+	return hashWithParams(plain, Recommended)
+}
+
+func hashWithParams(plain string, p Params) (string, error) {
 	if err := validateParams(p); err != nil {
 		return "", err
 	}
@@ -308,7 +322,9 @@ func HashWithParams(plain string, p Params) (string, error) {
 }
 
 // Verify fails closed for malformed or unsupported encodings. needsRehash is
-// true only after a successful comparison against non-current parameters.
+// true only after a successful comparison against conservatively weaker
+// parameters. Mixed costs and different lane counts need an explicit migration
+// policy: parallelism is not an ordered measure of password-hashing strength.
 func Verify(encoded, plain string) (ok, needsRehash bool, err error) {
 	p, salt, expected, err := parse(encoded)
 	if err != nil {
@@ -316,7 +332,13 @@ func Verify(encoded, plain string) (ok, needsRehash bool, err error) {
 	}
 	actual := argon2.IDKey([]byte(plain), salt, p.Iterations, p.Memory, p.Parallelism, uint32(len(expected)))
 	ok = subtle.ConstantTimeCompare(actual, expected) == 1
-	return ok, ok && p != Recommended, nil
+	return ok, ok && canUpgrade(p, Recommended), nil
+}
+
+func canUpgrade(old, next Params) bool {
+	return old != next && old.Parallelism == next.Parallelism &&
+		old.Memory <= next.Memory && old.Iterations <= next.Iterations &&
+		old.SaltLength <= next.SaltLength && old.KeyLength <= next.KeyLength
 }
 
 func validateParams(p Params) error {

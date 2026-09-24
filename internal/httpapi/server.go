@@ -523,7 +523,7 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	plain := r.FormValue("password")
 	now := time.Now()
 	ipRateKey := s.rateKey("ip", clientIP(r))
-	account, valid, err := s.authenticatePassword(r.Context(), email, plain, ipRateKey, now, "login")
+	account, valid, err := s.authenticatePassword(r.Context(), email, plain, ipRateKey, now, "login", true)
 	if err != nil {
 		logUnlessCancelled("password authentication", err)
 		s.passwordLoginFailure(w, r)
@@ -586,13 +586,14 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 // coalesced per source per window; the attacker already tripped the limit,
 // and one row per window records that without letting them grow the table.
 //
-// On success the returned Account carries the exact hash that verified;
-// callers pass it to CreateAuthSession so the session is bound to that
-// credential and cannot be issued after a concurrent replacement.
+// On success the returned Account carries the verified hash (or its upgraded
+// replacement); callers bind session issuance and MFA transactions to it so
+// a concurrent credential replacement cannot be accepted as this login.
 //
-// auditPrefix names the flow ("login" or "password_change") so audit events
-// distinguish a sign-in from a current-password check.
-func (s *Server) authenticatePassword(ctx context.Context, email, plain, ipRateKey string, now time.Time, auditPrefix string) (store.Account, bool, error) {
+// auditPrefix names the flow so audit events distinguish a sign-in from a
+// current-password check. upgradeHash is enabled only for a new login, before
+// it creates a session or MFA transaction; other flows keep their binding.
+func (s *Server) authenticatePassword(ctx context.Context, email, plain, ipRateKey string, now time.Time, auditPrefix string, upgradeHash bool) (store.Account, bool, error) {
 	emailRateKey := s.rateKey("email", email)
 
 	attempts, limited, err := s.reserveLoginAttempt(ctx, emailRateKey, ipRateKey, now)
@@ -612,7 +613,7 @@ func (s *Server) authenticatePassword(ctx context.Context, email, plain, ipRateK
 		auditUser = account.ID
 		encoded = account.PasswordHash
 	}
-	ok, _, verifyErr := s.verifyPassword(ctx, encoded, plain)
+	ok, needsRehash, verifyErr := s.verifyPassword(ctx, encoded, plain)
 	valid := lookupErr == nil && verifyErr == nil && ok && account.DisabledAt == nil
 	if !valid {
 		_ = s.store.RecordAudit(ctx, auditPrefix+".failed", auditUser, ipRateKey, now.Unix())
@@ -622,6 +623,25 @@ func (s *Server) authenticatePassword(ctx context.Context, email, plain, ipRateK
 			return store.Account{}, false, fmt.Errorf("verify stored credential: %w", verifyErr)
 		}
 		return store.Account{}, false, nil
+	}
+	// Upgrade on sign-in only. Password changes and step-up share this
+	// helper, but may already be bound to an incomplete MFA transaction's
+	// exact credential hash. A normal sign-in opens its transaction below.
+	// An upgrade error leaves the reserved failure intact, including a CAS
+	// loser: a replaced credential must never settle as a successful login.
+	if upgradeHash && needsRehash {
+		if err := acquire(ctx, s.passwordSlots); err != nil {
+			return store.Account{}, false, err
+		}
+		upgraded, err := passwordauth.RehashVerified(plain)
+		release(s.passwordSlots)
+		if err != nil {
+			return store.Account{}, false, fmt.Errorf("rehash verified credential: %w", err)
+		}
+		if err := s.store.UpgradePasswordHashIfCurrent(ctx, account.ID, encoded, upgraded); err != nil {
+			return store.Account{}, false, err
+		}
+		account.PasswordHash = upgraded
 	}
 	// The email reservation becomes the success marker that resets that
 	// account's failure count; the IP reservation is discarded so successful
@@ -740,7 +760,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	current, next, confirm := r.FormValue("current_password"), r.FormValue("new_password"), r.FormValue("confirm_password")
 	now := time.Now()
 	ipRateKey := s.rateKey("ip", clientIP(r))
-	account, valid, authErr := s.authenticatePassword(r.Context(), identity.Account.NormalizedEmail, current, ipRateKey, now, "password_change")
+	account, valid, authErr := s.authenticatePassword(r.Context(), identity.Account.NormalizedEmail, current, ipRateKey, now, "password_change", false)
 	if authErr != nil || !valid || account.ID != identity.Account.ID {
 		if authErr != nil {
 			logUnlessCancelled("password change authentication", authErr)

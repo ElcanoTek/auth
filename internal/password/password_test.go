@@ -96,11 +96,13 @@ func TestUserMessageIsASentence(t *testing.T) {
 
 func TestHashUsesUniqueSaltAndVerifies(t *testing.T) {
 	const plain = "a long passphrase with spaces"
-	first, err := HashWithParams(plain, testParams)
+	params := testParams
+	params.Parallelism = Recommended.Parallelism
+	first, err := HashWithParams(plain, params)
 	if err != nil {
 		t.Fatalf("HashWithParams first: %v", err)
 	}
-	second, err := HashWithParams(plain, testParams)
+	second, err := HashWithParams(plain, params)
 	if err != nil {
 		t.Fatalf("HashWithParams second: %v", err)
 	}
