@@ -1117,7 +1117,7 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 	}
 	now := time.Now()
 	ipKey := s.rateKey("ip", clientIP(r))
-	verified, valid, err := s.authenticatePassword(r.Context(), account.NormalizedEmail, r.FormValue("password"), ipKey, now, "reauth")
+	verified, valid, err := s.authenticatePassword(r.Context(), account.NormalizedEmail, r.FormValue("password"), ipKey, now, "reauth", false)
 	if err != nil || !valid || verified.ID != account.ID {
 		if err != nil {
 			logUnlessCancelled("reauth password", err)
@@ -1238,7 +1238,7 @@ func (s *Server) changePasswordUnderTransaction(w http.ResponseWriter, r *http.R
 	current, next, confirm := r.FormValue("current_password"), r.FormValue("new_password"), r.FormValue("confirm_password")
 	now := time.Now()
 	ipRateKey := s.rateKey("ip", clientIP(r))
-	verified, valid, authErr := s.authenticatePassword(r.Context(), account.NormalizedEmail, current, ipRateKey, now, "password_change")
+	verified, valid, authErr := s.authenticatePassword(r.Context(), account.NormalizedEmail, current, ipRateKey, now, "password_change", false)
 	if authErr != nil || !valid || verified.ID != account.ID {
 		if authErr != nil {
 			logUnlessCancelled("password change authentication", authErr)

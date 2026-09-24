@@ -54,6 +54,28 @@ authentication secret may be logged. Passwords are represented only by
 Argon2id PHC strings. Sessions and one-time credentials are represented in
 SQLite only by SHA-256 hashes.
 
+### Password hash upgrades
+
+After a correct password is verified during sign-in, an eligible older Argon2id
+hash is replaced with a fresh salt and the current recommended parameters.
+Eligibility requires the same lane count, no reduction in memory, iterations,
+salt length or key length, and at least one increase. Stronger and mixed-cost
+profiles are preserved; changing the lane count needs a separate migration
+policy. Current hashes are not rewritten.
+
+Verification and rehashing share the bounded Argon2 concurrency limiter and
+login rate limits. Rehashing preserves the verified password even if it no
+longer meets the policy for choosing new passwords. The database update only
+succeeds while the account is enabled and its stored hash still equals the
+verified hash. An update error or competing reset/upgrade refuses that login
+attempt with the normal generic failure; the user can retry.
+
+Only the hash changes: existing sessions, password-change timestamps,
+forced-change flags and MFA evidence remain intact. New session issuance and
+MFA transactions bind to the upgraded hash. Password-change and step-up
+verification do not opportunistically rehash an existing transaction's
+credential. The upgrade requires no schema migration or operator setting.
+
 ## Schema
 
 The password/session foundation adds:
