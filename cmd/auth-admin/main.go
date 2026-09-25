@@ -92,6 +92,9 @@ USERS
   auth-admin user disable <email>         disable account + revoke sessions
   auth-admin user enable <email>          re-enable account
   auth-admin user show <email>            show account state
+  auth-admin user admin <email> on|off    grant or remove administrator status
+  auth-admin user team <email> <team|->   set the team tag (- clears it)
+  auth-admin user access <email> <app-id> on|off  grant or revoke application access
   auth-admin user revoke-sessions <email> revoke every central session
   auth-admin user list                    show password accounts + legacy login audit
   auth-admin user mfa-required <email> on|off  require (or stop requiring) two-factor sign-in for one account

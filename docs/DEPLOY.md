@@ -11,8 +11,8 @@ model assumes:
 - Caddy in front for TLS — same Caddy that serves the other services
   can host this one too.
 - SQLite for state (no database to provision).
-- SendGrid or SMTP only for legacy magic-link mode. Password mode needs no
-  email provider in v1.
+- SendGrid or SMTP for legacy magic-link mode, or optional security notices
+  in password mode. Password sign-in needs no email provider.
 
 ## TL;DR — one command
 
@@ -702,7 +702,7 @@ auth logs --since '1 hour ago'   # any journalctl flag works
 producing a consistent snapshot WHILE the server is running:
 
 ```bash
-auth backup                         # writes /opt/auth/data/backups/auth-$(date).db
+auth backup                         # writes /opt/auth/data/backups/auth-YYYY-MM-DD-HHMMSS.db
 auth backup /mnt/nas/auth-backups   # explicit destination
 ```
 
@@ -726,7 +726,7 @@ auth stop
 # replaced: left in place, SQLite would replay the old WAL over the restored
 # snapshot at the next open.
 sudo rm -f /opt/auth/data/state.db-wal /opt/auth/data/state.db-shm
-sudo cp /opt/auth/data/backups/auth-2026-04-01.db /opt/auth/data/state.db
+sudo cp /opt/auth/data/backups/auth-2026-04-01-120000.db /opt/auth/data/state.db
 sudo chown auth:auth /opt/auth/data/state.db
 auth start
 ```
@@ -766,9 +766,14 @@ loopback (Caddy). That is correct for the documented layout: Caddy on the
 same box, terminating TLS, one hop. If a client fronts the auth hostname
 with a proxying CDN (Cloudflare "orange cloud"), the last hop becomes the
 CDN edge and every visitor shares one rate bucket. Before enabling that,
-configure Caddy's `trusted_proxies` with the CDN's ranges and forward the
-real client address (`CF-Connecting-IP`), then verify with `auth audit list`
-that failed logins from two different networks show different sources.
+configure the proxy to validate the CDN source and normalize the forwarded
+address. Auth reads only the last `X-Forwarded-For` value; it does not read
+`CF-Connecting-IP`. Configuring `trusted_proxies` alone does not ensure that
+Auth receives the real client in that final position. The loopback proxy must
+set that value to the verified client address, never to an untrusted header
+supplied by a direct visitor. Before deployment, verify with `auth audit list`
+that failed logins from two different networks show different sources, and
+that a visitor cannot change their source by supplying forwarding headers.
 DNS-only Cloudflare needs no change.
 
 Password-mode audit events (`auth audit list`) are kept for
@@ -909,9 +914,10 @@ Two things to get right:
   run *after* the `ALTER` (see `createdAtIndexes`) — otherwise it references a
   column that doesn't exist yet on an un-migrated DB and fails.
 
-For anything beyond additive columns (rename, drop, backfill), gate it behind
-a `PRAGMA user_version` check and bump the version. This service is too small
-to need that today, but the room is there.
+Versioned changes use the `schema_migrations` table and `hasMigration` helper
+in `internal/store/store.go`. Follow the existing migration pattern and record
+the marker only after the migration succeeds; do not introduce a separate
+`PRAGMA user_version` version counter.
 
 ### Abuse limits on POST /magic
 
@@ -992,6 +998,15 @@ bootstrap output is long gone. Safe to display/copy: the public key can
 verify cookies but never mint them.
 
 ## Rotating secrets
+
+**Password mode:** follow the overlapping signing-key/JWKS procedure in
+[Password-mode application setup](#password-mode-application-setup).
+Rotating the signing key does not revoke opaque, server-side password sessions.
+Use explicit session-revocation controls when sign-out is required. MFA
+encryption keys have their own rotation procedure in the two-factor section.
+
+**Legacy magic-link mode:** the shared signed-cookie rotation procedure below
+invalidates existing cookies and requires updating static public-key consumers.
 
 ```bash
 # Rotate the signing keypair — invalidates EVERY active session across

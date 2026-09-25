@@ -31,9 +31,10 @@ contract in [`INTEGRATION.md`](INTEGRATION.md).
 - Logout, password replacement, and account disablement revoke sessions.
 - Generic login failures, persistent rate limits, CSRF protection, and audit
   events are required before production.
-- MFA/2FA, passkeys, recovery codes, SMS/email challenges, and upstream Google
-  or Microsoft identities are not enabled in v1, but the account model and
-  authentication transaction boundary must accommodate them.
+- Passkeys, SMS/email challenges, and upstream Google or Microsoft identities
+  are not enabled, but the account model and authentication transaction
+  boundary must accommodate them. Authenticator-app (TOTP) two-factor sign-in
+  and recovery codes have since shipped; see "Delivered since" below.
 - An application may keep an independent break-glass login of its own.
   Central Auth is an additional login path, never a replacement requirement.
 
@@ -85,12 +86,12 @@ The password/session foundation adds:
 - `auth_sessions`: hashed token, activity/expiry, revocation reason.
 - `login_attempts`: hashed email/IP rate keys and attempt timestamps.
 - `audit_events`: security-relevant actions without credential material.
-- `authenticators`: future TOTP, WebAuthn/passkey, SMS, and recovery factors.
+- `authenticators`: TOTP factors today; WebAuthn/passkey and SMS later.
 - `external_identities`: future upstream OIDC identities keyed by issuer and
   subject; email alone must never auto-link an external identity.
-- `authentication_transactions`: future multi-step login/MFA challenges.
-- `authentication_policies`: future factor and step-up requirements.
-- `recovery_codes`: future individually hashed, single-use recovery codes.
+- `authentication_transactions`: multi-step login and two-factor challenges.
+- `authentication_policies`: factor and step-up requirements.
+- `recovery_codes`: individually hashed, single-use recovery codes.
 - `schema_migrations`: explicit, idempotent database evolution.
 
 Legacy `domains`, `magic_links`, and `users` tables remain intact.

@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Install gitleaks
         env:
@@ -37,6 +39,9 @@ jobs:
 
       - name: Scan the repository
         run: gitleaks dir . --redact --exit-code 1
+
+      - name: Scan Git history
+        run: gitleaks git . --log-opts="--all" --redact --exit-code 1
 
   lint:
     name: Lint

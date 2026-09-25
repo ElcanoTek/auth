@@ -38,8 +38,9 @@ It runs in one of two modes, chosen per deployment:
   discovery, JWKS) and, if they register a back-channel endpoint, receive a
   signed, versioned desired membership whenever an administrator grants or
   revokes access, plus a signed logout when a sign-out, password change or
-  disablement revokes the person's sessions. Two-factor sign-in with an authenticator app (TOTP) can
-  be turned on by each person or required by policy. A web admin console at
+  disablement revokes the person's sessions. Two-factor sign-in with an
+  authenticator app (TOTP) can be turned on by each person or required by
+  policy. A web admin console at
   `/admin` manages accounts, per-application access, two-factor policy and
   sign-outs. See
   [`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md) for the
@@ -57,6 +58,7 @@ remains for stacks that intentionally share a parent-domain cookie.
 - [See it in action](#see-it-in-action) · [What it supports](#what-it-supports) · [Architecture](#architecture)
 - [Quickstart](#quickstart) · [Environment](#environment) · [Tests](#tests) · [Tools](#tools)
 - [Deploying to production](#deploying-to-production) · [Token format](#token-format) · [Layout](#layout)
+- [Login UI fonts](#login-ui-fonts) · [Why not a hosted provider?](#why-not-a-hosted-provider)
 - [Security](#security) · [Contributing](#contributing) · [License](#license)
 
 ## Architecture
@@ -70,7 +72,7 @@ remains for stacks that intentionally share a parent-domain cookie.
    │  Caddy → :9000          │
    │     auth-server (Go)    │
    │     SQLite              │
-   │     SendGrid / SMTP     │  (magic-link mode only)
+   │     SendGrid / SMTP     │  (magic links; optional notices)
    └────────────┬────────────┘
                 │
      password mode: /authorize → code → /token → application session
@@ -111,8 +113,9 @@ public key, or let Caddy call `/verify` and pass `X-User-Email` and
 allowlist of domains that may request a link is managed with `auth domain`.
 
 Which services sit behind an Auth deployment, and how each one verifies, is
-documented per deployment, not here. [`docs/INTEGRATION.md`](docs/INTEGRATION.md)
-has the generic patterns and checklists.
+documented per deployment, not here.
+[`docs/INTEGRATION.md`](docs/INTEGRATION.md) has the generic patterns and
+checklists.
 
 ## Quickstart
 
@@ -207,6 +210,10 @@ For anything beyond localhost, also set:
   allowlist; empty means open enrollment, never in production), and
   `AUTH_EMAIL_DRIVER` plus `SENDGRID_API_KEY` or the `AUTH_SMTP_*` settings
   with `AUTH_EMAIL_FROM`.
+- In password mode, email is optional. With `sendgrid` or `smtp` configured,
+  Auth sends best-effort security notices about two-factor and recovery-code
+  changes; with
+  `stdout` or no driver it sends nothing and the audit log is the record.
 - Never set `AUTH_ALLOW_INSECURE_DEV=true` outside loopback development. The
   server rejects it with a public hostname or issuer.
 - Optionally `AUTH_CLIENT_CONFIG_DIR`: a checkout of a client bundle whose
@@ -217,16 +224,20 @@ Optional abuse caps on `/magic` (sensible defaults apply if unset):
 
 - `AUTH_MAGIC_RATE_PER_EMAIL`: links per email per 15 min (default `10`).
 - `AUTH_MAGIC_GLOBAL_LIMIT`: links across all emails per 60 min (default `500`).
-  Set either to `0` to disable. See [docs/DEPLOY.md](docs/DEPLOY.md) for details.
+  Set either to `0` to disable. See [docs/DEPLOY.md](docs/DEPLOY.md) for
+  details.
 
 ## Tests
 
 ```bash
-# Full gate: vet + build + test
+# Full gate: lint + vet + build + test
 make check
 
-# Just the Go tests
+# Go tests plus the operator CLI and doctor shell tests
 make test
+
+# Boot real binaries and drive the sign-in and application handoff flows
+make smoke
 
 # Just one package
 go test ./internal/store -v
@@ -253,8 +264,10 @@ the admin console, back-channel delivery and the last-administrator guard.
 ```bash
 make build     # compile auth-server + auth-admin into ./bin
 make run       # build + start with local .env.local
-make test      # go test ./...
-make check     # vet + build + test (pre-push gate)
+make test      # go test ./... + operator shell tests
+make lint      # gofmt -s check + pinned golangci-lint
+make check     # lint + vet + build + test (pre-push gate)
+make smoke     # end-to-end flows against throwaway databases
 make tidy      # go mod tidy
 make clean     # rm -rf bin
 ```
@@ -339,12 +352,15 @@ internal/config/         env loading + validation
 internal/token/          Ed25519-signed magic, session, identity and logout tokens
 internal/store/          SQLite (modernc.org/sqlite, no CGO)
 internal/password/       password policy + Argon2id hashing
+internal/mfa/            TOTP, recovery codes, sealed authenticator secrets
 internal/branding/       client bundle branding
 internal/backchannel/    durable back-channel logout delivery
+internal/provisioning/   durable application-access (grant/revoke) delivery
 internal/email/          SendGrid / SMTP / stdout drivers
 internal/httpapi/        HTTP routes + login, account and admin UI templates
 deploy/                  systemd units + Caddy + operator CLI
-scripts/                 bootstrap.sh, update.sh, envfile helpers, smoke tests
+scripts/                 bootstrap, update, doctor, envfile helpers, smoke tests
+docs/AUTH_V2_IMPLEMENTATION.md  password-mode design and invariants
 docs/DEPLOY.md           production walkthrough
 docs/INTEGRATION.md      integration patterns and checklists
 ```
@@ -367,12 +383,13 @@ change the face, replace the woff2 files and licence, then adjust the
 in `fonts.go` together. `TestFontsServed` and `TestFontLicenceShipped` fail if
 either drifts.
 
-**Why not a hosted provider (Clerk / Stytch / WorkOS)?** The surface is tiny
-and owning it keeps sessions out of a third party's hot path, lets one email
-provider account serve the whole stack, and avoids the per-user price ramp. If
-a deployment ever requires SAML, an upstream identity provider slots in behind
-the login step without any downstream service noticing: they all still verify
-the same signed tokens.
+## Why not a hosted provider?
+
+Hosted identity services (Clerk, Stytch, WorkOS and similar) are a good fit
+for many teams. Auth exists for deployments that prefer a small surface they
+own: sessions stay out of a third party's hot path, one email provider account
+can serve the whole stack, and there is no per-user pricing. SAML and upstream
+identity federation are not supported today.
 
 ## Security
 
@@ -386,8 +403,9 @@ authenticator seeds, and live sessions out of Git:
   `SameSite=Lax`, and `Secure` by default.
 - Authorization codes are short-lived, single-use, callback-bound, and require
   S256 PKCE; signed assertions publish their verification keys through JWKS.
-- CI scans every checked-out file with gitleaks, including documentation-only
-  changes. Local `.env` files, SQLite state, and build outputs are ignored.
+- CI scans every checked-out file and the full Git history with gitleaks,
+  including on documentation-only changes. Local `.env` files, SQLite
+  state, and build outputs are ignored.
 
 The full operational threat model and hardening checklist live in
 [`docs/DEPLOY.md`](docs/DEPLOY.md). Please report vulnerabilities privately as
