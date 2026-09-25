@@ -685,6 +685,30 @@ func TestReplayedCodeQueuesLogoutForThatApplicationOnly(t *testing.T) {
 		t.Fatalf("a normal exchange queued logout deliveries: %+v", due)
 	}
 
+	// A different authenticated client cannot use a leaked code to revoke
+	// this application's sessions. Reject it without cross-client effects.
+	form := url.Values{
+		"grant_type": {"authorization_code"}, "code": {code},
+		"redirect_uri": {"https://lens.example.com/auth/callback"}, "code_verifier": {verifier},
+	}
+	crossClient, err := http.NewRequest(http.MethodPost, ts.URL+"/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crossClient.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	crossClient.SetBasicAuth("lens", "lens-secret-lens-secret-lens-secret-1")
+	refused, err := http.DefaultClient.Do(crossClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = refused.Body.Close()
+	if refused.StatusCode != http.StatusBadRequest {
+		t.Fatalf("cross-client replay = %d, want 400", refused.StatusCode)
+	}
+	if due, err := st.ClaimDueLogoutDeliveries(ctx, time.Now().Unix(), 10, time.Minute); err != nil || len(due) != 0 {
+		t.Fatalf("cross-client replay queued logout deliveries: %+v, %v", due, err)
+	}
+
 	replay := exchangeOAuthCode(t, ts.URL, code, verifier, testOAuthClientSecret)
 	_ = replay.Body.Close()
 	if replay.StatusCode != http.StatusBadRequest {

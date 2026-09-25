@@ -1051,7 +1051,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		// consumed_at, so a superseded second-tab code never trips this.
 		if userID, codeClient, replayed, lookupErr := s.store.ReplayedAuthorizationCode(r.Context(), codeHash); lookupErr != nil {
 			log.Printf("replay lookup: %v", lookupErr)
-		} else if replayed {
+		} else if replayed && codeClient == clientID {
+			// A client may only trigger replay revocation for its own
+			// grants. Knowing another client's code is not authority to
+			// sign that client's user out.
 			if _, err := s.store.EnqueueClientLogout(r.Context(), userID, codeClient, "code_replayed", now.Unix()); err != nil {
 				log.Printf("revoke after code replay: %v", err)
 			}
@@ -1910,6 +1913,10 @@ func (s *Server) renderStatus(w http.ResponseWriter, status int, name string, da
 		return err
 	}
 	s.decorate(data)
+	// Do not add form-action 'self' without changing the handoff flow:
+	// Chromium also checks redirects after a form submission, including
+	// the 303 chain from sign-in through /authorize to an application's
+	// callback. A same-origin form action alone does not make it safe.
 	w.Header().Set("Content-Security-Policy",
 		"default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
 			"font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")

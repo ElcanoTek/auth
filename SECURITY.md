@@ -29,11 +29,14 @@ secret, password, token, or production client-config bundle. Deployment
 secrets belong in the root-owned `.env.local` created by `bootstrap.sh`; local
 runtime state belongs under `.localdata/`. Both paths are ignored by Git.
 
-CI runs gitleaks over the complete checked-out tree on every push to `main`
-and every pull request targeting `main`, including documentation-only changes.
+CI runs gitleaks twice on every push to `main` and every pull request
+targeting `main`, including documentation-only changes: once over the complete
+checked-out tree, and once over the full fetched Git history (all refs).
 Findings must be removed, not replaced with a broad allowlist. An inline
 `gitleaks:allow` is acceptable only for an obvious synthetic test fixture and
-must explain why it cannot be a live credential.
+must explain why it cannot be a live credential. `.gitleaksignore` lists
+exact commit-scoped fingerprints for synthetic fixtures in historical commits,
+so any new finding still fails.
 
 If a real credential is ever committed, removing it in a later commit is not
 enough: rotate or revoke it first, then purge it from every reachable Git ref

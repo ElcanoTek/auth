@@ -18,8 +18,8 @@ synthetic credentials, and the `stdout` email driver.
 
 ```bash
 make build      # auth-server + auth-admin in ./bin
-make test       # Go tests + operator doctor tests
-make lint       # gofmt-s check + golangci-lint
+make test       # Go tests + operator CLI and doctor shell tests
+make lint       # gofmt -s check + golangci-lint
 make check      # lint + vet + build + test
 make smoke      # real end-to-end magic-link and password flows
 ```
@@ -27,15 +27,24 @@ make smoke      # real end-to-end magic-link and password flows
 Run `make check` before opening a pull request. Changes to authentication,
 session, provisioning, or deployment behavior should also pass `make smoke`.
 
+CI additionally runs gitleaks over the tree and full history,
+`go mod verify`, `go test -race`, govulncheck, ShellCheck over the install and
+operator scripts, and `scripts/test/install_test.sh` as root.
+`scripts/test/layout_test.sh` exercises the installed layout and is run
+manually with `sudo`.
+
 ## Repository map
 
 ```text
 cmd/                 server and operator CLI entrypoints
+internal/config/     environment loading and startup validation
 internal/httpapi/    HTTP routes and embedded UI
 internal/store/      SQLite state and migrations
-internal/token/      signed magic, identity, and logout tokens
+internal/token/      signed magic, identity, access, and logout tokens
 internal/password/   password policy and Argon2id hashing
 internal/mfa/        TOTP, recovery codes, and secret sealing
+internal/backchannel/ and internal/provisioning/
+                     durable signed logout and access delivery to apps
 deploy/              systemd, Caddy, and the installed auth wrapper
 scripts/             bootstrap, update, doctor, and smoke tests
 docs/                design, deployment, and integration guides

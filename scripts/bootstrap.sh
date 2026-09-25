@@ -1009,7 +1009,7 @@ if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
   APP_URL="https://${HOSTNAME_ANSWER}"; [[ "$COOKIE_SECURE" == "true" ]] || APP_URL="http://${HOSTNAME_ANSWER}:9000"
   [[ "$SETUP_CADDY" == "y" || "$COOKIE_SECURE" != "true" ]] || say "  ${c_yellow}Before step 3, put an HTTPS reverse proxy for ${HOSTNAME_ANSWER} in front of 127.0.0.1:9000.${c_reset}"
   say "  ${c_bold}Next steps${c_reset} (full checklist: docs/DEPLOY.md, \"First password-mode client\")"
-  say "    1. First administrator (a temporary password is shown once; they change it at first sign-in):"
+  say "    1. First administrator (enter a temporary password at the prompt; they change it at first sign-in):"
   say "       ${c_dim}auth user create you@${HOSTNAME_ANSWER#auth.}${c_reset}"
   say "       ${c_dim}auth user admin you@${HOSTNAME_ANSWER#auth.} on${c_reset}"
   say "    2. Register each application (client id, its callback URL, its signed-out page), then grant access:"

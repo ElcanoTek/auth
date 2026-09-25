@@ -125,6 +125,10 @@ const tokensCSS = `
   --color-surface-1: #ffffff;
   --color-surface-2: #e9eefc;
   --color-primary-hover: #5f5f97;
+  /* Local override: the dark accent (#9da7ef) is 2.0-2.3:1 on these light
+     surfaces, below WCAG AA for links, badges and the focus ring. This
+     keeps its hue at 4.6-5.3:1. Mirror upstream in flag. */
+  --color-accent: #5a64b8;
   --color-border: rgba(38, 55, 92, 0.2);
   --color-border-strong: rgba(38, 55, 92, 0.32);
   --color-text-primary: #141824;
@@ -195,7 +199,8 @@ label {
   font-weight: var(--font-weight-bold); color: var(--color-text-secondary);
   margin-bottom: var(--space-2);
 }
-input[type=email], input[type=password] {
+input:not([type=hidden]) + label:not(.sr-only) { margin-top: var(--space-4); }
+input[type=email], input[type=password], input.code, input#recovery_code {
   width: 100%; min-height: 2.5rem; padding: var(--space-2) var(--space-3);
   font-family: var(--font-body); font-size: var(--font-size-body);
   color: var(--color-text-primary);
@@ -205,9 +210,9 @@ input[type=email], input[type=password] {
   outline: none;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
-input[type=email]::placeholder, input[type=password]::placeholder { color: var(--color-text-muted); }
-input[type=email]:hover, input[type=password]:hover { border-color: var(--color-primary); }
-input[type=email]:focus-visible, input[type=password]:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
+input[type=email]::placeholder, input[type=password]::placeholder, input.code::placeholder, input#recovery_code::placeholder { color: var(--color-text-muted); }
+input[type=email]:hover, input[type=password]:hover, input.code:hover, input#recovery_code:hover { border-color: var(--color-primary); }
+input[type=email]:focus-visible, input[type=password]:focus-visible, input.code:focus-visible, input#recovery_code:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
 .btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 100%; min-height: 2.75rem; margin-top: var(--space-5);
@@ -434,9 +439,9 @@ ul.plain li { margin: 0.2rem 0; }
   color: var(--color-text-primary); user-select: all; -webkit-user-select: all; word-break: break-all;
 }
 .secret .muted { margin: 0; font-size: var(--font-size-caption); }
-.qr { display: block; width: 220px; height: 220px; margin: 0 auto var(--space-4); border-radius: var(--radius-md); background: #fff; padding: var(--space-2); }
+.qr { display: block; width: 220px; max-width: 100%; height: auto; aspect-ratio: 1 / 1; margin: 0 auto var(--space-4); border-radius: var(--radius-md); background: #fff; padding: var(--space-2); }
 .codes { display: grid; grid-template-columns: 1fr; gap: var(--space-2); margin: 0 0 var(--space-5); padding: 0; list-style: none; }
-.codes li { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9rem; letter-spacing: 0.03em; white-space: nowrap; color: var(--color-text-primary); padding: var(--space-2) var(--space-3); background: var(--color-surface-1); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); user-select: all; -webkit-user-select: all; }
+.codes li { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9rem; letter-spacing: 0.03em; overflow-wrap: anywhere; color: var(--color-text-primary); padding: var(--space-2) var(--space-3); background: var(--color-surface-1); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); user-select: all; -webkit-user-select: all; }
 a.btn { text-decoration: none; }
 .actions .btn-ghost { width: 100%; min-height: 2.5rem; font-size: var(--font-size-caption); }
 .status-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin: 0 0 var(--space-5); }
@@ -516,11 +521,13 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 @media (max-width: 40rem) {
   table.list .num { display: none; }
   .account-title, .account-tools { width: 100%; }
+  .account-tools { flex-wrap: wrap; }
+  .account-tools input[type=search], .account-tools select { flex: 1 1 100%; min-width: 0; max-width: 100%; }
   /* The corner controls would float over a long table on a phone; let them
      end the page instead: body is a flex row for centring the card, so they
      wrap onto their own full-width line below it. */
   body { flex-wrap: wrap; }
-  .corner-bottom { position: static; flex: 0 0 100%; margin-top: var(--space-4); justify-content: center; }
+  .corner-bottom { position: static; flex: 0 0 100%; order: 1; margin-top: var(--space-4); justify-content: center; }
 }
 .theme-toggle {
   position: fixed; top: var(--space-5); right: var(--space-5);
