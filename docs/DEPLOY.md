@@ -295,6 +295,8 @@ auth app show explorer-northwind
 auth app rotate-secret explorer-northwind
 auth app clear-backchannel explorer-northwind
 auth app disable explorer-northwind
+auth app set-events-secret fleet      # optional: accept Fleet's account reports
+auth app compare fleet - < export.jsonl
 ```
 
 The authorization request must use the exact registered callback and S256
@@ -325,6 +327,39 @@ second time (a replay) queues a back-channel logout for that user at that
 application, ending whatever session the first exchange produced. Do not put the
 back-channel route behind application login; its Ed25519 signature, exact
 issuer/audience, and replay-safe `jti` are the authentication boundary.
+
+### Account reports from Fleet (optional)
+
+Fleet can report role changes and removals made in its own admin page, so the
+console shows what Fleet actually has. Auth mirrors them only for accounts
+that already have Fleet access; adding people stays in Auth. Protocol and
+rules: [INTEGRATION.md](INTEGRATION.md#receiving-application-account-reports).
+
+1. Make sure `AUTH_MFA_KEY` is set (`auth mfa keygen` if not): the events
+   secret is sealed with it, and from now on the server will not start
+   without it.
+2. Create the secret and note the two lines it prints once:
+   ```bash
+   auth app set-events-secret fleet
+   # FLEET_ACCOUNT_EVENTS_URL=https://<auth-host>/apps/fleet/events
+   # FLEET_ACCOUNT_EVENTS_SECRET=<64 hex characters>
+   ```
+3. On the Fleet host, preview what Fleet's current state would change before
+   enabling anything:
+   ```bash
+   fleet account-events export > fleet-accounts.jsonl
+   ```
+   Copy the file to the Auth host and run
+   `auth app compare fleet - < fleet-accounts.jsonl` (read-only). Resolve any
+   row you do not want mirrored first.
+4. Put both lines in Fleet's `/etc/fleet/fleet.env` and restart Fleet
+   (`fleet.service`). From then on each change in Fleet's admin page or CLI
+   reaches Auth within seconds; `fleet account-events resync` sends every
+   account's current state once.
+5. `auth app show fleet` confirms reports are accepted; each applied report
+   is in `auth audit list` with `app:fleet` as the actor. To stop, run
+   `auth app clear-events-secret fleet` (Fleet's deliveries then fail and
+   retry until Fleet is unconfigured too).
 
 ### Silent sign-in check (`prompt=none`)
 
@@ -467,6 +502,9 @@ Server configuration:
   key, give it a new id, move the old pair to `AUTH_MFA_PREVIOUS_KEYS` as
   `id:key`, restart, and keep it there until every factor has been re-sealed
   (each successful verification re-seals under the active key). Then drop it.
+  An application events secret (below) is sealed with the same key and is
+  re-sealed by the first report that arrives after the restart; running
+  `auth app set-events-secret` again is the other way to move it.
 - `AUTH_MFA_ISSUER` is the label authenticator apps show for the account
   (default the brand name); it may not contain `:`. Changing it affects only
   new enrollments.

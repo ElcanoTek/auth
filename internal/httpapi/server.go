@@ -130,6 +130,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin", s.handleAdmin)
 	mux.HandleFunc("/authorize", s.handleAuthorize)
 	mux.HandleFunc("/token", s.handleToken)
+	mux.HandleFunc("/apps/{client_id}/events", s.handleAppEvents)
 	mux.HandleFunc("/.well-known/openid-configuration", s.handleDiscovery)
 	mux.HandleFunc("/jwks.json", s.handleJWKS)
 	mux.HandleFunc("/sent", s.handleSent)

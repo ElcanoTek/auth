@@ -304,6 +304,7 @@ Day-to-day:
 auth user create alice@example.com   # password mode: provision an account
 auth user admin alice@example.com on # let them open the admin console
 auth app create <id> <callback>      # register an application
+auth app set-events-secret fleet     # optional: mirror role changes made in Fleet
 auth domain add example.com          # magic mode: allow an email domain
 auth pubkey                          # print AUTH_SIGNING_PUBKEY for verifiers
 auth restart                         # pick up new .env.local
@@ -352,12 +353,13 @@ internal/config/         env loading + validation
 internal/token/          Ed25519-signed magic, session, identity and logout tokens
 internal/store/          SQLite (modernc.org/sqlite, no CGO)
 internal/password/       password policy + Argon2id hashing
-internal/mfa/            TOTP, recovery codes, sealed authenticator secrets
+internal/mfa/            TOTP, recovery codes, sealed authenticator and events secrets
 internal/branding/       client bundle branding
 internal/backchannel/    durable back-channel logout delivery
 internal/provisioning/   durable application-access (grant/revoke) delivery
 internal/email/          SendGrid / SMTP / stdout drivers
-internal/httpapi/        HTTP routes + login, account and admin UI templates
+internal/httpapi/        HTTP routes + login, account and admin UI templates,
+                         signed application account reports (/apps/<id>/events)
 deploy/                  systemd units + Caddy + operator CLI
 scripts/                 bootstrap, update, doctor, envfile helpers, smoke tests
 docs/AUTH_V2_IMPLEMENTATION.md  password-mode design and invariants

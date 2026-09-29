@@ -299,3 +299,132 @@ func TestCLIApplicationsAndKeys(t *testing.T) {
 		t.Fatalf("domain list:\n%s", d)
 	}
 }
+
+func TestCLIApplicationEventsSecretAndCompare(t *testing.T) {
+	c := newCLI(t)
+	c.env = append(c.env, "AUTH_ISSUER_URL=https://auth.example.test/")
+	c.must("", "app", "create", "fleet", "https://fleet.example.com/api/auth/oidc/callback")
+	out := c.must("", "app", "set-events-secret", "fleet")
+	if !strings.Contains(out, "FLEET_ACCOUNT_EVENTS_URL=https://auth.example.test/apps/fleet/events") {
+		t.Fatalf("set-events-secret URL:\n%s", out)
+	}
+	var secret string
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(line, "FLEET_ACCOUNT_EVENTS_SECRET="); ok {
+			secret = v
+		}
+	}
+	if len(secret) != 64 {
+		t.Fatalf("secret %q in:\n%s", secret, out)
+	}
+	// Stored sealed: the plaintext is nowhere in the database, and the
+	// configured key opens it back to the printed value.
+	st := c.store()
+	ctx := context.Background()
+	sealed, err := st.ApplicationEventsSecret(ctx, "fleet")
+	if err != nil || sealed == nil || bytes.Contains(sealed, []byte(secret)) {
+		t.Fatalf("sealed = %q %v", sealed, err)
+	}
+	ring, err := mfa.ParseKeyring(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)), "1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain, _, err := ring.Open(sealed, mfa.ApplicationSecretAAD("fleet")); err != nil || string(plain) != secret {
+		t.Fatalf("open = %q %v", plain, err)
+	}
+	if show := c.must("", "app", "show", "fleet"); !strings.Contains(show, "account reports: accepted at https://auth.example.test/apps/fleet/events") {
+		t.Fatalf("app show:\n%s", show)
+	}
+	// Without AUTH_MFA_KEY there is nothing to seal with.
+	noKey := &cli{t: t, dataDir: c.dataDir}
+	for _, kv := range c.env {
+		if !strings.HasPrefix(kv, "AUTH_MFA_KEY") {
+			noKey.env = append(noKey.env, kv)
+		}
+	}
+	if out, code := noKey.run("", "app", "set-events-secret", "fleet"); code == 0 || !strings.Contains(out, "AUTH_MFA_KEY") {
+		t.Fatalf("set without key exited %d:\n%s", code, out)
+	}
+
+	// compare: one account per outcome.
+	now := time.Now().Unix()
+	for _, email := range []string{"change@example.com", "same@example.com", "gone@example.com", "nogrant@example.com", "odd@example.com"} {
+		a, err := st.CreatePasswordAccount(ctx, email, "hash", false, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if email == "nogrant@example.com" {
+			continue
+		}
+		if _, _, err := st.SetApplicationAccessWithSettings(ctx, a.ID, []string{"fleet"}, map[string]string{"fleet": `{"chat_role":"member","ops_role":"none"}`}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	export := strings.Join([]string{
+		`{"email":"change@example.com","enabled":true,"chat_role":"viewer","ops_role":"client"}`,
+		`{"email":"same@example.com","enabled":true,"chat_role":"member","ops_role":"none"}`,
+		`{"email":"gone@example.com","enabled":false,"chat_role":"member","ops_role":"none"}`,
+		`{"email":"nogrant@example.com","enabled":true,"chat_role":"member","ops_role":"none"}`,
+		`{"email":"stranger@example.com","enabled":true,"chat_role":"member","ops_role":"none"}`,
+		`{"email":"odd@example.com","enabled":true,"chat_role":"member","ops_role":"admin"}`,
+	}, "\n") + "\n"
+	before := settingsSnapshot(t, st)
+	out = c.must(export, "app", "compare", "fleet", "-")
+	for _, want := range []string{
+		"change@example.com", "chat member -> viewer, ops none -> client",
+		"same@example.com", "no-op",
+		"gone@example.com", "revoke",
+		"nogrant@example.com", "no fleet access in Auth",
+		"stranger@example.com", "no Auth account",
+		"odd@example.com", "unrepresentable",
+		"1 change, 1 revoke, 1 no-op, 2 ignored-not-granted, 1 unrepresentable",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compare lacks %q:\n%s", want, out)
+		}
+	}
+	if after := settingsSnapshot(t, st); after != before {
+		t.Fatal("compare wrote to the database")
+	}
+	// A file argument works too; a malformed line names its number.
+	path := filepath.Join(t.TempDir(), "export.jsonl")
+	if err := os.WriteFile(path, []byte(export+"not json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := c.run("", "app", "compare", "fleet", path); code == 0 || !strings.Contains(out, "line 7") {
+		t.Fatalf("malformed export exited %d:\n%s", code, out)
+	}
+
+	out = c.must("", "app", "clear-events-secret", "fleet")
+	if !strings.Contains(out, "cleared") {
+		t.Fatalf("clear:\n%s", out)
+	}
+	if sealed, _ := st.ApplicationEventsSecret(ctx, "fleet"); sealed != nil {
+		t.Fatal("secret not cleared")
+	}
+}
+
+// settingsSnapshot renders every grant, setting and provisioning version so
+// a read-only command can be shown to have changed nothing.
+func settingsSnapshot(t *testing.T, st *store.Store) string {
+	t.Helper()
+	ctx := context.Background()
+	access, err := st.AllApplicationAccess(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := st.AllApplicationAccessSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	accounts, err := st.ListPasswordAccounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range accounts {
+		p, _, _ := st.AccessProvisioningState(ctx, a.ID, "fleet")
+		fmt.Fprintf(&b, "%s %v %v %d\n", a.Email, access[a.ID], settings[a.ID], p.Version)
+	}
+	return b.String()
+}

@@ -105,6 +105,89 @@ should too.
      object whose keys and values are application-defined and strictly
      validated by that application.
 
+### Receiving application account reports
+
+An application that keeps its own user administration can tell Auth what
+changed there, so a role edited inside the application shows up in Auth's
+console instead of being overwritten by the next console save. This is
+optional and one-sided: the application publishes generic signed account
+events to a URL it is configured with and knows nothing about Auth; Auth is
+the side that listens. Fleet is the only application whose permission
+vocabulary Auth understands today (`chat_role` and `ops_role`); reports from
+any other application are accepted and change nothing.
+
+**Setup, on the Auth host:**
+
+```bash
+auth app set-events-secret fleet
+```
+
+This prints `FLEET_ACCOUNT_EVENTS_URL` (`https://<auth-host>/apps/fleet/events`)
+and `FLEET_ACCOUNT_EVENTS_SECRET` once. Put both in the application's
+environment. Auth keeps the secret sealed with `AUTH_MFA_KEY` (the command
+refuses without it, and the server refuses to start without the key once any
+application has an events secret). Running the command again replaces the
+secret; `auth app clear-events-secret fleet` stops accepting reports.
+
+**The request.** `POST /apps/<client-id>/events` with a JSON body, signed the
+way Fleet signs its outbound webhooks: `X-Fleet-Timestamp: <unix seconds>`
+and `X-Fleet-Signature: v1=<hex HMAC-SHA256>` computed with the secret string
+(as printed) over `<timestamp>.<raw body>`. Auth refuses a timestamp more than
+five minutes from its own clock, bodies over 16 KiB (413) and any signature
+mismatch (401); a malformed report is 400. The body:
+
+```json
+{"id": "evt_...", "type": "user.access_changed", "occurred_at": 1790000000,
+ "sequence": 42, "source": "admin_ui", "actor": "admin@example.com",
+ "user": {"email": "person@example.com", "enabled": true,
+          "chat_role": "member", "ops_role": "none"}}
+```
+
+`type` is `user.access_changed` or `user.deleted` (then `enabled` is false and
+both roles are empty). `source` is `admin_ui`, `cli`, `system`, `resync` or
+`identity_provider`. Unknown fields are ignored.
+
+**What Auth does.** Every authenticated, well-formed report gets a 204, also
+the ones Auth deliberately ignores, so the sender stops retrying them. A
+repeated `id` is a no-op. Then, in one transaction:
+
+- `source: identity_provider` is the application applying Auth's own push;
+  it is ignored, which is what ends the echo.
+- An email with no Auth account, or an account without access to the
+  application, is ignored (`access.app_report_ignored`). Reports never create
+  accounts or grants: adding people stays an Auth decision.
+- A report older than the last applied one, or older than an Auth-side change
+  made after it (a console save or a re-grant), is ignored as stale. Auth
+  compares the application's `occurred_at` with its own clock for that second
+  test, so the two hosts' clocks must roughly agree.
+- `user.deleted`, or `enabled: false`, removes the grant through the normal
+  revoke path: back-channel logout, a provisioning revoke and dropped
+  authorization codes. The stored roles are kept for a later re-grant.
+- A role pair Auth can store (Fleet Admin on both planes, or Chat
+  Viewer/Contributor with Ops None/Viewer/Contributor) is saved like a
+  console edit and audited as `access.settings_changed` with the report's
+  source and actor; anything else (for example Ops admin without Chat admin)
+  is ignored as unrepresentable. A change is pushed back to the application
+  through the provisioning event above; the application already has that
+  state, changes nothing and emits nothing. Unchanged roles are a no-op.
+
+A change made this way skips the console's authenticator check: Auth records
+what the application already enforces. The console marks it with "Changed in
+Fleet by <actor>" in the account's Access popup, and `auth audit list` names
+`app:fleet` as the actor.
+
+**Before switching it on**, preview what the application's current state
+would change. With Fleet:
+
+```bash
+fleet account-events export > fleet-accounts.jsonl        # on the Fleet host
+auth app compare fleet - < fleet-accounts.jsonl           # on the Auth host
+```
+
+`compare` opens the database read-only and prints, per email, `change`,
+`revoke`, `no-op`, `ignored-not-granted` or `unrepresentable`. Once you are
+happy with it, `fleet account-events resync` sends the same state for real.
+
 ### Application session conventions
 
 - Opaque 256-bit token, stored only as its SHA-256 hash; host-only cookie
@@ -281,8 +364,9 @@ wrong, or a `Secure` cookie is being set over plain HTTP.
   `auth user access`; `/authorize` refuses otherwise, with Auth's own "No
   access" page interactively and `error=access_denied` for `prompt=none`).
   Auth may transport application-specific settings chosen in its admin UI
-  (currently Fleet Chat/Ops roles), but the receiving application validates,
-  stores, and enforces them. Auth's own administrator flag is separate and
+  (currently Fleet Chat/Ops roles), and can mirror the same settings back from
+  the application's signed account reports, but the receiving application
+  validates, stores, and enforces them. Auth's own administrator flag is separate and
   gates only its console at `/admin`.
 - **Step-up beyond TOTP.** Magic links are themselves an inbox-possession
   factor. Password mode has authenticator-app (TOTP) two-factor sign-in,

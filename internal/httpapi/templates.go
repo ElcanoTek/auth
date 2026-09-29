@@ -950,6 +950,7 @@ const adminHTML = `<!doctype html>
               </div>
               <section class="fleet-permissions" data-fleet-permissions{{if not $row.FleetGranted}} hidden{{end}} aria-label="Fleet permissions for {{$row.Email}}">
                 <h4>Fleet permissions</h4>
+                {{if $row.FleetChangedAt}}<p class="hint" data-fleet-changed>Changed in Fleet{{if $row.FleetChangedBy}} by {{$row.FleetChangedBy}}{{end}} <span class="dot">&middot;</span> {{$row.FleetChangedAt}}</p>{{end}}
                 <div class="seg-group"><span class="seg-label">Fleet Admin</span>
                   <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"{{if $row.FleetAdmin}} checked{{end}}> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
                 </div>

@@ -280,6 +280,29 @@ CREATE TABLE IF NOT EXISTS access_provisioning (
 );
 CREATE INDEX IF NOT EXISTS idx_access_provisioning_due
   ON access_provisioning(delivered_at, next_attempt_at, lease_until);
+-- Signed account reports an application sends about its own users (schema
+-- v9). Receipts make a redelivered event a no-op; they are pruned after
+-- AppEventReceiptRetention. The last applied report per account and
+-- application backs the stale-report guard and the console's "Changed in"
+-- hint.
+CREATE TABLE IF NOT EXISTS app_event_receipts (
+  client_id   TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  event_id    TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY(client_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_app_event_receipts_received ON app_event_receipts(received_at);
+CREATE TABLE IF NOT EXISTS application_access_reports (
+  user_id        TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  event_id       TEXT NOT NULL,
+  occurred_at    INTEGER NOT NULL,
+  applied_at     INTEGER NOT NULL,
+  source         TEXT NOT NULL,
+  actor          TEXT NOT NULL DEFAULT '',
+  effect         TEXT NOT NULL,
+  PRIMARY KEY(user_id, application_id)
+);
 CREATE TABLE IF NOT EXISTS authorization_codes (
   code_hash          TEXT PRIMARY KEY,
   client_id          TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
@@ -436,7 +459,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateMFA(ctx); err != nil {
 		return err
 	}
-	return s.migrateAccessProvisioning(ctx)
+	if err := s.migrateAccessProvisioning(ctx); err != nil {
+		return err
+	}
+	return s.migrateAppReports(ctx)
 }
 
 // migrateAccessProvisioning is schema v8. It snapshots every existing grant
@@ -1367,7 +1393,7 @@ func (s *Store) SetApplicationAccessWithSettings(ctx context.Context, userID str
 		return nil, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	added, removed, _, err = setApplicationAccessTx(ctx, tx, userID, applicationIDs, settings, now)
+	added, removed, _, err = setApplicationAccessTx(ctx, tx, userID, applicationIDs, settings, now, "")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1399,7 +1425,11 @@ func (s *Store) AllApplicationAccessSettings(ctx context.Context) (map[string]ma
 // setApplicationAccessTx is SetApplicationAccess inside a caller's
 // transaction, so the console's Access popup can save it together with the
 // administrator flag and the two-factor requirement.
-func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, applicationIDs []string, settings map[string]string, now int64) (added, removed, updated []string, err error) {
+//
+// auditMeta, when non-empty, is the JSON metadata recorded on the
+// access.granted / access.settings_changed / access.revoked events (an
+// application report names its source there); "" records '{}'.
+func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, applicationIDs []string, settings map[string]string, now int64, auditMeta string) (added, removed, updated []string, err error) {
 	if userID == "" {
 		return nil, nil, nil, errors.New("user id is required")
 	}
@@ -1480,7 +1510,7 @@ func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, appl
 			`INSERT INTO application_access(user_id, application_id, granted_at) VALUES(?, ?, ?)`, userID, id, now); err != nil {
 			return nil, nil, nil, err
 		}
-		if err := insertApplicationAudit(ctx, tx, "access.granted", id, userID, now); err != nil {
+		if err := insertApplicationAuditMeta(ctx, tx, "access.granted", id, userID, now, auditMeta); err != nil {
 			return nil, nil, nil, err
 		}
 		if err := setAccessProvisioningTx(ctx, tx, userID, id, true, now); err != nil {
@@ -1488,7 +1518,7 @@ func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, appl
 		}
 	}
 	for _, id := range updated {
-		if err := insertApplicationAudit(ctx, tx, "access.settings_changed", id, userID, now); err != nil {
+		if err := insertApplicationAuditMeta(ctx, tx, "access.settings_changed", id, userID, now, auditMeta); err != nil {
 			return nil, nil, nil, err
 		}
 		if err := setAccessProvisioningTx(ctx, tx, userID, id, true, now); err != nil {
@@ -1500,7 +1530,7 @@ func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, appl
 			`DELETE FROM application_access WHERE user_id = ? AND application_id = ?`, userID, id); err != nil {
 			return nil, nil, nil, err
 		}
-		if err := insertApplicationAudit(ctx, tx, "access.revoked", id, userID, now); err != nil {
+		if err := insertApplicationAuditMeta(ctx, tx, "access.revoked", id, userID, now, auditMeta); err != nil {
 			return nil, nil, nil, err
 		}
 		// A code minted before the revocation must not become a session
@@ -2534,13 +2564,22 @@ func insertAudit(ctx context.Context, e execer, event, userID string, now int64,
 }
 
 func insertApplicationAudit(ctx context.Context, e execer, event, applicationID, userID string, now int64) error {
+	return insertApplicationAuditMeta(ctx, e, event, applicationID, userID, now, "")
+}
+
+// insertApplicationAuditMeta is insertApplicationAudit with JSON metadata;
+// "" records '{}'.
+func insertApplicationAuditMeta(ctx context.Context, e execer, event, applicationID, userID string, now int64, metadata string) error {
 	var nullableUser any
 	if userID != "" {
 		nullableUser = userID
 	}
+	if metadata == "" {
+		metadata = "{}"
+	}
 	_, err := e.ExecContext(ctx, `
 		INSERT INTO audit_events(event_type, user_id, application_id, occurred_at, metadata)
-		VALUES(?, ?, ?, ?, '{}')`, event, nullableUser, applicationID, now)
+		VALUES(?, ?, ?, ?, ?)`, event, nullableUser, applicationID, now, metadata)
 	return err
 }
 

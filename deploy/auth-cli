@@ -495,6 +495,9 @@ APPLICATIONS
   auth app create <id> <callback> [logout]  register a confidential client
   auth app list | show <id>                 inspect registered clients
   auth app rotate-secret <id>               replace + print the secret once
+  auth app set-events-secret <id>           accept signed account reports (prints secret once)
+  auth app clear-events-secret <id>         stop accepting account reports
+  auth app compare <id> -                   preview an account export read from stdin
   auth app disable|enable <id>              control new login handoffs
 
 CRYPTO
