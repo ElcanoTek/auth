@@ -55,6 +55,11 @@ type AppReport struct {
 	Enabled    bool
 	ChatRole   string
 	OpsRole    string
+	// Team is the account's team on the application side; HasTeam is false
+	// when the sender did not report one (an older Fleet), which leaves
+	// Auth's team alone.
+	Team    string
+	HasTeam bool
 }
 
 // AppReportAction is what Auth does (or, for a preview, would do) with a
@@ -76,10 +81,11 @@ const (
 	AppReportReasonNotGranted       = "not_granted"
 	AppReportReasonStale            = "stale"
 	AppReportReasonUnrepresentable  = "unrepresentable"
+	AppReportReasonInvalidTeam      = "invalid_team"
 )
 
 // AppReportDecision describes the outcome. From/To are the Fleet roles
-// before and after for AppReportChange (From alone for the others).
+// and team before and after for AppReportChange (From alone for the others).
 type AppReportDecision struct {
 	Action   AppReportAction
 	Reason   string // set when Action is AppReportIgnored
@@ -88,9 +94,19 @@ type AppReportDecision struct {
 	FromOps  string
 	ToChat   string
 	ToOps    string
+	FromTeam string
+	ToTeam   string
+	// RolesChange / TeamChange say which half of an AppReportChange moves.
+	RolesChange bool
+	TeamChange  bool
+	// RolesSkipped: the roles had no Auth equivalent, but the team was still
+	// mirrored. TeamSkipped: the reported team is not a valid team, so the
+	// roles were handled and the team left alone.
+	RolesSkipped bool
+	TeamSkipped  bool
 
 	grants   []string // the account's current application grants
-	settings string   // the settings JSON a change writes
+	settings string   // the settings JSON a role change writes
 }
 
 // fleetRoles mirrors the console's stored shape; the field order keeps the
@@ -171,6 +187,18 @@ func decideAppReport(ctx context.Context, q rowQuerier, clientID string, r AppRe
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return d, err
 	}
+	teamSync, err := teamSyncOn(ctx, q, clientID)
+	if err != nil {
+		return d, err
+	}
+	var teamAt int64
+	if teamSync {
+		if err := q.QueryRowContext(ctx, `SELECT team, team_updated_at FROM accounts WHERE id = ?`, d.UserID).Scan(&d.FromTeam, &teamAt); err != nil {
+			return d, err
+		}
+	} else if err := q.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ?`, d.UserID).Scan(&d.FromTeam); err != nil {
+		return d, err
+	}
 	var lastOccurred, lastApplied int64
 	hasReport := true
 	err = q.QueryRowContext(ctx, `SELECT occurred_at, applied_at FROM application_access_reports WHERE user_id = ? AND application_id = ?`, d.UserID, clientID).Scan(&lastOccurred, &lastApplied)
@@ -179,14 +207,15 @@ func decideAppReport(ctx context.Context, q rowQuerier, clientID string, r AppRe
 	} else if err != nil {
 		return d, err
 	}
-	// Stale guard. Reports from one application are ordered by their own
-	// clock, so a report older than the last applied one is stale. Auth's
-	// own changes (the grant, a console save) are on Auth's clock; one made
-	// after the last applied report wins over any report that happened
-	// before it. A change a report itself wrote is not "Auth's own", which
-	// is why the second comparison only applies when the latest change
+	// Stale guard, over the whole report (roles and team). Reports from one
+	// application are ordered by their own clock, so a report older than the
+	// last applied one is stale. Auth's own changes (the grant, a console
+	// save, and with team sync on a team change) are on Auth's clock; one
+	// made after the last applied report wins over any report that happened
+	// before it. A change a report itself wrote is not "Auth's own", which is
+	// why the second comparison only applies when the latest change
 	// postdates the last report.
-	authChangeAt := max(grantedAt, settingsAt)
+	authChangeAt := max(grantedAt, settingsAt, teamAt)
 	switch {
 	case hasReport && r.OccurredAt < lastOccurred:
 		return ignore(d, AppReportReasonStale)
@@ -212,23 +241,55 @@ func decideAppReport(ctx context.Context, q rowQuerier, clientID string, r AppRe
 		return d, err
 	}
 	if r.Type == AppReportDeleted || !r.Enabled {
+		// A removal, including Fleet's "Chat account gone, Ops access
+		// remains" shape: the grant covers both planes, and revoking it
+		// completes the removal there. The team is left alone.
 		d.Action = AppReportRevoke
 		return d, nil
 	}
+	if teamSync && r.HasTeam {
+		if team, err := NormalizeTeam(r.Team); err != nil {
+			d.TeamSkipped = true
+		} else if team != d.FromTeam {
+			d.TeamChange, d.ToTeam = true, team
+		}
+	}
 	if !FleetRolesRepresentable(r.ChatRole, r.OpsRole) {
-		return ignore(d, AppReportReasonUnrepresentable)
+		if !d.TeamChange {
+			return ignore(d, AppReportReasonUnrepresentable)
+		}
+		// The team is still Fleet's to state; only the roles are skipped.
+		d.RolesSkipped = true
+	} else {
+		d.ToChat, d.ToOps = r.ChatRole, r.OpsRole
+		if current.ChatRole != r.ChatRole || current.OpsRole != r.OpsRole {
+			raw, err := json.Marshal(fleetRoles{ChatRole: r.ChatRole, OpsRole: r.OpsRole})
+			if err != nil {
+				return d, err
+			}
+			d.RolesChange, d.settings = true, string(raw)
+		}
 	}
-	d.ToChat, d.ToOps = r.ChatRole, r.OpsRole
-	if current.ChatRole == r.ChatRole && current.OpsRole == r.OpsRole {
+	if d.RolesChange || d.TeamChange {
+		d.Action = AppReportChange
+	} else {
 		d.Action = AppReportNoOp
-		return d, nil
 	}
-	raw, err := json.Marshal(fleetRoles{ChatRole: r.ChatRole, OpsRole: r.OpsRole})
-	if err != nil {
-		return d, err
-	}
-	d.Action, d.settings = AppReportChange, string(raw)
 	return d, nil
+}
+
+// teamSyncOn reports whether an application has team sync on. Only Fleet
+// can; a database from before schema v10 has it off.
+func teamSyncOn(ctx context.Context, q rowQuerier, clientID string) (bool, error) {
+	if clientID != FleetApplicationID || !hasColumnQ(ctx, q, "applications", "team_sync") {
+		return false, nil
+	}
+	var on int
+	err := q.QueryRowContext(ctx, `SELECT team_sync FROM applications WHERE id = ?`, clientID).Scan(&on)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return on == 1, err
 }
 
 // PreviewAppReport says what ApplyAppReport would do, without writing. It
@@ -302,14 +363,39 @@ func (s *Store) ApplyAppReport(ctx context.Context, clientID string, r AppReport
 		}
 		effect = "revoked"
 	case AppReportChange:
-		_, _, updated, err := setApplicationAccessTx(ctx, tx, d.UserID, d.grants, map[string]string{clientID: d.settings}, now, string(meta))
-		if err != nil {
+		// The team first, so the push the role change (or the team change on
+		// its own) queues carries the new team.
+		if d.TeamChange {
+			teamMeta, err := reportTeamMeta(fields, d.ToTeam)
+			if err != nil {
+				return AppReportDecision{}, err
+			}
+			if err := setAccountTeamTx(ctx, tx, d.UserID, d.ToTeam, now, teamMeta, false); err != nil {
+				return AppReportDecision{}, err
+			}
+		}
+		if d.RolesChange {
+			_, _, updated, err := setApplicationAccessTx(ctx, tx, d.UserID, d.grants, map[string]string{clientID: d.settings}, now, string(meta))
+			if err != nil {
+				return AppReportDecision{}, err
+			}
+			if len(updated) != 1 || updated[0] != clientID {
+				return AppReportDecision{}, fmt.Errorf("report change updated %v", updated)
+			}
+		} else if err := setAccessProvisioningTx(ctx, tx, d.UserID, clientID, true, now); err != nil {
 			return AppReportDecision{}, err
 		}
-		if len(updated) != 1 || updated[0] != clientID {
-			return AppReportDecision{}, fmt.Errorf("report change updated %v", updated)
+		if d.RolesSkipped {
+			if err := auditSkippedHalf(ctx, tx, "access.app_report_roles_skipped", clientID, d.UserID, now, fields, AppReportReasonUnrepresentable); err != nil {
+				return AppReportDecision{}, err
+			}
 		}
 		effect = "settings"
+	}
+	if d.TeamSkipped {
+		if err := auditSkippedHalf(ctx, tx, "access.app_report_team_skipped", clientID, d.UserID, now, fields, AppReportReasonInvalidTeam); err != nil {
+			return AppReportDecision{}, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO application_access_reports(user_id, application_id, event_id, occurred_at, applied_at, source, actor, effect)
@@ -320,6 +406,33 @@ func (s *Store) ApplyAppReport(ctx context.Context, clientID string, r AppReport
 		return AppReportDecision{}, err
 	}
 	return d, tx.Commit()
+}
+
+// reportTeamMeta is the account.team_set audit metadata for a team a report
+// wrote: the report's own fields plus the team.
+func reportTeamMeta(fields map[string]any, team string) (string, error) {
+	out := make(map[string]any, len(fields)+1)
+	for k, v := range fields {
+		out[k] = v
+	}
+	out["team"] = team
+	raw, err := json.Marshal(out)
+	return string(raw), err
+}
+
+// auditSkippedHalf records that one half of an applied report (its roles or
+// its team) was left alone, and why.
+func auditSkippedHalf(ctx context.Context, tx *sql.Tx, event, clientID, userID string, now int64, fields map[string]any, reason string) error {
+	out := make(map[string]any, len(fields)+1)
+	for k, v := range fields {
+		out[k] = v
+	}
+	out["reason"] = reason
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	return insertApplicationAuditMeta(ctx, tx, event, clientID, userID, now, string(raw))
 }
 
 // AppReportHint is the console's "Changed in <application> by <actor>" note.
@@ -337,8 +450,10 @@ func (s *Store) AppReportHints(ctx context.Context, applicationID string) (map[s
 		FROM application_access_reports r
 		JOIN application_access aa ON aa.user_id = r.user_id AND aa.application_id = r.application_id
 		LEFT JOIN application_access_settings st ON st.user_id = r.user_id AND st.application_id = r.application_id
+		JOIN accounts a ON a.id = r.user_id
 		WHERE r.application_id = ? AND r.effect = 'settings'
-		  AND r.applied_at >= aa.granted_at AND r.applied_at >= COALESCE(st.updated_at, 0)`, strings.TrimSpace(applicationID))
+		  AND r.applied_at >= aa.granted_at AND r.applied_at >= COALESCE(st.updated_at, 0)
+		  AND r.applied_at >= a.team_updated_at`, strings.TrimSpace(applicationID))
 	if err != nil {
 		return nil, err
 	}

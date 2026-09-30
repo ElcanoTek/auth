@@ -462,7 +462,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateAccessProvisioning(ctx); err != nil {
 		return err
 	}
-	return s.migrateAppReports(ctx)
+	if err := s.migrateAppReports(ctx); err != nil {
+		return err
+	}
+	return s.migrateTeamSync(ctx)
 }
 
 // migrateAccessProvisioning is schema v8. It snapshots every existing grant
@@ -1195,19 +1198,21 @@ func setAccountAdminTx(ctx context.Context, tx *sql.Tx, a Account, admin bool, n
 	return nil
 }
 
-// MaxTeamLength bounds the free-text team tag.
-const MaxTeamLength = 40
+// MaxTeamLength bounds the free-text team tag in BYTES. It matches Fleet's
+// team label bound (len() of the label), so every team Fleet can hold is one
+// Auth can hold and a synced team never fails on either side.
+const MaxTeamLength = 64
 
 // ErrInvalidTeam reports a team tag that is too long or carries control
 // characters; the console shows it as a message.
-var ErrInvalidTeam = errors.New("team must be at most 40 characters with no control characters")
+var ErrInvalidTeam = errors.New("team must be at most 64 bytes with no control characters")
 
 // NormalizeTeam trims a team tag and validates it; "" clears the tag. The
-// bound is MaxTeamLength characters (runes), not bytes, and control
-// characters of any script are refused.
+// bound is MaxTeamLength bytes (Fleet's rule), and control characters of any
+// script are refused.
 func NormalizeTeam(raw string) (string, error) {
 	team := strings.TrimSpace(raw)
-	if utf8.RuneCountInString(team) > MaxTeamLength {
+	if len(team) > MaxTeamLength || !utf8.ValidString(team) {
 		return "", ErrInvalidTeam
 	}
 	for _, r := range team {
@@ -1233,14 +1238,75 @@ func (s *Store) SetAccountTeam(ctx context.Context, email, team string, now int6
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET team = ?, updated_at = ? WHERE id = ?`, team, now, a.ID); err != nil {
-		return err
-	}
 	metadata, _ := json.Marshal(map[string]string{"team": team})
-	if err := insertAudit(ctx, tx, "account.team_set", a.ID, now, string(metadata)); err != nil {
+	if err := setAccountTeamTx(ctx, tx, a.ID, team, now, string(metadata), true); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// setAccountTeamTx writes an account's team inside the caller's transaction
+// and audits it. A real change also stamps team_updated_at (the stale guard
+// counts it as an Auth-side change) and, when push is true, queues a
+// provisioning push to every team-synced application the account is granted,
+// so Fleet follows an Auth team change. Report and import writes pass
+// push=false and decide themselves.
+func setAccountTeamTx(ctx context.Context, tx *sql.Tx, userID, team string, now int64, metadata string, push bool) error {
+	var previous string
+	if err := tx.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ?`, userID).Scan(&previous); err != nil {
+		return err
+	}
+	if previous == team {
+		_, err := tx.ExecContext(ctx, `UPDATE accounts SET updated_at = ? WHERE id = ?`, now, userID)
+		if err == nil {
+			err = insertAudit(ctx, tx, "account.team_set", userID, now, metadata)
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET team = ?, team_updated_at = ?, updated_at = ? WHERE id = ?`, team, now, now, userID); err != nil {
+		return err
+	}
+	if err := insertAudit(ctx, tx, "account.team_set", userID, now, metadata); err != nil {
+		return err
+	}
+	if !push {
+		return nil
+	}
+	return enqueueTeamPushesTx(ctx, tx, userID, now)
+}
+
+// enqueueTeamPushesTx queues a provisioning push for each team-synced
+// application the account is granted, so the application receives the
+// account's current team.
+func enqueueTeamPushesTx(ctx context.Context, tx *sql.Tx, userID string, now int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT aa.application_id FROM application_access aa
+		JOIN applications a ON a.id = aa.application_id
+		WHERE aa.user_id = ? AND a.team_sync = 1 ORDER BY aa.application_id`, userID)
+	if err != nil {
+		return err
+	}
+	var apps []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		apps = append(apps, id)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range apps {
+		if id != FleetApplicationID {
+			continue
+		}
+		if err := setAccessProvisioningTx(ctx, tx, userID, id, true, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // anotherEnabledAdminExists is the write-time guard fragment shared by

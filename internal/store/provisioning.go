@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -31,6 +33,10 @@ func setAccessProvisioningTx(ctx context.Context, tx *sql.Tx, userID, clientID s
 		return err
 	}
 	_ = tx.QueryRowContext(ctx, `SELECT settings_json FROM application_access_settings WHERE user_id = ? AND application_id = ?`, userID, clientID).Scan(&settings)
+	settings, err := withSyncedTeamTx(ctx, tx, userID, clientID, settings)
+	if err != nil {
+		return err
+	}
 	eventID, err := randomID()
 	if err != nil {
 		return err
@@ -130,4 +136,40 @@ func (s *Store) AccessProvisioningState(ctx context.Context, subject, clientID s
 	}
 	d.Allowed = allowed != 0
 	return d, true, nil
+}
+
+// withSyncedTeamTx adds the account's team to an application's pushed
+// settings when that application has team sync on. Only Fleet has a team
+// vocabulary, and the team rides only on settings that already carry the
+// roles: Fleet accepts exactly {chat_role, ops_role} or {chat_role, ops_role,
+// team}, and a push without settings (a grant made before Fleet permissions
+// existed) tells Fleet to keep what it has, team included.
+func withSyncedTeamTx(ctx context.Context, tx *sql.Tx, userID, clientID, settings string) (string, error) {
+	if clientID != FleetApplicationID || settings == "" {
+		return settings, nil
+	}
+	if !hasColumnQ(ctx, tx, "applications", "team_sync") {
+		return settings, nil
+	}
+	var sync int
+	if err := tx.QueryRowContext(ctx, `SELECT team_sync FROM applications WHERE id = ?`, clientID).Scan(&sync); err != nil {
+		return "", err
+	}
+	if sync != 1 {
+		return settings, nil
+	}
+	var values map[string]string
+	if err := json.Unmarshal([]byte(settings), &values); err != nil {
+		return "", fmt.Errorf("decode access settings: %w", err)
+	}
+	var team string
+	if err := tx.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ?`, userID).Scan(&team); err != nil {
+		return "", err
+	}
+	values["team"] = team
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }

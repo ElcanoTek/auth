@@ -430,7 +430,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		res.Reopen = "add-user"
 		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
-			res.Error = "Team must be at most 40 characters."
+			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
 			return res
 		}
 		appSettings, settingsErr := fleetSettingsFromForm(r, r.Form["apps"])
@@ -636,7 +636,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	case "set-team":
 		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
-			res.Error = "Team must be at most 40 characters."
+			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
 			return res
 		}
 		if err := s.store.SetAccountTeam(ctx, target.Email, team, now.Unix()); err != nil {
@@ -793,7 +793,7 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 	case "team":
 		var err error
 		if team, err = store.NormalizeTeam(r.FormValue("team")); err != nil {
-			res.Error = "Team must be at most 40 characters."
+			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
 			return res
 		}
 	case "signout":

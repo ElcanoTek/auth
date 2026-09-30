@@ -305,6 +305,7 @@ auth user create alice@example.com   # password mode: provision an account
 auth user admin alice@example.com on # let them open the admin console
 auth app create <id> <callback>      # register an application
 auth app set-events-secret fleet     # optional: mirror role changes made in Fleet
+auth app import-teams fleet -        # optional: preview taking Fleet's teams from its export (stdin); --apply syncs them both ways
 auth domain add example.com          # magic mode: allow an email domain
 auth pubkey                          # print AUTH_SIGNING_PUBKEY for verifiers
 auth restart                         # pick up new .env.local

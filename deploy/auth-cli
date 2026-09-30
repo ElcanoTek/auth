@@ -498,6 +498,8 @@ APPLICATIONS
   auth app set-events-secret <id>           accept signed account reports (prints secret once)
   auth app clear-events-secret <id>         stop accepting account reports
   auth app compare <id> -                   preview an account export read from stdin
+  auth app import-teams <id> - [--apply]    take the app's teams from its export (dry run unless --apply)
+  auth app team-sync <id> on|off            send and mirror team changes with the app (fleet only)
   auth app disable|enable <id>              control new login handoffs
 
 CRYPTO

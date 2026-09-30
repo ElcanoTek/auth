@@ -144,8 +144,12 @@ mismatch (401); a malformed report is 400. The body:
 ```
 
 `type` is `user.access_changed` or `user.deleted` (then `enabled` is false and
-both roles are empty). `source` is `admin_ui`, `cli`, `system`, `resync` or
-`identity_provider`. Unknown fields are ignored.
+both roles are empty). A `user.access_changed` with `enabled: false`, an empty
+`chat_role` and a real `ops_role` is Fleet's "Chat account gone, Ops access
+remains" shape; Auth treats it as a removal. `user.team` is optional: a sender
+that reports no team leaves Auth's team alone (see "Team sync" below).
+`source` is `admin_ui`, `cli`, `system`, `resync` or `identity_provider`.
+Unknown fields are ignored.
 
 **What Auth does.** Every authenticated, well-formed report gets a 204, also
 the ones Auth deliberately ignores, so the sender stops retrying them. A
@@ -185,8 +189,55 @@ auth app compare fleet - < fleet-accounts.jsonl           # on the Auth host
 ```
 
 `compare` opens the database read-only and prints, per email, `change`,
-`revoke`, `no-op`, `ignored-not-granted` or `unrepresentable`. Once you are
-happy with it, `fleet account-events resync` sends the same state for real.
+`revoke`, `no-op`, `ignored-not-granted` or `unrepresentable`, plus a TEAM
+column comparing Auth's team with the exported one. Once you are happy with
+it, `fleet account-events resync` sends the same state for real.
+
+#### Team sync
+
+Fleet's teams are canonical. Team sync keeps an account's Auth team and its
+Fleet team the same, in both directions, once it is switched on for the
+`fleet` application (`auth app show fleet` prints `team sync: on|off`):
+
+- **Auth to Fleet.** A push to Fleet carries a third settings key, `team`
+  (`""` = no team), next to `chat_role` and `ops_role`. It rides only on
+  pushes that carry the roles: an account granted Fleet before Fleet
+  permissions existed has none, and Fleet keeps its own team for it. Any
+  Auth-side team change (the account's row, a batch team change, `auth user
+  team`) on an account granted Fleet queues a push. Fleet applies the team the
+  way its own admin page does, which also un-shares the person's team content
+  when the team really changes.
+- **Fleet to Auth.** A report carrying `user.team` updates the account's
+  team (audited as `account.team_set` with source `fleet` and the Fleet
+  actor), and Auth pushes back as for roles; the echo changes nothing. An
+  invalid team (over 64 bytes, or with control characters) is skipped and
+  audited (`access.app_report_team_skipped`) while the roles still apply. A
+  role pair Auth cannot store no longer hides a team change: the team is
+  mirrored and the roles are skipped (`access.app_report_roles_skipped`).
+- **Stale guard.** With team sync on, an Auth-side team change counts as an
+  Auth-side change: an older Fleet report cannot undo it.
+- A team is at most 64 bytes with no control characters, the same rule as a
+  Fleet team label, everywhere in Auth.
+
+With team sync off, teams are neither sent nor mirrored. Switch it on with
+an import, not by hand, so the first push cannot overwrite Fleet's teams:
+
+```bash
+fleet account-events export > fleet-accounts.jsonl         # on the Fleet host
+auth app import-teams fleet - < fleet-accounts.jsonl        # dry run: the plan
+auth app import-teams fleet - --apply < fleet-accounts.jsonl
+```
+
+For each Auth account the plan says `set` (granted Fleet and in the export:
+takes Fleet's team), `clear` (absent from the export: there is no Fleet team
+to mirror, so the Auth team is removed), `no-op`, `skipped` (in the export but
+not granted Fleet, or no Auth account; nothing changes) or `invalid`. It also
+records Fleet's roles for a granted account Auth holds none for, so its later
+team changes can ride a push. `--apply` makes those changes in one
+transaction without pushing anything (Fleet already has these teams), audits
+each with source `import`, and switches team sync on. Run the export and the
+import back to back. `auth app team-sync fleet on|off` switches it by hand;
+turning it on pushes nothing on its own.
 
 ### Application session conventions
 

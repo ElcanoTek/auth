@@ -39,6 +39,9 @@ const (
 	appEventSigHeader   = "X-Fleet-Signature"
 	appEventTimeHeader  = "X-Fleet-Timestamp"
 	appEventMaxIDLength = 255
+	// appEventMaxTeamBytes bounds a reported team before the store's own
+	// (much smaller) team rule decides whether to apply it.
+	appEventMaxTeamBytes = 1024
 )
 
 type appEventBody struct {
@@ -53,6 +56,9 @@ type appEventBody struct {
 		Enabled  bool   `json:"enabled"`
 		ChatRole string `json:"chat_role"`
 		OpsRole  string `json:"ops_role"`
+		// Team is a pointer so an older sender that reports no team is told
+		// apart from one reporting "no team".
+		Team *string `json:"team"`
 	} `json:"user"`
 }
 
@@ -200,6 +206,12 @@ func parseAppEvent(body []byte, now time.Time) (store.AppReport, bool) {
 	case store.AppReportAccessChanged:
 		switch ev.User.ChatRole {
 		case "viewer", "member", "admin":
+		case "":
+			// Fleet's "Chat account gone, Ops access remains" shape: only
+			// valid on a disabled account, and handled as a removal.
+			if ev.User.Enabled {
+				return store.AppReport{}, false
+			}
 		default:
 			return store.AppReport{}, false
 		}
@@ -215,11 +227,21 @@ func parseAppEvent(body []byte, now time.Time) (store.AppReport, bool) {
 	default:
 		return store.AppReport{}, false
 	}
-	return store.AppReport{
+	report := store.AppReport{
 		EventID: ev.ID, Type: ev.Type, OccurredAt: ev.OccurredAt, Source: ev.Source,
 		Actor: strings.TrimSpace(ev.Actor), Email: email, Enabled: ev.User.Enabled,
 		ChatRole: ev.User.ChatRole, OpsRole: ev.User.OpsRole,
-	}, true
+	}
+	// The team is validated by the store, which applies the roles and skips
+	// an invalid team rather than refusing the whole report (a refused body
+	// is never retried). Only an absurd length is a malformed report.
+	if ev.User.Team != nil {
+		if len(*ev.User.Team) > appEventMaxTeamBytes {
+			return store.AppReport{}, false
+		}
+		report.Team, report.HasTeam = *ev.User.Team, true
+	}
+	return report, true
 }
 
 func printableASCII(v string) bool {

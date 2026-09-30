@@ -361,6 +361,37 @@ rules: [INTEGRATION.md](INTEGRATION.md#receiving-application-account-reports).
    `auth app clear-events-secret fleet` (Fleet's deliveries then fail and
    retry until Fleet is unconfigured too).
 
+### Fleet team sync (optional)
+
+Keeps each account's Auth team and Fleet team the same, both ways, with
+Fleet's teams as the starting point. Rules:
+[INTEGRATION.md](INTEGRATION.md#team-sync). Order matters, because a Fleet
+build without team support refuses a push that carries a team:
+
+1. Update **Fleet first**, to a build whose account events carry `team` and
+   whose provisioning receiver accepts it.
+2. Set up account reports from Fleet (the section above), so Fleet's team
+   changes reach Auth.
+3. Export Fleet's accounts and preview the import on the Auth host:
+   ```bash
+   fleet account-events export > fleet-accounts.jsonl        # on the Fleet host
+   auth app import-teams fleet - < fleet-accounts.jsonl       # dry run
+   ```
+   `set` rows take Fleet's team; `clear` rows are Auth accounts with no Fleet
+   account, whose Auth team is removed; `skipped` rows change nothing. Review
+   every `clear`.
+4. Apply it, right after the export:
+   ```bash
+   auth app import-teams fleet - --apply < fleet-accounts.jsonl
+   ```
+   This writes the teams in one transaction without pushing anything and
+   switches team sync on. `auth app show fleet` then prints `team sync: on`.
+   Changing someone's team in Auth now changes it in Fleet (and un-shares
+   their team content there, as a Fleet admin move would); changing it in
+   Fleet changes it here.
+5. To stop: `auth app team-sync fleet off`. Teams stay where they are; they
+   are just no longer sent or mirrored.
+
 ### Silent sign-in check (`prompt=none`)
 
 An application may add `prompt=none` to its `/authorize` request to ask
@@ -585,9 +616,12 @@ Tabs:
   no self-service change (the `/change-password` page admits only a forced
   first-login change and administrators); when they need a new one, an
   administrator resets it and hands over the temporary password.
-- **Team tags** are free text (at most 40 characters), one per account, for
-  grouping people in the table; they carry no permissions. `auth user team
-  <email> <team|->` sets or clears one from the box.
+- **Team tags** are free text (at most 64 bytes, the same rule as Fleet team
+  labels), one per account, for grouping people in the table; they carry no
+  permissions in Auth. `auth user team <email> <team|->` sets or clears one
+  from the box. With Fleet team sync on (see "Fleet team sync" below), a
+  team change here also changes the person's Fleet team, and a Fleet team
+  change shows up here.
 - **Page controls.** Top right: the theme toggle and an **×** back to your
   apps. Bottom left: **Sign out**. An administrator's own password is changed
   from their own row: Settings → Reset password → Change, which opens the

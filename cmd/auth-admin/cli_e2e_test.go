@@ -428,3 +428,108 @@ func settingsSnapshot(t *testing.T, st *store.Store) string {
 	}
 	return b.String()
 }
+
+func TestCLITeamSyncImportTeamsAndCompare(t *testing.T) {
+	c := newCLI(t)
+	c.must("", "app", "create", "fleet", "https://fleet.example.com/api/auth/oidc/callback")
+	c.must("", "app", "create", "explorer", "https://explorer.example.com/auth/callback")
+	st := c.store()
+	ctx := context.Background()
+	now := time.Now().Unix()
+	mk := func(email, team string, apps ...string) {
+		a, err := st.CreatePasswordAccount(ctx, email, "hash", false, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(apps) > 0 {
+			if _, _, err := st.SetApplicationAccessWithSettings(ctx, a.ID, apps, map[string]string{"fleet": `{"chat_role":"member","ops_role":"none"}`}, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if team != "" {
+			if err := st.SetAccountTeam(ctx, email, team, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	mk("move@example.com", "Elcano Dev", "fleet")
+	mk("same@example.com", "Reklaim Internal", "fleet")
+	mk("nofleet@example.com", "Elcano Dev", "explorer")
+	export := strings.Join([]string{
+		`{"email":"move@example.com","enabled":true,"chat_role":"member","ops_role":"none","team":"Reklaim Internal"}`,
+		`{"email":"same@example.com","enabled":true,"chat_role":"member","ops_role":"none","team":"Reklaim Internal"}`,
+		`{"email":"stranger@example.com","enabled":true,"chat_role":"member","ops_role":"none","team":"testing"}`,
+	}, "\n") + "\n"
+	teams := func() string {
+		accounts, err := st.ListPasswordAccounts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var b strings.Builder
+		for _, a := range accounts {
+			fmt.Fprintf(&b, "%s=%q ", a.Email, a.Team)
+		}
+		return b.String()
+	}
+	if show := c.must("", "app", "show", "fleet"); !strings.Contains(show, "team sync: off") {
+		t.Fatalf("app show:\n%s", show)
+	}
+	// compare shows team differences even with sync off.
+	out := c.must(export, "app", "compare", "fleet", "-")
+	for _, want := range []string{`"Elcano Dev" -> "Reklaim Internal"`, "same", "1 team differences"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compare lacks %q:\n%s", want, out)
+		}
+	}
+	// Dry run: the plan, nothing written, sync still off.
+	before, beforeSettings := teams(), settingsSnapshot(t, st)
+	out = c.must(export, "app", "import-teams", "fleet", "-")
+	for _, want := range []string{
+		"move@example.com", `set`, `"Elcano Dev" -> "Reklaim Internal"`,
+		"same@example.com", "no-op",
+		"nofleet@example.com", "clear", `"Elcano Dev" -> (none)`,
+		"stranger@example.com", "no Auth account",
+		"1 set, 1 clear, 1 no-op, 1 skipped, 0 invalid", "Dry run",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dry run lacks %q:\n%s", want, out)
+		}
+	}
+	if teams() != before || settingsSnapshot(t, st) != beforeSettings {
+		t.Fatal("the dry run wrote to the database")
+	}
+	if on, _ := st.ApplicationTeamSync(ctx, "fleet"); on {
+		t.Fatal("the dry run switched team sync on")
+	}
+	// An export without teams (an older application) is refused.
+	if out, code := c.run(`{"email":"move@example.com","enabled":true,"chat_role":"member","ops_role":"none"}`+"\n", "app", "import-teams", "fleet", "-"); code == 0 || !strings.Contains(out, "no team") {
+		t.Fatalf("teamless export exited %d:\n%s", code, out)
+	}
+	if out, code := c.run(export, "app", "import-teams", "explorer", "-", "--apply"); code == 0 || !strings.Contains(out, "fleet application only") {
+		t.Fatalf("explorer import exited %d:\n%s", code, out)
+	}
+	// Apply.
+	out = c.must(export, "app", "import-teams", "fleet", "-", "--apply")
+	if !strings.Contains(out, "Applied. Team sync is on") {
+		t.Fatalf("apply:\n%s", out)
+	}
+	if got := teams(); !strings.Contains(got, `move@example.com="Reklaim Internal"`) || !strings.Contains(got, `nofleet@example.com=""`) || !strings.Contains(got, `same@example.com="Reklaim Internal"`) {
+		t.Fatalf("teams after apply: %s", got)
+	}
+	if show := c.must("", "app", "show", "fleet"); !strings.Contains(show, "team sync: on") {
+		t.Fatalf("app show after import:\n%s", show)
+	}
+	// Manual control, fleet only.
+	if out := c.must("", "app", "team-sync", "fleet", "off"); !strings.Contains(out, "team sync off") {
+		t.Fatalf("team-sync off:\n%s", out)
+	}
+	if on, _ := st.ApplicationTeamSync(ctx, "fleet"); on {
+		t.Fatal("team sync still on")
+	}
+	if out, code := c.run("", "app", "team-sync", "explorer", "on"); code == 0 || !strings.Contains(out, "fleet application only") {
+		t.Fatalf("explorer team-sync exited %d:\n%s", code, out)
+	}
+	if out, code := c.run("", "app", "team-sync", "fleet", "maybe"); code == 0 || !strings.Contains(out, "usage") {
+		t.Fatalf("bad team-sync arg exited %d:\n%s", code, out)
+	}
+}
