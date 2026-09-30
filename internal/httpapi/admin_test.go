@@ -632,7 +632,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		t.Fatal("account created despite a refused password")
 	}
 	// An overlong team is refused the same way.
-	if _, body := alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "team": {strings.Repeat("x", 41)}}); !strings.Contains(body, "Team must be at most 40 characters.") {
+	if _, body := alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "team": {strings.Repeat("x", 65)}}); !strings.Contains(body, "Team must be at most 64 bytes (64 plain letters) with no control characters.") {
 		t.Fatalf("long team:\n%s", body)
 	}
 	// A typed password that passes: created with team, must-change, no secret panel.

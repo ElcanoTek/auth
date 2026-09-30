@@ -539,15 +539,19 @@ func TestTeamTagSetClearedValidatedAndMigrated(t *testing.T) {
 	if len(list) != 1 || list[0].Team != "Trading" {
 		t.Fatalf("list team = %+v", list)
 	}
-	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("x", 41), now); !errors.Is(err, ErrInvalidTeam) {
+	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("x", 65), now); !errors.Is(err, ErrInvalidTeam) {
 		t.Fatalf("long team = %v", err)
 	}
-	// The bound is characters, not bytes: 40 CJK runes (120 bytes) fit, 41 do not.
-	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("交", 40), now); err != nil {
-		t.Fatalf("40 multibyte runes refused: %v", err)
+	// The bound is bytes, Fleet's rule for a team label: 64 ASCII bytes fit,
+	// and so do 21 three-byte CJK runes (63 bytes), but 22 (66 bytes) do not.
+	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("x", 64), now); err != nil {
+		t.Fatalf("64 bytes refused: %v", err)
 	}
-	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("交", 41), now); !errors.Is(err, ErrInvalidTeam) {
-		t.Fatalf("41 runes accepted: %v", err)
+	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("交", 21), now); err != nil {
+		t.Fatalf("63 multibyte bytes refused: %v", err)
+	}
+	if err := s.SetAccountTeam(ctx, "old@example.com", strings.Repeat("交", 22), now); !errors.Is(err, ErrInvalidTeam) {
+		t.Fatalf("66 bytes accepted: %v", err)
 	}
 	if err := s.SetAccountTeam(ctx, "old@example.com", "bad\x00team", now); !errors.Is(err, ErrInvalidTeam) {
 		t.Fatalf("control char = %v", err)

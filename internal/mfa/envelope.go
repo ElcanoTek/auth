@@ -118,6 +118,13 @@ func AAD(authenticatorID, userID, kind string) []byte {
 	return []byte(authenticatorID + "\x00" + userID + "\x00" + kind)
 }
 
+// ApplicationSecretAAD is the associated data for an application's events
+// secret. Its fixed prefix and two-part shape keep it distinct from every
+// authenticator row's AAD, so neither ciphertext opens in the other's place.
+func ApplicationSecretAAD(applicationID string) []byte {
+	return []byte("application-events-secret\x00" + applicationID)
+}
+
 // Seal encrypts plaintext under the active key.
 func (k *Keyring) Seal(plaintext, aad []byte) ([]byte, error) {
 	if k == nil {

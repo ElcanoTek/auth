@@ -24,6 +24,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -111,6 +112,11 @@ APPLICATIONS
   auth-admin app rotate-secret <id>              replace and print client secret
   auth-admin app set-backchannel <id> <url>       set signed server-to-server logout endpoint
   auth-admin app clear-backchannel <id>           disable back-channel logout delivery
+  auth-admin app set-events-secret <id>           accept signed account reports; prints secret once
+  auth-admin app clear-events-secret <id>         stop accepting account reports
+  auth-admin app compare <id> <file|->            preview what the app's account export would change
+  auth-admin app import-teams <id> <file|-> [--apply]  take the app's teams (dry run unless --apply; then team sync on)
+  auth-admin app team-sync <id> on|off            send and mirror team changes with the app (fleet only)
   auth-admin app disable|enable <id>              block or allow new handoffs
 
 CRYPTO
@@ -645,7 +651,16 @@ func auditCmd(dataDir string, args []string) {
 
 func applicationCmd(dataDir string, args []string) {
 	if len(args) < 1 {
-		fatalf("usage: auth-admin app <create|list|show|rotate-secret|set-backchannel|clear-backchannel|disable|enable> ...")
+		fatalf("usage: auth-admin app <create|list|show|rotate-secret|set-backchannel|clear-backchannel|set-events-secret|clear-events-secret|compare|import-teams|team-sync|disable|enable> ...")
+	}
+	if args[0] == "compare" {
+		// Read-only: a preview must never migrate or write the live database.
+		appCompareCmd(dataDir, args[1:])
+		return
+	}
+	if args[0] == "import-teams" {
+		appImportTeamsCmd(dataDir, args[1:])
+		return
 	}
 	st, ctx := openStore(dataDir)
 	defer func() { _ = st.Close() }()
@@ -695,6 +710,46 @@ func applicationCmd(dataDir string, args []string) {
 			fatalf("app clear-backchannel: %v", err)
 		}
 		fmt.Printf("✓ back-channel logout cleared for %s\n", id)
+	case "set-events-secret":
+		if len(args) != 2 {
+			fatalf("usage: auth-admin app set-events-secret <id>")
+		}
+		id := validateApplicationID(args[1])
+		// Sealed with AUTH_MFA_KEY, and the server refuses to start without
+		// that key once any application has an events secret.
+		ring, err := mfa.ParseKeyring(os.Getenv("AUTH_MFA_KEY"), os.Getenv("AUTH_MFA_KEY_ID"), os.Getenv("AUTH_MFA_PREVIOUS_KEYS"))
+		if err != nil {
+			fatalf("app set-events-secret: AUTH_MFA_KEY in .env.local is not usable (%v)", err)
+		}
+		if ring == nil {
+			fatalf("app set-events-secret needs AUTH_MFA_KEY in .env.local first (generate one with `auth mfa keygen`, then `auth restart`); the events secret is sealed with it")
+		}
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			fatalf("generate events secret: %v", err)
+		}
+		// The application keys its HMAC with this string as printed, so the
+		// hex text (not the decoded bytes) is what gets sealed.
+		secret := hex.EncodeToString(b)
+		sealed, err := ring.Seal([]byte(secret), mfa.ApplicationSecretAAD(id))
+		if err != nil {
+			fatalf("seal events secret: %v", err)
+		}
+		if err := st.SetApplicationEventsSecret(ctx, id, sealed, now); err != nil {
+			fatalf("app set-events-secret: %v", err)
+		}
+		fmt.Printf("✓ events secret set for %s (any previous secret stops working now)\n", id)
+		fmt.Println("Copy these into the application's configuration; the secret is not shown again:")
+		fmt.Printf("FLEET_ACCOUNT_EVENTS_URL=%s\nFLEET_ACCOUNT_EVENTS_SECRET=%s\n", appEventsURL(id), secret)
+	case "clear-events-secret":
+		if len(args) != 2 {
+			fatalf("usage: auth-admin app clear-events-secret <id>")
+		}
+		id := validateApplicationID(args[1])
+		if err := st.SetApplicationEventsSecret(ctx, id, nil, now); err != nil {
+			fatalf("app clear-events-secret: %v", err)
+		}
+		fmt.Printf("✓ events secret cleared for %s; its account reports are refused from now on\n", id)
 	case "disable", "enable":
 		if len(args) != 2 {
 			fatalf("usage: auth-admin app %s <id>", args[0])
@@ -713,11 +768,36 @@ func applicationCmd(dataDir string, args []string) {
 			fatalf("app show: %v", err)
 		}
 		printApplication(app)
+		if sealed, err := st.ApplicationEventsSecret(ctx, app.ID); err != nil {
+			fatalf("app show events secret: %v", err)
+		} else if sealed != nil {
+			fmt.Printf("account reports: accepted at %s\n", appEventsURL(app.ID))
+		}
+		if on, err := st.ApplicationTeamSync(ctx, app.ID); err != nil {
+			fatalf("app show team sync: %v", err)
+		} else if on {
+			fmt.Println("team sync: on (teams are sent to and mirrored from this application)")
+		} else if app.ID == store.FleetApplicationID {
+			fmt.Println("team sync: off")
+		}
 		pending, err := st.PendingLogoutDeliveries(ctx, app.ID, now)
 		if err != nil {
 			fatalf("app show deliveries: %v", err)
 		}
 		printPendingDeliveries(pending)
+	case "team-sync":
+		if len(args) != 3 || (args[2] != "on" && args[2] != "off") {
+			fatalf("usage: auth-admin app team-sync <id> on|off")
+		}
+		id := validateApplicationID(args[1])
+		if err := st.SetApplicationTeamSync(ctx, id, args[2] == "on", now); err != nil {
+			fatalf("app team-sync: %v", err)
+		}
+		if args[2] == "on" {
+			fmt.Printf("✓ team sync on for %s: team changes now go both ways (nothing was pushed; run import-teams to line teams up first)\n", id)
+		} else {
+			fmt.Printf("✓ team sync off for %s: teams are no longer sent or mirrored\n", id)
+		}
 	case "list", "ls":
 		if len(args) != 1 {
 			fatalf("usage: auth-admin app list")
@@ -736,6 +816,263 @@ func applicationCmd(dataDir string, args []string) {
 	default:
 		fatalf("unknown app subcommand: %s", args[0])
 	}
+}
+
+// appEventsURL is where an application posts its account reports, from
+// AUTH_ISSUER_URL (or AUTH_HOSTNAME) when the wrapper passed it.
+func appEventsURL(id string) string {
+	base := strings.TrimRight(strings.TrimSpace(os.Getenv("AUTH_ISSUER_URL")), "/")
+	if base == "" {
+		if host := strings.TrimSpace(os.Getenv("AUTH_HOSTNAME")); host != "" {
+			base = "https://" + host
+		} else {
+			base = "https://<auth-host>"
+		}
+	}
+	return base + "/apps/" + url.PathEscape(id) + "/events"
+}
+
+// appCompareCmd reads an application's account export (JSON Lines, one
+// {"email","enabled","chat_role","ops_role"} object per line, e.g. `fleet
+// account-events export`) and prints what a resync would do to each
+// account, without writing anything.
+func appCompareCmd(dataDir string, args []string) {
+	if len(args) != 2 {
+		fatalf("usage: auth-admin app compare <id> <file|->")
+	}
+	id := validateApplicationID(args[0])
+	var in io.Reader = os.Stdin
+	if args[1] != "-" {
+		f, err := os.Open(args[1])
+		if err != nil {
+			fatalf("app compare: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		in = f
+	}
+	st, err := store.OpenReadOnly(dataDir)
+	if err != nil {
+		fatalf("open store read-only: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if err := compareAppExport(context.Background(), st, id, in, os.Stdout, time.Now().Unix()); err != nil {
+		fatalf("app compare: %v", err)
+	}
+}
+
+type exportedAppUser struct {
+	Email    string  `json:"email"`
+	Enabled  bool    `json:"enabled"`
+	ChatRole string  `json:"chat_role"`
+	OpsRole  string  `json:"ops_role"`
+	Team     *string `json:"team"`
+}
+
+// readAppExport parses an application's account export: JSON Lines, one
+// account object per line, blank lines ignored.
+func readAppExport(in io.Reader) ([]exportedAppUser, error) {
+	sc := bufio.NewScanner(in)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	var out []exportedAppUser
+	line := 0
+	for sc.Scan() {
+		line++
+		raw := strings.TrimSpace(sc.Text())
+		if raw == "" {
+			continue
+		}
+		var u exportedAppUser
+		if err := json.Unmarshal([]byte(raw), &u); err != nil || strings.TrimSpace(u.Email) == "" {
+			return nil, fmt.Errorf("line %d is not an exported account", line)
+		}
+		out = append(out, u)
+	}
+	return out, sc.Err()
+}
+
+// appImportTeamsCmd lines Auth's teams up with the application's export.
+// Without --apply it only prints the plan, over a read-only database.
+func appImportTeamsCmd(dataDir string, args []string) {
+	apply := false
+	var rest []string
+	for _, a := range args {
+		if a == "--apply" {
+			apply = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	if len(rest) != 2 {
+		fatalf("usage: auth-admin app import-teams <id> <file|-> [--apply]")
+	}
+	id := validateApplicationID(rest[0])
+	if id != store.FleetApplicationID {
+		fatalf("app import-teams: %v", store.ErrTeamSyncUnsupported)
+	}
+	var in io.Reader = os.Stdin
+	if rest[1] != "-" {
+		f, err := os.Open(rest[1])
+		if err != nil {
+			fatalf("app import-teams: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		in = f
+	}
+	users, err := readAppExport(in)
+	if err != nil {
+		fatalf("app import-teams: %v", err)
+	}
+	entries := make([]store.TeamImportEntry, 0, len(users))
+	for _, u := range users {
+		if u.Team == nil {
+			fatalf("app import-teams: the export has no team for %s; update the application so its export includes teams", u.Email)
+		}
+		entries = append(entries, store.TeamImportEntry{Email: u.Email, Team: *u.Team, Enabled: u.Enabled, ChatRole: u.ChatRole, OpsRole: u.OpsRole})
+	}
+	ctx := context.Background()
+	var plan []store.TeamImportAction
+	if apply {
+		st, _ := openStore(dataDir)
+		defer func() { _ = st.Close() }()
+		plan, err = st.ImportTeams(ctx, id, entries, time.Now().Unix())
+	} else {
+		st, openErr := store.OpenReadOnly(dataDir)
+		if openErr != nil {
+			fatalf("open store read-only: %v", openErr)
+		}
+		defer func() { _ = st.Close() }()
+		plan, err = st.PreviewTeamImport(ctx, id, entries)
+	}
+	if err != nil {
+		fatalf("app import-teams: %v", err)
+	}
+	if err := printTeamImport(os.Stdout, plan, apply); err != nil {
+		fatalf("app import-teams: %v", err)
+	}
+}
+
+func printTeamImport(out io.Writer, plan []store.TeamImportAction, applied bool) error {
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "EMAIL\tRESULT\tTEAM\tDETAIL")
+	counts := map[string]int{}
+	for _, a := range plan {
+		counts[a.Action]++
+		team := teamLabel(a.From)
+		switch a.Action {
+		case store.TeamImportSet, store.TeamImportClear:
+			team = teamLabel(a.From) + " -> " + teamLabel(a.To)
+		case store.TeamImportSkipped:
+			team = teamLabel(a.To)
+		}
+		detail := a.Detail
+		if a.Roles != "" {
+			if detail != "" {
+				detail += "; "
+			}
+			detail += "records Fleet roles " + a.Roles
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Email, a.Action, team, detail)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(out, "\n%d set, %d clear, %d no-op, %d skipped, %d invalid\n",
+		counts[store.TeamImportSet], counts[store.TeamImportClear], counts[store.TeamImportNoOp], counts[store.TeamImportSkipped], counts[store.TeamImportInvalid])
+	if err != nil {
+		return err
+	}
+	if applied {
+		_, err = fmt.Fprintln(out, "Applied. Team sync is on: team changes now go both ways.")
+	} else {
+		_, err = fmt.Fprintln(out, "Dry run: nothing was written. Re-run with --apply to make these changes and switch team sync on.")
+	}
+	return err
+}
+
+// compareAppExport previews each exported account as a resync report
+// occurring now (so no row is stale) and prints one line per account. The
+// TEAM column compares Auth's team with the exported one whether or not team
+// sync is on, so an operator sees what an import would change.
+func compareAppExport(ctx context.Context, st *store.Store, id string, in io.Reader, out io.Writer, now int64) error {
+	users, err := readAppExport(in)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "EMAIL\tRESULT\tDETAIL\tTEAM")
+	counts := map[string]int{}
+	teamDiffs := 0
+	for i, u := range users {
+		report := store.AppReport{
+			EventID: fmt.Sprintf("compare-%d", i+1), Type: store.AppReportAccessChanged, OccurredAt: now,
+			Source: "resync", Email: u.Email, Enabled: u.Enabled, ChatRole: u.ChatRole, OpsRole: u.OpsRole,
+		}
+		if u.Team != nil {
+			report.Team, report.HasTeam = *u.Team, true
+		}
+		d, err := st.PreviewAppReport(ctx, id, report)
+		if err != nil {
+			return fmt.Errorf("account %d: %w", i+1, err)
+		}
+		result, detail := string(d.Action), ""
+		switch d.Action {
+		case store.AppReportChange:
+			if d.RolesChange {
+				detail = fmt.Sprintf("chat %s -> %s, ops %s -> %s", d.FromChat, d.ToChat, d.FromOps, d.ToOps)
+			} else {
+				detail = fmt.Sprintf("chat %s, ops %s", d.FromChat, d.FromOps)
+			}
+		case store.AppReportRevoke:
+			detail = "disabled there; Auth would remove the grant"
+		case store.AppReportNoOp:
+			detail = fmt.Sprintf("chat %s, ops %s", d.FromChat, d.FromOps)
+		case store.AppReportIgnored:
+			switch d.Reason {
+			case store.AppReportReasonNotGranted:
+				result = "ignored-not-granted"
+				if d.UserID == "" {
+					detail = "no Auth account"
+				} else {
+					detail = "no " + id + " access in Auth"
+				}
+			case store.AppReportReasonUnrepresentable:
+				result = "unrepresentable"
+				detail = fmt.Sprintf("chat %s, ops %s has no Auth equivalent", u.ChatRole, u.OpsRole)
+			default:
+				result = "ignored-" + strings.ReplaceAll(d.Reason, "_", "-")
+			}
+		}
+		team := "-"
+		granted := d.UserID != "" && (d.Action != store.AppReportIgnored || d.Reason != store.AppReportReasonNotGranted)
+		if u.Team != nil && granted {
+			exported, terr := store.NormalizeTeam(*u.Team)
+			switch {
+			case terr != nil:
+				team = "invalid exported team"
+			case exported == d.FromTeam:
+				team = "same"
+			default:
+				team = teamLabel(d.FromTeam) + " -> " + teamLabel(exported)
+				teamDiffs++
+			}
+		}
+		counts[result]++
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", strings.ToLower(strings.TrimSpace(u.Email)), result, detail, team)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "\n%d change, %d revoke, %d no-op, %d ignored-not-granted, %d unrepresentable, %d team differences\n",
+		counts[string(store.AppReportChange)], counts[string(store.AppReportRevoke)], counts[string(store.AppReportNoOp)],
+		counts["ignored-not-granted"], counts["unrepresentable"], teamDiffs)
+	return err
+}
+
+func teamLabel(team string) string {
+	if team == "" {
+		return "(none)"
+	}
+	return strconv.Quote(team)
 }
 
 func validateApplicationID(raw string) string {

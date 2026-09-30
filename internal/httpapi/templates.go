@@ -950,6 +950,7 @@ const adminHTML = `<!doctype html>
               </div>
               <section class="fleet-permissions" data-fleet-permissions{{if not $row.FleetGranted}} hidden{{end}} aria-label="Fleet permissions for {{$row.Email}}">
                 <h4>Fleet permissions</h4>
+                {{if $row.FleetChangedAt}}<p class="hint" data-fleet-changed>Changed in Fleet{{if $row.FleetChangedBy}} by {{$row.FleetChangedBy}}{{end}} <span class="dot">&middot;</span> {{$row.FleetChangedAt}}</p>{{end}}
                 <div class="seg-group"><span class="seg-label">Fleet Admin</span>
                   <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"{{if $row.FleetAdmin}} checked{{end}}> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
                 </div>
@@ -972,7 +973,7 @@ const adminHTML = `<!doctype html>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-team"><input type="hidden" name="email" value="{{$row.Email}}">
               <div class="field"><label for="team-{{$i}}">Team</label>
-                <div class="with-btn"><input id="team-{{$i}}" name="team" type="text" list="teams" maxlength="40" value="{{$row.Team}}" placeholder="e.g. Trading"><button class="btn-ghost" type="submit">Save</button></div>
+                <div class="with-btn"><input id="team-{{$i}}" name="team" type="text" list="teams" maxlength="64" value="{{$row.Team}}" placeholder="e.g. Trading"><button class="btn-ghost" type="submit">Save</button></div>
                 <p class="hint">A tag for grouping accounts. Leave blank to remove it.</p>
               </div>
             </form>
@@ -1071,7 +1072,7 @@ const adminHTML = `<!doctype html>
           <option value="require-mfa">Require two-factor</option>
           <option value="unrequire-mfa">Stop requiring two-factor</option>
         </select>
-        <input name="team" type="text" list="teams" maxlength="40" placeholder="Team (for Set team; blank removes it)" aria-label="Team for the selected accounts">
+        <input name="team" type="text" list="teams" maxlength="64" placeholder="Team (for Set team; blank removes it)" aria-label="Team for the selected accounts">
         <button class="btn-ghost" type="submit">Apply to selected</button>
       </form>
       <noscript><style nonce="{{.Nonce}}">.batch { display: flex; } .batch-count { display: none; }</style></noscript>
@@ -1087,7 +1088,7 @@ const adminHTML = `<!doctype html>
         <div class="field"><label for="new-email">Work email</label>
           <input id="new-email" name="email" type="email" required autocomplete="off" placeholder="name@company.com"></div>
         <div class="field"><label for="new-team">Team <span class="muted">(optional)</span></label>
-          <input id="new-team" name="team" type="text" list="teams" maxlength="40" placeholder="e.g. Trading"></div>
+          <input id="new-team" name="team" type="text" list="teams" maxlength="64" placeholder="e.g. Trading"></div>
         <div class="field"><label for="new-password">Temporary password</label>
           <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="Leave blank to generate one"><button class="btn-ghost" type="button" data-generate="new-password">Generate</button></div>
           <p class="hint">At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>

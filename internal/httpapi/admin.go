@@ -57,6 +57,10 @@ type adminAccountRow struct {
 	FleetAdmin    bool
 	FleetChatRole string
 	FleetOpsRole  string
+	// Set when the latest change to the Fleet permissions came from a
+	// report Fleet sent (store.AppReportHints).
+	FleetChangedBy string
+	FleetChangedAt string
 	// Second factor: the console shows the status the issue names and lets
 	// an administrator require it per account or reset a lost one.
 	MFAStatus      string // Enabled | Enrollment required | Not enrolled
@@ -426,7 +430,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		res.Reopen = "add-user"
 		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
-			res.Error = "Team must be at most 40 characters."
+			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
 			return res
 		}
 		appSettings, settingsErr := fleetSettingsFromForm(r, r.Form["apps"])
@@ -632,7 +636,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	case "set-team":
 		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
-			res.Error = "Team must be at most 40 characters."
+			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
 			return res
 		}
 		if err := s.store.SetAccountTeam(ctx, target.Email, team, now.Unix()); err != nil {
@@ -789,7 +793,7 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 	case "team":
 		var err error
 		if team, err = store.NormalizeTeam(r.FormValue("team")); err != nil {
-			res.Error = "Team must be at most 40 characters."
+			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
 			return res
 		}
 	case "signout":
@@ -954,6 +958,10 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 			logUnlessCancelled("admin list access settings", err)
 			data["Error"] = joinMessages(result.Error, "Application permissions could not be loaded.")
 		}
+		reportHints, err := s.store.AppReportHints(ctx, store.FleetApplicationID)
+		if err != nil {
+			logUnlessCancelled("admin list app report hints", err)
+		}
 		enabledAdmins := 0
 		for _, a := range accounts {
 			if a.IsAdmin && a.DisabledAt == nil {
@@ -997,6 +1005,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 			row.FleetGranted = granted["fleet"]
 			row.FleetAdmin = fleetSettings.ChatRole == "admin" && fleetSettings.OpsRole == "admin"
 			row.FleetChatRole, row.FleetOpsRole = fleetSettings.ChatRole, fleetSettings.OpsRole
+			if hint, ok := reportHints[a.ID]; ok {
+				row.FleetChangedBy, row.FleetChangedAt = hint.Actor, hint.At.UTC().Format("2006-01-02 15:04 UTC")
+			}
 			for _, app := range apps {
 				row.Apps = append(row.Apps, adminAppChoice{ID: app.ID, Name: app.Name, Granted: granted[app.ID]})
 				if granted[app.ID] {

@@ -280,6 +280,29 @@ CREATE TABLE IF NOT EXISTS access_provisioning (
 );
 CREATE INDEX IF NOT EXISTS idx_access_provisioning_due
   ON access_provisioning(delivered_at, next_attempt_at, lease_until);
+-- Signed account reports an application sends about its own users (schema
+-- v9). Receipts make a redelivered event a no-op; they are pruned after
+-- AppEventReceiptRetention. The last applied report per account and
+-- application backs the stale-report guard and the console's "Changed in"
+-- hint.
+CREATE TABLE IF NOT EXISTS app_event_receipts (
+  client_id   TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  event_id    TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY(client_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_app_event_receipts_received ON app_event_receipts(received_at);
+CREATE TABLE IF NOT EXISTS application_access_reports (
+  user_id        TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  event_id       TEXT NOT NULL,
+  occurred_at    INTEGER NOT NULL,
+  applied_at     INTEGER NOT NULL,
+  source         TEXT NOT NULL,
+  actor          TEXT NOT NULL DEFAULT '',
+  effect         TEXT NOT NULL,
+  PRIMARY KEY(user_id, application_id)
+);
 CREATE TABLE IF NOT EXISTS authorization_codes (
   code_hash          TEXT PRIMARY KEY,
   client_id          TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
@@ -436,7 +459,13 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateMFA(ctx); err != nil {
 		return err
 	}
-	return s.migrateAccessProvisioning(ctx)
+	if err := s.migrateAccessProvisioning(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateAppReports(ctx); err != nil {
+		return err
+	}
+	return s.migrateTeamSync(ctx)
 }
 
 // migrateAccessProvisioning is schema v8. It snapshots every existing grant
@@ -1169,19 +1198,21 @@ func setAccountAdminTx(ctx context.Context, tx *sql.Tx, a Account, admin bool, n
 	return nil
 }
 
-// MaxTeamLength bounds the free-text team tag.
-const MaxTeamLength = 40
+// MaxTeamLength bounds the free-text team tag in BYTES. It matches Fleet's
+// team label bound (len() of the label), so every team Fleet can hold is one
+// Auth can hold and a synced team never fails on either side.
+const MaxTeamLength = 64
 
 // ErrInvalidTeam reports a team tag that is too long or carries control
 // characters; the console shows it as a message.
-var ErrInvalidTeam = errors.New("team must be at most 40 characters with no control characters")
+var ErrInvalidTeam = errors.New("team must be at most 64 bytes with no control characters")
 
 // NormalizeTeam trims a team tag and validates it; "" clears the tag. The
-// bound is MaxTeamLength characters (runes), not bytes, and control
-// characters of any script are refused.
+// bound is MaxTeamLength bytes (Fleet's rule), and control characters of any
+// script are refused.
 func NormalizeTeam(raw string) (string, error) {
 	team := strings.TrimSpace(raw)
-	if utf8.RuneCountInString(team) > MaxTeamLength {
+	if len(team) > MaxTeamLength || !utf8.ValidString(team) {
 		return "", ErrInvalidTeam
 	}
 	for _, r := range team {
@@ -1207,14 +1238,75 @@ func (s *Store) SetAccountTeam(ctx context.Context, email, team string, now int6
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET team = ?, updated_at = ? WHERE id = ?`, team, now, a.ID); err != nil {
-		return err
-	}
 	metadata, _ := json.Marshal(map[string]string{"team": team})
-	if err := insertAudit(ctx, tx, "account.team_set", a.ID, now, string(metadata)); err != nil {
+	if err := setAccountTeamTx(ctx, tx, a.ID, team, now, string(metadata), true); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// setAccountTeamTx writes an account's team inside the caller's transaction
+// and audits it. A real change also stamps team_updated_at (the stale guard
+// counts it as an Auth-side change) and, when push is true, queues a
+// provisioning push to every team-synced application the account is granted,
+// so Fleet follows an Auth team change. Report and import writes pass
+// push=false and decide themselves.
+func setAccountTeamTx(ctx context.Context, tx *sql.Tx, userID, team string, now int64, metadata string, push bool) error {
+	var previous string
+	if err := tx.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ?`, userID).Scan(&previous); err != nil {
+		return err
+	}
+	if previous == team {
+		_, err := tx.ExecContext(ctx, `UPDATE accounts SET updated_at = ? WHERE id = ?`, now, userID)
+		if err == nil {
+			err = insertAudit(ctx, tx, "account.team_set", userID, now, metadata)
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET team = ?, team_updated_at = ?, updated_at = ? WHERE id = ?`, team, now, now, userID); err != nil {
+		return err
+	}
+	if err := insertAudit(ctx, tx, "account.team_set", userID, now, metadata); err != nil {
+		return err
+	}
+	if !push {
+		return nil
+	}
+	return enqueueTeamPushesTx(ctx, tx, userID, now)
+}
+
+// enqueueTeamPushesTx queues a provisioning push for each team-synced
+// application the account is granted, so the application receives the
+// account's current team.
+func enqueueTeamPushesTx(ctx context.Context, tx *sql.Tx, userID string, now int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT aa.application_id FROM application_access aa
+		JOIN applications a ON a.id = aa.application_id
+		WHERE aa.user_id = ? AND a.team_sync = 1 ORDER BY aa.application_id`, userID)
+	if err != nil {
+		return err
+	}
+	var apps []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		apps = append(apps, id)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range apps {
+		if id != FleetApplicationID {
+			continue
+		}
+		if err := setAccessProvisioningTx(ctx, tx, userID, id, true, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // anotherEnabledAdminExists is the write-time guard fragment shared by
@@ -1367,7 +1459,7 @@ func (s *Store) SetApplicationAccessWithSettings(ctx context.Context, userID str
 		return nil, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	added, removed, _, err = setApplicationAccessTx(ctx, tx, userID, applicationIDs, settings, now)
+	added, removed, _, err = setApplicationAccessTx(ctx, tx, userID, applicationIDs, settings, now, "")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1399,7 +1491,11 @@ func (s *Store) AllApplicationAccessSettings(ctx context.Context) (map[string]ma
 // setApplicationAccessTx is SetApplicationAccess inside a caller's
 // transaction, so the console's Access popup can save it together with the
 // administrator flag and the two-factor requirement.
-func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, applicationIDs []string, settings map[string]string, now int64) (added, removed, updated []string, err error) {
+//
+// auditMeta, when non-empty, is the JSON metadata recorded on the
+// access.granted / access.settings_changed / access.revoked events (an
+// application report names its source there); "" records '{}'.
+func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, applicationIDs []string, settings map[string]string, now int64, auditMeta string) (added, removed, updated []string, err error) {
 	if userID == "" {
 		return nil, nil, nil, errors.New("user id is required")
 	}
@@ -1480,7 +1576,7 @@ func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, appl
 			`INSERT INTO application_access(user_id, application_id, granted_at) VALUES(?, ?, ?)`, userID, id, now); err != nil {
 			return nil, nil, nil, err
 		}
-		if err := insertApplicationAudit(ctx, tx, "access.granted", id, userID, now); err != nil {
+		if err := insertApplicationAuditMeta(ctx, tx, "access.granted", id, userID, now, auditMeta); err != nil {
 			return nil, nil, nil, err
 		}
 		if err := setAccessProvisioningTx(ctx, tx, userID, id, true, now); err != nil {
@@ -1488,7 +1584,7 @@ func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, appl
 		}
 	}
 	for _, id := range updated {
-		if err := insertApplicationAudit(ctx, tx, "access.settings_changed", id, userID, now); err != nil {
+		if err := insertApplicationAuditMeta(ctx, tx, "access.settings_changed", id, userID, now, auditMeta); err != nil {
 			return nil, nil, nil, err
 		}
 		if err := setAccessProvisioningTx(ctx, tx, userID, id, true, now); err != nil {
@@ -1500,7 +1596,7 @@ func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, appl
 			`DELETE FROM application_access WHERE user_id = ? AND application_id = ?`, userID, id); err != nil {
 			return nil, nil, nil, err
 		}
-		if err := insertApplicationAudit(ctx, tx, "access.revoked", id, userID, now); err != nil {
+		if err := insertApplicationAuditMeta(ctx, tx, "access.revoked", id, userID, now, auditMeta); err != nil {
 			return nil, nil, nil, err
 		}
 		// A code minted before the revocation must not become a session
@@ -2534,13 +2630,22 @@ func insertAudit(ctx context.Context, e execer, event, userID string, now int64,
 }
 
 func insertApplicationAudit(ctx context.Context, e execer, event, applicationID, userID string, now int64) error {
+	return insertApplicationAuditMeta(ctx, e, event, applicationID, userID, now, "")
+}
+
+// insertApplicationAuditMeta is insertApplicationAudit with JSON metadata;
+// "" records '{}'.
+func insertApplicationAuditMeta(ctx context.Context, e execer, event, applicationID, userID string, now int64, metadata string) error {
 	var nullableUser any
 	if userID != "" {
 		nullableUser = userID
 	}
+	if metadata == "" {
+		metadata = "{}"
+	}
 	_, err := e.ExecContext(ctx, `
 		INSERT INTO audit_events(event_type, user_id, application_id, occurred_at, metadata)
-		VALUES(?, ?, ?, ?, '{}')`, event, nullableUser, applicationID, now)
+		VALUES(?, ?, ?, ?, ?)`, event, nullableUser, applicationID, now, metadata)
 	return err
 }
 
