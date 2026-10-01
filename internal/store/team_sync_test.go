@@ -425,3 +425,95 @@ func TestTeamSyncMigratesAndOlderDatabasesReadOff(t *testing.T) {
 		t.Fatal("v10 not applied on reopen")
 	}
 }
+
+// An Auth-side team write that matches an existing team ignoring case takes
+// the spelling already in use, so it never leaves Auth showing a spelling Fleet
+// keeps refusing (Fleet ignores case-only team changes) and never splits one
+// team into two. A case-only edit of the account's own team is no change at
+// all, so nothing is pushed; a genuinely new team keeps the admin's spelling.
+func TestSetAccountTeamUsesTheExistingSpelling(t *testing.T) {
+	f := newReportFixture(t)
+	f.teamSyncOn(t)
+	for _, email := range []string{"a@example.com", "b@example.com"} {
+		if _, err := f.s.CreatePasswordAccount(f.ctx, email, "hash", false, 900); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.s.SetAccountTeam(f.ctx, email, "Growth", 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "growth", 2000); err != nil {
+		t.Fatal(err)
+	}
+	if team, _ := f.team(t); team != "Growth" {
+		t.Fatalf("team = %q, want the existing spelling Growth", team)
+	}
+	pushed := f.provisioning(t)
+	if got := pushedSettings(t, pushed)["team"]; got != "Growth" {
+		t.Fatalf("pushed team = %q, want Growth", got)
+	}
+
+	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "GROWTH", 2100); err != nil {
+		t.Fatal(err)
+	}
+	if team, at := f.team(t); team != "Growth" || at != 2000 {
+		t.Fatalf("case-only edit of the own team = (%q, %d), want unchanged (Growth, 2000)", team, at)
+	}
+	if again := f.provisioning(t); again.Version != pushed.Version {
+		t.Fatalf("a case-only edit pushed: version %d -> %d", pushed.Version, again.Version)
+	}
+
+	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "Desk Ops", 2200); err != nil {
+		t.Fatal(err)
+	}
+	if team, _ := f.team(t); team != "Desk Ops" {
+		t.Fatalf("new team = %q, want the admin's own spelling", team)
+	}
+}
+
+// The account's own spelling wins over an exact match elsewhere: when another
+// account holds the variant spelling exactly, a case-only edit of the
+// account's own team is still no change and pushes nothing. Among several
+// case variants the most used wins, and folding follows Unicode (as Fleet's
+// does), not just ASCII.
+func TestSetAccountTeamOwnSpellingAndVariantChoice(t *testing.T) {
+	f := newReportFixture(t)
+	f.teamSyncOn(t)
+	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "Growth", 1000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.CreatePasswordAccount(f.ctx, "other@example.com", "hash", false, 900); err != nil {
+		t.Fatal(err)
+	}
+	// A report or import can leave another account on an exact variant.
+	if _, err := f.s.db.ExecContext(f.ctx, `UPDATE accounts SET team = 'growth' WHERE normalized_email = 'other@example.com'`); err != nil {
+		t.Fatal(err)
+	}
+	before := f.provisioning(t)
+	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "growth", 2000); err != nil {
+		t.Fatal(err)
+	}
+	if team, at := f.team(t); team != "Growth" || at != 1000 {
+		t.Fatalf("case-only edit with an exact variant elsewhere = (%q, %d), want unchanged (Growth, 1000)", team, at)
+	}
+	if after := f.provisioning(t); after.Version != before.Version {
+		t.Fatalf("a case-only edit pushed: version %d -> %d", before.Version, after.Version)
+	}
+
+	for _, email := range []string{"v1@example.com", "v2@example.com", "v3@example.com"} {
+		if _, err := f.s.CreatePasswordAccount(f.ctx, email, "hash", false, 900); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for email, team := range map[string]string{"v1@example.com": "ÉQUIPE", "v2@example.com": "Équipe", "v3@example.com": "Équipe"} {
+		if _, err := f.s.db.ExecContext(f.ctx, `UPDATE accounts SET team = ? WHERE normalized_email = ?`, team, email); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "équipe", 3000); err != nil {
+		t.Fatal(err)
+	}
+	if team, _ := f.team(t); team != "Équipe" {
+		t.Fatalf("team = %q, want the most used variant Équipe", team)
+	}
+}

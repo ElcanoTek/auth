@@ -1238,11 +1238,67 @@ func (s *Store) SetAccountTeam(ctx context.Context, email, team string, now int6
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if team, err = canonicalTeamSpellingTx(ctx, tx, a.ID, team); err != nil {
+		return err
+	}
 	metadata, _ := json.Marshal(map[string]string{"team": team})
 	if err := setAccountTeamTx(ctx, tx, a.ID, team, now, string(metadata), true); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// canonicalTeamSpellingTx returns the spelling an existing team already uses
+// when team matches it ignoring case, and team itself otherwise. The account's
+// own current team comes first: a case-only edit of it is no change, even when
+// another account happens to use the requested spelling exactly. After that an
+// exact match wins; among case variants the most used one does (then the
+// lowest, for a stable answer).
+//
+// Fleet keeps a team's spelling when an identity provider sends one that
+// differs only in case (its team gates match exactly, so rewriting the case
+// would detach the person from their team's shared projects), so a case-only
+// edit made here would leave Auth showing a spelling Fleet never adopts.
+// Writing the spelling already in use keeps the two identical, and keeps an
+// admin from splitting one team into "Growth" and "growth". Reports and the
+// team import write Fleet's exact value and do not pass through here.
+func canonicalTeamSpellingTx(ctx context.Context, tx *sql.Tx, userID, team string) (string, error) {
+	if team == "" {
+		return team, nil
+	}
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ?`, userID).Scan(&current); err != nil {
+		return "", err
+	}
+	if current != "" && strings.EqualFold(current, team) {
+		return current, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT team, COUNT(*) FROM accounts WHERE team != '' GROUP BY team`)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	best, bestCount := "", 0
+	for rows.Next() {
+		var existing string
+		var n int
+		if err := rows.Scan(&existing, &n); err != nil {
+			return "", err
+		}
+		if existing == team {
+			return team, nil
+		}
+		if strings.EqualFold(existing, team) && (n > bestCount || (n == bestCount && existing < best)) {
+			best, bestCount = existing, n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if best == "" {
+		return team, nil
+	}
+	return best, nil
 }
 
 // setAccountTeamTx writes an account's team inside the caller's transaction

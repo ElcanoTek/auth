@@ -218,6 +218,12 @@ Fleet team the same, in both directions, once it is switched on for the
   Auth-side change: an older Fleet report cannot undo it.
 - A team is at most 64 bytes with no control characters, the same rule as a
   Fleet team label, everywhere in Auth.
+- **One spelling per team.** A team typed in the console or with
+  `auth user team` that matches an existing team ignoring case is saved with
+  the spelling already in use, and a case-only edit of an account's own team
+  is no change. Fleet keeps a team's spelling when told one that differs only
+  in case, so without this Auth could show a spelling Fleet never adopts.
+  Reports and the team import keep Fleet's exact value.
 
 With team sync off, teams are neither sent nor mirrored. Switch it on with
 an import, not by hand, so the first push cannot overwrite Fleet's teams:
