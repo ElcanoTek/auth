@@ -16,8 +16,10 @@
 
 set -euo pipefail
 
-# Re-open /dev/tty for curl|sudo bash flow.
-if [[ "${AUTH_BOOTSTRAP_DRY_RUN:-0}" != "1" && ! -t 0 ]]; then
+# Re-open /dev/tty for curl|sudo bash flow. A non-interactive run never
+# prompts (prompt, prompt_secret and confirm all return before reading), so
+# it must not need a terminal: agents, Ansible and CI run without one.
+if [[ "${AUTH_BOOTSTRAP_DRY_RUN:-0}" != "1" && "${AUTH_BOOTSTRAP_NON_INTERACTIVE:-0}" != "1" && ! -t 0 ]]; then
   if [[ -t 1 ]]; then
     exec </dev/tty
   else
