@@ -75,4 +75,34 @@ if compgen -G "$failed.partial.*" >/dev/null; then
   exit 1
 fi
 
+# bootstrap.sh without a terminal: a non-interactive run (agents, Ansible, CI)
+# must get past the terminal check, and an interactive one must still refuse.
+# The real script runs as an unprivileged user, so it stops at its root check
+# before it could change anything.
+boot="$T/boot"
+mkdir -p "$boot"
+cp "$REPO/scripts/bootstrap.sh" "$boot/bootstrap.sh"
+chmod 0755 "$T" "$boot"
+chmod 0644 "$boot/bootstrap.sh"
+run_bootstrap_unprivileged() {
+  runuser -u nobody -- env -i PATH=/usr/bin:/bin TERM=dumb "$@" \
+    /bin/bash "$boot/bootstrap.sh" </dev/null
+}
+
+if run_bootstrap_unprivileged AUTH_BOOTSTRAP_NON_INTERACTIVE=1 >"$T/noninteractive.log" 2>&1; then
+  echo 'unprivileged bootstrap reported success' >&2
+  exit 1
+fi
+if grep -q 'needs an interactive terminal' "$T/noninteractive.log"; then
+  echo 'non-interactive bootstrap demanded a terminal' >&2
+  exit 1
+fi
+grep -q 'run as root' "$T/noninteractive.log"
+
+if run_bootstrap_unprivileged >"$T/interactive.log" 2>&1; then
+  echo 'interactive bootstrap ran without a terminal' >&2
+  exit 1
+fi
+grep -q 'needs an interactive terminal' "$T/interactive.log"
+
 echo 'installer tests passed'
