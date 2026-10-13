@@ -36,6 +36,7 @@ func TestQuickLinksResolveAgainstRegisteredApplications(t *testing.T) {
 		{Kicker: "Agents", Name: "Fleet", Description: "Work with your AI agents and their tasks.", URL: "https://fleet.client.example/", Available: true},
 		{Kicker: "Reporting", Name: "Explorer", Description: "Explore reporting on your programmatic activity.", URL: "https://explorer.client.example/", Available: true},
 		{Kicker: "Classification", Name: "Lens", Description: "Classify supply quality with AI signals."},
+		{Kicker: "Dashboards", Name: "Pages", Description: "Publish and share versioned dashboards."},
 	}
 	if len(links) != len(want) {
 		t.Fatalf("got %d links, want %d", len(links), len(want))
@@ -44,6 +45,28 @@ func TestQuickLinksResolveAgainstRegisteredApplications(t *testing.T) {
 		if links[i] != want[i] {
 			t.Errorf("link %d = %+v, want %+v", i, links[i], want[i])
 		}
+	}
+}
+
+// Pages is a family like the others: its tile links to the origin of the
+// registered callback (the dashboard host), and only for accounts granted it.
+func TestQuickLinksPagesTile(t *testing.T) {
+	apps := []store.Application{{ID: "pages", Name: "Pages", RedirectURI: "https://pages.client.example/auth/callback"}}
+	tile := func(access map[string]bool) quickLink {
+		for _, link := range quickLinksFor(apps, access, false) {
+			if link.Name == "Pages" {
+				return link
+			}
+		}
+		t.Fatal("no Pages tile in the catalogue")
+		return quickLink{}
+	}
+	granted := tile(map[string]bool{"pages": true})
+	if !granted.Available || granted.URL != "https://pages.client.example/" {
+		t.Fatalf("granted Pages tile = %+v, want live and linked to the dashboard origin", granted)
+	}
+	if denied := tile(map[string]bool{}); denied.Available || denied.URL != "" {
+		t.Fatalf("ungranted Pages tile = %+v, want greyed out", denied)
 	}
 }
 
@@ -58,7 +81,7 @@ func TestQuickLinksGreyOutWhatTheClientDoesNotHave(t *testing.T) {
 	}{
 		{"no applications", nil},
 		{"disabled application", []store.Application{{ID: "lens", RedirectURI: "https://lens.example/auth/callback", DisabledAt: &disabled}}},
-		{"unknown family", []store.Application{{ID: "pages", Name: "Pages", RedirectURI: "https://pages.example/cb"}}},
+		{"unknown family", []store.Application{{ID: "billing", Name: "Billing", RedirectURI: "https://billing.example/cb"}}},
 		{"name is not an identity", []store.Application{{ID: "client-42", Name: "Fleet", RedirectURI: "https://evil.example/cb"}}},
 		{"bare prefix", []store.Application{{ID: "fleet-", RedirectURI: "https://fleet.example/cb"}}},
 		{"prefix without dash", []store.Application{{ID: "fleetish", RedirectURI: "https://fleet.example/cb"}}},

@@ -220,13 +220,13 @@ one edit; nothing here is optional for the first sign-in to work.
    an explicit `AUTH_DEFAULT_RETURN_TO` changes where a direct visit lands.
 
    The signed-in page at `/account` shows a quick-link tile per application
-   family (Admin, Fleet, Explorer, Lens). A tile is live when an enabled
+   family (Admin, Fleet, Explorer, Lens, Pages). A tile is live when an enabled
    application of that family is registered **and the signed-in account has
    access to it**; otherwise it is greyed out. It links to the **origin** of
    the registered callback (applications are assumed origin-rooted; a
    callback under a sub-path such as `/apps/fleet/...` would link to the
    wrong place). The family is read from the ID only: the exact ID (`fleet`,
-   `explorer`, `lens`) wins; otherwise exactly one `<family>-<suffix>` ID
+   `explorer`, `lens`, `pages`) wins; otherwise exactly one `<family>-<suffix>` ID
    (`explorer-northwind`) stands in. Two suffixed IDs and no exact one is
    ambiguous, so that tile stays greyed and the server log says why. The
    Admin tile opens Auth's own console and is live for administrators only.

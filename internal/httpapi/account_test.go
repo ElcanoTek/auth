@@ -58,17 +58,18 @@ func TestAccountPageLinksRegisteredAppsAndGreysOutTheRest(t *testing.T) {
 		t.Fatalf("disabled lens application is linked:\n%s", body)
 	}
 	// Tiles keep the catalogue order regardless of registration order.
-	order := regexp.MustCompile(`<h3>(Admin|Fleet|Explorer|Lens)</h3>`).FindAllStringSubmatch(body, -1)
+	order := regexp.MustCompile(`<h3>(Admin|Fleet|Explorer|Lens|Pages)</h3>`).FindAllStringSubmatch(body, -1)
 	var names []string
 	for _, m := range order {
 		names = append(names, m[1])
 	}
-	if strings.Join(names, ",") != "Admin,Fleet,Explorer,Lens" {
+	if strings.Join(names, ",") != "Admin,Fleet,Explorer,Lens,Pages" {
 		t.Fatalf("tile order = %v", names)
 	}
-	// Exactly one greyed tile, and it is not an anchor.
-	if n := strings.Count(body, `class="tile tile-off"`); n != 1 {
-		t.Fatalf("greyed tiles = %d, want 1", n)
+	// Exactly two greyed tiles (Lens and Pages are not registered here), and
+	// neither is an anchor.
+	if n := strings.Count(body, `class="tile tile-off"`); n != 2 {
+		t.Fatalf("greyed tiles = %d, want 2", n)
 	}
 	if n := strings.Count(body, `<a class="tile"`); n != 3 {
 		t.Fatalf("linked tiles = %d, want 3", n)
@@ -116,8 +117,8 @@ func TestAccountPageIsUncachedAndReferrerFree(t *testing.T) {
 func TestAccountPageWithNoApplicationsGreysEveryTile(t *testing.T) {
 	ts, _, cfg, plain := newPasswordTestServer(t, false)
 	body := accountPage(t, ts, cfg, plain)
-	if n := strings.Count(body, `class="tile tile-off"`); n != 4 {
-		t.Fatalf("greyed tiles = %d, want 4\n%s", n, body)
+	if n := strings.Count(body, `class="tile tile-off"`); n != 5 {
+		t.Fatalf("greyed tiles = %d, want 5\n%s", n, body)
 	}
 	if strings.Contains(body, `<a class="tile"`) || !strings.Contains(body, `action="/logout"`) {
 		t.Fatalf("unexpected link or missing sign-out form:\n%s", body)
@@ -161,8 +162,8 @@ func TestAccountPageGreysAppsTheAccountCannotOpen(t *testing.T) {
 	if strings.Contains(body, "fleet.client.example") || !strings.Contains(body, `href="https://explorer.client.example/"`) {
 		t.Fatalf("access not reflected:\n%s", body)
 	}
-	if n := strings.Count(body, `class="tile tile-off"`); n != 3 {
-		t.Fatalf("greyed tiles = %d, want 3 (Admin, Fleet, Lens)", n)
+	if n := strings.Count(body, `class="tile tile-off"`); n != 4 {
+		t.Fatalf("greyed tiles = %d, want 4 (Admin, Fleet, Lens, Pages)", n)
 	}
 }
 
