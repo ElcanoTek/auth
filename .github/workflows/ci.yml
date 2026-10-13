@@ -145,12 +145,11 @@ jobs:
           cache: true
 
       - name: Run govulncheck
-        # Pinned, not @latest: govulncheck v1.8.0 requires Go 1.26 while this
-        # job runs the go.mod toolchain (1.25) under GOTOOLCHAIN=local, so
-        # @latest failed to build and the job was red without ever scanning.
-        # v1.1.4 is the last release that builds on 1.25 (go 1.22.0 directive);
-        # its vulnerability database is fetched live, so pinning the tool does
-        # not pin the advisories. Bump the pin when the Go toolchain is bumped.
+        # Pinned, not @latest, so a new tool release cannot turn the job red
+        # without a scan. v1.1.4 was pinned while go.mod named Go 1.25 (it is
+        # the last release that builds there) and still builds on the go.mod
+        # toolchain (1.26); its vulnerability database is fetched live, so
+        # pinning the tool does not pin the advisories.
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           set +e
