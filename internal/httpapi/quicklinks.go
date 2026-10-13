@@ -38,10 +38,11 @@ var quickLinkCatalog = []quickLinkSpec{
 	{Kicker: "Agents", Name: "Fleet", Description: "Work with your AI agents and their tasks.", Kind: "fleet", Path: "/"},
 	{Kicker: "Reporting", Name: "Explorer", Description: "Explore reporting on your programmatic activity.", Kind: "explorer", Path: "/"},
 	{Kicker: "Classification", Name: "Lens", Description: "Classify supply quality with AI signals.", Kind: "lens", Path: "/"},
+	{Kicker: "Dashboards", Name: "Pages", Description: "Publish and share versioned dashboards.", Kind: "pages", Path: "/"},
 }
 
 // quickLinkKinds are the application families the catalogue knows.
-var quickLinkKinds = []string{"fleet", "explorer", "lens"}
+var quickLinkKinds = []string{"fleet", "explorer", "lens", "pages"}
 
 // quickLinksFor resolves the catalogue for one signed-in account: a tile is
 // live when an enabled application of that kind is registered with a usable
