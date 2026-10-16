@@ -362,8 +362,18 @@ ul.plain li { margin: 0.2rem 0; }
 /* Fleet's application row: the checkbox plus the gear that reopens the
    Fleet permissions dialog. Accent-tinted and labelled with the current role
    so it reads as "configure this", not as decoration. */
-.app-row { display: flex; align-items: stretch; gap: var(--space-2); }
-.app-row > .permission-choice { flex: 1 1 auto; min-width: 0; }
+/* The Fleet row is one card: the wrapper carries the border and the checked
+   treatment that .permission-choice has elsewhere, and the label and the
+   gear sit inside it (a button cannot live inside the label itself). */
+.app-row {
+  display: flex; align-items: center; gap: var(--space-2); padding-right: var(--space-2);
+  border: 1px solid transparent; border-radius: var(--radius-md);
+}
+.app-row:has(> .permission-choice input:checked) {
+  border: 2px solid transparent;
+  background: linear-gradient(var(--color-surface-2), var(--color-surface-2)) padding-box, var(--gradient-action-primary) border-box;
+}
+.app-row > .permission-choice, .app-row > .permission-choice:has(input:checked) { flex: 1 1 auto; min-width: 0; border: 0; background: none; }
 .fleet-edit {
   flex: 0 0 auto; display: inline-flex; align-items: center; gap: 0.4rem; align-self: center;
   min-height: 2.25rem; padding: 0.3rem 0.7rem; max-width: 11rem;
