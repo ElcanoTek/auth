@@ -31,7 +31,7 @@ func TestConsoleShowsTwoFactorStatusAndPolicyControls(t *testing.T) {
 	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
 	_, body := alice.get("/admin")
 	for _, want := range []string{
-		`popovertarget="mfa-policy"`, `id="mfa-policy" class="modal" popover`,
+		`commandfor="mfa-policy" command="show-modal"`, `<dialog id="mfa-policy" class="modal"`,
 		`<label class="permission-choice"><input type="radio" name="mode" value="optional" checked> Optional<small>Nobody is made to. Anyone may set up an authenticator from their Security page, and once they have, they always use it. Choosing it now makes nobody new enroll.</small></label>`,
 		`<label class="permission-choice"><input type="radio" name="mode" value="admins"> Required for administrators<small>Everyone who can open this console must sign in with an authenticator app; other accounts may set one up but are not made to. Choosing it now signs out 1 account without an authenticator; they set one up at their next sign-in.</small></label>`,
 		`<label class="permission-choice"><input type="radio" name="mode" value="everyone"> Required for everyone<small>Every account must sign in with an authenticator app. Choosing it now signs out 2 accounts without an authenticator; they set one up at their next sign-in.</small></label>`,
@@ -63,7 +63,7 @@ func TestConsoleShowsTwoFactorStatusAndPolicyControls(t *testing.T) {
 // is the last element in that row's cell, so the cell's end closes it.
 func settingsPopover(t *testing.T, body, email string) string {
 	t.Helper()
-	for _, chunk := range strings.Split(body, `<div id="settings-`)[1:] {
+	for _, chunk := range strings.Split(body, `<dialog id="settings-`)[1:] {
 		if end := strings.Index(chunk, "</td>"); end >= 0 {
 			chunk = chunk[:end]
 		}

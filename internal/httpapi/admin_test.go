@@ -598,7 +598,7 @@ func exchangeOAuthCodeFor(t *testing.T, base, code, verifier, clientID, secret, 
 	return resp
 }
 
-// The console's account rows open popovers for Access and Settings, Add user
+// The console's account rows open dialogs for Access and Settings, Add user
 // is a popup with a typed-or-generated temporary password and a team tag,
 // the corner controls carry the way out and the sign-out, and the login page
 // shows a sign-out as a red banner.
@@ -607,9 +607,9 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	_, body := alice.get("/admin")
 	for _, want := range []string{
-		`popovertarget="add-user"`, `id="add-user" class="modal" popover`,
-		`popovertarget="access-0"`, `id="access-0" class="modal" popover`,
-		`popovertarget="settings-0"`, `id="settings-0" class="modal" popover`,
+		`commandfor="add-user" command="show-modal"`, `<dialog id="add-user" class="modal"`,
+		`commandfor="access-0" command="show-modal"`, `<dialog id="access-0" class="modal"`,
+		`commandfor="settings-0" command="show-modal"`, `<dialog id="settings-0" class="modal"`,
 		`<a class="icon-btn close" href="/account" aria-label="Back to your apps"`,
 		`<div class="corner-bottom">`, `action="/logout"`, `<a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>`,
 		`data-generate="new-password"`, `name="password" type="text"`, `name="team" type="text" list="teams"`, `<datalist id="teams">`,
@@ -678,8 +678,8 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 			t.Errorf("escaped team missing in one context: %s", want)
 		}
 	}
-	// Every row gets its own popover ids.
-	for _, want := range []string{`id="access-1"`, `id="settings-1"`, `id="access-2"`, `id="settings-2"`, `popovertarget="settings-2"`} {
+	// Every row gets its own dialog ids.
+	for _, want := range []string{`id="access-1"`, `id="settings-1"`, `id="access-2"`, `id="settings-2"`, `commandfor="settings-2"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %s", want)
 		}

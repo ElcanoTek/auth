@@ -213,7 +213,10 @@ input[type=email], input[type=password], input.code, input#recovery_code {
   width: 100%; min-height: 2.5rem; padding: var(--space-2) var(--space-3);
   font-family: var(--font-body); font-size: var(--font-size-body);
   color: var(--color-text-primary);
-  background: var(--color-surface-1);
+  /* One input recipe across Auth (and Fleet's settings inputs): a soft
+     tinted fill, the strong border, the primary border + focus ring on
+     focus. Toolbar fields only differ in height. */
+  background: var(--color-overlay-soft);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
   outline: none;
@@ -315,12 +318,15 @@ a.btn-ghost, a.btn { text-decoration: none; }
 .btn.inline { width: auto; margin: 0; min-height: 2.5rem; padding-inline: var(--space-5); font-size: var(--font-size-caption); }
 .row-actions { display: flex; gap: var(--space-2); justify-content: flex-end; white-space: nowrap; }
 .row-actions .btn-ghost { padding-inline: var(--space-3); }
-.modal[popover] {
+/* Admin dialogs are native <dialog>s opened modally (showModal): focus stays
+   inside, Escape closes, focus returns to the opener, and the page behind is
+   inert, the same contract as Fleet's DialogShell. */
+dialog.modal {
   position: fixed; inset: 0; margin: auto; width: min(30rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); overflow: auto;
   padding: var(--space-6); border: 1px solid var(--color-border-strong); border-radius: var(--radius-xl);
   background: var(--color-surface-1); color: var(--color-text-secondary); box-shadow: var(--shadow-lg);
 }
-.modal[popover]::backdrop { background: var(--color-scrim); }
+dialog.modal::backdrop { background: var(--color-scrim); }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-2); }
 .modal-head h3 { margin: 0; font-family: var(--font-heading); font-size: 1.125rem; color: var(--color-text-primary); }
 .modal-head .icon-btn { width: 2rem; height: 2rem; font-size: 1.1rem; background: transparent; border-color: transparent; }
@@ -331,8 +337,9 @@ a.btn-ghost, a.btn { text-decoration: none; }
 .modal input[type=email], .modal input[type=text], .modal input[type=password] {
   width: 100%; min-height: 2.5rem; padding: var(--space-2) var(--space-3);
   font-family: var(--font-body); font-size: var(--font-size-body); color: var(--color-text-primary);
-  background: var(--color-bg); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); outline: none;
+  background: var(--color-overlay-soft); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); outline: none;
 }
+.modal input[type=email]:hover, .modal input[type=text]:hover, .modal input[type=password]:hover { border-color: var(--color-primary); }
 .modal input:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
 .modal .hint { margin: var(--space-2) 0 0; font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .modal .with-btn { display: flex; gap: var(--space-2); }
@@ -374,9 +381,10 @@ ul.plain li { margin: 0.2rem 0; }
 .account-tools { display: flex; align-items: center; gap: var(--space-2); flex: 1 1 24rem; }
 .account-tools input[type=search], .account-tools select {
   min-height: 2.25rem; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-caption);
-  color: var(--color-text-primary); background: var(--color-surface-1);
-  border: 1px solid var(--color-border); border-radius: var(--radius-md); outline: none;
+  color: var(--color-text-primary); background: var(--color-overlay-soft);
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); outline: none;
 }
+.account-tools input[type=search]:hover, .account-tools select:hover { border-color: var(--color-primary); }
 .account-tools input[type=search] { flex: 1 1 12rem; min-width: 8rem; }
 .account-tools select { flex: 0 1 auto; max-width: 12rem; }
 .account-tools input:focus-visible, .account-tools select:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
@@ -407,7 +415,8 @@ ul.plain li { margin: 0.2rem 0; }
   .section:has([data-select]:checked) .batch { display: flex; }
 }
 .batch-count { font-size: var(--font-size-caption); color: var(--color-text-muted); min-width: 5.5rem; }
-.batch select, .batch input[type=text] { min-height: 2.25rem; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-caption); color: var(--color-text-primary); background: var(--color-surface-1); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.batch select, .batch input[type=text] { min-height: 2.25rem; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-caption); color: var(--color-text-primary); background: var(--color-overlay-soft); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); }
+.batch select:hover, .batch input[type=text]:hover { border-color: var(--color-primary); }
 .batch input[type=text] { flex: 1; min-width: 12rem; }
 .batch select:focus-visible, .batch input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--focus-ring); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -539,11 +548,19 @@ table.list tr.manage:last-child td { border-bottom: 0; }
   .account-title, .account-tools { width: 100%; }
   .account-tools { flex-wrap: wrap; }
   .account-tools input[type=search], .account-tools select { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+  /* iOS Safari zooms the page into any field under 16px; keep the compact
+     toolbar fields at body size on phones. */
+  .account-tools input[type=search], .account-tools select, .batch select, .batch input[type=text] { font-size: var(--font-size-body); }
   /* The corner controls would float over a long table on a phone; let them
      end the page instead: body is a flex row for centring the card, so they
      wrap onto their own full-width line below it. */
   body { flex-wrap: wrap; }
   .corner-bottom { position: static; flex: 0 0 100%; order: 1; margin-top: var(--space-4); justify-content: center; }
+  /* Same for the top controls: a right-aligned row above the card that
+     scrolls away with the page, instead of floating over long content. */
+  .corner-actions { position: static; flex: 0 0 100%; order: -1; justify-content: flex-end; margin-bottom: var(--space-4); }
+  body > .theme-toggle { position: static; order: -1; margin: 0 0 var(--space-4) auto; }
+  body > .theme-toggle + * { flex-basis: 100%; }
 }
 .theme-toggle {
   position: fixed; top: var(--space-5); right: var(--space-5);
@@ -761,7 +778,7 @@ const noAccessHTML = `<!doctype html>
 // adminScript is the console's only script, inlined under the page nonce:
 // the Generate button fills the temporary-password field client-side (the
 // server generates one anyway when the field is blank), and a form the
-// server rejected reopens its popover so the input is not hidden behind a
+// server rejected reopens its dialog so the input is not hidden behind a
 // closed dialog. The console works without it.
 const adminScript = `
 (function () {
@@ -860,10 +877,33 @@ const adminScript = `
       field.focus();
     });
   });
+  // Dialog buttons carry command/commandfor, which modern browsers act on
+  // without script; older ones get the same behaviour here.
+  if (!("command" in HTMLButtonElement.prototype)) {
+    document.querySelectorAll("button[commandfor]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var dialog = document.getElementById(button.getAttribute("commandfor"));
+        if (!dialog) return;
+        var command = button.getAttribute("command");
+        if (command === "show-modal" && !dialog.open) dialog.showModal();
+        if (command === "close" && dialog.open) dialog.close();
+      });
+    });
+  }
+  // A click on the backdrop (outside the panel) closes it, as the popovers
+  // these replaced did.
+  document.querySelectorAll("dialog.modal").forEach(function (dialog) {
+    dialog.addEventListener("click", function (event) {
+      if (event.target !== dialog) return;
+      var r = dialog.getBoundingClientRect();
+      var inside = event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
+      if (!inside) dialog.close();
+    });
+  });
   var reopen = document.body.getAttribute("data-reopen");
   if (reopen) {
-    var popover = document.getElementById(reopen);
-    if (popover && popover.showPopover) { try { popover.showPopover(); } catch (e) {} }
+    var dialog = document.getElementById(reopen);
+    if (dialog && dialog.showModal && !dialog.open) { try { dialog.showModal(); } catch (e) {} }
   }
 })();
 `
@@ -932,8 +972,8 @@ const adminHTML = `<!doctype html>
           </div>{{end}}
         </div>
         <div class="row-actions head-actions">
-          <button class="btn-ghost" type="button" popovertarget="mfa-policy" title="Two-factor policy" aria-label="Two-factor policy">2FA</button>
-          <button class="btn-add" type="button" popovertarget="add-user" title="Add user" aria-label="Add user">+</button>
+          <button class="btn-ghost" type="button" commandfor="mfa-policy" command="show-modal" title="Two-factor policy" aria-label="Two-factor policy">2FA</button>
+          <button class="btn-add" type="button" commandfor="add-user" command="show-modal" title="Add user" aria-label="Add user">+</button>
         </div>
       </div>
       {{if .Accounts}}
@@ -947,11 +987,11 @@ const adminHTML = `<!doctype html>
           <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
           <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
           <td><div class="row-actions">
-            <button class="btn-ghost" type="button" popovertarget="access-{{$i}}" aria-label="Access: {{$row.Email}}">Access</button>
-            <button class="btn-ghost" type="button" popovertarget="settings-{{$i}}" aria-label="Settings: {{$row.Email}}">Settings</button>
+            <button class="btn-ghost" type="button" commandfor="access-{{$i}}" command="show-modal" aria-label="Access: {{$row.Email}}">Access</button>
+            <button class="btn-ghost" type="button" commandfor="settings-{{$i}}" command="show-modal" aria-label="Settings: {{$row.Email}}">Settings</button>
           </div>
-          <div id="access-{{$i}}" class="modal" popover aria-labelledby="access-{{$i}}-title">
-            <div class="modal-head"><h3 id="access-{{$i}}-title">Access</h3><button class="icon-btn close" type="button" popovertarget="access-{{$i}}" popovertargetaction="hide" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+          <dialog id="access-{{$i}}" class="modal" aria-labelledby="access-{{$i}}-title">
+            <div class="modal-head"><h3 id="access-{{$i}}-title">Access</h3><button class="icon-btn close" type="button" commandfor="access-{{$i}}" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
             <p class="who">{{$row.Email}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{$row.Email}}">
@@ -982,9 +1022,9 @@ const adminHTML = `<!doctype html>
               </section>
               <button class="btn" type="submit">Save access</button>
             </form>
-          </div>
-          <div id="settings-{{$i}}" class="modal" popover aria-labelledby="settings-{{$i}}-title">
-            <div class="modal-head"><h3 id="settings-{{$i}}-title">Settings</h3><button class="icon-btn close" type="button" popovertarget="settings-{{$i}}" popovertargetaction="hide" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+          </dialog>
+          <dialog id="settings-{{$i}}" class="modal" aria-labelledby="settings-{{$i}}-title">
+            <div class="modal-head"><h3 id="settings-{{$i}}-title">Settings</h3><button class="icon-btn close" type="button" commandfor="settings-{{$i}}" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
             <p class="who">{{$row.Email}} <span class="dot">&middot;</span> created {{$row.Created}} <span class="dot">&middot;</span> {{$row.Sessions}} active session{{if ne $row.Sessions 1}}s{{end}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-team"><input type="hidden" name="email" value="{{$row.Email}}">
@@ -1073,7 +1113,7 @@ const adminHTML = `<!doctype html>
               </details>
             </div>
             {{end}}
-          </div></td>
+          </dialog></td>
         </tr>{{end}}
         <tr data-account-empty hidden><td class="search-empty" colspan="6">No matching accounts.</td></tr>
         </tbody>
@@ -1096,8 +1136,8 @@ const adminHTML = `<!doctype html>
       <datalist id="teams">{{range .Teams}}<option value="{{.}}">{{end}}</datalist>
     </section>
 
-    <div id="add-user" class="modal" popover aria-labelledby="add-user-title">
-      <div class="modal-head"><h3 id="add-user-title">Add user</h3><button class="icon-btn close" type="button" popovertarget="add-user" popovertargetaction="hide" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+    <dialog id="add-user" class="modal" aria-labelledby="add-user-title">
+      <div class="modal-head"><h3 id="add-user-title">Add user</h3><button class="icon-btn close" type="button" commandfor="add-user" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
       <p class="who">A temporary password is shown once; they choose their own at first sign-in.</p>
       <form method="post" action="/admin">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="create">
@@ -1132,10 +1172,10 @@ const adminHTML = `<!doctype html>
         </section>{{end}}
         <button class="btn" type="submit">Create account</button>
       </form>
-    </div>
+    </dialog>
 
-    <div id="mfa-policy" class="modal" popover aria-labelledby="mfa-policy-title">
-      <div class="modal-head"><h3 id="mfa-policy-title">Two-factor policy</h3><button class="icon-btn close" type="button" popovertarget="mfa-policy" popovertargetaction="hide" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+    <dialog id="mfa-policy" class="modal" aria-labelledby="mfa-policy-title">
+      <div class="modal-head"><h3 id="mfa-policy-title">Two-factor policy</h3><button class="icon-btn close" type="button" commandfor="mfa-policy" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
       <p class="who">Who must enter a code from an authenticator app after their password. Anyone may set one up from their Security page, and once they have, they always use it; this policy decides who is made to. A per-account requirement (Settings) adds to whichever policy is chosen.</p>
       {{if not .MFAAvailable}}<div class="err">Two-factor sign-in is not set up on this server: set AUTH_MFA_KEY (see <code>auth mfa keygen</code>) and restart.</div>{{else}}
       <form method="post" action="/admin">
@@ -1148,7 +1188,7 @@ const adminHTML = `<!doctype html>
         {{if not .ActorEnrolled}}<p class="hint"><a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up yours</a></p>{{end}}
         <button class="btn" type="submit">Save policy</button>{{end}}
       </form>{{end}}
-    </div>
+    </dialog>
     {{else}}{{with .App}}
     <section class="section" aria-labelledby="app-heading">
       <div class="topline">
