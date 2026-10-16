@@ -92,6 +92,11 @@ const tokensCSS = `
   --color-status-warning-fg: #ffe4b5;
   --color-status-warning-bg: rgba(255, 176, 32, 0.16);
   --color-status-warning-border: rgba(255, 176, 32, 0.55);
+  /* Fleet's values (web/src/app/globals.css): --color-overlay-soft fills a
+     neutral chip; --color-scrim is the modal backdrop (Fleet's
+     --color-overlay-strong). */
+  --color-overlay-soft: rgba(0, 0, 0, 0.2);
+  --color-scrim: rgba(0, 0, 0, 0.4);
 
   --gradient-bg-home-signature:
     radial-gradient(circle at 8% -4%, rgba(114, 114, 171, 0.34), transparent 34%),
@@ -143,10 +148,14 @@ const tokensCSS = `
   --color-status-warning-fg: #6e4a00;
   --color-status-warning-bg: rgba(255, 176, 32, 0.18);
   --color-status-warning-border: rgba(255, 176, 32, 0.5);
+  --color-overlay-soft: rgba(114, 114, 171, 0.05);
+  --color-scrim: rgba(20, 24, 36, 0.16);
+  /* Same formula as Fleet's light sign-in background: surface-2 at
+     18% / 45% / 70% over white (it used to darken toward a blue-grey). */
   --gradient-bg-home-signature:
     radial-gradient(circle at 9% -8%, rgba(114, 114, 171, 0.28), transparent 42%),
     radial-gradient(circle at 90% 0%, rgba(88, 111, 124, 0.24), transparent 38%),
-    linear-gradient(150deg, #f7f9ff 0%, #eaf0ff 52%, #e2e9fb 100%);
+    linear-gradient(150deg, #fbfcff 0%, #f6f8fe 52%, #f0f3fd 100%);
   --gradient-surface-card: linear-gradient(145deg, #ffffff, #eef3ff);
   --shadow-lg: 0 16px 34px rgba(38, 55, 92, 0.2);
   --focus-ring: 0 0 0 2px var(--color-white), 0 0 0 4px var(--color-accent);
@@ -204,7 +213,10 @@ input[type=email], input[type=password], input.code, input#recovery_code {
   width: 100%; min-height: 2.5rem; padding: var(--space-2) var(--space-3);
   font-family: var(--font-body); font-size: var(--font-size-body);
   color: var(--color-text-primary);
-  background: var(--color-surface-1);
+  /* One input recipe across Auth (and Fleet's settings inputs): a soft
+     tinted fill, the strong border, the primary border + focus ring on
+     focus. Toolbar fields only differ in height. */
+  background: var(--color-overlay-soft);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
   outline: none;
@@ -276,6 +288,12 @@ a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .banner.alert strong { color: var(--color-status-error-fg); }
 .banner.warn { color: var(--color-status-warning-fg); background: var(--color-status-warning-bg); border-color: var(--color-status-warning-border); }
 .banner.warn strong { color: var(--color-status-warning-fg); }
+.banner a, .muted a { color: var(--color-accent); }
+/* Plain text links only: classed links (.btn, .tile, .tab, .icon-btn) keep
+   their own shape and focus rule. */
+a:not([class]):focus-visible, button.linkish:focus-visible { outline: none; border-radius: 0.2rem; box-shadow: var(--focus-ring); }
+/* A long work email must wrap inside the card, not push it wider. */
+.muted strong, .foot, .topline .muted { overflow-wrap: anywhere; }
 /* ── admin console ── */
 .corner-actions { position: fixed; top: var(--space-5); right: var(--space-5); display: flex; gap: var(--space-2); z-index: 3; }
 .corner-actions .theme-toggle { position: static; }
@@ -286,29 +304,32 @@ a.btn-ghost, a.btn { text-decoration: none; }
   width: 2.5rem; height: 2.5rem; display: inline-flex; align-items: center; justify-content: center;
   font-size: 1.25rem; line-height: 1; text-decoration: none;
   color: var(--color-text-secondary); background: var(--color-surface-1); border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill); cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast);
+  border-radius: var(--radius-md); cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
 }
+.icon-btn svg { width: 1rem; height: 1rem; }
 .icon-btn:hover { color: var(--color-text-primary); border-color: var(--color-border-strong); }
-/* The top-right X (back to your apps) reads as "leave": red, darker on hover. */
-.corner-actions .close { color: var(--color-status-error-fg); background: var(--color-status-error-bg); border-color: var(--color-status-error-border); }
-.corner-actions .close:hover { color: #fff; background: #b91c1c; border-color: #991b1b; }
-:root[data-theme="dark"] .corner-actions .close:hover { background: #991b1b; border-color: #7f1d1d; }
+/* Every dismiss X is Fleet's CloseButton: neutral at rest, a soft red tint
+   on hover (dismissal reads as "abort", quieter than a destructive button). */
+.icon-btn.close:hover { color: var(--color-status-error-fg); background: var(--color-status-error-bg); border-color: var(--color-status-error-border); }
 .icon-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
 .section-head .muted { margin: 0; }
 .btn.inline { width: auto; margin: 0; min-height: 2.5rem; padding-inline: var(--space-5); font-size: var(--font-size-caption); }
 .row-actions { display: flex; gap: var(--space-2); justify-content: flex-end; white-space: nowrap; }
 .row-actions .btn-ghost { padding-inline: var(--space-3); }
-.modal[popover] {
+/* Admin dialogs are native <dialog>s opened modally (showModal): focus stays
+   inside, Escape closes, focus returns to the opener, and the page behind is
+   inert, the same contract as Fleet's DialogShell. */
+dialog.modal {
   position: fixed; inset: 0; margin: auto; width: min(30rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); overflow: auto;
   padding: var(--space-6); border: 1px solid var(--color-border-strong); border-radius: var(--radius-xl);
   background: var(--color-surface-1); color: var(--color-text-secondary); box-shadow: var(--shadow-lg);
 }
-.modal[popover]::backdrop { background: rgba(0, 0, 0, 0.55); }
+dialog.modal::backdrop { background: var(--color-scrim); }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-2); }
 .modal-head h3 { margin: 0; font-family: var(--font-heading); font-size: 1.125rem; color: var(--color-text-primary); }
-.modal-head .icon-btn { width: 2rem; height: 2rem; font-size: 1.1rem; }
+.modal-head .icon-btn { width: 2rem; height: 2rem; font-size: 1.1rem; background: transparent; border-color: transparent; }
 .modal .who { color: var(--color-text-muted); font-size: var(--font-size-caption); margin: 0 0 var(--space-5); overflow-wrap: anywhere; }
 .modal .who .dot { margin: 0 0.35em; }
 .modal .field { margin-bottom: var(--space-4); }
@@ -316,12 +337,13 @@ a.btn-ghost, a.btn { text-decoration: none; }
 .modal input[type=email], .modal input[type=text], .modal input[type=password] {
   width: 100%; min-height: 2.5rem; padding: var(--space-2) var(--space-3);
   font-family: var(--font-body); font-size: var(--font-size-body); color: var(--color-text-primary);
-  background: var(--color-bg); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); outline: none;
+  background: var(--color-overlay-soft); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); outline: none;
 }
+.modal input[type=email]:hover, .modal input[type=text]:hover, .modal input[type=password]:hover { border-color: var(--color-primary); }
 .modal input:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
 .modal .hint { margin: var(--space-2) 0 0; font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .modal .with-btn { display: flex; gap: var(--space-2); }
-.modal .with-btn input { flex: 1; }
+.modal .with-btn input { flex: 1; min-width: 0; }
 .modal .with-btn .btn-ghost { min-height: 2.5rem; }
 .modal .btn { margin-top: var(--space-2); }
 .setting { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-3) 0; border-top: 1px solid var(--color-border); }
@@ -331,21 +353,11 @@ a.btn-ghost, a.btn { text-decoration: none; }
 .setting .confirm .pane { left: auto; right: 0; border-radius: var(--radius-md) 0 var(--radius-md) var(--radius-md); }
 .setting .confirm > summary, .setting .btn-ghost, .setting .btn { white-space: nowrap; }
 .modal .checks { margin-top: var(--space-2); }
-/* Segmented pills used for compact single-choice controls such as 2FA policy. */
+/* Labels over the permission-choice groups. */
 .seg-label { display: block; margin-bottom: 0.3rem; font-size: 0.64rem; font-weight: var(--font-weight-bold); letter-spacing: 0.07em; text-transform: uppercase; color: var(--color-text-muted); }
-.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--color-border); border-radius: var(--radius-pill); overflow: hidden; }
-.seg-opt { position: relative; display: inline-flex; align-items: center; margin: 0; padding: 0.18rem 0.6rem; font-size: 0.72rem; font-weight: 500; color: var(--color-text-muted); cursor: pointer; user-select: none; transition: color var(--transition-fast), background var(--transition-fast); }
-.seg-opt + .seg-opt { border-left: 1px solid var(--color-border); }
-.seg-opt:hover { color: var(--color-text-primary); }
-.seg-opt input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-.seg-opt:has(input:checked) { background: var(--color-primary); color: var(--color-on-primary); }
 ul.plain { margin: 0 0 var(--space-4); padding-left: 1.1rem; font-size: var(--font-size-caption); color: var(--color-text-secondary); }
 ul.plain li { margin: 0.2rem 0; }
 .modal label[for^="reason-"] { display: block; margin: var(--space-2) 0; }
-.seg-opt:has(input:focus-visible) { box-shadow: inset 0 0 0 2px var(--color-accent); }
-.seg-opt.off { opacity: 0.55; }
-.seg-opt.locked { cursor: not-allowed; }
-.seg-opt.locked input { cursor: not-allowed; }
 .seg-group { margin-bottom: var(--space-4); }
 .fleet-permissions { margin: 0 0 var(--space-4); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-2); }
 .fleet-permissions[hidden] { display: none; }
@@ -369,19 +381,20 @@ ul.plain li { margin: 0.2rem 0; }
 .account-tools { display: flex; align-items: center; gap: var(--space-2); flex: 1 1 24rem; }
 .account-tools input[type=search], .account-tools select {
   min-height: 2.25rem; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-caption);
-  color: var(--color-text-primary); background: var(--color-surface-1);
-  border: 1px solid var(--color-border); border-radius: var(--radius-md); outline: none;
+  color: var(--color-text-primary); background: var(--color-overlay-soft);
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); outline: none;
 }
+.account-tools input[type=search]:hover, .account-tools select:hover { border-color: var(--color-primary); }
 .account-tools input[type=search] { flex: 1 1 12rem; min-width: 8rem; }
 .account-tools select { flex: 0 1 auto; max-width: 12rem; }
 .account-tools input:focus-visible, .account-tools select:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
 .search-empty { padding: var(--space-5) !important; color: var(--color-text-muted) !important; text-align: center !important; }
-.btn-add { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; padding: 0; border: 0; border-radius: 50%; background: #15803d; color: #fff; font-size: 1.35rem; line-height: 1; font-weight: 600; cursor: pointer; transition: background var(--transition-fast), transform var(--transition-fast); }
-.btn-add:hover { background: #166534; }
+/* The page's primary action, as an icon button: brand primary fill (a bundle
+   recolors it), the same rounded square as every other icon button. */
+.btn-add { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; padding: 0; border: 0; border-radius: var(--radius-md); background: var(--gradient-action-primary); color: var(--color-on-primary); font-size: 1.35rem; line-height: 1; font-weight: 600; cursor: pointer; transition: filter var(--transition-fast), transform var(--transition-fast); }
+.btn-add:hover { filter: brightness(1.08); }
 .btn-add:active { transform: scale(0.96); }
 .btn-add:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-:root[data-theme="dark"] .btn-add { background: #22c55e; color: #052e16; }
-:root[data-theme="dark"] .btn-add:hover { background: #16a34a; color: #fff; }
 .list th.sel, .list td.sel { width: 1.6rem; padding-right: 0; }
 /* Quiet until used: an outline in the muted text colour (opaque, so it
    keeps a 3:1 contrast against the card) that fills only when checked. */
@@ -402,25 +415,37 @@ ul.plain li { margin: 0.2rem 0; }
   .section:has([data-select]:checked) .batch { display: flex; }
 }
 .batch-count { font-size: var(--font-size-caption); color: var(--color-text-muted); min-width: 5.5rem; }
-.batch select, .batch input[type=text] { min-height: 2.25rem; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-caption); color: var(--color-text-primary); background: var(--color-surface-1); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.batch select, .batch input[type=text] { min-height: 2.25rem; padding: 0 var(--space-3); font: inherit; font-size: var(--font-size-caption); color: var(--color-text-primary); background: var(--color-overlay-soft); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); }
+.batch select:hover, .batch input[type=text]:hover { border-color: var(--color-primary); }
 .batch input[type=text] { flex: 1; min-width: 12rem; }
 .batch select:focus-visible, .batch input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--focus-ring); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .seg-group .hint { margin-top: var(--space-2); }
-.tag { display: inline-block; padding: 0.1rem 0.5rem; border-radius: var(--radius-pill); font-size: 0.6875rem; font-weight: var(--font-weight-bold); letter-spacing: 0.04em; background: var(--color-bg); border: 1px solid var(--color-border-strong); color: var(--color-text-secondary); white-space: nowrap; }
+/* One chip recipe for every badge (.tag, .badge, .chip) — Fleet's StatusChip
+   geometry and tones (web/src/app/shared/ui/StatusChip.tsx): neutral is a
+   soft fill, success/warning use the status tokens, admin uses the accent,
+   and a dashed outline marks something absent. */
+.tag, .badge, .chip {
+  display: inline-block; padding: 0.125rem 0.5rem; border-radius: var(--radius-pill);
+  font-size: 0.6875rem; font-weight: 500; letter-spacing: 0; white-space: nowrap;
+  border: 1px solid var(--color-border-strong); background: var(--color-overlay-soft); color: var(--color-text-secondary);
+}
 .card.admin { max-width: 68rem; }
 .topline { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
 .topline .muted { margin: 0; }
-.tabs { display: flex; gap: var(--space-2); flex-wrap: wrap; margin: var(--space-5) 0 var(--space-5); border-bottom: 1px solid var(--color-border); }
+.tabs { display: flex; gap: var(--space-2); margin: var(--space-5) 0 var(--space-5); border-bottom: 1px solid var(--color-border); overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
-  display: inline-block; padding: var(--space-2) var(--space-3); margin-bottom: -1px;
+  display: inline-block; flex: 0 0 auto; white-space: nowrap; text-transform: capitalize;
+  padding: var(--space-2) var(--space-3); margin-bottom: -1px;
   font-size: var(--font-size-caption); font-weight: var(--font-weight-bold); letter-spacing: 0.02em;
   color: var(--color-text-muted); text-decoration: none;
   border: 1px solid transparent; border-bottom: 2px solid transparent; border-radius: var(--radius-md) var(--radius-md) 0 0;
 }
 .tab:hover { color: var(--color-text-primary); }
 .tab.active { color: var(--color-text-primary); border-bottom-color: var(--color-accent); }
-.tab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* Inset: the tab row scrolls, and a scroll container clips an outer ring. */
+.tab:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--color-accent); }
 .section { margin-top: var(--space-6); }
 .section h2 { font-family: var(--font-heading); font-size: 1.125rem; margin: 0 0 var(--space-2); color: var(--color-text-primary); }
 .section > .muted { margin-bottom: var(--space-4); }
@@ -439,11 +464,11 @@ ul.plain li { margin: 0.2rem 0; }
   color: var(--color-text-primary); user-select: all; -webkit-user-select: all; word-break: break-all;
 }
 .secret .muted { margin: 0; font-size: var(--font-size-caption); }
-.qr { display: block; width: 220px; max-width: 100%; height: auto; aspect-ratio: 1 / 1; margin: 0 auto var(--space-4); border-radius: var(--radius-md); background: #fff; padding: var(--space-2); }
+.qr { display: block; width: 220px; max-width: 100%; height: auto; aspect-ratio: 1 / 1; margin: 0 auto var(--space-4); border-radius: var(--radius-md); background: var(--color-white); padding: var(--space-2); }
 .codes { display: grid; grid-template-columns: 1fr; gap: var(--space-2); margin: 0 0 var(--space-5); padding: 0; list-style: none; }
 .codes li { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9rem; letter-spacing: 0.03em; overflow-wrap: anywhere; color: var(--color-text-primary); padding: var(--space-2) var(--space-3); background: var(--color-surface-1); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); user-select: all; -webkit-user-select: all; }
 a.btn { text-decoration: none; }
-.actions .btn-ghost { width: 100%; min-height: 2.5rem; font-size: var(--font-size-caption); }
+.actions .btn-ghost { width: 100%; min-height: 2.5rem; justify-content: center; font-size: var(--font-size-caption); }
 .status-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin: 0 0 var(--space-5); }
 /* .muted carries a bottom margin; inside the status line it would push the
    text off the pill's centre line. */
@@ -469,18 +494,15 @@ table.list tr:last-child td { border-bottom: 0; }
 table.list tr.account td { border-bottom: 0; padding-bottom: var(--space-2); }
 table.list tr.manage td { padding-top: 0; padding-bottom: var(--space-3); }
 table.list tr.manage:last-child td { border-bottom: 0; }
-.badge {
-  display: inline-block; padding: 0.1rem 0.5rem; border-radius: var(--radius-pill);
-  font-size: 0.6875rem; font-weight: var(--font-weight-bold); letter-spacing: 0.04em; white-space: nowrap;
-  border: 1px solid var(--color-border-strong); color: var(--color-text-secondary);
-}
 .badge.ok { color: var(--color-status-success-fg); background: var(--color-status-success-bg); border-color: var(--color-status-success-border); }
 .badge.warn { color: var(--color-status-warning-fg); background: var(--color-status-warning-bg); border-color: var(--color-status-warning-border); }
-.badge.off { color: var(--color-text-muted); border-style: dashed; }
-.badge.admin { color: var(--color-accent); border-color: var(--color-accent); }
+.badge.off { color: var(--color-text-muted); background: transparent; border-style: dashed; }
+.badge.admin { color: var(--color-accent); border-color: color-mix(in srgb, var(--color-accent) 50%, transparent); background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+/* On the light card the accent over its own tint dips below 4.5:1 for an
+   11px label; deepen the text toward the body ink to keep AA. */
+:root[data-theme="light"] .badge.admin { color: color-mix(in srgb, var(--color-accent) 75%, var(--color-text-primary)); }
 .chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.chip { display: inline-block; padding: 0.1rem 0.5rem; border-radius: var(--radius-pill); font-size: 0.6875rem; border: 1px solid var(--color-border); color: var(--color-text-secondary); }
-.chip.off { color: var(--color-text-muted); border-style: dashed; text-decoration: line-through; }
+.chip.off { color: var(--color-text-muted); background: transparent; border-style: dashed; text-decoration: line-through; }
 .btn-ghost, .confirm > summary {
   display: inline-flex; align-items: center; min-height: 1.9rem; padding: 0.2rem var(--space-3);
   font-family: var(--font-body); font-size: var(--font-size-caption); font-weight: var(--font-weight-bold);
@@ -520,14 +542,25 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .empty { margin: 0; padding: var(--space-4); border: 1px dashed var(--color-border); border-radius: var(--radius-md); color: var(--color-text-muted); font-size: var(--font-size-caption); text-align: center; }
 @media (max-width: 40rem) {
   table.list .num { display: none; }
+  /* Scroll the accounts table sideways inside .table-wrap rather than
+     crushing the account column until an email breaks every few letters. */
+  table.list td.who { min-width: 13rem; }
   .account-title, .account-tools { width: 100%; }
   .account-tools { flex-wrap: wrap; }
   .account-tools input[type=search], .account-tools select { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+  /* iOS Safari zooms the page into any field under 16px; keep the compact
+     toolbar fields at body size on phones. */
+  .account-tools input[type=search], .account-tools select, .batch select, .batch input[type=text] { font-size: var(--font-size-body); }
   /* The corner controls would float over a long table on a phone; let them
      end the page instead: body is a flex row for centring the card, so they
      wrap onto their own full-width line below it. */
   body { flex-wrap: wrap; }
   .corner-bottom { position: static; flex: 0 0 100%; order: 1; margin-top: var(--space-4); justify-content: center; }
+  /* Same for the top controls: a right-aligned row above the card that
+     scrolls away with the page, instead of floating over long content. */
+  .corner-actions { position: static; flex: 0 0 100%; order: -1; justify-content: flex-end; margin-bottom: var(--space-4); }
+  body > .theme-toggle { position: static; order: -1; margin: 0 0 var(--space-4) auto; }
+  body > .theme-toggle + * { flex-basis: 100%; }
 }
 .theme-toggle {
   position: fixed; top: var(--space-5); right: var(--space-5);
@@ -535,7 +568,7 @@ table.list tr.manage:last-child td { border-bottom: 0; }
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--color-text-secondary);
   background: var(--color-surface-1); border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill); cursor: pointer;
+  border-radius: var(--radius-md); cursor: pointer;
   transition: color var(--transition-fast), border-color var(--transition-fast);
 }
 .theme-toggle:hover { color: var(--color-text-primary); border-color: var(--color-border-strong); }
@@ -623,7 +656,7 @@ const loginHTML = `<!doctype html>
     <h1>{{if .LoginTitle}}{{.LoginTitle}}{{else}}Sign in{{end}}</h1>
     {{if .LoginTagline}}<p class="muted">{{.LoginTagline}}</p>{{else if .PasswordMode}}<p class="muted">Enter your work email and password.</p>{{else}}<p class="muted">Enter your work email. We'll send you a one-time link.</p>{{end}}
     {{if .Notice}}<div class="banner {{.NoticeClass}}" role="status"><strong>{{.NoticeTitle}}</strong> {{.Notice}}</div>{{end}}
-    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     <form method="post" action="{{if .PasswordMode}}/login{{else}}/magic{{end}}">
       <label for="email">Email</label>
       <input id="email" name="email" type="email" required autofocus autocomplete="email"
@@ -659,7 +692,7 @@ const changePasswordHTML = `<!doctype html>
     <div class="brand">{{.Wordmark}}</div>
     <h1>Change password</h1>
     <p class="muted">Use at least 12 characters; a few unrelated words work well. Spaces and Unicode are allowed. Avoid common passwords and anything similar to your email or the organisation's name.</p>
-    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     <form method="post" action="/change-password">
       <label for="current_password">Current password</label>
       <input id="current_password" name="current_password" type="password" required autocomplete="current-password">
@@ -745,7 +778,7 @@ const noAccessHTML = `<!doctype html>
 // adminScript is the console's only script, inlined under the page nonce:
 // the Generate button fills the temporary-password field client-side (the
 // server generates one anyway when the field is blank), and a form the
-// server rejected reopens its popover so the input is not hidden behind a
+// server rejected reopens its dialog so the input is not hidden behind a
 // closed dialog. The console works without it.
 const adminScript = `
 (function () {
@@ -844,10 +877,40 @@ const adminScript = `
       field.focus();
     });
   });
+  // Dialog buttons carry command/commandfor, which modern browsers act on
+  // without script; older ones get the same behaviour here.
+  if (!("command" in HTMLButtonElement.prototype)) {
+    document.querySelectorAll("button[commandfor]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var dialog = document.getElementById(button.getAttribute("commandfor"));
+        if (!dialog) return;
+        var command = button.getAttribute("command");
+        if (command === "show-modal" && !dialog.open) dialog.showModal();
+        if (command === "close" && dialog.open) dialog.close();
+      });
+    });
+  }
+  // A click on the backdrop (outside the panel) closes it, as the popovers
+  // these replaced did.
+  // Both ends of the gesture must be outside: a press inside the panel (or
+  // a text-selection drag) that is released over the backdrop stays open.
+  document.querySelectorAll("dialog.modal").forEach(function (dialog) {
+    function outside(event) {
+      if (event.target !== dialog) return false;
+      var r = dialog.getBoundingClientRect();
+      return event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom;
+    }
+    var pressedOutside = false;
+    dialog.addEventListener("pointerdown", function (event) { pressedOutside = outside(event); });
+    dialog.addEventListener("click", function (event) {
+      if (pressedOutside && outside(event)) dialog.close();
+      pressedOutside = false;
+    });
+  });
   var reopen = document.body.getAttribute("data-reopen");
   if (reopen) {
-    var popover = document.getElementById(reopen);
-    if (popover && popover.showPopover) { try { popover.showPopover(); } catch (e) {} }
+    var dialog = document.getElementById(reopen);
+    if (dialog && dialog.showModal && !dialog.open) { try { dialog.showModal(); } catch (e) {} }
   }
 })();
 `
@@ -866,7 +929,7 @@ const adminHTML = `<!doctype html>
 <body{{if .Reopen}} data-reopen="{{.Reopen}}"{{end}}>
   <div class="corner-actions">
     ` + themeToggle + `
-    <a class="icon-btn close" href="/account" aria-label="Back to your apps" title="Back to your apps">&times;</a>
+    <a class="icon-btn close" href="/account" aria-label="Back to your apps" title="Back to your apps"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></a>
   </div>
   <div class="corner-bottom">
     <form method="post" action="/logout">
@@ -887,7 +950,7 @@ const adminHTML = `<!doctype html>
     </nav>
     {{if .NeedVerify}}<div class="banner warn" role="alert"><strong>Confirm it is you.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need your authenticator code entered less than five minutes ago. <a href="/account/security/verify?return_to=%2Fadmin">Enter it now</a> and then repeat the change.</div>
     {{else if .NeedEnroll}}<div class="banner warn" role="alert"><strong>Set up two-factor sign-in first.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need an administrator's own authenticator. <a href="/account/security?return_to=%2Fadmin">Set yours up</a> and then repeat the change.</div>
-    {{else if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+    {{else if and .Error (ne .Reopen "add-user")}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     {{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
     {{if .Secret}}<div class="secret" role="status">
       <p class="muted">Temporary password for <strong>{{.SecretFor}}</strong>. It is shown once and not stored: copy it now.</p>
@@ -916,8 +979,8 @@ const adminHTML = `<!doctype html>
           </div>{{end}}
         </div>
         <div class="row-actions head-actions">
-          <button class="btn-ghost" type="button" popovertarget="mfa-policy" title="Two-factor policy" aria-label="Two-factor policy">2FA</button>
-          <button class="btn-add" type="button" popovertarget="add-user" title="Add user" aria-label="Add user">+</button>
+          <button class="btn-ghost" type="button" commandfor="mfa-policy" command="show-modal" title="Two-factor policy" aria-label="Two-factor policy">2FA</button>
+          <button class="btn-add" type="button" commandfor="add-user" command="show-modal" title="Add user" aria-label="Add user">+</button>
         </div>
       </div>
       {{if .Accounts}}
@@ -931,11 +994,11 @@ const adminHTML = `<!doctype html>
           <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
           <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
           <td><div class="row-actions">
-            <button class="btn-ghost" type="button" popovertarget="access-{{$i}}" aria-label="Access: {{$row.Email}}">Access</button>
-            <button class="btn-ghost" type="button" popovertarget="settings-{{$i}}" aria-label="Settings: {{$row.Email}}">Settings</button>
+            <button class="btn-ghost" type="button" commandfor="access-{{$i}}" command="show-modal" aria-label="Access: {{$row.Email}}">Access</button>
+            <button class="btn-ghost" type="button" commandfor="settings-{{$i}}" command="show-modal" aria-label="Settings: {{$row.Email}}">Settings</button>
           </div>
-          <div id="access-{{$i}}" class="modal" popover aria-labelledby="access-{{$i}}-title">
-            <div class="modal-head"><h3 id="access-{{$i}}-title">Access</h3><button class="icon-btn" type="button" popovertarget="access-{{$i}}" popovertargetaction="hide" aria-label="Close">&times;</button></div>
+          <dialog id="access-{{$i}}" class="modal" aria-labelledby="access-{{$i}}-title">
+            <div class="modal-head"><h3 id="access-{{$i}}-title">Access</h3><button class="icon-btn close" type="button" commandfor="access-{{$i}}" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
             <p class="who">{{$row.Email}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{$row.Email}}">
@@ -966,9 +1029,9 @@ const adminHTML = `<!doctype html>
               </section>
               <button class="btn" type="submit">Save access</button>
             </form>
-          </div>
-          <div id="settings-{{$i}}" class="modal" popover aria-labelledby="settings-{{$i}}-title">
-            <div class="modal-head"><h3 id="settings-{{$i}}-title">Settings</h3><button class="icon-btn" type="button" popovertarget="settings-{{$i}}" popovertargetaction="hide" aria-label="Close">&times;</button></div>
+          </dialog>
+          <dialog id="settings-{{$i}}" class="modal" aria-labelledby="settings-{{$i}}-title">
+            <div class="modal-head"><h3 id="settings-{{$i}}-title">Settings</h3><button class="icon-btn close" type="button" commandfor="settings-{{$i}}" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
             <p class="who">{{$row.Email}} <span class="dot">&middot;</span> created {{$row.Created}} <span class="dot">&middot;</span> {{$row.Sessions}} active session{{if ne $row.Sessions 1}}s{{end}}</p>
             <form method="post" action="/admin">
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-team"><input type="hidden" name="email" value="{{$row.Email}}">
@@ -1057,7 +1120,7 @@ const adminHTML = `<!doctype html>
               </details>
             </div>
             {{end}}
-          </div></td>
+          </dialog></td>
         </tr>{{end}}
         <tr data-account-empty hidden><td class="search-empty" colspan="6">No matching accounts.</td></tr>
         </tbody>
@@ -1080,8 +1143,10 @@ const adminHTML = `<!doctype html>
       <datalist id="teams">{{range .Teams}}<option value="{{.}}">{{end}}</datalist>
     </section>
 
-    <div id="add-user" class="modal" popover aria-labelledby="add-user-title">
-      <div class="modal-head"><h3 id="add-user-title">Add user</h3><button class="icon-btn" type="button" popovertarget="add-user" popovertargetaction="hide" aria-label="Close">&times;</button></div>
+    <dialog id="add-user" class="modal" aria-labelledby="add-user-title">
+      <div class="modal-head"><h3 id="add-user-title">Add user</h3><button class="icon-btn close" type="button" commandfor="add-user" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+      {{/* A rejected Add user reopens this dialog (Reopen), and showModal makes the page behind it inert, so the reason has to be in here. */}}
+      {{if and .Error (eq .Reopen "add-user")}}<div class="err" role="alert">{{.Error}}</div>{{end}}
       <p class="who">A temporary password is shown once; they choose their own at first sign-in.</p>
       <form method="post" action="/admin">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="create">
@@ -1116,10 +1181,10 @@ const adminHTML = `<!doctype html>
         </section>{{end}}
         <button class="btn" type="submit">Create account</button>
       </form>
-    </div>
+    </dialog>
 
-    <div id="mfa-policy" class="modal" popover aria-labelledby="mfa-policy-title">
-      <div class="modal-head"><h3 id="mfa-policy-title">Two-factor policy</h3><button class="icon-btn" type="button" popovertarget="mfa-policy" popovertargetaction="hide" aria-label="Close">&times;</button></div>
+    <dialog id="mfa-policy" class="modal" aria-labelledby="mfa-policy-title">
+      <div class="modal-head"><h3 id="mfa-policy-title">Two-factor policy</h3><button class="icon-btn close" type="button" commandfor="mfa-policy" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
       <p class="who">Who must enter a code from an authenticator app after their password. Anyone may set one up from their Security page, and once they have, they always use it; this policy decides who is made to. A per-account requirement (Settings) adds to whichever policy is chosen.</p>
       {{if not .MFAAvailable}}<div class="err">Two-factor sign-in is not set up on this server: set AUTH_MFA_KEY (see <code>auth mfa keygen</code>) and restart.</div>{{else}}
       <form method="post" action="/admin">
@@ -1132,7 +1197,7 @@ const adminHTML = `<!doctype html>
         {{if not .ActorEnrolled}}<p class="hint"><a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up yours</a></p>{{end}}
         <button class="btn" type="submit">Save policy</button>{{end}}
       </form>{{end}}
-    </div>
+    </dialog>
     {{else}}{{with .App}}
     <section class="section" aria-labelledby="app-heading">
       <div class="topline">
@@ -1241,7 +1306,7 @@ const mfaVerifyHTML = `<!doctype html>
     <div class="brand">{{.Wordmark}}</div>
     <h1>Enter your code</h1>
     <p class="muted">Signing in as <strong>{{.Email}}</strong>. {{if .Recovery}}Enter one of your recovery codes.{{else}}Open your authenticator app and enter the six-digit code for {{.Brand}}.{{end}}</p>
-    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     <form method="post" action="/login/verify" autocomplete="off">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       {{if .Recovery}}
@@ -1280,7 +1345,7 @@ const mfaEnrollHTML = `<!doctype html>
     <div class="brand">{{.Wordmark}}</div>
     <h1>{{if .Replace}}Replace your authenticator{{else}}Set up your authenticator{{end}}</h1>
     <p class="muted">{{if .Required}}Your account requires a second step at sign-in. {{end}}Scan this code with an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others all work), then enter the six-digit code it shows.</p>
-    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     <img class="qr" src="{{.QR}}" alt="QR code for {{.Issuer}}: {{.Email}}" width="220" height="220">
     <div class="secret">
       <p class="muted">Cannot scan? Enter this key by hand (time-based, six digits):</p>
@@ -1345,7 +1410,7 @@ const securityHTML = `<!doctype html>
     <p class="muted">Two-factor sign-in for <strong>{{.Email}}</strong>.</p>
     {{if .Notice}}<div class="banner" role="status"><strong>Done.</strong> {{.Notice}}</div>{{end}}
     {{if .UsedRecovery}}<div class="banner warn" role="status"><strong>Recovery code used.</strong> You signed in with a recovery code. If you lost your authenticator, replace it now.</div>{{end}}
-    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     <div class="status-line"><span class="tag {{if .Enrolled}}on{{else if .Required}}need{{end}}">{{.Status}}</span>{{if .Enrolled}}<span class="muted">{{.Remaining}} recovery codes left</span>{{else if .Required}}<span class="muted">Set up an authenticator to continue.</span>{{end}}</div>
     {{if not .Available}}<div class="err">Two-factor sign-in is not set up on this server. Ask your administrator to configure AUTH_MFA_KEY.</div>{{else}}
     <div class="actions">
@@ -1385,7 +1450,7 @@ const reauthHTML = `<!doctype html>
     <div class="brand">{{.Wordmark}}</div>
     <h1>Confirm it is you</h1>
     <p class="muted">Enter your password{{if .Enrolled}} and the current code from your authenticator app{{end}} to change security settings for <strong>{{.Email}}</strong>.</p>
-    {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     <form method="post" action="/account/security/verify" autocomplete="off">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       {{if .Action}}<input type="hidden" name="action" value="{{.Action}}">{{end}}
