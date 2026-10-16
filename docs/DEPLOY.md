@@ -1017,6 +1017,15 @@ or iPad Home Screen web app, whose cookies are separate from Safari's: the
 link opens in Safari, the code is typed in the app. Link and code share the
 link's single-use nonce, and requesting a new link retires the old code.
 
+iOS may close the app while the person is in Mail; reopening it starts from
+the app's start page, which sends it back to Auth's sign-in page rather than
+to "check your inbox". So the sign-in page also shows an "Already have a
+code?" form whenever the browser holds a transaction cookie. It decides on the
+cookie's presence alone, never a database lookup, so a decoy cookie shows the
+same page. `return_to` rides through "check your inbox" and failed code
+attempts (re-validated each time), so "try again" goes back to the app that
+started the sign-in.
+
 The limits are fixed constants, not settings:
 
 - 5 wrong codes kill that code. Its link still works.

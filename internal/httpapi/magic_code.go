@@ -121,13 +121,46 @@ func normalizeMagicCode(raw string) string {
 
 // sentLocation is the "check your inbox" page for email, optionally carrying
 // an error code. Every outcome of POST /magic and every failed code attempt
-// lands here, so the page and its form stay in front of the person.
-func sentLocation(email, errCode string) string {
+// from that page lands here, so the page and its form stay in front of the
+// person. returnTo must already have passed resolveReturnTo (or be ""); it
+// rides along so "try again" can send the person back to the app that
+// started the sign-in.
+func sentLocation(email, errCode, returnTo string) string {
 	q := url.Values{"email": {email}}
 	if errCode != "" {
 		q.Set("err", errCode)
 	}
+	if returnTo != "" {
+		q.Set("return_to", returnTo)
+	}
 	return "/sent?" + q.Encode()
+}
+
+// loginLocation is the sign-in page with an error code and an already
+// validated returnTo. A failed code typed on the sign-in page itself lands
+// here; the transaction cookie is still set, so the page shows the code
+// form again.
+func loginLocation(errCode, returnTo string) string {
+	q := url.Values{}
+	if errCode != "" {
+		q.Set("err", errCode)
+	}
+	if returnTo != "" {
+		q.Set("return_to", returnTo)
+	}
+	if len(q) == 0 {
+		return "/"
+	}
+	return "/?" + q.Encode()
+}
+
+// hasMagicTx reports whether this browser holds a magic transaction cookie.
+// It is a presence check only and never consults the database: a decoy
+// cookie from the no-leak path must look exactly like a real one, so the
+// sign-in page cannot tell an enumerator which addresses got a code.
+func (s *Server) hasMagicTx(r *http.Request) bool {
+	c, err := r.Cookie(s.magicTxCookieName())
+	return err == nil && c.Value != ""
 }
 
 // ── POST /magic/code ─────────────────────────────────────────────────
@@ -146,10 +179,21 @@ func (s *Server) handleMagicCode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	// The address only re-labels the "sent" page on failure; identity comes
-	// from the stored code, never from the form.
+	// The address only re-labels the "sent" page on failure, and return_to
+	// only says where a failure goes back to; identity and the post-login
+	// destination come from the stored code, never from the form. The form
+	// on the sign-in page (shown after an app relaunch) has no address, so
+	// its failures return to the sign-in page, which shows the code form
+	// again while the transaction cookie lives.
 	email := strings.TrimSpace(r.FormValue("email"))
-	fail := func() { http.Redirect(w, r, sentLocation(email, errInvalidCode), http.StatusSeeOther) }
+	returnTo := s.resolveReturnTo(r.FormValue("return_to"))
+	fail := func() {
+		dest := loginLocation(errInvalidCode, returnTo)
+		if email != "" {
+			dest = sentLocation(email, errInvalidCode, returnTo)
+		}
+		http.Redirect(w, r, dest, http.StatusSeeOther)
+	}
 
 	// The transaction cookie is the login-CSRF defense as well as the
 	// binding: SameSite=Lax keeps it off cross-site POSTs, and the __Host-

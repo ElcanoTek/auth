@@ -624,9 +624,18 @@ const loginHTML = `<!doctype html>
     {{if .LoginTagline}}<p class="muted">{{.LoginTagline}}</p>{{else if .PasswordMode}}<p class="muted">Enter your work email and password.</p>{{else}}<p class="muted">Enter your work email. We'll send you a one-time link and code.</p>{{end}}
     {{if .Notice}}<div class="banner {{.NoticeClass}}" role="status"><strong>{{.NoticeTitle}}</strong> {{.Notice}}</div>{{end}}
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    {{if .HasCode}}
+    <form method="post" action="/magic/code" autocomplete="off">
+      <label for="code">Already have a code? Enter it here</label>
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000">
+      {{if .CodeReturnTo}}<input type="hidden" name="return_to" value="{{.CodeReturnTo}}">{{end}}
+      <button class="btn" type="submit">Sign in with code</button>
+    </form>
+    <p class="hint">Or send a new link and code:</p>
+    {{end}}
     <form method="post" action="{{if .PasswordMode}}/login{{else}}/magic{{end}}">
       <label for="email">Email</label>
-      <input id="email" name="email" type="email" required autofocus autocomplete="email"
+      <input id="email" name="email" type="email" required{{if not .HasCode}} autofocus{{end}} autocomplete="email"
              placeholder="you@example.com">
       {{if .PasswordMode}}
       <label for="password">Password</label>
@@ -1193,13 +1202,14 @@ const sentHTML = `<!doctype html>
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
     <form method="post" action="/magic/code" autocomplete="off">
       <input type="hidden" name="email" value="{{.Email}}">
+      {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
       <label for="code">Sign-in code</label>
       <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000">
       <button class="btn" type="submit">Sign in</button>
     </form>
     <p class="hint">Using {{.Wordmark}} from your Home Screen? Type the code: the link opens in Safari.</p>
     <div class="foot">The code and link expire in {{.TTLMinutes}} minutes. Didn't get them? Check spam, or
-      <a href="/">try again</a>.</div>
+      <a href="{{.RetryHref}}">try again</a>.</div>
   </main>
 </body>
 </html>`

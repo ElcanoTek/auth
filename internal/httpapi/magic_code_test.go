@@ -81,13 +81,13 @@ func wrongCode(right string) string {
 }
 
 func invalidCodeLocation(emailAddr string) string {
-	return sentLocation(emailAddr, errInvalidCode)
+	return sentLocation(emailAddr, errInvalidCode, "")
 }
 
 func TestMagicCodeSignsInTheRequestingBrowser(t *testing.T) {
 	ts, sender, st, cfg := newTestServer(t)
 	resp, tx := requestMagic(t, ts, url.Values{"email": {"alice@example.com"}, "return_to": {"https://app.example.com/inbox"}})
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != sentLocation("alice@example.com", "") {
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != sentLocation("alice@example.com", "", "https://app.example.com/inbox") {
 		t.Fatalf("POST /magic = %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	if tx == nil || len(tx.Value) < 40 {
@@ -333,7 +333,7 @@ func TestMagicCodeNoLeakPathsLookLikeARealSend(t *testing.T) {
 
 	check := func(name string, resp *http.Response, tx *http.Cookie, addr string) {
 		t.Helper()
-		if resp.StatusCode != realResp.StatusCode || resp.Header.Get("Location") != sentLocation(addr, "") {
+		if resp.StatusCode != realResp.StatusCode || resp.Header.Get("Location") != sentLocation(addr, "", "") {
 			t.Errorf("%s: response %d %q differs from a real send", name, resp.StatusCode, resp.Header.Get("Location"))
 		}
 		if tx == nil || len(tx.Value) != len(realTx.Value) || tx.MaxAge != realTx.MaxAge || tx.HttpOnly != realTx.HttpOnly ||
@@ -397,7 +397,7 @@ func TestMagicCodeAndTransactionNeverLogged(t *testing.T) {
 
 func TestSentPageOffersTheCodeForm(t *testing.T) {
 	ts, _, _, _ := newTestServer(t)
-	resp, err := http.Get(ts.URL + sentLocation("nobody@hacker.test", errInvalidCode))
+	resp, err := http.Get(ts.URL + sentLocation("nobody@hacker.test", errInvalidCode, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,5 +486,184 @@ func TestNewMagicCodeIsSixDigits(t *testing.T) {
 	}
 	if len(seen) < 190 {
 		t.Fatalf("only %d distinct codes in 200 draws", len(seen))
+	}
+}
+
+// getLogin fetches the sign-in page with an optional cookie and returns the
+// body.
+func getLogin(t *testing.T, ts *httptest.Server, query string, c *http.Cookie) string {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/"+query, nil)
+	if c != nil {
+		req.AddCookie(c)
+	}
+	resp, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /%s = %d", query, resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
+}
+
+const loginCodeForm = `action="/magic/code"`
+
+func TestLoginPageOffersCodeFormWhileATxCookieIsPresent(t *testing.T) {
+	ts, sender, _, _ := newTestServer(t)
+	_, realTx := requestMagic(t, ts, url.Values{"email": {"alice@example.com"}})
+	sender.wait(t, 1)
+	_, decoyTx := requestMagic(t, ts, url.Values{"email": {"mallory@evil.com"}})
+
+	for name, c := range map[string]*http.Cookie{
+		"real cookie":  realTx,
+		"decoy cookie": decoyTx,
+		// Presence only, never a lookup: an unknown value shows it too.
+		"unknown value": {Name: "auth_magic_tx", Value: "x"},
+	} {
+		body := getLogin(t, ts, "", c)
+		if !strings.Contains(body, loginCodeForm) || !strings.Contains(body, "Already have a code? Enter it here") ||
+			!strings.Contains(body, `autocomplete="one-time-code"`) {
+			t.Errorf("%s: sign-in page lacks the code form", name)
+		}
+		if !strings.Contains(body, `action="/magic"`) {
+			t.Errorf("%s: the email form must stay available", name)
+		}
+	}
+	if body := getLogin(t, ts, "", nil); strings.Contains(body, loginCodeForm) {
+		t.Error("no cookie: the sign-in page must not offer the code form")
+	}
+	// The decoy and the real page are the same page.
+	if getLogin(t, ts, "", realTx) == "" || len(getLogin(t, ts, "", realTx)) != len(getLogin(t, ts, "", decoyTx)) {
+		t.Error("the sign-in page differs between a real and a decoy transaction cookie")
+	}
+}
+
+func TestLoginPageCodeFormCarriesOnlyAValidatedReturnTo(t *testing.T) {
+	ts, _, _, _ := newTestServer(t)
+	c := &http.Cookie{Name: "auth_magic_tx", Value: "x"}
+	good := getLogin(t, ts, "?return_to="+url.QueryEscape("https://app.example.com/x"), c)
+	if !strings.Contains(good, `<input type="hidden" name="return_to" value="https://app.example.com/x">`) {
+		t.Error("an allowed return_to should ride in the code form")
+	}
+	bad := getLogin(t, ts, "?return_to="+url.QueryEscape("https://evil.com/x"), c)
+	codeForm := bad[strings.Index(bad, loginCodeForm):strings.Index(bad, `action="/magic"`)]
+	if strings.Contains(codeForm, "evil.com") {
+		t.Errorf("a foreign return_to was reflected into the code form: %s", codeForm)
+	}
+}
+
+func TestLoginPageCodeFormSignsIn(t *testing.T) {
+	// The relaunch case: the app opens its start page, lands on the sign-in
+	// page with the transaction cookie still alive, and the person types the
+	// code there. No email field is posted.
+	ts, sender, _, cfg := newTestServer(t)
+	_, tx := requestMagic(t, ts, url.Values{"email": {"alice@example.com"}, "return_to": {"https://app.example.com/inbox"}})
+	code := lastCode(t, sender, 1)
+
+	resp := postCode(t, ts, tx, "", wrongCode(code))
+	if want := loginLocation(errInvalidCode, ""); resp.Header.Get("Location") != want {
+		t.Fatalf("failure from the sign-in page: Location %q, want %q", resp.Header.Get("Location"), want)
+	}
+	body := getLogin(t, ts, "?err="+errInvalidCode, tx)
+	if !strings.Contains(body, loginCodeForm) || !strings.Contains(body, "That code didn&#39;t work.") {
+		t.Fatal("after a failure the sign-in page must show the error and the code form again")
+	}
+
+	resp = postCode(t, ts, tx, "", code)
+	if resp.Header.Get("Location") != "https://app.example.com/inbox" || findCookie(resp, cfg.CookieName) == nil {
+		t.Fatalf("sign-in from the sign-in page form: Location %q cookies %v", resp.Header.Get("Location"), resp.Cookies())
+	}
+}
+
+func TestCodeFailureKeepsOnlyAValidatedReturnTo(t *testing.T) {
+	ts, sender, _, _ := newTestServer(t)
+	_, tx := requestMagic(t, ts, url.Values{"email": {"alice@example.com"}})
+	code := lastCode(t, sender, 1)
+	post := func(emailAddr, returnTo string) string {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/magic/code", strings.NewReader(url.Values{
+			"email": {emailAddr}, "code": {wrongCode(code)}, "return_to": {returnTo},
+		}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(tx)
+		resp, err := noFollowClient().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.Header.Get("Location")
+	}
+	if got, want := post("alice@example.com", "https://app.example.com/x"), sentLocation("alice@example.com", errInvalidCode, "https://app.example.com/x"); got != want {
+		t.Errorf("from /sent: Location %q, want %q", got, want)
+	}
+	if got, want := post("", "https://app.example.com/x"), loginLocation(errInvalidCode, "https://app.example.com/x"); got != want {
+		t.Errorf("from the sign-in page: Location %q, want %q", got, want)
+	}
+	for _, from := range []string{"alice@example.com", ""} {
+		if got := post(from, "https://evil.com/x"); strings.Contains(got, "evil.com") {
+			t.Errorf("email=%q: a foreign return_to survived into %q", from, got)
+		}
+	}
+}
+
+func TestSentPageCarriesReturnToBackToTheApp(t *testing.T) {
+	ts, _, _, _ := newTestServer(t)
+	get := func(returnTo string) string {
+		resp, err := http.Get(ts.URL + "/sent?" + url.Values{"email": {"a@example.com"}, "return_to": {returnTo}}.Encode())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		return string(body)
+	}
+	good := get("https://app.example.com/x")
+	if !strings.Contains(good, `href="/?return_to=https%3A%2F%2Fapp.example.com%2Fx"`) {
+		t.Errorf("\"try again\" should go back to the sign-in page with the app's return_to; body:\n%s", good)
+	}
+	if !strings.Contains(good, `<input type="hidden" name="return_to" value="https://app.example.com/x">`) {
+		t.Error("the code form should carry the validated return_to for its failure path")
+	}
+	bad := get("https://evil.com/x")
+	if strings.Contains(bad, "evil.com") {
+		t.Error("a foreign return_to must never be reflected into /sent")
+	}
+	if !strings.Contains(bad, `href="/"`) {
+		t.Error("without a valid return_to, \"try again\" goes to the bare sign-in page")
+	}
+}
+
+func TestMagicRedirectCarriesValidatedReturnToOnRealAndDecoyPaths(t *testing.T) {
+	ts, sender, _, _ := newTestServer(t)
+	rt := "https://app.example.com/x"
+	resp, _ := requestMagic(t, ts, url.Values{"email": {"alice@example.com"}, "return_to": {rt}})
+	sender.wait(t, 1)
+	if got, want := resp.Header.Get("Location"), sentLocation("alice@example.com", "", rt); got != want {
+		t.Errorf("real send: Location %q, want %q", got, want)
+	}
+	resp, _ = requestMagic(t, ts, url.Values{"email": {"mallory@evil.com"}, "return_to": {rt}})
+	if got, want := resp.Header.Get("Location"), sentLocation("mallory@evil.com", "", rt); got != want {
+		t.Errorf("decoy: Location %q, want %q (must match a real send)", got, want)
+	}
+	resp, _ = requestMagic(t, ts, url.Values{"email": {"bob@example.com"}, "return_to": {"https://evil.com/"}})
+	if strings.Contains(resp.Header.Get("Location"), "evil.com") {
+		t.Errorf("a foreign return_to leaked into %q", resp.Header.Get("Location"))
+	}
+}
+
+func TestPasswordModeLoginPageIgnoresMagicTxCookie(t *testing.T) {
+	ts, _, _, _ := newPasswordTestServer(t, false)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_magic_tx", Value: "x"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if strings.Contains(string(body), loginCodeForm) || !strings.Contains(string(body), `action="/login"`) {
+		t.Error("password mode must render its own form and never the magic code form")
 	}
 }

@@ -14,7 +14,8 @@
 #   7. reusing the magic link   → bounced (single-use enforced)
 #   8. POST /magic (DISALLOWED domain) → no email emitted (no enum oracle)
 #   9. POST /magic/code with the emailed code, in the browser that asked
-#      → 303 + Set-Cookie, and /verify sees the new identity
+#      → 303 + Set-Cookie, and /verify sees the new identity (the sign-in
+#      page offers the code form to that browser first)
 #  10. reusing the code         → bounced (single-use enforced)
 #
 # No secrets, no network: stdout driver + a throwaway SQLite dir. Safe to
@@ -155,6 +156,10 @@ for _ in $(seq 1 20); do
   sleep 0.1
 done
 [[ -n "$signin_code" ]] || fail "9. no sign-in code found in server log"
+# An app relaunched from the Home Screen lands on the sign-in page, not /sent;
+# with the transaction cookie still set, that page must offer the code form.
+curl -s -b "$CODE_JAR" "$BASE/" | grep -q 'action="/magic/code"' \
+  || fail "9. sign-in page did not offer the code form to a browser holding a transaction cookie"
 cp "$CODE_JAR" "$WORK/code-cookies-before.txt" # still holds the transaction cookie, for step 10
 chdrs="$(curl -s -D - -o /dev/null -b "$CODE_JAR" -c "$CODE_JAR" -X POST \
           --data-urlencode 'email=bob@example.com' --data-urlencode "code=$signin_code" "$BASE/magic/code")"

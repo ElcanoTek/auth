@@ -182,10 +182,17 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A browser still holding a magic transaction cookie may have a code in
+	// its inbox: iOS can terminate a Home Screen web app while the person
+	// reads Mail, and the relaunch opens the app's start page, which sends
+	// it here rather than back to /sent. Offer the code form on presence
+	// alone (see hasMagicTx), with only a validated return_to in it.
 	if err := s.render(w, "login.html", map[string]any{
-		"Brand":    s.cfg.BrandName,
-		"ReturnTo": r.URL.Query().Get("return_to"),
-		"Error":    errorMessage(r.URL.Query().Get("err")),
+		"Brand":        s.cfg.BrandName,
+		"ReturnTo":     r.URL.Query().Get("return_to"),
+		"Error":        errorMessage(r.URL.Query().Get("err")),
+		"HasCode":      s.hasMagicTx(r),
+		"CodeReturnTo": s.resolveReturnTo(r.URL.Query().Get("return_to")),
 	}); err != nil {
 		log.Printf("render login: %v", err)
 	}
@@ -245,11 +252,17 @@ func (s *Server) handleSent(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// return_to is re-validated here, never reflected as given: it feeds
+	// the code form's failure path and the "try again" link, which must
+	// take the person back to the app that started the sign-in.
+	returnTo := s.resolveReturnTo(r.URL.Query().Get("return_to"))
 	if err := s.render(w, "sent.html", map[string]any{
 		"Brand":      s.cfg.BrandName,
 		"Email":      r.URL.Query().Get("email"),
 		"Error":      errorMessage(r.URL.Query().Get("err")),
 		"TTLMinutes": int(s.cfg.MagicTTL.Minutes()),
+		"ReturnTo":   returnTo,
+		"RetryHref":  loginLocation("", returnTo),
 	}); err != nil {
 		log.Printf("render sent: %v", err)
 	}
@@ -414,7 +427,7 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 	}(email, subject, text, html)
 
 	s.setMagicTxCookie(w, txRaw)
-	http.Redirect(w, r, sentLocation(email, ""), http.StatusSeeOther)
+	http.Redirect(w, r, sentLocation(email, "", returnTo), http.StatusSeeOther)
 }
 
 // fakeSentResponse exits the magic flow with a "check your inbox" page
@@ -427,7 +440,8 @@ func (s *Server) fakeSentResponse(w http.ResponseWriter, r *http.Request, email 
 	if decoy, err := randomSecret(32); err == nil {
 		s.setMagicTxCookie(w, decoy)
 	}
-	http.Redirect(w, r, sentLocation(email, ""), http.StatusSeeOther)
+	// Same validated return_to as the real path, so the Location matches.
+	http.Redirect(w, r, sentLocation(email, "", s.resolveReturnTo(r.FormValue("return_to"))), http.StatusSeeOther)
 }
 
 // Login-page error codes. The page only ever renders one of these fixed
