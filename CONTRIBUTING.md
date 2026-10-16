@@ -7,7 +7,7 @@ features are welcome.
 
 - Go at the version declared in [`go.mod`](go.mod).
 - Bash and standard Unix tools for the smoke and deployment-script tests.
-- `golangci-lint` v2.12.0; `make lint` downloads the pinned version through Go
+- `golangci-lint` v2.14.0; `make lint` downloads the pinned version through Go
   when it is not already cached.
 
 No email provider, external identity service, or production credential is

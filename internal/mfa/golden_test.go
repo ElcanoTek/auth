@@ -1,9 +1,13 @@
 package mfa
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"image"
+	"image/png"
 	"net/url"
 	"os"
 	"strings"
@@ -21,8 +25,10 @@ import (
 //
 //   - the otpauth:// URI, byte for byte, for issuers and accounts that
 //     exercise net/url escaping (spaces, UTF-8, reserved characters);
-//   - the QR module matrix for that URI, and the SHA-256 of the PNG that
-//     QRPNG renders at several sizes, so the image is pixel-identical;
+//   - the QR module matrix for that URI, and a SHA-256 over every decoded
+//     pixel of the PNG that QRPNG renders at several sizes, so the image is
+//     pixel-identical. Pixels, not PNG bytes: image/png's compressed output
+//     changed between Go 1.26 and 1.27 while the image stayed the same;
 //   - HOTP codes for counters at the edges of the uint64 range.
 type golden struct {
 	Keys []struct {
@@ -31,7 +37,7 @@ type golden struct {
 		Secret  string            `json:"secret_hex"`
 		URI     string            `json:"uri"`
 		Modules []string          `json:"modules"`
-		PNG     map[string]string `json:"png_sha256"`
+		Pixels  map[string]string `json:"pixels_sha256"`
 	} `json:"keys"`
 	HOTP []struct {
 		Secret  string `json:"secret_hex"`
@@ -61,6 +67,11 @@ func loadGolden(t *testing.T) golden {
 	}
 	if len(g.Keys) == 0 || len(g.HOTP) == 0 {
 		t.Fatal("empty golden file")
+	}
+	for _, k := range g.Keys {
+		if len(k.Modules) == 0 || len(k.Pixels) != 4 {
+			t.Fatalf("golden case %q lacks modules or pixel hashes", k.Issuer)
+		}
 	}
 	return g
 }
@@ -112,7 +123,7 @@ func TestQRMatchesPreviousLibrary(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for size, want := range c.PNG {
+		for size, want := range c.Pixels {
 			n := map[string]int{"120": 120, "200": 200, "220": 220, "1024": 1024}[size]
 			p, err := QRPNG(key, n)
 			if strings.HasPrefix(want, "error: ") {
@@ -124,12 +135,30 @@ func TestQRMatchesPreviousLibrary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%q at %s: %v", c.Issuer, size, err)
 			}
-			sum := sha256.Sum256(p)
-			if got := hex.EncodeToString(sum[:]); got != want {
-				t.Errorf("%q at %s px: PNG sha256 %s, want %s", c.Issuer, size, got, want)
+			img, err := png.Decode(bytes.NewReader(p))
+			if err != nil {
+				t.Fatalf("%q at %s: %v", c.Issuer, size, err)
+			}
+			if got := pixelHash(img); got != want {
+				t.Errorf("%q at %s px: pixel sha256 %s, want %s", c.Issuer, size, got, want)
 			}
 		}
 	}
+}
+
+// pixelHash hashes the size and every pixel's 16-bit RGBA, row-major: the
+// same function that produced the golden values from the old library.
+func pixelHash(img image.Image) string {
+	h := sha256.New()
+	b := img.Bounds()
+	_, _ = fmt.Fprintf(h, "%dx%d\n", b.Dx(), b.Dy())
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, a := img.At(x, y).RGBA()
+			h.Write([]byte{byte(r >> 8), byte(r), byte(g >> 8), byte(g), byte(bl >> 8), byte(bl), byte(a >> 8), byte(a)})
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func TestHOTPMatchesPreviousLibrary(t *testing.T) {
