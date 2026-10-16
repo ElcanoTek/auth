@@ -870,6 +870,25 @@ func TestFleetPermissionsAreSavedAndRenderedSeparatelyFromAuthAdmin(t *testing.T
 			t.Fatalf("admin page lacks %q", want)
 		}
 	}
+	// Fleet permissions are a dialog of their own, reopened from a gear button
+	// beside Fleet that names the current choice; the new-user form opens on
+	// the Contributor / None defaults.
+	for _, want := range []string{
+		`<dialog id="fleet-perms-new" class="modal fleet-perms" data-fleet-permissions`,
+		`commandfor="fleet-perms-new" command="close" aria-label="Close"`,
+		`commandfor="fleet-perms-new" command="show-modal"`,
+		`<span data-fleet-summary>Chat Contributor · Ops None</span>`,
+		`<input type="radio" name="fleet_chat_role" value="member" checked> Contributor`,
+		`<input type="radio" name="fleet_ops_role" value="none" checked> None`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("Add user lacks %q", want)
+		}
+	}
+	// The created account's own Access dialog summarises what was saved.
+	if !strings.Contains(body, `<span data-fleet-summary>Chat Viewer · Ops Contributor</span>`) {
+		t.Fatal("Access gear does not summarise the saved Fleet roles")
+	}
 	account, err := st.PasswordAccountByEmail(context.Background(), "fleet-user@example.com")
 	if err != nil {
 		t.Fatal(err)
