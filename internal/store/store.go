@@ -15,6 +15,8 @@
 //	                used on /callback. Old rows are GC'd lazily.
 //	users         — audit/usage log. Auto-populated on first successful
 //	                /callback. operators see it via `auth user list`.
+//	magic_codes   — the six-digit code sent with each link, bound to the
+//	                browser that asked for it (schema v11, magic_code.go).
 //
 // Password mode adds accounts, Argon2id credential records, opaque server-side
 // sessions, persistent rate-limit/audit state, and reserved factor tables.
@@ -465,7 +467,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateAppReports(ctx); err != nil {
 		return err
 	}
-	return s.migrateTeamSync(ctx)
+	if err := s.migrateTeamSync(ctx); err != nil {
+		return err
+	}
+	return s.migrateMagicCodes(ctx)
 }
 
 // migrateAccessProvisioning is schema v8. It snapshots every existing grant
@@ -688,24 +693,30 @@ func canonicalEmail(email string) string {
 // email is canonicalized (see canonicalEmail) so rate/collapse key per mailbox,
 // not per sub-address; the real recipient travels in the signed token.
 func (s *Store) IssueMagic(ctx context.Context, nonce, email string, createdAt, expiresAt int64) error {
-	email = canonicalEmail(email)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := issueMagicTx(ctx, tx, nonce, email, createdAt, expiresAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+// issueMagicTx is IssueMagic's body inside a caller's transaction, shared
+// with IssueMagicWithCode.
+func issueMagicTx(ctx context.Context, tx *sql.Tx, nonce, email string, createdAt, expiresAt int64) error {
+	email = canonicalEmail(email)
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE magic_links SET used_at = ? WHERE email = ? AND used_at IS NULL`,
 		createdAt, email); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx,
+	_, err := tx.ExecContext(ctx,
 		`INSERT INTO magic_links(nonce, email, created_at, expires_at) VALUES(?, ?, ?, ?)`,
-		nonce, email, createdAt, expiresAt); err != nil {
-		return err
-	}
-	return tx.Commit()
+		nonce, email, createdAt, expiresAt)
+	return err
 }
 
 // CountRecentByEmail returns how many magic links were ISSUED for email at or
@@ -772,7 +783,8 @@ var (
 // expiry. Called periodically by the server. We hold rows briefly past
 // expiry so a too-late click gets "expired" instead of "invalid" — that
 // way an operator helping a user can say "your link was 20 minutes old,
-// here's a fresh one" instead of "uhh I don't know."
+// here's a fresh one" instead of "uhh I don't know." Each link's
+// magic_codes row goes with it (ON DELETE CASCADE).
 func (s *Store) SweepExpired(ctx context.Context, now int64, keep time.Duration) (int64, error) {
 	cutoff := now - int64(keep.Seconds())
 	res, err := s.db.ExecContext(ctx,

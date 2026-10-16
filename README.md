@@ -46,7 +46,9 @@ It runs in one of two modes, chosen per deployment:
   [`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md) for the
   design.
 - **Magic-link mode** (legacy). People type an email address and click a
-  one-time link. The result is one Ed25519-signed cookie on a shared parent
+  one-time link, or type the six-digit code that comes with it (needed on an
+  iPhone Home Screen app, where links open in Safari instead). The result is
+  one Ed25519-signed cookie on a shared parent
   domain, which every subdomain either verifies natively or has Caddy verify
   for it with `forward_auth`.
 
@@ -107,7 +109,11 @@ such as Fleet's Chat and Ops roles.
 
 **Magic-link mode.** Auth emails a one-time link signed with its Ed25519 key.
 Clicking it sets a signed cookie on `AUTH_COOKIE_DOMAIN`, so it rides to every
-subdomain. Downstream services either verify the cookie themselves with the
+subdomain. The same email carries a six-digit code that signs in the browser
+that asked for it, typed on the "check your inbox" page: a link always opens
+the device's default browser, which on iOS is never a Home Screen web app
+(those keep their own cookies), and is not the laptop when the email is read
+on a phone. Link and code are one credential; whichever is used first wins. Downstream services either verify the cookie themselves with the
 public key, or let Caddy call `/verify` and pass `X-User-Email` and
 `X-User-Tenant` headers to the upstream. Tenant is the email domain; the
 allowlist of domains that may request a link is managed with `auth domain`.
@@ -246,11 +252,14 @@ go test ./internal/store -v
 go test -cover ./...
 ```
 
-Two tests worth highlighting:
+Tests worth highlighting:
 
 - `TestMagicLinkConcurrentConsumeOnlyOneWins` (`internal/store`) fires 8
   simultaneous `ConsumeMagic` goroutines at the same nonce and asserts exactly
   one wins. The core single-use invariant of magic-link mode.
+- `TestMagicCodeConcurrentGuessesNeverExceedMax` (`internal/store`) fires 20
+  simultaneous wrong sign-in codes at one link and asserts exactly 5 are
+  compared. The brute-force bound of the six-digit code.
 - `TestReturnToForeignHostFallsBack` (`internal/httpapi`): even though
   `return_to` is signed inside the magic link, the post-login redirect
   re-checks the allowlist. An attacker who got a victim to submit `/magic`

@@ -392,6 +392,14 @@ exactly match the registered one.
 If step 3 fails, the cookie isn't being saved: usually `AUTH_COOKIE_DOMAIN` is
 wrong, or a `Secure` cookie is being set over plain HTTP.
 
+**Home Screen web apps (magic mode).** On iPhone and iPad, a site added to the
+Home Screen keeps its own cookies, separate from Safari's, and an emailed link
+always opens Safari. Sign-in from such an app works through the six-digit code
+in the same email, typed on Auth's "check your inbox" page inside the app. The
+service needs no change for this, provided its unauthenticated redirect to
+Auth is a normal top-level navigation (not a `fetch`) and it sends
+`return_to`, so the person lands back in the service.
+
 ## Common foot-guns
 
 - **The cookie domain must be a parent of every service host** (magic mode).

@@ -1006,6 +1006,33 @@ disable that limit; leave them unset to get the defaults. There is no per-IP
 limit yet — a single client can still consume the global budget — so treat the
 global cap as a spend backstop, not a DoS defense.
 
+### Sign-in codes (POST /magic/code)
+
+Every magic-link email also carries a six-digit code. It signs in only the
+browser that requested it: `/magic` sets a `__Host-auth_magic_tx` cookie
+(HttpOnly, `SameSite=Lax`, `Max-Age` equal to the link TTL, never a session
+cookie), and the code typed on the "check your inbox" page is checked against
+that browser's pending link. This is what makes sign-in work from an iPhone
+or iPad Home Screen web app, whose cookies are separate from Safari's: the
+link opens in Safari, the code is typed in the app. Link and code share the
+link's single-use nonce, and requesting a new link retires the old code.
+
+The limits are fixed constants, not settings:
+
+- 5 wrong codes kill that code. Its link still works.
+- 10 wrong codes per mailbox (sub-addresses folded) per rolling 24 hours close
+  code entry for that mailbox. Links still work. Successes never reset the
+  count.
+
+Every failure shows the same message, whatever the reason (wrong, expired,
+used, locked, over the daily count, or a decoy cookie from the no-leak path),
+so code entry reveals no more than `/magic` itself. The journal logs
+`magic code daily limit hit: tenant=<domain>` when a mailbox's count runs out.
+The code is stored only as an HMAC under a key derived from
+`AUTH_SIGNING_KEY`, and neither the code nor the cookie value is logged. The
+`stdout` email driver prints the whole email, code included, which is one
+more reason it is development-only.
+
 ### Graceful shutdown
 
 On `auth restart`/stop (SIGTERM), the server drains in-flight magic-link email
@@ -1161,6 +1188,22 @@ address):
 - `AUTH_SIGNING_KEY` was rotated between issuance and click.
 
 In every case, the fix is "request a new link".
+
+### Sign-in code says "That code didn't work"
+
+The message is deliberately the same for every cause:
+
+- The person typed it in a different browser or app from the one that asked
+  for it. On an iPhone, a Home Screen web app and Safari are different
+  browsers. The code works only where "Send link" was pressed.
+- A newer link was requested since (only the newest code works), or the link
+  in the same email was already used.
+- The code is past the link TTL, or took 5 wrong tries.
+- The mailbox hit 10 wrong codes in 24 hours. Look for
+  `magic code daily limit hit: tenant=…` in `auth logs`. The link in the email
+  still works.
+
+The fix is again "request a new link", or open the link on the same device.
 
 ### User logs in, gets redirected, but the downstream service still says "not signed in"
 
