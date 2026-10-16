@@ -423,4 +423,6 @@ local checks, repository map, and pull-request expectations.
 
 Auth is available under the [MIT License](LICENSE). The embedded Nebula Sans
 font files are distributed separately under the SIL Open Font License 1.1 in
-[`internal/httpapi/fonts/OFL.txt`](internal/httpapi/fonts/OFL.txt).
+[`internal/httpapi/fonts/OFL.txt`](internal/httpapi/fonts/OFL.txt). The QR
+encoder in `internal/mfa/qr/` is derived from boombuler/barcode under the MIT
+License in [`internal/mfa/qr/LICENSE`](internal/mfa/qr/LICENSE).

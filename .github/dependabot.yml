@@ -1,6 +1,9 @@
 # Dependabot config — https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-# Weekly version + security updates, all bundled into one PR per ecosystem.
-# Tests gate the merge — review the consolidated diff, don't read every changelog.
+# Go modules: security updates only (open-pull-requests-limit: 0 turns off
+# version-update PRs; security PRs are not subject to the limit). We update a
+# module for a CVE we reach or a specific upstream change, not on a schedule —
+# see AGENTS.md › Dependencies and in-housed code. GitHub Actions: weekly
+# version updates, bundled into one PR.
 #
 # auth has no `dev` branch, so updates target the default branch (main) —
 # no target-branch override.
@@ -10,7 +13,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     labels:
       - dependencies
       - go

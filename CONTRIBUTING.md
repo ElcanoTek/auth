@@ -43,6 +43,7 @@ internal/store/      SQLite state and migrations
 internal/token/      signed magic, identity, access, and logout tokens
 internal/password/   password policy and Argon2id hashing
 internal/mfa/        TOTP, recovery codes, and secret sealing
+internal/mfa/qr/     in-process QR encoder for enrollment (MIT, see LICENSE)
 internal/backchannel/ and internal/provisioning/
                      durable signed logout and access delivery to apps
 deploy/              systemd, Caddy, and the installed auth wrapper
