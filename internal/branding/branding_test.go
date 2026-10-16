@@ -96,7 +96,7 @@ func TestLoadReadsOnlyBrandingAndValidatesValues(t *testing.T) {
 	}
 	supports := b.CSS[strings.Index(b.CSS, "@supports"):]
 	light := supports[strings.Index(supports, `[data-theme="light"]`):]
-	if !strings.Contains(light, "color-mix(in srgb, #e9eefc 34%, #fff) 0%") || !strings.Contains(light, "--gradient-surface-card: linear-gradient(145deg, #ffffff, color-mix(in srgb, #e9eefc 70%, #fff))") {
+	if !strings.Contains(light, "color-mix(in srgb, #e9eefc 18%, #fff) 0%") || !strings.Contains(light, "--gradient-surface-card: linear-gradient(145deg, #ffffff, color-mix(in srgb, #e9eefc 70%, #fff))") {
 		t.Fatalf("light gradients not derived with defaults:\n%s", light)
 	}
 	if !strings.Contains(b.CSS, "--gradient-action-primary: linear-gradient(140deg, #0B6E4F, #5f5f97);") {
@@ -176,6 +176,27 @@ func TestHoverOnlyPaletteRepaintsTheButton(t *testing.T) {
 	}
 }
 
+// A bundle's overlays reach the same roles as in Fleet: overlay_soft fills
+// neutral chips and overlay_strong is the modal backdrop, per mode.
+func TestOverlaysMapToChipFillAndBackdrop(t *testing.T) {
+	dir := writeBundle(t, "branding:\n  colors:\n    dark:\n      overlay_soft: \"rgba(0, 0, 0, 0.20)\"\n      overlay_strong: \"rgba(0, 0, 0, 0.40)\"\n    light:\n      overlay_soft: \"rgba(16, 18, 25, 0.05)\"\n      overlay_strong: \"rgba(16, 18, 25, 0.16)\"\n", nil)
+	b, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	light := b.CSS[strings.Index(b.CSS, `:root[data-theme="light"]`):]
+	for _, want := range []string{"--color-overlay-soft: rgba(0, 0, 0, 0.20);", "--color-scrim: rgba(0, 0, 0, 0.40);"} {
+		if !strings.Contains(b.CSS, want) {
+			t.Fatalf("dark CSS missing %q:\n%s", want, b.CSS)
+		}
+	}
+	for _, want := range []string{"--color-overlay-soft: rgba(16, 18, 25, 0.05);", "--color-scrim: rgba(16, 18, 25, 0.16);"} {
+		if !strings.Contains(light, want) {
+			t.Fatalf("light CSS missing %q:\n%s", want, b.CSS)
+		}
+	}
+}
+
 func TestValidColorGrammar(t *testing.T) {
 	for _, ok := range []string{"#fff", "#FFFF", "#0089F7", "#0089F7CC", "rgb(0, 137, 247)", "rgba(0,137,247,0.55)", "hsl(210 100% 48%)", "hsla(210, 100%, 48%, .5)", " #abc ", "hsl(210deg 100% 48%)", "rgb(0 0 0 / 50%)"} {
 		if !ValidColor(ok) {
@@ -224,7 +245,7 @@ branding:
 		"--color-secondary: #123456;",
 		"color-mix(in srgb, #123456 28%, transparent)", // dark second radial
 		"--color-surface-2: #ABCDEF;",
-		"color-mix(in srgb, #ABCDEF 34%, #fff) 0%", // light background linear
+		"color-mix(in srgb, #ABCDEF 18%, #fff) 0%", // light background linear
 		"--gradient-surface-card: linear-gradient(145deg, #ffffff, color-mix(in srgb, #ABCDEF 70%, #fff))",
 	} {
 		if !strings.Contains(b.CSS, want) {
