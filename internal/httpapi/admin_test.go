@@ -623,10 +623,20 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	}
 
 	// A typed temporary password that breaks the policy is refused, nothing is
-	// created, and the Add user popup is asked to reopen.
+	// created, and the Add user dialog is asked to reopen.
 	_, body = alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "password": {"danexample1"}, "team": {"Trading"}})
 	if !strings.Contains(body, "Temporary password:") || !strings.Contains(body, `<body data-reopen="add-user">`) {
 		t.Fatalf("policy refusal:\n%s", body)
+	}
+	// The reopened dialog is modal (the page behind it is inert), so the
+	// refusal must be rendered inside it, and only there.
+	dlg := body[strings.Index(body, `<dialog id="add-user"`):]
+	dlg = dlg[:strings.Index(dlg, "</dialog>")]
+	if !strings.Contains(dlg, `<div class="err" role="alert">`) || !strings.Contains(dlg, "Temporary password:") {
+		t.Fatalf("refusal not inside the reopened Add user dialog:\n%s", dlg)
+	}
+	if n := strings.Count(body, `<div class="err" role="alert">`); n != 1 {
+		t.Fatalf("refusal rendered %d times, want once (inside the dialog)", n)
 	}
 	if _, err := st.PasswordAccountByEmail(context.Background(), "dan@example.com"); err == nil {
 		t.Fatal("account created despite a refused password")

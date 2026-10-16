@@ -892,12 +892,19 @@ const adminScript = `
   }
   // A click on the backdrop (outside the panel) closes it, as the popovers
   // these replaced did.
+  // Both ends of the gesture must be outside: a press inside the panel (or
+  // a text-selection drag) that is released over the backdrop stays open.
   document.querySelectorAll("dialog.modal").forEach(function (dialog) {
-    dialog.addEventListener("click", function (event) {
-      if (event.target !== dialog) return;
+    function outside(event) {
+      if (event.target !== dialog) return false;
       var r = dialog.getBoundingClientRect();
-      var inside = event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
-      if (!inside) dialog.close();
+      return event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom;
+    }
+    var pressedOutside = false;
+    dialog.addEventListener("pointerdown", function (event) { pressedOutside = outside(event); });
+    dialog.addEventListener("click", function (event) {
+      if (pressedOutside && outside(event)) dialog.close();
+      pressedOutside = false;
     });
   });
   var reopen = document.body.getAttribute("data-reopen");
@@ -943,7 +950,7 @@ const adminHTML = `<!doctype html>
     </nav>
     {{if .NeedVerify}}<div class="banner warn" role="alert"><strong>Confirm it is you.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need your authenticator code entered less than five minutes ago. <a href="/account/security/verify?return_to=%2Fadmin">Enter it now</a> and then repeat the change.</div>
     {{else if .NeedEnroll}}<div class="banner warn" role="alert"><strong>Set up two-factor sign-in first.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need an administrator's own authenticator. <a href="/account/security?return_to=%2Fadmin">Set yours up</a> and then repeat the change.</div>
-    {{else if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+    {{else if and .Error (ne .Reopen "add-user")}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     {{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
     {{if .Secret}}<div class="secret" role="status">
       <p class="muted">Temporary password for <strong>{{.SecretFor}}</strong>. It is shown once and not stored: copy it now.</p>
@@ -1138,6 +1145,8 @@ const adminHTML = `<!doctype html>
 
     <dialog id="add-user" class="modal" aria-labelledby="add-user-title">
       <div class="modal-head"><h3 id="add-user-title">Add user</h3><button class="icon-btn close" type="button" commandfor="add-user" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+      {{/* A rejected Add user reopens this dialog (Reopen), and showModal makes the page behind it inert, so the reason has to be in here. */}}
+      {{if and .Error (eq .Reopen "add-user")}}<div class="err" role="alert">{{.Error}}</div>{{end}}
       <p class="who">A temporary password is shown once; they choose their own at first sign-in.</p>
       <form method="post" action="/admin">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="create">
