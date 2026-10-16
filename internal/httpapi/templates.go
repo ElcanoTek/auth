@@ -359,9 +359,26 @@ ul.plain { margin: 0 0 var(--space-4); padding-left: 1.1rem; font-size: var(--fo
 ul.plain li { margin: 0.2rem 0; }
 .modal label[for^="reason-"] { display: block; margin: var(--space-2) 0; }
 .seg-group { margin-bottom: var(--space-4); }
-.fleet-permissions { margin: 0 0 var(--space-4); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-2); }
-.fleet-permissions[hidden] { display: none; }
-.fleet-permissions h4 { margin: 0 0 var(--space-3); font-size: var(--font-size-body); }
+/* Fleet's application row: the checkbox plus the gear that reopens the
+   Fleet permissions dialog. Accent-tinted and labelled with the current role
+   so it reads as "configure this", not as decoration. */
+.app-row { display: flex; align-items: stretch; gap: var(--space-2); }
+.app-row > .permission-choice { flex: 1 1 auto; min-width: 0; }
+.fleet-edit {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 0.4rem; align-self: center;
+  min-height: 2.25rem; padding: 0.3rem 0.7rem; max-width: 11rem;
+  font: inherit; font-size: 0.75rem; font-weight: var(--font-weight-bold); line-height: 1.25; text-align: left;
+  color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 50%, transparent); border-radius: var(--radius-md);
+  cursor: pointer; transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.fleet-edit[hidden] { display: none; }
+.fleet-edit svg { flex: 0 0 auto; width: 1rem; height: 1rem; }
+.fleet-edit:hover { background: color-mix(in srgb, var(--color-accent) 20%, transparent); border-color: var(--color-accent); }
+.fleet-edit:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+:root[data-theme="light"] .fleet-edit { color: color-mix(in srgb, var(--color-accent) 75%, var(--color-text-primary)); }
+dialog.modal.fleet-perms { width: min(26rem, calc(100vw - 2rem)); }
+dialog.modal.fleet-perms .btn { margin-top: var(--space-4); }
 .permission-choice { display: block; padding: var(--space-2); border: 1px solid transparent; border-radius: var(--radius-md); font-size: var(--font-size-caption); color: var(--color-text-secondary); }
 .permission-choice input { margin-right: 0.4rem; accent-color: var(--color-primary); }
 .permission-choice small { display: block; margin: 0.12rem 0 0 1.35rem; color: var(--color-text-muted); }
@@ -821,13 +838,51 @@ const adminScript = `
   if (search) { search.addEventListener("input", filterAccounts); }
   if (filter) { filter.addEventListener("change", filterAccounts); }
   filterAccounts();
+  // Fleet permissions live in their own dialog inside the form. Ticking Fleet
+  // opens it (unless the account is an Auth Admin, which defaults to Fleet
+  // Admin with no prompt); the gear button beside Fleet reopens it and shows
+  // the current choice, so closing the dialog never loses the way back.
+  function isAuthAdmin(form) {
+    var admin = form.querySelector('input[name="admin"]');
+    return !!admin && (admin.type === "hidden" || admin.checked);
+  }
+  function fleetSummary(form) {
+    var fa = form.querySelector('input[name="fleet_admin"]');
+    if (fa && fa.checked) return "Fleet Admin";
+    var chat = form.querySelector('input[name="fleet_chat_role"]:checked');
+    var ops = form.querySelector('input[name="fleet_ops_role"]:checked');
+    var chatLabel = chat && chat.value === "viewer" ? "Viewer" : "Contributor";
+    var opsLabel = !ops || ops.value === "none" ? "None" : ops.value === "readonly" ? "Viewer" : "Contributor";
+    return "Chat " + chatLabel + " \u00b7 Ops " + opsLabel;
+  }
   document.querySelectorAll("form").forEach(function (form) {
     var toggle = form.querySelector('[data-fleet-toggle]');
-    var panel = form.querySelector('[data-fleet-permissions]');
-    if (!toggle || !panel) return;
-    function showFleetPermissions() { panel.hidden = !toggle.checked; }
-    toggle.addEventListener("change", showFleetPermissions);
-    showFleetPermissions();
+    var dialog = form.querySelector('[data-fleet-permissions]');
+    var edit = form.querySelector('[data-fleet-edit]');
+    if (!toggle || !dialog) return;
+    var summary = edit && edit.querySelector('[data-fleet-summary]');
+    // Deferred: the Fleet Admin and role handlers below adjust the other
+    // choices in the same change event, after this listener runs.
+    function refreshSummary() { setTimeout(function () { if (summary) summary.textContent = fleetSummary(form); }, 0); }
+    form.querySelectorAll('input[name="fleet_admin"], input[name="fleet_chat_role"], input[name="fleet_ops_role"]').forEach(function (input) {
+      input.addEventListener("change", refreshSummary);
+    });
+    toggle.addEventListener("change", function () {
+      if (edit) edit.hidden = !toggle.checked;
+      if (toggle.checked && isAuthAdmin(form)) {
+        // An Auth Admin defaults to Fleet Admin, including one who already
+        // was an Auth Admin (or is locked in) and ticks Fleet afterwards.
+        var fa = form.querySelector('input[name="fleet_admin"]');
+        if (fa && !fa.checked) { fa.checked = true; fa.dispatchEvent(new Event("change", { bubbles: true })); }
+      } else if (toggle.checked && dialog.showModal && !dialog.open) {
+        dialog.showModal();
+      }
+      if (!toggle.checked && dialog.open) dialog.close();
+    });
+    // Rendered visible so the permissions stay reachable without script;
+    // with script, it shows only while Fleet is ticked.
+    if (edit) edit.hidden = !toggle.checked;
+    refreshSummary();
   });
   document.querySelectorAll('input[name="admin"][type="checkbox"]').forEach(function (toggle) {
     toggle.addEventListener("change", function () {
@@ -1008,11 +1063,12 @@ const adminHTML = `<!doctype html>
                 {{if $row.Self}}<p class="hint">You cannot remove your own administrator access.</p>{{else if and $row.IsAdmin (not $row.CanDemote)}}<p class="hint">The last enabled administrator cannot be removed.</p>{{end}}
               </div>
               <div class="seg-group"><span class="seg-label">Applications</span>
-                {{if $row.Apps}}<div role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}<label class="permission-choice application-choice"><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}<small>Can sign in to {{.Name}}.</small></label>{{end}}</div>
+                {{if $row.Apps}}<div role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}{{if eq .ID "fleet"}}<div class="app-row"><label class="permission-choice application-choice"><input type="checkbox" name="apps" value="{{.ID}}" data-fleet-toggle{{if .Granted}} checked{{end}}> {{.Name}}<small>Can sign in to {{.Name}}.</small></label><button class="fleet-edit" type="button" data-fleet-edit commandfor="fleet-perms-{{$i}}" command="show-modal" aria-label="Fleet permissions for {{$row.Email}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg><span data-fleet-summary>{{if $row.FleetAdmin}}Fleet Admin{{else}}Chat {{if eq $row.FleetChatRole "viewer"}}Viewer{{else}}Contributor{{end}} · Ops {{if eq $row.FleetOpsRole "readonly"}}Viewer{{else if eq $row.FleetOpsRole "client"}}Contributor{{else}}None{{end}}{{end}}</span></button></div>{{else}}<label class="permission-choice application-choice"><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}<small>Can sign in to {{.Name}}.</small></label>{{end}}{{end}}</div>
                 <p class="hint">Deselecting an application signs them out of it now.</p>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
               </div>
-              <section class="fleet-permissions" data-fleet-permissions{{if not $row.FleetGranted}} hidden{{end}} aria-label="Fleet permissions for {{$row.Email}}">
-                <h4>Fleet permissions</h4>
+              <dialog id="fleet-perms-{{$i}}" class="modal fleet-perms" data-fleet-permissions aria-labelledby="fleet-perms-{{$i}}-title">
+                <div class="modal-head"><h3 id="fleet-perms-{{$i}}-title">Fleet permissions</h3><button class="icon-btn close" type="button" commandfor="fleet-perms-{{$i}}" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+                <p class="who">{{$row.Email}}</p>
                 {{if $row.FleetChangedAt}}<p class="hint" data-fleet-changed>Changed in Fleet{{if $row.FleetChangedBy}} by {{$row.FleetChangedBy}}{{end}} <span class="dot">&middot;</span> {{$row.FleetChangedAt}}</p>{{end}}
                 <div class="seg-group"><span class="seg-label">Fleet Admin</span>
                   <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"{{if $row.FleetAdmin}} checked{{end}}> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
@@ -1026,7 +1082,9 @@ const adminHTML = `<!doctype html>
                   <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="readonly"{{if eq $row.FleetOpsRole "readonly"}} checked{{end}}> Viewer<small>Can view Ops Center tasks and logs but cannot change them.</small></label>
                   <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="client"{{if eq $row.FleetOpsRole "client"}} checked{{end}}> Contributor<small>Can view, create, and run Ops Center tasks.</small></label>
                 </div>
-              </section>
+                <button class="btn" type="button" commandfor="fleet-perms-{{$i}}" command="close">Done</button>
+                <p class="hint">Saved with the rest of this account's access when you choose Save access.</p>
+              </dialog>
               <button class="btn" type="submit">Save access</button>
             </form>
           </dialog>
@@ -1161,11 +1219,12 @@ const adminHTML = `<!doctype html>
           <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>
         </div>
         <div class="seg-group"><span class="seg-label">Applications</span>
-          {{if .AppChoices}}<div role="group" aria-label="Applications">{{range .AppChoices}}<label class="permission-choice application-choice{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}<small>{{if .Granted}}Can sign in to {{.Name}}.{{else}}{{.Name}} is disabled for everyone.{{end}}</small></label>{{end}}</div>
+          {{if .AppChoices}}<div role="group" aria-label="Applications">{{range .AppChoices}}{{if eq .ID "fleet"}}<div class="app-row">{{end}}<label class="permission-choice application-choice{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}<small>{{if .Granted}}Can sign in to {{.Name}}.{{else}}{{.Name}} is disabled for everyone.{{end}}</small></label>{{if eq .ID "fleet"}}<button class="fleet-edit" type="button" data-fleet-edit commandfor="fleet-perms-new" command="show-modal" aria-label="Fleet permissions for the new user"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg><span data-fleet-summary>Chat Contributor · Ops None</span></button></div>{{end}}{{end}}</div>
           {{else}}<p class="muted">No applications are registered yet; register them with <code>auth app create</code> on the server.</p>{{end}}
         </div>
-        {{if .HasFleet}}<section class="fleet-permissions" data-fleet-permissions hidden aria-label="New user Fleet permissions">
-          <h4>Fleet permissions</h4>
+        {{if .HasFleet}}<dialog id="fleet-perms-new" class="modal fleet-perms" data-fleet-permissions aria-labelledby="fleet-perms-new-title">
+          <div class="modal-head"><h3 id="fleet-perms-new-title">Fleet permissions</h3><button class="icon-btn close" type="button" commandfor="fleet-perms-new" command="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+          <p class="who">For the new user.</p>
           <div class="seg-group"><span class="seg-label">Fleet Admin</span>
             <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
           </div>
@@ -1178,7 +1237,9 @@ const adminHTML = `<!doctype html>
             <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="readonly"> Viewer<small>Can view Ops Center tasks and logs but cannot change them.</small></label>
             <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="client"> Contributor<small>Can view, create, and run Ops Center tasks.</small></label>
           </div>
-        </section>{{end}}
+          <button class="btn" type="button" commandfor="fleet-perms-new" command="close">Done</button>
+          <p class="hint">Saved with the account when you choose Create account.</p>
+        </dialog>{{end}}
         <button class="btn" type="submit">Create account</button>
       </form>
     </dialog>
