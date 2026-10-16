@@ -24,7 +24,7 @@ import (
 	"strings"
 	"syscall"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // Brand is the loaded, validated result. A nil *Brand means "no bundle":
