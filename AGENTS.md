@@ -21,12 +21,12 @@ hardening: [`docs/DEPLOY.md`](docs/DEPLOY.md); relying apps:
 ## Build, test, lint
 
 ```sh
-make check   # gofmt -s + golangci-lint (pinned v2.12.0) + go vet + build + test
+make check   # gofmt -s + golangci-lint (pinned v2.14.0) + go vet + build + test
 make smoke   # real binaries: magic link, password, app handoff (needed for
              # auth/session/provisioning/deploy changes)
 go test -race ./...                      # CI runs this, not plain go test
 go mod verify && go mod tidy -diff       # CI dependency gate
-go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+GOTOOLCHAIN=go1.27.2 go run golang.org/x/vuln/cmd/govulncheck@latest ./...  # Go = go.mod's
 ```
 
 CI (`.github/workflows/ci.yml`) also runs gitleaks over the tree and full
@@ -45,8 +45,8 @@ as root. Every job must be green.
 - TOTP is fixed at SHA-1, 6 digits, 30 s, 160-bit secret, ±1 step, with
   replay refusal of any step at or before the last accepted one. These are
   constants, not settings: changing them breaks enrolled authenticators. The
-  stored secret is raw bytes; the otpauth URI and QR are pinned byte-for-byte
-  by `internal/mfa/testdata/totp_golden.json`.
+  stored secret is raw bytes; the otpauth URI and QR are pinned by golden
+  tests (`internal/mfa/golden_test.go`, `testdata/totp_golden.json`).
 - The enrollment QR is rendered in process (`internal/mfa/qr`); the secret
   never goes to an external service. Fonts are self-hosted; no CDN.
 - Fixtures stay generic: never a real hostname, account, credential or
@@ -58,11 +58,14 @@ as root. Every job must be green.
 
 Prefer the standard library or small owned code; add a dependency only when it
 clearly earns its place (cryptographic primitives and the SQLite driver do).
-Update a dependency only for a specific, compelling upstream change or a CVE
-whose code path we actually reach — not on a schedule. For a CVE: check
-reachability with govulncheck first; if the affected code is unused, delete
-it; if it is in-housed, port the fix by hand. Dependabot opens gomod
-*security* updates only; GitHub Actions updates stay weekly.
+Dependabot proposes updates daily, grouped, after a cooldown of 7 days (3 for
+patch releases); a human merges them only when the bump earns it — a security
+fix whose code path we use, or a specific commit we need. In-housed code is ours and is not tracked by
+Dependabot. For a CVE: check reachability with govulncheck first; if the
+affected code is unused, delete it; if it is in-housed, port the fix by hand.
+The Go toolchain is the `go` line in `go.mod` (Dependabot does not move it);
+every build path uses `GOTOOLCHAIN=auto`. `modernc.org/libc` stays at the
+version `modernc.org/sqlite` requires — never bump it on its own.
 
 | What | Where | Upstream, version | License |
 | --- | --- | --- | --- |
