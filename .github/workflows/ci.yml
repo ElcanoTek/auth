@@ -7,9 +7,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# PRs: one run per ref, a new push cancels the old one. Pushes to main and
+# manual runs: one group per commit, so every main commit gets its own CI run
+# (GitHub keeps only one pending run per group and would drop the rest).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -20,9 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install gitleaks
         env:
@@ -48,10 +52,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -66,22 +72,24 @@ jobs:
           fi
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          # v2.12+ release binaries are built with Go 1.25; older ones
-          # (e.g. v2.1.x, built with 1.24) refuse to run against a go.mod
-          # that targets 1.25. Keep this >= the go directive in go.mod.
-          version: v2.12.0
+          # The binary must be built with a Go at least as new as go.mod's
+          # `go` line (v2.14.0 is the first that runs against 1.27). Keep in
+          # step with GOLANGCI_VERSION in the Makefile.
+          version: v2.14.0
 
   test:
     name: Vet & Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # Single source of truth: the `go` directive in go.mod. setup-go
           # resolves it to the latest matching patch release, so stdlib
@@ -102,20 +110,24 @@ jobs:
 
       - name: Coverage summary
         run: |
-          echo '### Go test coverage' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '### Go test coverage'
+            echo '```'
+            go tool cover -func=coverage.out | tail -1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   smoke:
     name: Smoke (magic + password + app handoff)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -136,22 +148,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Run govulncheck
-        # Pinned, not @latest, so a new tool release cannot turn the job red
-        # without a scan. v1.1.4 was pinned while go.mod named Go 1.25 (it is
-        # the last release that builds there) and still builds on the go.mod
-        # toolchain (1.26); its vulnerability database is fetched live, so
-        # pinning the tool does not pin the advisories.
+        # @latest, as upstream Go documents and fleet runs it: a pin nobody
+        # bumps costs detection as the analysis improves, and the advisory
+        # database is fetched live either way, so this job can turn red with
+        # no commit involved — that is the gate working. If a bad release
+        # ever blocks every PR, pinning here is the one-line rollback.
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          go install golang.org/x/vuln/cmd/govulncheck@latest
           set +e
           output="$("$(go env GOPATH)/bin/govulncheck" ./... 2>&1)"
           status=$?
@@ -170,7 +184,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: ShellCheck the deploy/ops scripts
         # These scripts run as root and do destructive things (install

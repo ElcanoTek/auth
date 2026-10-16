@@ -7,7 +7,7 @@ features are welcome.
 
 - Go at the version declared in [`go.mod`](go.mod).
 - Bash and standard Unix tools for the smoke and deployment-script tests.
-- `golangci-lint` v2.12.0; `make lint` downloads the pinned version through Go
+- `golangci-lint` v2.14.0; `make lint` downloads the pinned version through Go
   when it is not already cached.
 
 No email provider, external identity service, or production credential is
@@ -43,6 +43,7 @@ internal/store/      SQLite state and migrations
 internal/token/      signed magic, identity, access, and logout tokens
 internal/password/   password policy and Argon2id hashing
 internal/mfa/        TOTP, recovery codes, and secret sealing
+internal/mfa/qr/     in-process QR encoder for enrollment (MIT, see LICENSE)
 internal/backchannel/ and internal/provisioning/
                      durable signed logout and access delivery to apps
 deploy/              systemd, Caddy, and the installed auth wrapper

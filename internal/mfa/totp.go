@@ -12,18 +12,21 @@ package mfa
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/subtle"
 	"encoding/base32"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"image/png"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 
-	"github.com/pquerna/otp"
-	"github.com/pquerna/otp/hotp"
-	"github.com/pquerna/otp/totp"
+	"github.com/elcanotek/auth/internal/mfa/qr"
 )
 
 const (
@@ -70,10 +73,29 @@ func ValidateIssuer(issuer string) error {
 	return nil
 }
 
+// ProvisioningKey is one enrollment's provisioning key: the otpauth:// URI
+// an authenticator app scans.
+type ProvisioningKey struct {
+	uri string
+}
+
+// URL returns the otpauth:// provisioning URI, exactly as the QR code
+// encodes it.
+func (k *ProvisioningKey) URL() string { return k.uri }
+
 // Key builds the provisioning key (otpauth:// URI and QR source) for one
-// enrollment. The library escapes the label and parameters; we only supply
-// the fixed parameters explicitly so the contract is visible here.
-func Key(issuer, account string, secret []byte) (*otp.Key, error) {
+// enrollment.
+//
+// The label "/<issuer>:<account>" is path-escaped by net/url, and the query
+// lists algorithm, digits, issuer, period and secret in that (sorted) order.
+// Query values are query-escaped, so "&", "+", "#", "=" and "%" in an issuer
+// survive a query parser, with a space written as %20 rather than "+"
+// because some authenticator apps render "+" literally. For issuers without
+// those characters the URI is byte-for-byte what github.com/pquerna/otp
+// v1.5.0 produced before it was replaced (golden tests pin it); pquerna
+// path-escaped query values, which left "&" and "+" raw and so corrupted
+// issuers such as "R&D" or "C++".
+func Key(issuer, account string, secret []byte) (*ProvisioningKey, error) {
 	if err := ValidateIssuer(issuer); err != nil {
 		return nil, err
 	}
@@ -83,23 +105,42 @@ func Key(issuer, account string, secret []byte) (*otp.Key, error) {
 	if strings.TrimSpace(account) == "" {
 		return nil, errors.New("mfa: account label is required")
 	}
-	return totp.Generate(totp.GenerateOpts{
-		Issuer:      strings.TrimSpace(issuer),
-		AccountName: account,
-		Secret:      secret,
-		Period:      Period,
-		Digits:      otp.DigitsSix,
-		Algorithm:   otp.AlgorithmSHA1,
-	})
+	issuer = strings.TrimSpace(issuer)
+	query := "algorithm=SHA1" +
+		"&digits=" + fmt.Sprint(Digits) +
+		"&issuer=" + queryEscape(issuer) +
+		"&period=" + fmt.Sprint(Period) +
+		"&secret=" + queryEscape(Base32Secret(secret))
+	u := url.URL{
+		Scheme:   "otpauth",
+		Host:     "totp",
+		Path:     "/" + issuer + ":" + account,
+		RawQuery: query,
+	}
+	uri := strings.TrimSpace(u.String())
+	if _, err := url.Parse(uri); err != nil {
+		return nil, err
+	}
+	return &ProvisioningKey{uri: uri}, nil
+}
+
+// queryEscape escapes a query value, writing a space as %20. QueryEscape
+// renders a literal "+" as %2B, so every "+" left in its output is a space.
+func queryEscape(v string) string {
+	return strings.ReplaceAll(url.QueryEscape(v), "+", "%20")
 }
 
 // QRPNG renders the provisioning URI as a PNG of the given pixel size, in
 // process. The secret never leaves the binary: no external QR service.
-func QRPNG(key *otp.Key, size int) ([]byte, error) {
+func QRPNG(key *ProvisioningKey, size int) ([]byte, error) {
 	if size < 120 || size > 1024 {
 		return nil, errors.New("mfa: QR size out of range")
 	}
-	img, err := key.Image(size, size)
+	code, err := qr.Encode(key.uri)
+	if err != nil {
+		return nil, err
+	}
+	img, err := qr.Scale(code, size, size)
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +149,20 @@ func QRPNG(key *otp.Key, size int) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// hotpCode is the RFC 4226 HOTP value for secret at counter: HMAC-SHA-1 of
+// the big-endian counter, dynamic truncation to 31 bits, then the low six
+// decimal digits, zero-padded.
+func hotpCode(secret []byte, counter uint64) string {
+	var msg [8]byte
+	binary.BigEndian.PutUint64(msg[:], counter)
+	mac := hmac.New(sha1.New, secret)
+	mac.Write(msg[:])
+	sum := mac.Sum(nil)
+	offset := sum[len(sum)-1] & 0x0f
+	value := binary.BigEndian.Uint32(sum[offset:offset+4]) & 0x7fffffff
+	return fmt.Sprintf("%06d", value%1_000_000)
 }
 
 // StepAt is the TOTP counter for a moment in time.
@@ -151,8 +206,6 @@ func Verify(secret []byte, code string, now time.Time, lastAcceptedStep int64) (
 	if code == "" || len(secret) != SecretSize {
 		return 0, false
 	}
-	encoded := Base32Secret(secret)
-	opts := hotp.ValidateOpts{Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1}
 	current := StepAt(now)
 	var matched int64
 	ok := false
@@ -160,10 +213,7 @@ func Verify(secret []byte, code string, now time.Time, lastAcceptedStep int64) (
 		if step < 0 {
 			continue
 		}
-		expected, err := hotp.GenerateCodeCustom(encoded, uint64(step), opts)
-		if err != nil {
-			return 0, false
-		}
+		expected := hotpCode(secret, uint64(step))
 		equal := subtle.ConstantTimeCompare([]byte(expected), []byte(code)) == 1
 		if equal && step > lastAcceptedStep {
 			matched, ok = step, true

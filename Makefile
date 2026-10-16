@@ -2,7 +2,11 @@
 
 .PHONY: all build deps test check lint smoke clean tidy run
 
-GOLANGCI_VERSION := v2.12.0
+GOLANGCI_VERSION := v2.14.0
+# The toolchain go.mod names. `go run tool@version` would otherwise build the
+# tool with the lowest Go its own go.mod allows, and a Go-analysing tool built
+# with an older Go than go.mod's refuses to run.
+GO_PINNED := $(shell awk '/^go /{print "go" $$2; exit}' go.mod)
 
 all: build
 
@@ -29,7 +33,7 @@ test:
 ## lint: gofmt -s check + golangci-lint (matches the CI lint gate)
 lint:
 	@out="$$(gofmt -s -l .)"; if [ -n "$$out" ]; then echo "gofmt -s needed on:"; echo "$$out"; echo "run: gofmt -s -w ."; exit 1; fi
-	GOTOOLCHAIN=auto go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION) run ./...
+	GOTOOLCHAIN=$(GO_PINNED) go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION) run ./...
 
 ## check: the pre-push gate (lint + vet + build + test)
 check:

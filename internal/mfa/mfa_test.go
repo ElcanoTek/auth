@@ -72,8 +72,8 @@ func codeAt(t *testing.T, step int64) (string, time.Time) {
 			return v.code, at
 		}
 	}
-	// Derive via Verify's own generator path: brute-force is unnecessary,
-	// the library exposes GenerateCodeCustom through hotp; reuse it.
+	// Derive via Verify's own HOTP generator; it is pinned separately by the
+	// RFC 4226 vectors and the golden file.
 	code, err := generateForTest(rfcSecret, step)
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +285,7 @@ func TestPolicy(t *testing.T) {
 // must then record the later step, so presenting the same value again at
 // that step is a replay and fails. The secret and step below were found by
 // search (steps 70000018 and 70000019 both yield 000180); the test fails if
-// the library's HOTP ever changes.
+// the HOTP implementation ever changes.
 func TestVerifyCollisionRecordsTheLaterStep(t *testing.T) {
 	secret := []byte("collide-000000062449")
 	const first = int64(70000018)
