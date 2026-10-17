@@ -892,8 +892,10 @@ That runs `scripts/update.sh`, which:
 5. Re-installs the login banner (`/etc/motd`) from `deploy/motd` when it
    differs. Bootstrap installs it too, replacing whatever the image shipped.
 6. Keeps Cockpit off: masks `cockpit.socket` and removes the `cockpit`
-   service from firewalld when present (bootstrap does the same). A no-op
-   where Cockpit is not installed.
+   service from firewalld when present, and installs
+   `deploy/cockpit-ws.tmpfiles.conf` as `/etc/tmpfiles.d/cockpit-ws.conf` so
+   Cockpit's "Activate the web console" notice leaves the login banner
+   (bootstrap does the same). A no-op where Cockpit is not installed.
 
 Steps 5 and 6 also run when there is nothing new to deploy, so a plain
 `auth update` brings an existing box's banner and Cockpit state in line.

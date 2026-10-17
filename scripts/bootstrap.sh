@@ -970,6 +970,20 @@ disable_cockpit() {
     services="$(firewall-cmd --permanent --list-services 2>/dev/null || true)"
     [[ " $services " != *" cockpit "* ]] || fw=1
   fi
+  # Masking leaves cockpit-ws's "Activate the web console" line in the login
+  # banner (/etc/motd.d/cockpit -> /run/cockpit/issue, made at boot by the
+  # package's tmpfiles.d entry). A same-named /etc/tmpfiles.d copy overrides it.
+  local tmpf_src="$APP_DIR/deploy/cockpit-ws.tmpfiles.conf" tmpf_dst=/etc/tmpfiles.d/cockpit-ws.conf
+  if [[ -f /usr/lib/tmpfiles.d/cockpit-ws.conf && -f "$tmpf_src" ]] && command -v systemd-tmpfiles >/dev/null 2>&1 \
+     && ! cmp -s "$tmpf_src" "$tmpf_dst"; then
+    if [[ "$DRY_RUN" == "1" ]]; then
+      info "DRY_RUN: would install $tmpf_dst to blank the Cockpit login notice"
+    elif install -m 0644 "$tmpf_src" "$tmpf_dst" && systemd-tmpfiles --create "$tmpf_dst"; then
+      ok "Cockpit login notice blanked ($tmpf_dst)"
+    else
+      warn "could not install $tmpf_dst to blank the Cockpit login notice"
+    fi
+  fi
   if [[ "$DRY_RUN" == "1" ]]; then
     [[ "$(systemctl is-enabled cockpit.socket 2>/dev/null || true)" == "masked" ]] \
       || info "DRY_RUN: would disable --now and mask cockpit.socket"

@@ -164,6 +164,18 @@ disable_cockpit() {
       warn "could not disable and mask cockpit.socket"
     fi
   fi
+  # Masking leaves cockpit-ws's "Activate the web console" line in the login
+  # banner (/etc/motd.d/cockpit -> /run/cockpit/issue, made at boot by the
+  # package's tmpfiles.d entry). A same-named /etc/tmpfiles.d copy overrides it.
+  local tmpf_src="$SRC_DIR/deploy/cockpit-ws.tmpfiles.conf" tmpf_dst=/etc/tmpfiles.d/cockpit-ws.conf
+  if [[ -f /usr/lib/tmpfiles.d/cockpit-ws.conf && -f "$tmpf_src" ]] && command -v systemd-tmpfiles >/dev/null 2>&1 \
+     && ! cmp -s "$tmpf_src" "$tmpf_dst"; then
+    if install -m 0644 "$tmpf_src" "$tmpf_dst" && systemd-tmpfiles --create "$tmpf_dst"; then
+      ok "Cockpit login notice blanked ($tmpf_dst)"
+    else
+      warn "could not install $tmpf_dst to blank the Cockpit login notice"
+    fi
+  fi
   if [[ "$fw" == 1 ]]; then
     if firewall-cmd --permanent --remove-service=cockpit >/dev/null && firewall-cmd --reload >/dev/null; then
       ok "firewalld: cockpit removed"
