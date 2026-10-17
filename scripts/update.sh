@@ -21,6 +21,7 @@ APP_DIR="${APP_DIR:-/opt/auth}"
 APP_USER="${APP_USER:-auth}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}" # overridable for tests
 CLI_BIN="${CLI_BIN:-/usr/local/bin/auth}"         # overridable for tests
+MOTD_FILE="${MOTD_FILE:-/etc/motd}"               # overridable for tests
 
 # Copy SRC onto DEST as a root-owned regular file. A symlink destination is
 # replaced; a symlink source is refused. GNU install would follow either.
@@ -493,6 +494,19 @@ if wait_healthy; then
   ok "auth-server healthy"
 else
   rollback_and_die "new build (${after_sha:0:12}) didn't come up healthy"
+fi
+
+# Keep the login banner in sync with deploy/motd: boxes bootstrapped before
+# the banner existed kept the image's motd, and this heals drift on every
+# update. Installed from the root-owned tree just synced from the trusted
+# checkout; a failure here is reported, never fatal (the update is done).
+motd_src="$APP_DIR/deploy/motd"
+if [[ -f "$motd_src" && ! -L "$motd_src" ]] && ! cmp -s "$motd_src" "$MOTD_FILE"; then
+  if install -m 0644 "$motd_src" "$MOTD_FILE"; then
+    ok "motd installed/refreshed"
+  else
+    warn "could not install $motd_src to $MOTD_FILE"
+  fi
 fi
 
 say

@@ -1,0 +1,16 @@
+     ╔══════════════════╗
+     ║   ELCANO  AUTH   ║
+     ║   ──────────     ║
+     ║   one login      ║
+     ║   for the stack  ║
+     ╚══════════════════╝
+
+Elcano Auth: the sign-in service for this client's apps (Go + SQLite).
+
+  health    auth status · auth doctor
+  logs      auth logs
+  update    auth update
+  users     auth user --help
+  more      auth --help
+
+  source /opt/auth-src · app /opt/auth · unit auth-server.service

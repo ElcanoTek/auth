@@ -889,6 +889,8 @@ That runs `scripts/update.sh`, which:
    version. The journalctl pointer it prints is for *investigating* the
    bad build, not manual recovery. (Only if the rollback _itself_ also
    fails `/healthz` does it stop and ask for manual recovery.)
+5. Re-installs the login banner (`/etc/motd`) from `deploy/motd` when it
+   differs. Bootstrap installs it too, replacing whatever the image shipped.
 
 Your `.env.local`, the SQLite file, and the domain allowlist all
 live outside the paths `update.sh` replaces.

@@ -153,7 +153,7 @@ ENV
 run_update() {  # extra env as args
   env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LAYOUT_BUILD_GOFLAGS="-p=1" \
     APP_DIR="$APP" SRC_DIR="$SRC" APP_USER="$APP_USER" SYSTEMD_DIR="$SYSTEMD" CLI_BIN="$BIN/auth" \
-    LOCK_FILE="$T/lock" BUILD_CACHE="$CACHE" AUTH_UPDATE_NO_PULL=1 AUTH_UPDATE_YES=1 "$@" \
+    MOTD_FILE="$T/motd" LOCK_FILE="$T/lock" BUILD_CACHE="$CACHE" AUTH_UPDATE_NO_PULL=1 AUTH_UPDATE_YES=1 "$@" \
     bash "$SRC/scripts/update.sh"
 }
 cli() {  # run the installed wrapper as root with the test prefix
@@ -191,6 +191,7 @@ chown -R "$APP_USER:$APP_USER" "$APP/data"; touch "$APP/data/state.db-wal"; chow
 # ── 2. the one-time migration: new update.sh from the trusted checkout ─
 section "migration run (update.sh from SRC_DIR, rebuild-only)"
 if run_update >"$T/update1.log" 2>&1; then ok "update.sh succeeded"; else bad "update.sh failed"; tail -20 "$T/update1.log"; fi
+cmp -s "$SRC/deploy/motd" "$T/motd" && [[ "$(stat -c '%a' "$T/motd")" == "644" ]] && ok "update installed deploy/motd (0644)" || bad "motd not installed from deploy/motd"
 check layout_ok
 check test ! -e "$APP/scripts/lib/evil.sh"
 check test ! -e "$APP/scripts/planted-link"

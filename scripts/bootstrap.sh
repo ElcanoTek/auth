@@ -958,16 +958,14 @@ else
 fi
 
 # ── motd ────────────────────────────────────────────────────────────
-[[ "$DRY_RUN" == "1" || -s /etc/motd ]] || tee /etc/motd > /dev/null <<'MOTD'
-     ╔══════════════════╗
-     ║   ELCANO  AUTH   ║
-     ║   ──────────     ║
-     ║   one login      ║
-     ║   for the stack  ║
-     ╚══════════════════╝
-
-To manage auth → `auth --help`
-MOTD
+# Single source of truth is deploy/motd, installed unconditionally: a fresh
+# image ships its own /etc/motd (cloud-init's notice) that must not survive.
+# update.sh keeps it in sync on existing boxes.
+if [[ "$DRY_RUN" == "1" ]]; then
+  info "DRY_RUN: would install $APP_DIR/deploy/motd to /etc/motd"
+else
+  install -m 0644 "$APP_DIR/deploy/motd" /etc/motd
+fi
 
 # ── final card ──────────────────────────────────────────────────────
 say
