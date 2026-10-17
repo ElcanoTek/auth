@@ -895,6 +895,9 @@ That runs `scripts/update.sh`, which:
    service from firewalld when present (bootstrap does the same). A no-op
    where Cockpit is not installed.
 
+Steps 5 and 6 also run when there is nothing new to deploy, so a plain
+`auth update` brings an existing box's banner and Cockpit state in line.
+
 Your `.env.local`, the SQLite file, and the domain allowlist all
 live outside the paths `update.sh` replaces.
 

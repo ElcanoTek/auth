@@ -145,6 +145,55 @@ wait_healthy() {
   return 1
 }
 
+# cockpit.socket served a root-capable web login on :9090 on an internet-facing
+# box whose only admin path is ssh. Keep it off: socket masked, service out of
+# a running firewalld. Idempotent; a no-op without systemd or cockpit; never
+# fails the run, never installs or removes packages, never touches ufw/iptables.
+disable_cockpit() {
+  local fw=0 services
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [[ -n "$(systemctl list-unit-files cockpit.socket --no-legend 2>/dev/null || true)" ]] || return 0
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    services="$(firewall-cmd --permanent --list-services 2>/dev/null || true)"
+    [[ " $services " != *" cockpit "* ]] || fw=1
+  fi
+  if [[ "$(systemctl is-enabled cockpit.socket 2>/dev/null || true)" != "masked" ]]; then
+    if systemctl disable --now cockpit.socket >/dev/null 2>&1 && systemctl mask cockpit.socket >/dev/null 2>&1; then
+      ok "cockpit.socket disabled and masked"
+    else
+      warn "could not disable and mask cockpit.socket"
+    fi
+  fi
+  if [[ "$fw" == 1 ]]; then
+    if firewall-cmd --permanent --remove-service=cockpit >/dev/null && firewall-cmd --reload >/dev/null; then
+      ok "firewalld: cockpit removed"
+    else
+      warn "could not remove cockpit from firewalld"
+    fi
+  fi
+  return 0
+}
+# Keep the login banner in sync with deploy/motd: boxes bootstrapped before
+# the banner existed kept the image's motd, and this heals drift on every
+# update. Read from the source checkout, which require_trusted_checkout has
+# proven root's alone (the no-op paths below skip the install-tree sync); a
+# failure here is reported, never fatal.
+sync_motd() {
+  local motd_src="$SRC_DIR/deploy/motd"
+  if [[ -f "$motd_src" && ! -L "$motd_src" ]] && ! cmp -s "$motd_src" "$MOTD_FILE"; then
+    if install -m 0644 "$motd_src" "$MOTD_FILE"; then
+      ok "motd installed/refreshed"
+    else
+      warn "could not install $motd_src to $MOTD_FILE"
+    fi
+  fi
+  return 0
+}
+
+# Host upkeep that runs on every path that ends with a healthy service,
+# including "nothing to update", so a box adopts it on its next update.
+host_upkeep() { disable_cockpit; sync_motd; }
+
 [[ $EUID -eq 0 ]] || die "run as root: sudo auth update"
 
 # Serialize against another in-flight update/rebuild. Two concurrent runs race
@@ -321,6 +370,7 @@ else
       if wait_healthy; then
         update_succeeded=1
         ok "auth-server restarted on bundle ${bundle_after:0:12}"
+        host_upkeep
         exit 0
       fi
       restore_bundle || true
@@ -329,6 +379,7 @@ else
       die "auth-server did not come up on the new bundle AND is unhealthy after the reset — manual recovery needed: journalctl -u auth-server -n 50"
     fi
     ok "already on ${after_sha:0:12} — nothing to update"
+    host_upkeep
     exit 0
   fi
 
@@ -495,49 +546,8 @@ if wait_healthy; then
 else
   rollback_and_die "new build (${after_sha:0:12}) didn't come up healthy"
 fi
+host_upkeep
 
-# cockpit.socket served a root-capable web login on :9090 on an internet-facing
-# box whose only admin path is ssh. Keep it off: socket masked, service out of
-# a running firewalld. Idempotent; a no-op without systemd or cockpit; never
-# fails the run, never installs or removes packages, never touches ufw/iptables.
-disable_cockpit() {
-  local fw=0 services
-  command -v systemctl >/dev/null 2>&1 || return 0
-  [[ -n "$(systemctl list-unit-files cockpit.socket --no-legend 2>/dev/null || true)" ]] || return 0
-  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-    services="$(firewall-cmd --permanent --list-services 2>/dev/null || true)"
-    [[ " $services " != *" cockpit "* ]] || fw=1
-  fi
-  if [[ "$(systemctl is-enabled cockpit.socket 2>/dev/null || true)" != "masked" ]]; then
-    if systemctl disable --now cockpit.socket >/dev/null 2>&1 && systemctl mask cockpit.socket >/dev/null 2>&1; then
-      ok "cockpit.socket disabled and masked"
-    else
-      warn "could not disable and mask cockpit.socket"
-    fi
-  fi
-  if [[ "$fw" == 1 ]]; then
-    if firewall-cmd --permanent --remove-service=cockpit >/dev/null && firewall-cmd --reload >/dev/null; then
-      ok "firewalld: cockpit removed"
-    else
-      warn "could not remove cockpit from firewalld"
-    fi
-  fi
-  return 0
-}
-disable_cockpit
-
-# Keep the login banner in sync with deploy/motd: boxes bootstrapped before
-# the banner existed kept the image's motd, and this heals drift on every
-# update. Installed from the root-owned tree just synced from the trusted
-# checkout; a failure here is reported, never fatal (the update is done).
-motd_src="$APP_DIR/deploy/motd"
-if [[ -f "$motd_src" && ! -L "$motd_src" ]] && ! cmp -s "$motd_src" "$MOTD_FILE"; then
-  if install -m 0644 "$motd_src" "$MOTD_FILE"; then
-    ok "motd installed/refreshed"
-  else
-    warn "could not install $motd_src to $MOTD_FILE"
-  fi
-fi
 
 say
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
