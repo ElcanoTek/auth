@@ -480,7 +480,7 @@ func TestProductionPasswordCookieUsesHostPrefixAndSecurityFlags(t *testing.T) {
 
 func TestPasswordModeDoesNotExposeMagicLinkRoutes(t *testing.T) {
 	ts, _, _, _ := newPasswordTestServer(t, false)
-	for _, path := range []string{"/magic", "/sent", "/callback"} {
+	for _, path := range []string{"/magic", "/magic/code", "/sent", "/callback"} {
 		req, _ := http.NewRequest(http.MethodGet, ts.URL+path, nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

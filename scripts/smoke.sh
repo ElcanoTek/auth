@@ -13,6 +13,10 @@
 #   6. /me    WITH the cookie   → authenticated:true with the right email
 #   7. reusing the magic link   → bounced (single-use enforced)
 #   8. POST /magic (DISALLOWED domain) → no email emitted (no enum oracle)
+#   9. POST /magic/code with the emailed code, in the browser that asked
+#      → 303 + Set-Cookie, and /verify sees the new identity (the sign-in
+#      page offers the code form to that browser first)
+#  10. reusing the code         → bounced (single-use enforced)
 #
 # No secrets, no network: stdout driver + a throwaway SQLite dir. Safe to
 # run locally (`bash scripts/smoke.sh`) or in CI. Exits non-zero on the
@@ -134,6 +138,45 @@ after="$(grep -c 'email/stdout' "$LOG" || true)"
 [[ "$before" == "$after" ]] || fail "8. disallowed domain triggered an email send (oracle leak)"
 grep -qi 'notallowed.test' "$LOG" && fail "8. disallowed address appeared in send log (oracle leak)"
 pass "8. disallowed domain → no email emitted (no enum oracle)"
+
+# ── 9. sign in with the emailed code, in the browser that asked ──────
+# A fresh cookie jar is the "browser": /magic hands it the transaction
+# cookie the code is bound to (a Home Screen web app, say), and the code is
+# read from the email rather than clicked.
+CODE_JAR="$WORK/code-cookies.txt"
+before="$(grep -c 'Your sign-in code:' "$LOG" || true)"
+curl -s -o /dev/null -c "$CODE_JAR" -X POST --data-urlencode 'email=bob@example.com' "$BASE/magic"
+grep -q 'auth_magic_tx' "$CODE_JAR" || fail "9. /magic did not set the auth_magic_tx cookie"
+signin_code=""
+for _ in $(seq 1 20); do
+  if [[ "$(grep -c 'Your sign-in code:' "$LOG" || true)" -gt "$before" ]]; then
+    signin_code="$(grep -oE 'Your sign-in code: [0-9]{6}' "$LOG" | tail -1 | grep -oE '[0-9]{6}$')"
+    break
+  fi
+  sleep 0.1
+done
+[[ -n "$signin_code" ]] || fail "9. no sign-in code found in server log"
+# An app relaunched from the Home Screen lands on the sign-in page, not /sent;
+# with the transaction cookie still set, that page must offer the code form.
+curl -s -b "$CODE_JAR" "$BASE/" | grep -q 'action="/magic/code"' \
+  || fail "9. sign-in page did not offer the code form to a browser holding a transaction cookie"
+cp "$CODE_JAR" "$WORK/code-cookies-before.txt" # still holds the transaction cookie, for step 10
+chdrs="$(curl -s -D - -o /dev/null -b "$CODE_JAR" -c "$CODE_JAR" -X POST \
+          --data-urlencode 'email=bob@example.com' --data-urlencode "code=$signin_code" "$BASE/magic/code")"
+echo "$chdrs" | grep -qiE '^HTTP/[0-9.]+ 303' || fail "9. /magic/code expected 303, got: $(echo "$chdrs" | head -1)"
+echo "$chdrs" | grep -qi '^set-cookie: elcano_auth=' || fail "9. /magic/code did not Set-Cookie elcano_auth"
+cvhdrs="$(curl -s -D - -o /dev/null -b "$CODE_JAR" "$BASE/verify")"
+echo "$cvhdrs" | grep -qi '^x-user-email: bob@example.com' || fail "9. /verify after code sign-in missing X-User-Email: bob@example.com"
+pass "9. POST /magic/code → 303 + Set-Cookie elcano_auth (bob@example.com)"
+
+# ── 10. the code is single-use ───────────────────────────────────────
+# Replay the same code with the transaction cookie as it was before step 9
+# (success cleared it from the live jar), so only single-use can refuse it.
+rhdrs="$(curl -s -D - -o /dev/null -b "$WORK/code-cookies-before.txt" -X POST \
+          --data-urlencode 'email=bob@example.com' --data-urlencode "code=$signin_code" "$BASE/magic/code")"
+echo "$rhdrs" | grep -i '^location:' | grep -q 'err=invalid_code' || fail "10. reused code should bounce with err=invalid_code"
+echo "$rhdrs" | grep -qi '^set-cookie: elcano_auth=' && fail "10. reused code must not set a session cookie"
+pass "10. reusing the sign-in code is rejected"
 
 echo
 pass "smoke test passed"

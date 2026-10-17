@@ -10,8 +10,9 @@
 //	POST /token      — confidential-client authorization-code exchange
 //	GET  /.well-known/openid-configuration — application handoff discovery
 //	GET  /jwks.json  — current and overlapping identity signing keys
-//	POST /magic      — issue + email a magic link (form post or JSON)
-//	GET  /sent       — "check your inbox" confirmation page
+//	POST /magic      — issue + email a magic link and its sign-in code
+//	GET  /sent       — "check your inbox" page with the code form
+//	POST /magic/code — redeem the code in the browser that asked for it
 //	GET  /callback   — verify magic token, set session cookie, redirect
 //	POST /logout     — clear cookie, render goodbye
 //	GET  /verify     — Caddy forward_auth target. 200 + X-User-Email
@@ -64,6 +65,7 @@ type Server struct {
 	passwordSlots     chan struct{} // bounds concurrent Argon2 computations
 	attemptGate       chan struct{} // 1-slot gate around limit-check + attempt-reserve
 	rateKeyMAC        []byte        // per-deployment HMAC key for rate-limit and audit hashes
+	magicCodeKey      []byte        // per-deployment HMAC key for stored magic-link sign-in codes
 	started           time.Time     // Last-Modified for assets snapshotted at startup (the brand logo)
 
 	// sends tracks in-flight magic-link email goroutines so graceful
@@ -91,6 +93,14 @@ func New(cfg *config.Config, st *store.Store, sender email.Sender) *Server {
 		panic(fmt.Sprintf("derive rate-key MAC: %v", err))
 	}
 	s.rateKeyMAC = mac
+	// Magic-link sign-in codes are stored as an HMAC under their own key
+	// (see magic_code.go): a 10^6 code space hashed without a secret is a
+	// lookup table away from plaintext.
+	codeKey, err := hkdf.Key(sha256.New, []byte(cfg.SigningKey), nil, "elcano-auth/magic-code/v1", 32)
+	if err != nil {
+		panic(fmt.Sprintf("derive magic-code MAC: %v", err))
+	}
+	s.magicCodeKey = codeKey
 	return s
 }
 
@@ -119,6 +129,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRoot)
 	mux.HandleFunc("/magic", s.handleMagic)
+	mux.HandleFunc("/magic/code", s.handleMagicCode)
 	mux.HandleFunc("/login", s.handlePasswordLogin)
 	mux.HandleFunc("/change-password", s.handleChangePassword)
 	mux.HandleFunc("/login/verify", s.handleLoginVerify)
@@ -171,10 +182,17 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A browser still holding a magic transaction cookie may have a code in
+	// its inbox: iOS can terminate a Home Screen web app while the person
+	// reads Mail, and the relaunch opens the app's start page, which sends
+	// it here rather than back to /sent. Offer the code form on presence
+	// alone (see hasMagicTx), with only a validated return_to in it.
 	if err := s.render(w, "login.html", map[string]any{
-		"Brand":    s.cfg.BrandName,
-		"ReturnTo": r.URL.Query().Get("return_to"),
-		"Error":    errorMessage(r.URL.Query().Get("err")),
+		"Brand":        s.cfg.BrandName,
+		"ReturnTo":     r.URL.Query().Get("return_to"),
+		"Error":        errorMessage(r.URL.Query().Get("err")),
+		"HasCode":      s.hasMagicTx(r),
+		"CodeReturnTo": s.resolveReturnTo(r.URL.Query().Get("return_to")),
 	}); err != nil {
 		log.Printf("render login: %v", err)
 	}
@@ -234,9 +252,17 @@ func (s *Server) handleSent(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// return_to is re-validated here, never reflected as given: it feeds
+	// the code form's failure path and the "try again" link, which must
+	// take the person back to the app that started the sign-in.
+	returnTo := s.resolveReturnTo(r.URL.Query().Get("return_to"))
 	if err := s.render(w, "sent.html", map[string]any{
-		"Brand": s.cfg.BrandName,
-		"Email": r.URL.Query().Get("email"),
+		"Brand":      s.cfg.BrandName,
+		"Email":      r.URL.Query().Get("email"),
+		"Error":      errorMessage(r.URL.Query().Get("err")),
+		"TTLMinutes": int(s.cfg.MagicTTL.Minutes()),
+		"ReturnTo":   returnTo,
+		"RetryHref":  loginLocation("", returnTo),
 	}); err != nil {
 		log.Printf("render sent: %v", err)
 	}
@@ -341,7 +367,23 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	exp := now.Add(s.cfg.MagicTTL)
-	if err := s.store.IssueMagic(r.Context(), nonce, email, now.Unix(), exp.Unix()); err != nil {
+	// The sign-in code and the transaction cookie that binds it to this
+	// browser (magic_code.go). Neither is ever logged.
+	code, err := newMagicCode()
+	if err != nil {
+		log.Printf("magic code: %v", err)
+		s.bounceWithErr(w, r, errInternal)
+		return
+	}
+	txRaw, err := randomSecret(32)
+	if err != nil {
+		log.Printf("magic tx: %v", err)
+		s.bounceWithErr(w, r, errInternal)
+		return
+	}
+	if err := s.store.IssueMagicWithCode(r.Context(), nonce, email, now.Unix(), exp.Unix(), store.MagicCode{
+		TxHash: hashSecret(txRaw), CodeMAC: s.magicCodeMAC(nonce, code), Email: email, ReturnTo: returnTo,
+	}); err != nil {
 		log.Printf("issue magic: %v", err)
 		s.bounceWithErr(w, r, errInternal)
 		return
@@ -362,8 +404,8 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 
 	link := s.absoluteURL(r, "/callback") + "?token=" + tok
 	subject := "Your " + s.cfg.BrandName + " sign-in link"
-	text := renderTextEmail(s.cfg.BrandName, link, s.cfg.MagicTTL)
-	html := renderHTMLEmail(s.cfg.BrandName, link, s.cfg.MagicTTL)
+	text := renderTextEmail(s.cfg.BrandName, link, code, s.cfg.MagicTTL)
+	html := renderHTMLEmail(s.cfg.BrandName, link, code, s.cfg.MagicTTL)
 
 	// Send happens asynchronously so a slow provider can't slow the
 	// user's "check your inbox" page. We log the error if it fails —
@@ -384,15 +426,22 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		}
 	}(email, subject, text, html)
 
-	dest := "/sent?email=" + url.QueryEscape(email)
-	http.Redirect(w, r, dest, http.StatusSeeOther)
+	s.setMagicTxCookie(w, txRaw)
+	http.Redirect(w, r, sentLocation(email, "", returnTo), http.StatusSeeOther)
 }
 
 // fakeSentResponse exits the magic flow with a "check your inbox" page
 // even though we sent nothing. Used when the email's domain isn't on
-// the allowlist; reveals nothing to a curious enumerator.
+// the allowlist or a send cap is hit; reveals nothing to a curious
+// enumerator. It sets a transaction cookie of the same shape as a real one
+// (random, never stored), so the response headers match a genuine send and
+// a code typed against it fails exactly like a wrong one.
 func (s *Server) fakeSentResponse(w http.ResponseWriter, r *http.Request, email string) {
-	http.Redirect(w, r, "/sent?email="+url.QueryEscape(email), http.StatusSeeOther)
+	if decoy, err := randomSecret(32); err == nil {
+		s.setMagicTxCookie(w, decoy)
+	}
+	// Same validated return_to as the real path, so the Location matches.
+	http.Redirect(w, r, sentLocation(email, "", s.resolveReturnTo(r.FormValue("return_to"))), http.StatusSeeOther)
 }
 
 // Login-page error codes. The page only ever renders one of these fixed
@@ -408,6 +457,10 @@ const (
 	errInvalidCredentials = "invalid_credentials"
 )
 
+// invalidCodeMessage is the only text a failed sign-in code shows (see
+// errInvalidCode): it names every reason without saying which one applied.
+var invalidCodeMessage = fmt.Sprintf("That code didn't work. Use the code from the newest email: a code stops working when its link is used or expires, or after %d wrong tries. You can also open the link on this device, or request a fresh one.", magicCodeMaxAttempts)
+
 var errorMessages = map[string]string{
 	errInvalidEmail:       "Please enter a valid email address.",
 	errInternal:           "Something went wrong. Try again.",
@@ -416,6 +469,7 @@ var errorMessages = map[string]string{
 	errExpiredLink:        "That link expired. Request a fresh one.",
 	errUsedLink:           "That link has already been used. Request a fresh one.",
 	errInvalidCredentials: "Invalid email or password.",
+	errInvalidCode:        invalidCodeMessage,
 	errMFALocked:          "Too many incorrect codes. Sign in again to get a fresh attempt.",
 	errMFAExpired:         "That sign-in expired. Please sign in again.",
 }
@@ -1356,32 +1410,10 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenant := emailTenant(m.Email)
-	now := time.Now()
-	sessTok, err := token.Sign(s.cfg.SigningKey, token.Session{
-		Email:  m.Email,
-		Tenant: tenant,
-		IAT:    now.Unix(),
-		Exp:    now.Add(s.cfg.SessionTTL).Unix(),
-	})
-	if err != nil {
-		log.Printf("sign session: %v", err)
-		s.bounceWithErr(w, r, errInternal)
-		return
-	}
-
-	if err := s.store.RecordLogin(r.Context(), m.Email, tenant, now.Unix()); err != nil {
-		// Audit log failure shouldn't block login — log + continue.
-		log.Printf("record login: %v", err)
-	}
-
-	s.setSessionCookie(w, sessTok)
-
-	dest := s.resolveReturnTo(m.ReturnTo)
-	if dest == "" {
-		dest = s.defaultDest()
-	}
-	http.Redirect(w, r, dest, http.StatusSeeOther)
+	// The link won, so this browser's pending code (if it is the one that
+	// asked) is dead too; drop its cookie.
+	s.clearMagicTxCookie(w)
+	s.completeMagicSignIn(w, r, m.Email, m.ReturnTo, time.Now())
 }
 
 // ── /logout ──────────────────────────────────────────────────────────

@@ -684,12 +684,21 @@ const loginHTML = `<!doctype html>
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
     <h1>{{if .LoginTitle}}{{.LoginTitle}}{{else}}Sign in{{end}}</h1>
-    {{if .LoginTagline}}<p class="muted">{{.LoginTagline}}</p>{{else if .PasswordMode}}<p class="muted">Enter your work email and password.</p>{{else}}<p class="muted">Enter your work email. We'll send you a one-time link.</p>{{end}}
+    {{if .LoginTagline}}<p class="muted">{{.LoginTagline}}</p>{{else if .PasswordMode}}<p class="muted">Enter your work email and password.</p>{{else}}<p class="muted">Enter your work email. We'll send you a one-time link and code.</p>{{end}}
     {{if .Notice}}<div class="banner {{.NoticeClass}}" role="status"><strong>{{.NoticeTitle}}</strong> {{.Notice}}</div>{{end}}
     {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+    {{if .HasCode}}
+    <form method="post" action="/magic/code" autocomplete="off">
+      <label for="code">Already have a code? Enter it here</label>
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 \-]*" maxlength="16" required autofocus autocomplete="one-time-code" placeholder="000000">
+      {{if .CodeReturnTo}}<input type="hidden" name="return_to" value="{{.CodeReturnTo}}">{{end}}
+      <button class="btn" type="submit">Sign in with code</button>
+    </form>
+    <p class="hint">Or send a new link and code:</p>
+    {{end}}
     <form method="post" action="{{if .PasswordMode}}/login{{else}}/magic{{end}}">
       <label for="email">Email</label>
-      <input id="email" name="email" type="email" required autofocus autocomplete="email"
+      <input id="email" name="email" type="email" required{{if not .HasCode}} autofocus{{end}} autocomplete="email"
              placeholder="you@example.com">
       {{if .PasswordMode}}
       <label for="password">Password</label>
@@ -1328,9 +1337,18 @@ const sentHTML = `<!doctype html>
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
     <h1>Check your inbox</h1>
-    <p class="muted">If <b>{{.Email}}</b> has an account, a one-time sign-in link is on its way. Click it to continue.</p>
-    <div class="foot">The link expires in 15 minutes. Didn't get one? Check spam, or
-      <a href="/">try again</a>.</div>
+    <p class="muted">If <b>{{.Email}}</b> has an account, a sign-in link and a 6-digit code are on their way. Type the code here, or open the link on this device.</p>
+    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+    <form method="post" action="/magic/code" autocomplete="off">
+      <input type="hidden" name="email" value="{{.Email}}">
+      {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
+      <label for="code">Sign-in code</label>
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 \-]*" maxlength="16" required autofocus autocomplete="one-time-code" placeholder="000000">
+      <button class="btn" type="submit">Sign in</button>
+    </form>
+    <p class="hint">Using {{.Wordmark}} from your Home Screen? Type the code: the link opens in Safari.</p>
+    <div class="foot">The code and link expire in {{.TTLMinutes}} minutes. Didn't get them? Check spam, or
+      <a href="{{.RetryHref}}">try again</a>.</div>
   </main>
 </body>
 </html>`
@@ -1341,23 +1359,28 @@ const sentHTML = `<!doctype html>
 // {{Brand}} only appears in the subject line; the body is plain text
 // wrapped in the most minimal HTML that still gets a clickable button.
 
-func renderTextEmail(_, link string, ttl time.Duration) string {
-	return fmt.Sprintf(`Your sign-in link (expires in %d minutes, one-time use):
+func renderTextEmail(_, link, code string, ttl time.Duration) string {
+	return fmt.Sprintf(`Your sign-in code: %s
+
+Type it on the sign-in page that asked for it. Or open this one-time link
+(both expire in %d minutes):
 
 %s
 
-If you didn't request this, you can ignore this email.
-`, int(ttl.Minutes()), link)
+Never share this code. If you didn't request this, you can ignore this email.
+`, code, int(ttl.Minutes()), link)
 }
 
-func renderHTMLEmail(_, link string, ttl time.Duration) string {
+func renderHTMLEmail(_, link, code string, ttl time.Duration) string {
 	return fmt.Sprintf(`<!doctype html>
 <html><body style="font:16px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#1a1a1a;padding:24px">
-  <p>Your sign-in link (expires in %d minutes, one-time use):</p>
+  <p>Your sign-in code:</p>
+  <p style="font:600 28px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.2em;margin:8px 0 16px">%s</p>
+  <p>Type it on the sign-in page that asked for it. Or open this one-time link (both expire in %d minutes):</p>
   <p><a href="%s" style="display:inline-block;padding:10px 18px;background:#1a1a1a;color:#fff;text-decoration:none;border-radius:6px">Sign in</a></p>
   <p style="color:#666;font-size:.9em;word-break:break-all">Or paste this link: %s</p>
-  <p style="color:#888;font-size:.85em;margin-top:24px">If you didn't request this, you can ignore this email.</p>
-</body></html>`, int(ttl.Minutes()), link, link)
+  <p style="color:#888;font-size:.85em;margin-top:24px">Never share this code. If you didn't request this, you can ignore this email.</p>
+</body></html>`, code, int(ttl.Minutes()), link, link)
 }
 
 // ── second factor pages ─────────────────────────────────────────────
