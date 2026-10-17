@@ -106,6 +106,20 @@ if you want to pin one (e.g. to keep the same key across a rebuild),
 pre-set `AUTH_SIGNING_KEY` in the environment before invocation; the
 bootstrap derives and prints the matching public key either way.
 
+Bootstrap also names the box after the service: when the static hostname is an
+unset cloud-image default (exactly `vultr.guest`, `localhost` or
+`localhost.localdomain`) it runs `hostnamectl set-hostname` with the auth hostname,
+writes `/etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg` so cloud-init does not
+reset it, and points the loopback lines in `/etc/hosts` at the new name. Any
+other hostname is treated as deliberate and left alone (bootstrap prints the
+command to change it). `AUTH_SET_HOSTNAME=1` forces the rename;
+`AUTH_SET_HOSTNAME=0` skips the step.
+
+Bootstrap also uninstalls Cockpit (`dnf -y remove 'cockpit*'`) when `cockpit-ws`
+is installed: the Vultr Fedora image ships its root-capable web login on :9090,
+and these boxes are administered over ssh only. `AUTH_KEEP_COCKPIT=1` keeps it;
+without rpm or Cockpit the step does nothing, and a failure only warns.
+
 ## What you get
 
 - `/opt/auth/` — source tree, built binaries, and the SQLite file
@@ -889,6 +903,11 @@ That runs `scripts/update.sh`, which:
    version. The journalctl pointer it prints is for *investigating* the
    bad build, not manual recovery. (Only if the rollback _itself_ also
    fails `/healthz` does it stop and ask for manual recovery.)
+5. Re-installs the login banner (`/etc/motd`) from `deploy/motd` when it
+   differs. Bootstrap installs it too, replacing whatever the image shipped.
+
+Step 5 also runs when there is nothing new to deploy, so a plain
+`auth update` brings an existing box's banner in line.
 
 Your `.env.local`, the SQLite file, and the domain allowlist all
 live outside the paths `update.sh` replaces.

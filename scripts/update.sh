@@ -21,6 +21,7 @@ APP_DIR="${APP_DIR:-/opt/auth}"
 APP_USER="${APP_USER:-auth}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}" # overridable for tests
 CLI_BIN="${CLI_BIN:-/usr/local/bin/auth}"         # overridable for tests
+MOTD_FILE="${MOTD_FILE:-/etc/motd}"               # overridable for tests
 
 # Copy SRC onto DEST as a root-owned regular file. A symlink destination is
 # replaced; a symlink source is refused. GNU install would follow either.
@@ -143,6 +144,27 @@ wait_healthy() {
   done
   return 1
 }
+
+# Keep the login banner in sync with deploy/motd: boxes bootstrapped before
+# the banner existed kept the image's motd, and this heals drift on every
+# update. Read from the source checkout, which require_trusted_checkout has
+# proven root's alone (the no-op paths below skip the install-tree sync); a
+# failure here is reported, never fatal.
+sync_motd() {
+  local motd_src="$SRC_DIR/deploy/motd"
+  if [[ -f "$motd_src" && ! -L "$motd_src" ]] && ! cmp -s "$motd_src" "$MOTD_FILE"; then
+    if install -m 0644 "$motd_src" "$MOTD_FILE"; then
+      ok "motd installed/refreshed"
+    else
+      warn "could not install $motd_src to $MOTD_FILE"
+    fi
+  fi
+  return 0
+}
+
+# Host upkeep that runs on every path that ends with a healthy service,
+# including "nothing to update", so a box adopts it on its next update.
+host_upkeep() { sync_motd; }
 
 [[ $EUID -eq 0 ]] || die "run as root: sudo auth update"
 
@@ -320,6 +342,7 @@ else
       if wait_healthy; then
         update_succeeded=1
         ok "auth-server restarted on bundle ${bundle_after:0:12}"
+        host_upkeep
         exit 0
       fi
       restore_bundle || true
@@ -328,6 +351,7 @@ else
       die "auth-server did not come up on the new bundle AND is unhealthy after the reset — manual recovery needed: journalctl -u auth-server -n 50"
     fi
     ok "already on ${after_sha:0:12} — nothing to update"
+    host_upkeep
     exit 0
   fi
 
@@ -494,6 +518,8 @@ if wait_healthy; then
 else
   rollback_and_die "new build (${after_sha:0:12}) didn't come up healthy"
 fi
+host_upkeep
+
 
 say
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
