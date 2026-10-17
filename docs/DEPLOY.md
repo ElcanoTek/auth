@@ -120,6 +120,22 @@ is installed: the Vultr Fedora image ships its root-capable web login on :9090,
 and these boxes are administered over ssh only. `AUTH_KEEP_COCKPIT=1` keeps it;
 without rpm or Cockpit the step does nothing, and a failure only warns.
 
+Bootstrap also makes SSH key-only. Vultr's cloud-init writes
+`/etc/ssh/sshd_config.d/50-cloud-init.conf` with `PasswordAuthentication yes`;
+the Vultr startup script `elcano-key-only-ssh` turns that off at first boot,
+and bootstrap is the net for a box built without it. It writes
+`/etc/ssh/sshd_config.d/01-no-password-login.conf` (`PasswordAuthentication no`,
+`KbdInteractiveAuthentication no`, `PermitRootLogin prohibit-password`; it sorts
+first, and sshd keeps the first value it reads), checks it with `sshd -t`
+(removing it again if that fails) and reloads sshd. When root and `/home/*`
+have no authorized key between them (counted from the effective
+`AuthorizedKeysFile`), it only warns: key-only with no key would lock everyone
+out. If `sshd -T` still allows passwords afterwards, an earlier directive wins
+(for example `PermitRootLogin yes` above the `Include` line in
+`/etc/ssh/sshd_config`); bootstrap warns and leaves `sshd_config` for you to
+fix. `AUTH_KEEP_SSH_PASSWORDS=1` skips the step; a box without sshd or
+`/etc/ssh/sshd_config.d` is left alone, and it never fails the install.
+
 ## What you get
 
 - `/opt/auth/` — source tree, built binaries, and the SQLite file
@@ -178,7 +194,8 @@ this small, the cost doesn't pay off.
 
 `auth restart`, `auth logs`, `auth backup`, and `auth doctor` cover the
 operator surface. `auth doctor` is read-only (add `--json` for a machine
-report). `sudo auth doctor --repair` only fixes `.env.local` and data-directory
+report). Run as root, it also warns when `sshd -T` still accepts passwords
+(see the key-only SSH step above). `sudo auth doctor --repair` only fixes `.env.local` and data-directory
 ownership and starts a stopped `auth-server`; it does not pull, upgrade, or
 create the database.
 

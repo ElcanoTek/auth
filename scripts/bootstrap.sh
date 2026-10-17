@@ -978,6 +978,16 @@ remove_cockpit() {
 }
 remove_cockpit
 
+# ── key-only ssh ────────────────────────────────────────────────────
+# Vultr's cloud-init turns SSH password login on; the "elcano-key-only-ssh"
+# startup script turns it off at first boot. This is the net for a box built
+# without it: write /etc/ssh/sshd_config.d/01-no-password-login.conf, check it
+# with sshd -t, reload sshd. Skipped (with a warning) when no authorized key is
+# installed; AUTH_KEEP_SSH_PASSWORDS=1 skips it. Never fails the install.
+# shellcheck disable=SC1091
+. "$SRC_DIR/scripts/lib/ssh.sh"
+ssh_key_only
+
 # ── hostname ────────────────────────────────────────────────────────
 # Name the box after its service. Vultr images boot as "vultr.guest", so every
 # prompt read root@vultr. Renames only an unset cloud-image default (exactly

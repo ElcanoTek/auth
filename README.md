@@ -239,7 +239,7 @@ Optional abuse caps on `/magic` (sensible defaults apply if unset):
 # Full gate: lint + vet + build + test
 make check
 
-# Go tests plus the operator CLI and doctor shell tests
+# Go tests plus the operator CLI, doctor and key-only SSH shell tests
 make test
 
 # Boot real binaries and drive the sign-in and application handoff flows
