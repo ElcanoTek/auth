@@ -957,6 +957,43 @@ else
   fi
 fi
 
+# ── cockpit ─────────────────────────────────────────────────────────
+# cockpit.socket served a root-capable web login on :9090 on an internet-facing
+# box whose only admin path is ssh. Keep it off: socket masked, service out of
+# a running firewalld. Idempotent; a no-op without systemd or cockpit; never
+# fails the run, never installs or removes packages, never touches ufw/iptables.
+disable_cockpit() {
+  local fw=0 services
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [[ -n "$(systemctl list-unit-files cockpit.socket --no-legend 2>/dev/null || true)" ]] || return 0
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    services="$(firewall-cmd --permanent --list-services 2>/dev/null || true)"
+    [[ " $services " != *" cockpit "* ]] || fw=1
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    [[ "$(systemctl is-enabled cockpit.socket 2>/dev/null || true)" == "masked" ]] \
+      || info "DRY_RUN: would disable --now and mask cockpit.socket"
+    [[ "$fw" == 0 ]] || info "DRY_RUN: would remove cockpit from firewalld"
+    return 0
+  fi
+  if [[ "$(systemctl is-enabled cockpit.socket 2>/dev/null || true)" != "masked" ]]; then
+    if systemctl disable --now cockpit.socket >/dev/null 2>&1 && systemctl mask cockpit.socket >/dev/null 2>&1; then
+      ok "cockpit.socket disabled and masked"
+    else
+      warn "could not disable and mask cockpit.socket"
+    fi
+  fi
+  if [[ "$fw" == 1 ]]; then
+    if firewall-cmd --permanent --remove-service=cockpit >/dev/null && firewall-cmd --reload >/dev/null; then
+      ok "firewalld: cockpit removed"
+    else
+      warn "could not remove cockpit from firewalld"
+    fi
+  fi
+  return 0
+}
+disable_cockpit
+
 # ── motd ────────────────────────────────────────────────────────────
 # Single source of truth is deploy/motd, installed unconditionally: a fresh
 # image ships its own /etc/motd (cloud-init's notice) that must not survive.

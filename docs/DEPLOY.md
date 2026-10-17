@@ -891,6 +891,9 @@ That runs `scripts/update.sh`, which:
    fails `/healthz` does it stop and ask for manual recovery.)
 5. Re-installs the login banner (`/etc/motd`) from `deploy/motd` when it
    differs. Bootstrap installs it too, replacing whatever the image shipped.
+6. Keeps Cockpit off: masks `cockpit.socket` and removes the `cockpit`
+   service from firewalld when present (bootstrap does the same). A no-op
+   where Cockpit is not installed.
 
 Your `.env.local`, the SQLite file, and the domain allowlist all
 live outside the paths `update.sh` replaces.
