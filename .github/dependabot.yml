@@ -1,37 +1,53 @@
-# Dependabot config — https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-# Weekly version + security updates, all bundled into one PR per ecosystem.
-# Tests gate the merge — review the consolidated diff, don't read every changelog.
+# Dependabot proposes updates for auth's two dependency surfaces: the Go
+# module at the repo root and the GitHub Actions used by CI. Modelled on
+# fleet's .github/dependabot.yml, which has the long-form reasoning.
 #
-# auth has no `dev` branch, so updates target the default branch (main) —
-# no target-branch override.
+# - Daily polling, so an update is visible the day it becomes eligible.
+# - Cooldown (gomod): wait 7 days (3 for patch releases) before proposing a
+#   freshly published release, so a compromised version that the ecosystem
+#   flags and yanks never reaches a PR. Cooldown applies to version updates
+#   only; security updates are not delayed.
+# - Minor + patch bumps are grouped into one PR per ecosystem; majors stay
+#   separate for their own review.
+# - Nothing merges itself. A human merges a bump only when it earns it: a
+#   security fix whose code path we use, or a specific change we need (see
+#   AGENTS.md › Dependencies and in-housed code). In-housed code
+#   (internal/mfa/qr, the TOTP code) is ours and is not tracked here.
+# - Not covered: the `go` line in go.mod (Dependabot does not move the
+#   toolchain; that is a deliberate human change) and tool versions pinned
+#   inside `run:` steps or the Makefile (gitleaks, shellcheck,
+#   golangci-lint).
+#
+# auth has no `dev` branch, so updates target main (no target-branch).
 version: 2
 updates:
   - package-ecosystem: gomod
-    directory: /
+    directory: "/"
     schedule:
-      interval: weekly
+      interval: daily
     open-pull-requests-limit: 10
-    labels:
-      - dependencies
-      - go
+    cooldown:
+      default-days: 7
+      semver-major-days: 7
+      semver-minor-days: 7
+      semver-patch-days: 3
     commit-message:
-      prefix: chore(deps)
+      prefix: "deps(go)"
     groups:
-      gomod:
-        patterns:
-          - "*"
+      go-minor-patch:
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: github-actions
-    directory: /
+    directory: "/"
     schedule:
-      interval: weekly
+      interval: daily
     open-pull-requests-limit: 10
-    labels:
-      - dependencies
-      - github-actions
     commit-message:
-      prefix: chore(ci)
+      prefix: "deps(actions)"
     groups:
-      github-actions:
-        patterns:
-          - "*"
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch

@@ -155,7 +155,7 @@ type adminAppView struct {
 // adminResult is what one POST leaves for the re-rendered page. Status is
 // non-zero when the action must not render the page at all: an unexpected
 // failure (500, so an uncertain outcome is never dressed up as "nothing
-// changed") or a request the UI never sends (400). Reopen names the popover
+// changed") or a request the UI never sends (400). Reopen names the dialog
 // the page should show again (the Add user form after a rejected entry) so
 // the administrator's input is not lost behind a closed dialog.
 type adminResult struct {

@@ -184,7 +184,7 @@ func TestSparsePaletteStillDerivesGradients(t *testing.T) {
 		t.Fatal("color-mix gradients are not guarded by @supports")
 	}
 	light := page[strings.LastIndex(page, `:root[data-theme="light"] {`):]
-	if !strings.Contains(light, "color-mix(in srgb, #e9eefc 34%, #fff) 0%") || !strings.Contains(light, "color-mix(in srgb, #7272ab 28%, transparent)") {
+	if !strings.Contains(light, "color-mix(in srgb, #e9eefc 18%, #fff) 0%") || !strings.Contains(light, "color-mix(in srgb, #7272ab 28%, transparent)") {
 		t.Fatalf("light gradients not derived from bundle background + default primary:\n%s", light)
 	}
 }

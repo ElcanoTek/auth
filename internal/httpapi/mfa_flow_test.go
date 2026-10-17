@@ -2,7 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
 	"encoding/base32"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,8 +19,6 @@ import (
 
 	"github.com/elcanotek/auth/internal/mfa"
 	"github.com/elcanotek/auth/internal/store"
-	"github.com/pquerna/otp"
-	"github.com/pquerna/otp/hotp"
 )
 
 // browser keeps cookies across requests without following redirects, so
@@ -114,13 +115,19 @@ func extractRecoveryCodes(t *testing.T, page string) []string {
 	return codes
 }
 
+// codeFor computes the authenticator app's code at a moment with a separate
+// RFC 6238 implementation, so these tests do not grade mfa.Verify against
+// its own generator.
 func codeFor(t *testing.T, secret []byte, at time.Time) string {
 	t.Helper()
-	code, err := hotp.GenerateCodeCustom(mfa.Base32Secret(secret), uint64(mfa.StepAt(at)), hotp.ValidateOpts{Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return code
+	var msg [8]byte
+	binary.BigEndian.PutUint64(msg[:], uint64(mfa.StepAt(at)))
+	mac := hmac.New(sha1.New, secret)
+	mac.Write(msg[:])
+	sum := mac.Sum(nil)
+	off := int(sum[19] & 0x0f)
+	v := (uint32(sum[off])&0x7f)<<24 | uint32(sum[off+1])<<16 | uint32(sum[off+2])<<8 | uint32(sum[off+3])
+	return fmt.Sprintf("%06d", v%1000000)
 }
 
 // enrollViaStore gives an account a factor with a known secret, the way the

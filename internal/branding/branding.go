@@ -24,7 +24,7 @@ import (
 	"strings"
 	"syscall"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // Brand is the loaded, validated result. A nil *Brand means "no bundle":
@@ -241,8 +241,11 @@ func validateLogo(bundle, rel string) (string, string, os.FileInfo, error) {
 var colorValue = regexp.MustCompile(`^(?:#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|(?:rgb|rgba|hsl|hsla)\([0-9a-zA-Z.,%/\s-]+\))$`)
 
 // tokens maps the bundle's colour names onto the custom properties Auth's
-// stylesheet already uses. Names Auth has no surface for (rail, overlays,
-// text_disabled) are simply not listed, so they are dropped. secondary and
+// stylesheet already uses. Names Auth has no surface for (rail,
+// text_disabled) are simply not listed, so they are dropped. The two
+// overlays map onto the same roles as in Fleet: overlay_soft fills a neutral
+// chip and overlay_strong is the modal backdrop, so a client's chips and
+// backdrops match across its Fleet and Auth. secondary and
 // surface_2 have no element of their own here; they exist so the page
 // gradients can be derived with Fleet's exact formula (see declarations),
 // which is what makes Auth's sign-in page and Fleet's look the same.
@@ -260,6 +263,8 @@ var tokens = map[string]string{
 	"text_muted":     "--color-text-muted",
 	"border":         "--color-border",
 	"border_strong":  "--color-border-strong",
+	"overlay_soft":   "--color-overlay-soft",
+	"overlay_strong": "--color-scrim",
 }
 
 // ValidColor reports whether v may be emitted into the stylesheet.
@@ -321,7 +326,7 @@ func declarations(mode map[string]string, light bool) (plain, mixed []string) {
 			mixed = append(mixed,
 				"--gradient-bg-home-signature: radial-gradient(circle at 9% -8%, color-mix(in srgb, "+primary+" 28%, transparent), transparent 42%), "+
 					"radial-gradient(circle at 90% 0%, color-mix(in srgb, "+secondary+" 24%, transparent), transparent 38%), "+
-					"linear-gradient(150deg, color-mix(in srgb, "+s2+" 34%, #fff) 0%, color-mix(in srgb, "+s2+" 89%, #fff) 52%, color-mix(in srgb, "+s2+" 98%, #000) 100%);",
+					"linear-gradient(150deg, color-mix(in srgb, "+s2+" 18%, #fff) 0%, color-mix(in srgb, "+s2+" 45%, #fff) 52%, color-mix(in srgb, "+s2+" 70%, #fff) 100%);",
 				"--gradient-surface-card: linear-gradient(145deg, "+s1+", color-mix(in srgb, "+s2+" 70%, #fff));")
 		} else {
 			mixed = append(mixed,

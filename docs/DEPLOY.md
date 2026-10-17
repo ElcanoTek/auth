@@ -859,7 +859,7 @@ key; in-flight lockouts reset at rotation.
 
 ### Go toolchain
 
-The `go 1.26.x` line in `go.mod` names the exact Go patch release the
+The `go 1.27.x` line in `go.mod` names the exact Go patch release the
 service is built with, not just the language version. Every build path
 (`auth update`, `auth rebuild`, bootstrap) runs with `GOTOOLCHAIN=auto`, so a
 box whose distro Go is older downloads exactly that version on first build
