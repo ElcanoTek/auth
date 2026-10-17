@@ -55,6 +55,7 @@ ssh_key_only() {
   local conf="$dir/01-no-password-login.conf" keys tmp old=""
   command -v sshd >/dev/null 2>&1 && [[ -d "$dir" ]] || return 0
   if [[ -f "$conf" ]] && printf '%s\n' "$SSH_KEY_ONLY_CONF" | cmp -s - "$conf"; then
+    ssh_key_only_still_open  # already in place: nothing to write or reload
     return 0
   fi
   keys="$(ssh_count_authorized_keys)"
@@ -77,7 +78,9 @@ ssh_key_only() {
   fi
   rm -f "$tmp"
   if ! sshd -t >/dev/null 2>&1; then
-    if [[ -n "$old" ]]; then mv -f "$old" "$conf"; else rm -f "$conf"; fi
+    # install, not mv: a new file in sshd_config.d gets that directory's
+    # SELinux label, where a moved /tmp file would keep tmp_t.
+    if [[ -n "$old" ]]; then install -m 0600 "$old" "$conf"; rm -f "$old"; else rm -f "$conf"; fi
     warn "sshd -t rejected the key-only drop-in — reverted $conf; sshd left as it was"
     return 0
   fi
@@ -87,6 +90,13 @@ ssh_key_only() {
   else
     warn "wrote $conf but could not reload sshd — run: systemctl reload sshd"
   fi
+  ssh_key_only_still_open
+  return 0
+}
+
+# ssh_key_only_still_open — warn when the effective config still takes
+# passwords although the drop-in is in place: an earlier directive wins.
+ssh_key_only_still_open() {
   if sshd -T 2>/dev/null | grep -qiE '^(passwordauthentication|permitrootlogin) yes$'; then
     warn "sshd still accepts passwords: an earlier directive wins (e.g. 'PermitRootLogin yes' above the Include line in /etc/ssh/sshd_config) — fix it by hand"
   fi
