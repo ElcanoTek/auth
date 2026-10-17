@@ -145,58 +145,6 @@ wait_healthy() {
   return 1
 }
 
-# cockpit.socket served a root-capable web login on :9090 on an internet-facing
-# box whose only admin path is ssh. Keep it off: socket stopped and masked,
-# service out of every firewalld zone, and its "Activate the web console" line
-# out of the login banner. Idempotent; a no-op without systemd or cockpit; never
-# fails the run, never installs or removes packages, never touches ufw/iptables.
-disable_cockpit() {
-  local zones=() zone tmpf_src="$SRC_DIR/deploy/cockpit-ws.tmpfiles.conf" tmpf_dst=/etc/tmpfiles.d/cockpit-ws.conf
-  command -v systemctl >/dev/null 2>&1 || return 0
-  [[ -n "$(systemctl list-unit-files cockpit.socket --no-legend 2>/dev/null || true)" ]] || return 0
-  if [[ "$(systemctl is-enabled cockpit.socket 2>/dev/null || true)" != "masked" ]]; then
-    if systemctl disable --now cockpit.socket >/dev/null 2>&1 && systemctl mask cockpit.socket >/dev/null 2>&1; then
-      ok "cockpit.socket disabled and masked"
-    else
-      warn "could not disable and mask cockpit.socket"
-    fi
-  elif systemctl is-active --quiet cockpit.socket 2>/dev/null; then
-    # Masked without --now leaves an active socket listening.
-    if systemctl stop cockpit.socket >/dev/null 2>&1; then
-      ok "stopped the masked cockpit.socket"
-    else
-      warn "could not stop cockpit.socket"
-    fi
-  fi
-  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-    for zone in $(firewall-cmd --permanent --get-zones 2>/dev/null || true); do
-      if firewall-cmd --permanent --zone="$zone" --query-service=cockpit >/dev/null 2>&1; then zones+=("$zone"); fi
-    done
-    if [[ ${#zones[@]} -gt 0 ]]; then
-      for zone in "${zones[@]}"; do
-        firewall-cmd --permanent --zone="$zone" --remove-service=cockpit >/dev/null 2>&1 \
-          || warn "could not remove cockpit from firewalld zone $zone"
-      done
-      if firewall-cmd --reload >/dev/null 2>&1; then
-        ok "firewalld: cockpit removed from ${zones[*]}"
-      else
-        warn "firewalld reload failed; cockpit stays open until the next reload"
-      fi
-    fi
-  fi
-  # Masking leaves cockpit-ws's "Activate the web console" line in the login
-  # banner (/etc/motd.d/cockpit -> /run/cockpit/issue, made at boot by the
-  # package's tmpfiles.d entry). A same-named /etc/tmpfiles.d copy overrides it.
-  if [[ -f /usr/lib/tmpfiles.d/cockpit-ws.conf && -f "$tmpf_src" ]] && command -v systemd-tmpfiles >/dev/null 2>&1 \
-     && ! cmp -s "$tmpf_src" "$tmpf_dst"; then
-    if install -m 0644 "$tmpf_src" "$tmpf_dst" && systemd-tmpfiles --create "$tmpf_dst"; then
-      ok "Cockpit login notice blanked ($tmpf_dst)"
-    else
-      warn "could not install $tmpf_dst to blank the Cockpit login notice"
-    fi
-  fi
-  return 0
-}
 # Keep the login banner in sync with deploy/motd: boxes bootstrapped before
 # the banner existed kept the image's motd, and this heals drift on every
 # update. Read from the source checkout, which require_trusted_checkout has
@@ -216,7 +164,7 @@ sync_motd() {
 
 # Host upkeep that runs on every path that ends with a healthy service,
 # including "nothing to update", so a box adopts it on its next update.
-host_upkeep() { disable_cockpit; sync_motd; }
+host_upkeep() { sync_motd; }
 
 [[ $EUID -eq 0 ]] || die "run as root: sudo auth update"
 

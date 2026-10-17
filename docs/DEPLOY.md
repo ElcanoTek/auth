@@ -115,6 +115,11 @@ other hostname is treated as deliberate and left alone (bootstrap prints the
 command to change it). `AUTH_SET_HOSTNAME=1` forces the rename;
 `AUTH_SET_HOSTNAME=0` skips the step.
 
+Bootstrap also uninstalls Cockpit (`dnf -y remove 'cockpit*'`) when `cockpit-ws`
+is installed: the Vultr Fedora image ships its root-capable web login on :9090,
+and these boxes are administered over ssh only. `AUTH_KEEP_COCKPIT=1` keeps it;
+without rpm or Cockpit the step does nothing, and a failure only warns.
+
 ## What you get
 
 - `/opt/auth/` — source tree, built binaries, and the SQLite file
@@ -900,14 +905,9 @@ That runs `scripts/update.sh`, which:
    fails `/healthz` does it stop and ask for manual recovery.)
 5. Re-installs the login banner (`/etc/motd`) from `deploy/motd` when it
    differs. Bootstrap installs it too, replacing whatever the image shipped.
-6. Keeps Cockpit off: masks `cockpit.socket` and removes the `cockpit`
-   service from firewalld when present, and installs
-   `deploy/cockpit-ws.tmpfiles.conf` as `/etc/tmpfiles.d/cockpit-ws.conf` so
-   Cockpit's "Activate the web console" notice leaves the login banner
-   (bootstrap does the same). A no-op where Cockpit is not installed.
 
-Steps 5 and 6 also run when there is nothing new to deploy, so a plain
-`auth update` brings an existing box's banner and Cockpit state in line.
+Step 5 also runs when there is nothing new to deploy, so a plain
+`auth update` brings an existing box's banner in line.
 
 Your `.env.local`, the SQLite file, and the domain allowlist all
 live outside the paths `update.sh` replaces.
