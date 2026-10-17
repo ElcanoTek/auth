@@ -29,6 +29,7 @@ test:
 	GOTOOLCHAIN=auto go test ./...
 	bash scripts/test/auth_cli_test.sh
 	bash scripts/test/doctor_test.sh
+	bash scripts/test/ssh_test.sh
 
 ## lint: gofmt -s check + golangci-lint (matches the CI lint gate)
 lint:

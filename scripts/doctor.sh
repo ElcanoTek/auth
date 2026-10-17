@@ -744,6 +744,20 @@ print(max(nums))' 2>/dev/null || true)"
 
 # Never disable Git's ownership check. A service-owned checkout can set
 # core.fsmonitor; running that as root is code execution. Inspect as the owner.
+# Read-only. Vultr's cloud-init turns SSH password login on; bootstrap writes
+# /etc/ssh/sshd_config.d/01-no-password-login.conf to turn it off. sshd -T
+# needs root (host keys), so a non-root doctor, or a box without sshd, skips it.
+check_sshd() {
+  local effective
+  [[ $EUID -eq 0 ]] && have sshd || return 0
+  effective="$(sshd -T 2>/dev/null)" && [[ -n "$effective" ]] || return 0
+  if grep -qiE '^(passwordauthentication|permitrootlogin) yes$' <<<"$effective"; then
+    add warn sshd "sshd accepts passwords — see production-support README, Access: SSH keys"
+  else
+    add pass sshd "sshd is key-only (no password or root-password login)"
+  fi
+}
+
 gitc() {
   local owner
   if [[ $EUID -eq 0 ]]; then
@@ -933,6 +947,7 @@ check_disk "${DISK_PATH:-$APP_DIR}"
 check_updates
 check_reboot
 check_fedora
+check_sshd
 check_git
 print_report
 exit "$(( n_fail > 0 ))"
