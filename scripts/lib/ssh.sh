@@ -97,7 +97,11 @@ ssh_key_only() {
 # ssh_key_only_still_open — warn when the effective config still takes
 # passwords although the drop-in is in place: an earlier directive wins.
 ssh_key_only_still_open() {
-  if sshd -T 2>/dev/null | grep -qiE '^(passwordauthentication|permitrootlogin) yes$'; then
+  local eff
+  # Capture first: under pipefail, grep -q exiting early can SIGPIPE sshd -T
+  # and the pipeline then reads as "no match".
+  eff="$(sshd -T 2>/dev/null || true)"
+  if grep -qiE '^(passwordauthentication|permitrootlogin) yes$' <<<"$eff"; then
     warn "sshd still accepts passwords: an earlier directive wins (e.g. 'PermitRootLogin yes' above the Include line in /etc/ssh/sshd_config) — fix it by hand"
   fi
   return 0
