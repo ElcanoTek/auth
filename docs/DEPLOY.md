@@ -106,6 +106,15 @@ if you want to pin one (e.g. to keep the same key across a rebuild),
 pre-set `AUTH_SIGNING_KEY` in the environment before invocation; the
 bootstrap derives and prints the matching public key either way.
 
+Bootstrap also names the box after the service: when the static hostname is an
+unset cloud-image default (exactly `vultr.guest`, `localhost` or
+`localhost.localdomain`) it runs `hostnamectl set-hostname` with the auth hostname,
+writes `/etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg` so cloud-init does not
+reset it, and points the loopback lines in `/etc/hosts` at the new name. Any
+other hostname is treated as deliberate and left alone (bootstrap prints the
+command to change it). `AUTH_SET_HOSTNAME=1` forces the rename;
+`AUTH_SET_HOSTNAME=0` skips the step.
+
 ## What you get
 
 - `/opt/auth/` — source tree, built binaries, and the SQLite file
