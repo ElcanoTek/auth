@@ -405,7 +405,7 @@ func TestSentPageOffersTheCodeForm(t *testing.T) {
 	_ = resp.Body.Close()
 	s := string(body)
 	for _, want := range []string{
-		`action="/magic/code"`, `name="code"`, `inputmode="numeric"`, `autocomplete="one-time-code"`, `pattern="[0-9 ]*"`,
+		`action="/magic/code"`, `name="code"`, `inputmode="numeric"`, `autocomplete="one-time-code"`, `pattern="[0-9 \-]*"`,
 		`name="email" value="nobody@hacker.test"`, "has an account", "Home Screen", "expire in 10 minutes",
 		"That code didn&#39;t work.",
 	} {
@@ -665,5 +665,63 @@ func TestPasswordModeLoginPageIgnoresMagicTxCookie(t *testing.T) {
 	_ = resp.Body.Close()
 	if strings.Contains(string(body), loginCodeForm) || !strings.Contains(string(body), `action="/login"`) {
 		t.Error("password mode must render its own form and never the magic code form")
+	}
+}
+
+// A sibling subdomain is same-site, so SameSite=Lax lets it drive both
+// /magic and /magic/code in the victim's browser (login CSRF into the
+// attacker's account). Only a same-origin post may redeem a code.
+func TestMagicCodeRefusesCrossOriginPosts(t *testing.T) {
+	ts, sender, _, cfg := newTestServer(t)
+	_, tx := requestMagic(t, ts, url.Values{"email": {"alice@example.com"}})
+	code := lastCode(t, sender, 1)
+	post := func(header, value string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/magic/code",
+			strings.NewReader(url.Values{"email": {"alice@example.com"}, "code": {code}}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set(header, value)
+		req.AddCookie(tx)
+		resp, err := noFollowClient().Do(req)
+		if err != nil {
+			t.Fatalf("POST /magic/code: %v", err)
+		}
+		_ = resp.Body.Close()
+		return resp
+	}
+	for _, c := range []struct{ header, value string }{
+		{"Sec-Fetch-Site", "same-site"},
+		{"Sec-Fetch-Site", "cross-site"},
+		{"Origin", "https://evil.example.com"},
+		{"Origin", "null"},
+	} {
+		resp := post(c.header, c.value)
+		if resp.StatusCode != http.StatusForbidden || findCookie(resp, cfg.CookieName) != nil {
+			t.Fatalf("%s: %s = %d, session %v; want 403 and no session", c.header, c.value, resp.StatusCode, findCookie(resp, cfg.CookieName))
+		}
+	}
+	// The refusals spent nothing: the same code still signs in same-origin.
+	resp := post("Sec-Fetch-Site", "same-origin")
+	if findCookie(resp, cfg.CookieName) == nil {
+		t.Fatalf("same-origin POST = %d, want a session", resp.StatusCode)
+	}
+}
+
+func TestMagicCodeSameOriginByOriginHeader(t *testing.T) {
+	ts, sender, _, cfg := newTestServer(t)
+	_, tx := requestMagic(t, ts, url.Values{"email": {"alice@example.com"}})
+	code := lastCode(t, sender, 1)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/magic/code",
+		strings.NewReader(url.Values{"code": {code}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", ts.URL)
+	req.AddCookie(tx)
+	resp, err := noFollowClient().Do(req)
+	if err != nil {
+		t.Fatalf("POST /magic/code: %v", err)
+	}
+	_ = resp.Body.Close()
+	if findCookie(resp, cfg.CookieName) == nil {
+		t.Fatalf("Origin=%s POST = %d, want a session", ts.URL, resp.StatusCode)
 	}
 }

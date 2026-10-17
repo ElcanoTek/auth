@@ -165,6 +165,31 @@ func (s *Server) hasMagicTx(r *http.Request) bool {
 
 // ── POST /magic/code ─────────────────────────────────────────────────
 
+// sameOriginPost refuses a code redemption a browser sent from any origin
+// but Auth's own. SameSite=Lax is not enough: a sibling subdomain under the
+// same parent domain is same-site, so it could make the victim POST /magic
+// for the attacker's address (Auth then legitimately sets the victim's
+// transaction cookie) and post the attacker's emailed code here, signing the
+// victim in as the attacker. Both code forms are served by Auth itself, so a
+// genuine redemption is always same-origin. Sec-Fetch-Site is authoritative
+// when present; otherwise Origin must name this host. A request carrying
+// neither is not from a browser that could be driven cross-origin (curl, the
+// smoke test) and is allowed.
+func sameOriginPost(r *http.Request) bool {
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+		return site == "same-origin" || site == "none"
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
+}
+
 func (s *Server) handleMagicCode(w http.ResponseWriter, r *http.Request) {
 	if s.passwordMode() {
 		http.NotFound(w, r)
@@ -172,6 +197,10 @@ func (s *Server) handleMagicCode(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOriginPost(r) {
+		http.Error(w, "cross-origin sign-in code refused", http.StatusForbidden)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
@@ -195,9 +224,10 @@ func (s *Server) handleMagicCode(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, dest, http.StatusSeeOther)
 	}
 
-	// The transaction cookie is the login-CSRF defense as well as the
-	// binding: SameSite=Lax keeps it off cross-site POSTs, and the __Host-
-	// prefix keeps a sibling subdomain from planting one.
+	// The transaction cookie binds the code to the browser that asked for
+	// it: SameSite=Lax keeps it off cross-site POSTs, and the __Host- prefix
+	// keeps a sibling subdomain from planting one. sameOriginPost above is
+	// the login-CSRF defense against same-site (sibling subdomain) posts.
 	c, err := r.Cookie(s.magicTxCookieName())
 	if err != nil || c.Value == "" {
 		fail()

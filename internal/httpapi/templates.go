@@ -690,7 +690,7 @@ const loginHTML = `<!doctype html>
     {{if .HasCode}}
     <form method="post" action="/magic/code" autocomplete="off">
       <label for="code">Already have a code? Enter it here</label>
-      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000">
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 \-]*" maxlength="16" required autofocus autocomplete="one-time-code" placeholder="000000">
       {{if .CodeReturnTo}}<input type="hidden" name="return_to" value="{{.CodeReturnTo}}">{{end}}
       <button class="btn" type="submit">Sign in with code</button>
     </form>
@@ -1343,7 +1343,7 @@ const sentHTML = `<!doctype html>
       <input type="hidden" name="email" value="{{.Email}}">
       {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
       <label for="code">Sign-in code</label>
-      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000">
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 \-]*" maxlength="16" required autofocus autocomplete="one-time-code" placeholder="000000">
       <button class="btn" type="submit">Sign in</button>
     </form>
     <p class="hint">Using {{.Wordmark}} from your Home Screen? Type the code: the link opens in Safari.</p>
