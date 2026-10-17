@@ -13,4 +13,4 @@ Elcano Auth: the sign-in service for this client's apps (Go + SQLite).
   users     auth user list
   more      auth --help
 
-  source /opt/auth-src · app /opt/auth · unit auth-server.service
+  unit auth-server.service
