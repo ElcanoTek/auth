@@ -125,7 +125,7 @@ checklists.
 
 ## Quickstart
 
-Prerequisite: Go 1.27.2 or a compatible newer toolchain.
+Prerequisite: Go 1.27.3 or a compatible newer toolchain.
 
 ```bash
 # Build both binaries.
