@@ -26,7 +26,7 @@ make smoke   # real binaries: magic link, password, app handoff (needed for
              # auth/session/provisioning/deploy changes)
 go test -race ./...                      # CI runs this, not plain go test
 go mod verify && go mod tidy -diff       # CI dependency gate
-GOTOOLCHAIN=go1.27.2 go run golang.org/x/vuln/cmd/govulncheck@latest ./...  # Go = go.mod's
+GOTOOLCHAIN=go1.27.3 go run golang.org/x/vuln/cmd/govulncheck@latest ./...  # Go = go.mod's
 ```
 
 CI (`.github/workflows/ci.yml`) also runs gitleaks over the tree and full
