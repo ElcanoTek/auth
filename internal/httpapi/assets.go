@@ -147,6 +147,12 @@ func brandCSSPath(css string) string {
 	return "/brand/theme-" + hex.EncodeToString(sum[:])[:16] + ".css"
 }
 
+// brandLogoVersion is the content hash pages put in the logo URL.
+func brandLogoVersion(logo []byte) string {
+	sum := sha256.Sum256(logo)
+	return hex.EncodeToString(sum[:])[:16]
+}
+
 // brandCSSHandler serves the bundle's palette overrides as a stylesheet so
 // pages need no inline <style>.
 func brandCSSHandler(css string) http.HandlerFunc {

@@ -22,7 +22,7 @@
 //	                    token themselves.
 //	GET  /healthz    — for orchestration probes.
 //	GET  /assets/<hash>/… — embedded page CSS/JS and vendored Flag files (assets.go)
-//	GET  /brand/logo, /brand/theme-<hash>.css — client bundle mark and palette
+//	GET  /brand/logo?v=<hash>, /brand/theme-<hash>.css — client bundle mark and palette
 //
 // The HTTP server itself is plain net/http. No middleware library, no
 // router — chi/mux/gorilla are wonderful but overkill for this small surface.
@@ -1999,7 +1999,7 @@ func (s *Server) decorate(data map[string]any) {
 		data["Wordmark"] = b.AppName
 	}
 	if len(b.Logo) > 0 {
-		data["LogoURL"] = "/brand/logo"
+		data["LogoURL"] = "/brand/logo?v=" + brandLogoVersion(b.Logo)
 	}
 	data["BrandCSSURL"] = brandCSSPath(b.CSS)
 	data["LoginTitle"] = b.LoginTitle
@@ -2024,9 +2024,14 @@ func (s *Server) handleBrandLogo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", b.LogoContentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
-	// A re-theme is a restart away; five minutes keeps every page load from
-	// re-fetching while letting a new mark show up promptly.
-	w.Header().Set("Cache-Control", "public, max-age=300")
+	// Pages link /brand/logo?v=<content hash>, which is immutable: a new mark
+	// changes the URL. The bare or stale URL (kept for anything that
+	// hard-coded it) must revalidate, so it never pins an old mark.
+	if r.URL.Query().Get("v") == brandLogoVersion(b.Logo) {
+		w.Header().Set("Cache-Control", immutableCache)
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 	w.Header().Del("Pragma")
 	http.ServeContent(w, r, "", s.started, bytes.NewReader(b.Logo))
 }

@@ -113,8 +113,8 @@ func TestAssetRouteRefusesEverythingElse(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("POST asset = %d, want 405", resp.StatusCode)
+	if resp.StatusCode != http.StatusMethodNotAllowed || strings.Contains(resp.Header.Get("Cache-Control"), "immutable") {
+		t.Fatalf("POST asset = %d %q, want an uncached 405", resp.StatusCode, resp.Header.Get("Cache-Control"))
 	}
 	head, err := http.Head(ts.URL + v + "auth.css")
 	if err != nil || head.StatusCode != http.StatusOK {

@@ -103,7 +103,12 @@ without it) and `admin-noscript.css`. Both trees are embedded
   `immutable` for a year; a stale hash is a 404, and only the listed file
   types are served. HTML stays `no-store`.
 - A client bundle's palette is generated at startup (`internal/branding`) and
-  served as `/brand/theme-<hash>.css`; `/brand/logo` serves its mark.
+  served as `/brand/theme-<hash>.css` (immutable). Pages link its mark as
+  `/brand/logo?v=<hash>` (immutable); the bare `/brand/logo` and a stale `v`
+  are the one non-HTML asset at a stable URL, kept for anything that
+  hard-coded it, and are served `no-cache`. Error responses on asset URLs are
+  never cached (`TestAssetRouteRefusesEverythingElse`,
+  `TestBrandLogoCachingFollowsItsVersion`).
 - No inline `<style>`, `<script>`, `style=""`, `on*=` or `javascript:` in a
   template — `TestTemplatesHaveNoInlineCode` enforces it. Page CSP is two
   policies in one header: `script-src 'self'; style-src 'self'` (plus

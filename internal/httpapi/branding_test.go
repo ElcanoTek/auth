@@ -99,8 +99,8 @@ func TestPagesWearTheBundleBrand(t *testing.T) {
 	css := brandStylesheet(t, ts, page)
 	for _, want := range []string{
 		"<title>NORTHWIND — Sign in</title>",
-		`<link rel="icon" href="/brand/logo">`,
-		`<img class="mark" src="/brand/logo" alt="">`,
+		`<link rel="icon" href="/brand/logo?v=`,
+		`<img class="mark" src="/brand/logo?v=`,
 		`<div class="brand">NORTHWIND</div>`,
 		"<h1>Welcome to Northwind.</h1>",
 		"Sign in to pick up where you left off.",
@@ -145,7 +145,7 @@ func TestBrandLogoIsServedSandboxed(t *testing.T) {
 	}
 	h := resp.Header
 	if h.Get("Content-Type") != "image/svg+xml" || h.Get("X-Content-Type-Options") != "nosniff" ||
-		!strings.Contains(h.Get("Content-Security-Policy"), "sandbox") || h.Get("Cache-Control") != "public, max-age=300" {
+		!strings.Contains(h.Get("Content-Security-Policy"), "sandbox") || h.Get("Cache-Control") != "no-cache" {
 		t.Fatalf("logo headers = %v", h)
 	}
 	head, err := http.Head(ts.URL + "/brand/logo")
@@ -166,6 +166,36 @@ func TestBrandLogoIsServedSandboxed(t *testing.T) {
 	_ = after.Body.Close()
 	if after.StatusCode != http.StatusOK || string(afterBody) != string(body) {
 		t.Fatalf("logo after on-disk swap = %d %q, want the snapshot", after.StatusCode, afterBody)
+	}
+}
+
+// The page links the mark by content hash, so that URL is cached for a year;
+// the bare URL and a stale hash revalidate, and errors are never cached.
+func TestBrandLogoCachingFollowsItsVersion(t *testing.T) {
+	ts, _ := newBrandedServer(t, brandedManifest)
+	_, page := get(t, ts.URL+"/")
+	m := regexp.MustCompile(`<img class="mark" src="(/brand/logo\?v=[0-9a-f]{16})"`).FindStringSubmatch(string(page))
+	if m == nil {
+		t.Fatalf("page does not link a versioned logo:\n%s", page)
+	}
+	for url, want := range map[string]string{
+		m[1]:                             immutableCache,
+		"/brand/logo":                    "no-cache",
+		"/brand/logo?v=0000000000000000": "no-cache",
+	} {
+		resp, _ := get(t, ts.URL+url)
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != want || resp.Header.Get("Pragma") != "" {
+			t.Errorf("%s = %d Cache-Control %q, want %q", url, resp.StatusCode, resp.Header.Get("Cache-Control"), want)
+		}
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+m[1], nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed || strings.Contains(resp.Header.Get("Cache-Control"), "immutable") {
+		t.Fatalf("POST logo = %d %q", resp.StatusCode, resp.Header.Get("Cache-Control"))
 	}
 }
 

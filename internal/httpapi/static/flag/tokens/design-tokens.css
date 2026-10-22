@@ -54,6 +54,9 @@
   --color-border: rgba(114, 114, 171, 0.35);
   --color-border-strong: rgba(114, 114, 171, 0.55);
   --color-border-subtle: rgba(255, 255, 255, 0.14);
+  /* The edge of a small control that has no other boundary (checkbox box,
+   * radio ring): 3:1 against every surface (WCAG 1.4.11). */
+  --color-control-border: #7a7392;
 
   --color-text-primary: #ffffff;
   --color-text-secondary: #d2d9de;
@@ -223,6 +226,13 @@
   --transition-fast: 140ms ease;
   --transition-base: 200ms ease;
   --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+  /* Keyboard focus on a calendar day. Days sit edge to edge, so an outer
+   * ring would be covered by the next day's fill: these rings are inset, in
+   * the color that holds 3:1 on the fill the day has (bare or hovered day,
+   * in-range day, selected / range-end day). */
+  --focus-ring-day: inset 0 0 0 2px var(--color-accent);
+  --focus-ring-day-on-fill: inset 0 0 0 2px var(--color-on-primary-fill);
+  --focus-ring-day-on-range: inset 0 0 0 2px var(--color-on-accent-strong);
 
   /* Syntax highlighting for code blocks (keyword, string, ...). Every value
    * holds 4.5:1 on a --color-surface-inset well over --color-bg,
@@ -250,10 +260,16 @@
   --color-row-active-border: #9da7ef;
   --color-pill-border: rgba(255, 255, 255, 0.14);
   --color-pill-hover-bg: rgba(255, 255, 255, 0.06);
-  --color-switch-track-on: var(--color-accent-strong);
-  /* 3.16:1 on the popover and 4.1:1 under the knob (the design's 14% white
-     was 1.56:1). */
-  --color-switch-track-off: #7a7392;
+  /* The on track is a state indicator and needs 3:1 (WCAG 1.4.11) on every
+   * surface it sits on, including the popover's active row (selected-bg over
+   * surface-2), where accent-strong was 2.5:1. 19% toward white: 3.1:1 on the
+   * active row, 3.66:1 on surface-2, knob 3.54:1 on it. Light keeps
+   * accent-strong. */
+  --color-switch-track-on: #7976dd;
+  /* 3.05:1 on the popover's active row, 3.61:1 on the popover, 3.59:1 under
+     the knob (the design's 14% white was 1.56:1; #7a7392 was 2.67:1 on the
+     active row). */
+  --color-switch-track-off: #837d9a;
   --color-switch-knob: #f4f5f9;
   --shadow-switch-knob: none;
   --focus-ring-picker: var(--focus-ring);
@@ -287,6 +303,7 @@ body.theme-light {
   --color-border: rgba(38, 55, 92, 0.2);
   --color-border-strong: rgba(38, 55, 92, 0.32);
   --color-border-subtle: rgba(38, 55, 92, 0.18);
+  --color-control-border: #586f7c;
   --color-text-primary: #141824;
   --color-text-secondary: #33415f;
   --color-text-muted: #5c6a87;
@@ -298,7 +315,9 @@ body.theme-light {
    * non-text that needs 3:1. Same hue, deep enough for 4.6:1+ (auth shipped
    * this override first). */
   --color-accent: #5a64b8;
-  --color-surface-inset: rgba(38, 55, 92, 0.045);
+  /* Opaque in light: a well stays near-white inside any card (#eef1f2 is
+   * the code well's long-standing light color). */
+  --color-surface-inset: #eef1f2;
 
   /* Light-mode accent overrides: the dark-theme accents are tuned for dark
    * surfaces and fail WCAG AA as text on white (#ff5555 ≈ 2.9:1). These darker
@@ -403,6 +422,7 @@ body.theme-light {
   /* The design's #e4e5ee read 1.08:1 on the popover; this is 3.2:1 there and
      3.75:1 under the white knob. */
   --color-switch-track-off: #80829e;
+  --color-switch-track-on: var(--color-accent-strong);
   --color-switch-knob: #ffffff;
   --shadow-switch-knob: 0 1px 2px rgba(26, 11, 30, 0.28);
   --color-match-bg: #9da7ef;
