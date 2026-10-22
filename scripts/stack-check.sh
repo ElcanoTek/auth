@@ -16,7 +16,7 @@
 #   4. npm trees: no server frameworks (next, express, ...); Tier A has no runtime deps.
 set -euo pipefail
 
-STACK_CHECK_VERSION=7
+STACK_CHECK_VERSION=9
 STANDARD_SHA=5b3a1c9dab098277570a37d58366b0802d4378370f9717d48743c386b194bdbb
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONF="$ROOT/stack.conf"
@@ -56,21 +56,22 @@ fi
 # 3. Third-party hosts in served files. Links (<a href>, rel=canonical) are
 # fine; loading a script, stylesheet, font, icon or module from elsewhere is
 # not. Perl reads each file whole, so tags split across lines and whitespace
-# around "=" are caught too.
+# around "=" are caught too. Go files are scanned as well, for markup built
+# in Go (only tag/import patterns match, not plain URLs in strings).
 # shellcheck disable=SC2016 # the perl program is single-quoted on purpose
 for d in $web; do
   [ -d "$ROOT/$d" ] || { err "stack.conf: web dir $d does not exist"; continue; }
   while IFS= read -r hit; do
     err "remote asset in served file: ${hit#"$ROOT"/}"
   done < <(find "$ROOT/$d" \( -name node_modules -o -name dist -o -name test -o -name tests -o -name e2e -o -name testdata \) -prune -o -type f \
-             ! -name '*.test.*' ! -name '*.spec.*' \( -name '*.html' -o -name '*.tmpl' -o -name '*.gohtml' -o -name '*.css' -o -name '*.js' -o -name '*.mjs' -o -name '*.ts' -o -name '*.tsx' -o -name '*.jinja' -o -name '*.j2' \) -print0 \
+             ! -name '*.test.*' ! -name '*.spec.*' ! -name '*_test.go' \( -name '*.go' -o -name '*.html' -o -name '*.tmpl' -o -name '*.gohtml' -o -name '*.css' -o -name '*.js' -o -name '*.mjs' -o -name '*.ts' -o -name '*.tsx' -o -name '*.jinja' -o -name '*.j2' \) -print0 \
            | xargs -0 -r perl -0777 -ne '
-               my $f = $ARGV; my $remote = qr{["'"'"'(]?\s*(?:https?:)?//(?!(?:localhost|127\.0\.0\.1)(?:[:/\s)>]|$))[^\s"'"'"')>]+}i;
+               my $f = $ARGV; my $remote = qr{["'"'"'(]?\s*(?:https?:)?//(?!(?:localhost|127\.0\.0\.1)(?::\d+)?(?:[/?#\s"'"'"')>]|$))[^\s"'"'"')>]+}i;
                while (/<script\b[^>]*?\bsrc\s*=\s*$remote/gis) { (my $m = $&) =~ s/\s+/ /g; print "$f: $m\n"; }
                while (/(<link\b[^>]*>)/gis) { my $t = $1;
                  if ($t =~ /\brel\s*=\s*["'"'"']?[^"'"'"'>]*\b(?:stylesheet|preload|modulepreload|icon|apple-touch-icon|manifest)\b/i && $t =~ /\bhref\s*=\s*$remote/i) {
                    (my $one = $t) =~ s/\s+/ /g; print "$f: $one\n"; } }
-               while (/(?:\@import\s*(?:url\()?|(?<![\w.\$])url\(|(?<![\w.\$])import\s*\(|(?<![\w.\$])from)\s*$remote/gi) { (my $m = $&) =~ s/\s+/ /g; print "$f: $m\n"; }
+               while (/(?:\@import\s*(?:url\()?|(?<![\w.\$])url\(|(?<![\w.\$])import\s*\(?|(?<![\w.\$])from)\s*$remote/gi) { (my $m = $&) =~ s/\s+/ /g; print "$f: $m\n"; }
              ' || true)
 done
 
@@ -83,14 +84,23 @@ while IFS= read -r pj; do
   case " $npm " in *" $rel "*) ;; *) err "$rel/package.json is not declared in stack.conf npm=" ;; esac
 done < <(find "$ROOT" \( -name node_modules -o -name .git -o -name .flag -o -name dist -o -name testdata -o -name fixtures \) -prune -o -name package.json -type f -print)
 
-servers='"(next|express|koa|fastify|@hapi/hapi|@remix-run/[a-z-]+|nuxt|@sveltejs/kit|astro|hono)"[[:space:]]*:'
 for d in $npm; do
   pj="$ROOT/$d/package.json"
   [ -f "$pj" ] || { err "stack.conf: no package.json in $d"; continue; }
-  if grep -Eq "$servers" "$pj"; then err "$d/package.json: depends on a JavaScript server framework; the server is Go"; fi
-  if [ "$tier" = A ] && awk '/"dependencies"[[:space:]]*:/{f=1} f&&/}/{print; exit} f' "$pj" | grep -Eq '"[^"]+"[[:space:]]*:[[:space:]]*"'; then
-    err "$d/package.json: Tier A allows devDependencies only (browser tests), no runtime dependencies"
-  fi
+  # Every field npm installs at runtime (optional and peer deps install by
+  # default; bundled deps ship inside the package).
+  while IFS= read -r msg; do err "$d/package.json: $msg"; done < <(TIER="$tier" perl -MJSON::PP -0777 -ne '
+    my $j = eval { JSON::PP->new->decode($_) } or do { print "is not valid JSON\n"; exit };
+    my $servers = qr/^(?:next|express|koa|fastify|\@hapi\/hapi|\@remix-run\/.+|nuxt|\@sveltejs\/kit|astro|hono)$/;
+    my @runtime = qw(dependencies optionalDependencies peerDependencies);
+    for my $f (@runtime, "devDependencies") {
+      next unless ref $j->{$f} eq "HASH";
+      for my $n (sort keys %{$j->{$f}}) { print "depends on JavaScript server framework $n ($f); the server is Go\n" if $n =~ $servers; }
+    }
+    if ($ENV{TIER} eq "A") {
+      for my $f (@runtime) { print "Tier A allows devDependencies only (browser tests), but $f is not empty\n" if ref $j->{$f} eq "HASH" && %{$j->{$f}}; }
+      for my $f (qw(bundleDependencies bundledDependencies)) { print "Tier A allows devDependencies only, but $f is set\n" if $j->{$f} && (ref $j->{$f} ne "ARRAY" || @{$j->{$f}}); }
+    }' "$pj")
 done
 
 if [ "$fail" -ne 0 ]; then echo "stack-check: FAILED (frontend standard v2, tier $tier)" >&2; exit 1; fi

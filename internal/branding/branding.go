@@ -244,8 +244,9 @@ var colorValue = regexp.MustCompile(`^(?:#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a
 // stylesheet already uses. Names Auth has no surface for (rail,
 // text_disabled) are simply not listed, so they are dropped. The two
 // overlays map onto the same roles as in Fleet: overlay_soft fills a neutral
-// chip and overlay_strong is the modal backdrop, so a client's chips and
-// backdrops match across its Fleet and Auth. secondary and
+// chip and overlay_strong is the modal backdrop (Flag's
+// --color-overlay-strong, which auth.css paints dialog backdrops with), so a
+// client's chips and backdrops match across its Fleet and Auth. secondary and
 // surface_2 have no element of their own here; they exist so the page
 // gradients can be derived with Fleet's exact formula (see declarations),
 // which is what makes Auth's sign-in page and Fleet's look the same.
@@ -264,7 +265,18 @@ var tokens = map[string]string{
 	"border":         "--color-border",
 	"border_strong":  "--color-border-strong",
 	"overlay_soft":   "--color-overlay-soft",
-	"overlay_strong": "--color-scrim",
+	"overlay_strong": "--color-overlay-strong",
+}
+
+// ColorNames lists the manifest colour names a bundle may set (per mode), in
+// a stable order.
+func ColorNames() []string {
+	names := make([]string, 0, len(tokens))
+	for name := range tokens {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ValidColor reports whether v may be emitted into the stylesheet.

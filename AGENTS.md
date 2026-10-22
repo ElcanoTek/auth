@@ -116,7 +116,10 @@ without it) and `admin-noscript.css`. Both trees are embedded
   `auth.css` defines and overrides no tokens: a missing token or a contrast
   fix goes into Flag first, then arrives here with `scripts/flag-sync.sh sync`.
   Labelled buttons use `--gradient-action-fill` / `--color-on-primary-fill`
-  (measured for 4.5:1), never `--gradient-action-primary`. Monospace uses
+  (measured for 4.5:1) under `@supports (color-mix)`, with
+  `--gradient-action-primary` as the base fallback. A bundle colour
+  (`internal/branding`) must override a token the pages read;
+  `TestBrandTokensAndPageStylesheetAgree` fails otherwise. Monospace uses
   `var(--font-code)` (Hack).
 - After any UI change, render the login (password and email modes, error
   state), MFA enroll/verify, recovery codes, account and admin pages in

@@ -187,12 +187,12 @@ func TestOverlaysMapToChipFillAndBackdrop(t *testing.T) {
 		t.Fatal(err)
 	}
 	light := b.CSS[strings.Index(b.CSS, `:root[data-theme="light"]`):]
-	for _, want := range []string{"--color-overlay-soft: rgba(0, 0, 0, 0.20);", "--color-scrim: rgba(0, 0, 0, 0.40);"} {
+	for _, want := range []string{"--color-overlay-soft: rgba(0, 0, 0, 0.20);", "--color-overlay-strong: rgba(0, 0, 0, 0.40);"} {
 		if !strings.Contains(b.CSS, want) {
 			t.Fatalf("dark CSS missing %q:\n%s", want, b.CSS)
 		}
 	}
-	for _, want := range []string{"--color-overlay-soft: rgba(16, 18, 25, 0.05);", "--color-scrim: rgba(16, 18, 25, 0.16);"} {
+	for _, want := range []string{"--color-overlay-soft: rgba(16, 18, 25, 0.05);", "--color-overlay-strong: rgba(16, 18, 25, 0.16);"} {
 		if !strings.Contains(light, want) {
 			t.Fatalf("light CSS missing %q:\n%s", want, b.CSS)
 		}

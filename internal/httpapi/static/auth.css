@@ -73,13 +73,13 @@ input[type=email]:focus-visible, input[type=password]:focus-visible, input.code:
   padding: var(--space-3) var(--space-4);
   font-family: var(--font-body); font-size: var(--font-size-body);
   font-weight: var(--font-weight-bold); color: var(--color-on-primary-fill);
-  /* The fill gradient, not --gradient-action-primary: its stops are measured
-     so the label holds 4.5:1 everywhere, and its hover only darkens. */
-  background: var(--gradient-action-fill);
+  /* Fallback for browsers without color-mix(), which Flag's fill tokens are
+     computed with: the action gradient keeps the label readable. Supporting
+     browsers get the fill gradient below the .btn-add rules. */
+  background: var(--gradient-action-primary);
   border: 0; border-radius: var(--radius-md); cursor: pointer;
   transition: filter var(--transition-fast), transform var(--transition-fast);
 }
-.btn:hover { background: var(--gradient-action-fill-hover); }
 .btn:active { transform: translateY(1px); }
 .btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .err {
@@ -265,8 +265,16 @@ dialog.modal.fleet-perms .btn { margin-top: var(--space-4); }
 .search-empty { padding: var(--space-5) !important; color: var(--color-text-muted) !important; text-align: center !important; }
 /* The page's primary action, as an icon button: brand primary fill (a bundle
    recolors it), the same rounded square as every other icon button. */
-.btn-add { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; padding: 0; border: 0; border-radius: var(--radius-md); background: var(--gradient-action-fill); color: var(--color-on-primary-fill); font-size: 1.35rem; line-height: 1; font-weight: var(--font-weight-semibold); cursor: pointer; transition: filter var(--transition-fast), transform var(--transition-fast); }
-.btn-add:hover { background: var(--gradient-action-fill-hover); }
+.btn-add { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; padding: 0; border: 0; border-radius: var(--radius-md); background: var(--gradient-action-primary); color: var(--color-on-primary-fill); font-size: 1.35rem; line-height: 1; font-weight: var(--font-weight-semibold); cursor: pointer; transition: filter var(--transition-fast), transform var(--transition-fast); }
+/* Labelled fills: Flag's measured fill gradient (the label holds 4.5:1 at
+   every point, and hover only darkens), never --gradient-action-primary.
+   It resolves through color-mix(), so it is applied only where that parses;
+   elsewhere a var() to an invalid value would paint nothing behind white
+   text. */
+@supports (background: color-mix(in srgb, red, blue)) {
+  .btn, .btn-add { background: var(--gradient-action-fill); }
+  .btn:hover, .btn-add:hover { background: var(--gradient-action-fill-hover); }
+}
 .btn-add:active { transform: scale(0.96); }
 .btn-add:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .list th.sel, .list td.sel { width: 1.6rem; padding-right: 0; }
