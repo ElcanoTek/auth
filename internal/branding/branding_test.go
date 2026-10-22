@@ -1,8 +1,10 @@
 package branding
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -74,6 +76,10 @@ func TestLoadReadsOnlyBrandingAndValidatesValues(t *testing.T) {
 		"--color-primary: #0B6E4F;", "--color-primary-hover: #118A63;", "--color-on-primary: #FFFFFF;",
 		"--color-bg: #0E1512;", "--color-border: rgba(255, 255, 255, 0.14);",
 		"--gradient-action-primary: linear-gradient(140deg, #0B6E4F, #118A63);",
+		// #0B6E4F is 6.3:1 under white and stays; #118A63 is 4.3:1 and moves
+		// 2% toward black. The hover is 10 points further.
+		"--gradient-action-fill: linear-gradient(140deg, #0b6e4f, #118761);",
+		"--gradient-action-fill-hover: linear-gradient(140deg, #0a6347, #0f7957);",
 		"color-mix(in srgb, #0B6E4F 34%, transparent)", "color-mix(in srgb, #586f7c 28%, transparent)",
 		"radial-gradient(circle at 72% 82%, color-mix(in srgb, #0B6E4F 18%, transparent), transparent 30%)",
 		"--gradient-surface-card: linear-gradient(145deg, color-mix(in srgb, color-mix(in srgb, #16201B 90%, #000) 92%, transparent)",
@@ -185,12 +191,12 @@ func TestOverlaysMapToChipFillAndBackdrop(t *testing.T) {
 		t.Fatal(err)
 	}
 	light := b.CSS[strings.Index(b.CSS, `:root[data-theme="light"]`):]
-	for _, want := range []string{"--color-overlay-soft: rgba(0, 0, 0, 0.20);", "--color-scrim: rgba(0, 0, 0, 0.40);"} {
+	for _, want := range []string{"--color-overlay-soft: rgba(0, 0, 0, 0.20);", "--color-overlay-strong: rgba(0, 0, 0, 0.40);"} {
 		if !strings.Contains(b.CSS, want) {
 			t.Fatalf("dark CSS missing %q:\n%s", want, b.CSS)
 		}
 	}
-	for _, want := range []string{"--color-overlay-soft: rgba(16, 18, 25, 0.05);", "--color-scrim: rgba(16, 18, 25, 0.16);"} {
+	for _, want := range []string{"--color-overlay-soft: rgba(16, 18, 25, 0.05);", "--color-overlay-strong: rgba(16, 18, 25, 0.16);"} {
 		if !strings.Contains(light, want) {
 			t.Fatalf("light CSS missing %q:\n%s", want, b.CSS)
 		}
@@ -255,5 +261,264 @@ branding:
 	// The dark card still derives from the stock surface_1 and background.
 	if !strings.Contains(b.CSS, "color-mix(in srgb, color-mix(in srgb, #241b31 90%, #000) 92%, transparent)") {
 		t.Fatalf("dark card did not fall back to stock surface_1:\n%s", b.CSS)
+	}
+}
+
+// cssBlocks splits a stylesheet into its :root and light-theme declarations
+// (comments stripped; @supports wrappers are transparent, as in a browser
+// that supports them; the explicit dark-theme block only sets color-scheme).
+func cssBlocks(css string) (root, light map[string]string) {
+	css = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(css, "")
+	css = regexp.MustCompile(`@supports[^{]*\{`).ReplaceAllString(css, "")
+	root, light = map[string]string{}, map[string]string{}
+	for _, m := range regexp.MustCompile(`([^{}]+)\{([^{}]*)\}`).FindAllStringSubmatch(css, -1) {
+		sel := strings.TrimSpace(m[1])
+		var into map[string]string
+		switch {
+		case strings.Contains(sel, `data-theme="light"`):
+			into = light
+		case sel == ":root":
+			into = root
+		default:
+			continue
+		}
+		for _, d := range regexp.MustCompile(`(--[a-z0-9-]+)\s*:\s*([^;]+);`).FindAllStringSubmatch(m[2], -1) {
+			v := strings.Join(strings.Fields(d[2]), " ")
+			into[d[1]] = strings.ReplaceAll(strings.ReplaceAll(v, "( ", "("), " )", ")")
+		}
+	}
+	return root, light
+}
+
+// buttonPaint resolves what a labelled button actually paints in one theme
+// when Auth's page loads Flag's tokens and then the bundle's CSS: the
+// cascade order is the bundle's light block, Flag's light block, the
+// bundle's :root, Flag's :root (light theme), or the two :root blocks (dark).
+func buttonPaint(t *testing.T, bundleCSS string, light bool) (fill, hover [2]rgb, label rgb) {
+	t.Helper()
+	flagCSS, err := os.ReadFile(filepath.Join("..", "httpapi", "static", "flag", "tokens", "design-tokens.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flagRoot, flagLight := cssBlocks(string(flagCSS))
+	brandRoot, brandLight := cssBlocks(bundleCSS)
+	layers := []map[string]string{brandRoot, flagRoot}
+	if light {
+		layers = []map[string]string{brandLight, flagLight, brandRoot, flagRoot}
+	}
+	varRef := regexp.MustCompile(`var\((--[a-z0-9-]+)(?:,[^()]*)?\)`)
+	var resolve func(prop string, depth int) string
+	resolve = func(prop string, depth int) string {
+		if depth > 20 {
+			t.Fatalf("%s: var() cycle", prop)
+		}
+		for _, l := range layers {
+			if v, ok := l[prop]; ok {
+				return varRef.ReplaceAllStringFunc(v, func(ref string) string {
+					return resolve(varRef.FindStringSubmatch(ref)[1], depth+1)
+				})
+			}
+		}
+		t.Fatalf("%s is not defined", prop)
+		return ""
+	}
+	stops := func(prop string) [2]rgb {
+		v := resolve(prop, 0)
+		m := regexp.MustCompile(`^linear-gradient\(140deg, ([^,]+), ([^,]+)\)$`).FindStringSubmatch(v)
+		if m == nil {
+			t.Fatalf("%s = %q, not a two-stop gradient", prop, v)
+		}
+		var out [2]rgb
+		for i, h := range m[1:] {
+			c, ok := parseOpaque(h)
+			if !ok {
+				t.Fatalf("%s stop %q is not an opaque colour", prop, h)
+			}
+			out[i] = c
+		}
+		return out
+	}
+	l, ok := parseOpaque(resolve("--color-on-primary-fill", 0))
+	if !ok {
+		t.Fatalf("label %q is not an opaque colour", resolve("--color-on-primary-fill", 0))
+	}
+	return stops("--gradient-action-fill"), stops("--gradient-action-fill-hover"), l
+}
+
+// denseMin samples a gradient independently of the code under test (257
+// points, unrounded), so a coarse sampler in labelSafeFill cannot hide a dip.
+func denseMin(a, b, label rgb) float64 {
+	low := 99.0
+	for i := 0; i <= 256; i++ {
+		if c := contrast(mix(a, b, float64(i)/256), label); c < low {
+			low = c
+		}
+	}
+	return low
+}
+
+// assertButtonsReadable measures what a bundle's buttons paint in both
+// themes: every sampled point of the fill and of its hover holds 4.5:1
+// against the label actually in effect, and hovering never lowers the
+// contrast at either end.
+func assertButtonsReadable(t *testing.T, name, manifest string) {
+	t.Helper()
+	b, err := Load(writeBundle(t, manifest, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, light := range []bool{false, true} {
+		fill, hover, label := buttonPaint(t, b.CSS, light)
+		theme := map[bool]string{false: "dark", true: "light"}[light]
+		if got := denseMin(fill[0], fill[1], label); got < minLabelContrast {
+			t.Errorf("%s, %s: fill %s→%s dips to %.2f:1 under %s\n%s", name, theme, fill[0].hex(), fill[1].hex(), got, label.hex(), b.CSS)
+		}
+		if got := denseMin(hover[0], hover[1], label); got < minLabelContrast {
+			t.Errorf("%s, %s: hover %s→%s dips to %.2f:1 under %s", name, theme, hover[0].hex(), hover[1].hex(), got, label.hex())
+		}
+		for i := range fill {
+			if contrast(hover[i], label) < contrast(fill[i], label) {
+				t.Errorf("%s, %s: hover stop %s lowers contrast", name, theme, hover[i].hex())
+			}
+		}
+	}
+}
+
+// Whatever subset of colours a bundle sets, in either or both themes,
+// labelled buttons stay readable in both themes. Page-only colours
+// (background, surfaces) never touch the button tokens at all.
+func TestBundleButtonFillHoldsLabelContrast(t *testing.T) {
+	named := map[string]string{
+		"stock hover only":               `primary_hover: "#8686c4"`,
+		"label only, black":              `on_primary: "#000000"`,
+		"label only, white":              `on_primary: "#ffffff"`,
+		"label only, mid-grey":           `on_primary: "#777777"`,
+		"red/blue, black label":          "primary: \"#ff0000\"\n      primary_hover: \"#5e5eff\"\n      on_primary: \"#000000\"",
+		"bright primary, dark label":     "primary: \"#ffd700\"\n      primary_hover: \"#ffe766\"\n      on_primary: \"#111111\"",
+		"dark primary, light grey label": "primary: \"#303030\"\n      primary_hover: \"#505050\"\n      on_primary: \"#dddddd\"",
+		"secondary only":                 `secondary: "#d0e0f0"`,
+		"translucent primary":            `primary: "rgba(114, 114, 171, 0.5)"`,
+		"rgb and hsl":                    "primary: \"rgb(114, 114, 171)\"\n      primary_hover: \"hsl(240, 33%, 65%)\"",
+	}
+	for name, colors := range named {
+		for _, modes := range [][]string{{"dark"}, {"light"}, {"dark", "light"}} {
+			m := "branding:\n  colors:\n"
+			for _, mode := range modes {
+				m += "    " + mode + ":\n      " + colors + "\n"
+			}
+			assertButtonsReadable(t, name+" in "+strings.Join(modes, "+"), m)
+		}
+	}
+	// The class, not just the cases: a deterministic sweep over every subset
+	// of the fill inputs, set per theme from a palette of awkward values.
+	palette := []string{"#000000", "#ffffff", "#777777", "#ff0000", "#5e5eff", "#9da7ef", "#0b6e4f", "#ffd700", "#8686c4", "#203040", "rgba(0, 0, 0, 0.5)", "hsl(60, 100%, 50%)"}
+	fields := []string{"primary", "primary_hover", "secondary", "on_primary", "background"}
+	seed := uint32(2166136261)
+	next := func(n int) int { seed = seed*1664525 + 1013904223; return int(seed>>8) % n }
+	for i := 0; i < 160; i++ {
+		m := "branding:\n  colors:\n"
+		for _, mode := range []string{"dark", "light"} {
+			block := ""
+			for _, f := range fields {
+				if next(2) == 0 {
+					block += "      " + f + ": \"" + palette[next(len(palette))] + "\"\n"
+				}
+			}
+			if block != "" {
+				m += "    " + mode + ":\n" + block
+			}
+		}
+		if strings.HasSuffix(m, "colors:\n") {
+			m = "branding:\n  app_name: \"Sweep\"\n"
+		}
+		assertButtonsReadable(t, fmt.Sprintf("sweep %d", i), m)
+	}
+}
+
+// Page-only colours keep Flag's button tokens untouched; a fill input in
+// either theme makes both themes explicit, so a dark-only label cannot
+// cascade into light mode over Flag's light fill.
+func TestButtonTokensEmittedOnlyForFillInputs(t *testing.T) {
+	for _, colour := range []string{"background", "surface_1", "surface_2"} {
+		b, err := Load(writeBundle(t, "branding:\n  colors:\n    dark:\n      "+colour+": \"#203040\"\n", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.CSS, "--gradient-action-") || strings.Contains(b.CSS, "--color-on-primary-fill") {
+			t.Fatalf("%s: a page-only palette touched the button tokens:\n%s", colour, b.CSS)
+		}
+	}
+	b, err := Load(writeBundle(t, "branding:\n  colors:\n    dark:\n      on_primary: \"#000000\"\n", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, light := cssBlocks(b.CSS)
+	if light["--color-on-primary-fill"] != "#ffffff" || light["--gradient-action-fill"] != "linear-gradient(140deg, #656598, #4f6470)" {
+		t.Fatalf("a dark-only label left light mode implicit:\n%s", b.CSS)
+	}
+}
+
+// A label nothing can pass under is dropped for Flag's white label; colours
+// that cannot be measured fall back to Flag's measured fill and label. A
+// failing pair is never emitted.
+func TestUnpassableButtonColoursFallBackToFlag(t *testing.T) {
+	b, err := Load(writeBundle(t, "branding:\n  colors:\n    dark:\n      primary: \"rgba(114, 114, 171, 0.5)\"\n", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ := cssBlocks(b.CSS)
+	if root["--gradient-action-fill"] != "linear-gradient(140deg, #7171a9, #586f7c)" || root["--color-on-primary-fill"] != "#ffffff" {
+		t.Fatalf("a translucent primary did not fall back to Flag's fill:\n%s", b.CSS)
+	}
+	// A translucent label cannot be measured: it drops to white and the
+	// bundle's own primary stays.
+	b, err = Load(writeBundle(t, "branding:\n  colors:\n    dark:\n      primary: \"#202020\"\n      on_primary: \"rgba(0, 0, 0, 0.5)\"\n", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ = cssBlocks(b.CSS)
+	if root["--color-on-primary-fill"] != "#ffffff" || !strings.HasPrefix(root["--gradient-action-fill"], "linear-gradient(140deg, #202020,") {
+		t.Fatalf("an unpassable label was not dropped for white:\n%s", b.CSS)
+	}
+}
+
+// labelSafeFill measures the whole gradient: red to blue under a black label
+// passes at both ends but dips to about 3.5:1 in the middle.
+func TestLabelSafeFillMeasuresBetweenTheStops(t *testing.T) {
+	red, _ := parseOpaque("#ff0000")
+	blue, _ := parseOpaque("#5e5eff")
+	black := rgb{0, 0, 0}
+	if contrast(red, black) < minLabelContrast || contrast(blue, black) < minLabelContrast || denseMin(red, blue, black) >= minLabelContrast {
+		t.Fatal("fixture no longer exercises a mid-gradient dip")
+	}
+	fill, hover, ok := labelSafeFill("#000000", "#ff0000", "#5e5eff")
+	if !ok {
+		t.Fatal("no passing fill")
+	}
+	for _, g := range [][2]string{fill, hover} {
+		a, _ := parseOpaque(g[0])
+		b, _ := parseOpaque(g[1])
+		if got := denseMin(a, b, black); got < minLabelContrast {
+			t.Fatalf("%v dips to %.2f:1", g, got)
+		}
+	}
+}
+
+func TestParseOpaque(t *testing.T) {
+	for in, want := range map[string]string{
+		"#abc": "#aabbcc", "#ABCDEF": "#abcdef", "#abcf": "#aabbcc", "#11223344": "", "#112233ff": "#112233",
+		"rgb(1, 2, 3)": "#010203", "rgb(100% 0% 0%)": "#ff0000", "rgba(1, 2, 3, 1)": "#010203", "rgba(1, 2, 3, 0.5)": "",
+		"hsl(0, 100%, 50%)": "#ff0000", "hsl(120deg 100% 25%)": "#008000", "hsla(0, 0%, 0%, 0.2)": "", "red": "",
+	} {
+		c, ok := parseOpaque(in)
+		if want == "" {
+			if ok {
+				t.Errorf("parseOpaque(%q) = %s, want rejected", in, c.hex())
+			}
+			continue
+		}
+		if !ok || c.hex() != want {
+			t.Errorf("parseOpaque(%q) = %s %v, want %s", in, c.hex(), ok, want)
+		}
 	}
 }

@@ -62,6 +62,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Frontend standard (stack-check)
+        # Offline: stack.conf, the shared AGENTS.md block, flag.lock against
+        # the vendored Flag files, and no remote script/style/font hosts.
+        # The weekly flag-drift workflow compares with Flag upstream.
+        run: scripts/stack-check.sh
+
       - name: gofmt -s check
         run: |
           unformatted="$(gofmt -s -l .)"

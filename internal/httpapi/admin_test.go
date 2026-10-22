@@ -527,8 +527,8 @@ func TestAuthorizeRefusesAccountsWithoutAccess(t *testing.T) {
 		t.Fatalf("interactive = %d\n%s", resp.StatusCode, body)
 	}
 	// The 403 is a real page: HTML content type and the nonce policy that
-	// lets its own style and theme script run.
-	nonce := regexp.MustCompile(`<style nonce="([^"]+)"`).FindStringSubmatch(string(body))
+	// lets its own stylesheets and theme script load.
+	nonce := regexp.MustCompile(`<link rel="stylesheet" nonce="([^"]+)"`).FindStringSubmatch(string(body))
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") || nonce == nil ||
 		!strings.Contains(resp.Header.Get("Content-Security-Policy"), "'nonce-"+nonce[1]+"'") {
 		t.Fatalf("403 headers: Content-Type=%q CSP=%q", resp.Header.Get("Content-Type"), resp.Header.Get("Content-Security-Policy"))

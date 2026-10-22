@@ -1,0 +1,442 @@
+:root {
+  color-scheme: dark;
+  --theme-selector-attribute: data-theme;
+  --theme-preference-storage-key: flag-theme-preference;
+  /* Brand faces come from fonts/fonts.css, which sets --font-brand to
+   * "Nebula Sans" and both code variables to "Hack". There is exactly one font
+   * sheet and one pair of faces across every Elcano product — see Flag's design-system/FONTS.md.
+   * The fallbacks below name the same two faces, so a product that forgets the
+   * sheet degrades to a system stack rather than to a different brand face.
+   * Never name a family in product CSS; always use these tokens. */
+  --font-heading: var(--font-brand, "Nebula Sans"), "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-body: var(--font-brand, "Nebula Sans"), "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* One mono serves both code and code-chrome. The variables stay distinct so
+   * product CSS reading --font-code-ui keeps working, but they resolve alike. */
+  --font-code: var(--font-code-brand, "Hack"), ui-monospace, "SF Mono", "Consolas", monospace;
+  --font-code-ui: var(--font-code-ui-brand, "Hack"), ui-monospace, "SF Mono", "Consolas", monospace;
+
+  /* Only these four weights are shipped as real faces. Anything else is a
+   * synthetic smear — see Flag's design-system/FONTS.md before adding a fifth. */
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --font-size-display: clamp(2rem, 1.75rem + 0.8vw, 2.5rem);
+  --line-height-display: 1.15;
+  --font-size-title: 1.75rem;
+  --line-height-title: 1.2;
+  --font-size-subtitle: 1.125rem;
+  --line-height-subtitle: 1.3;
+  --font-size-body-lg: 1.0625rem;
+  --line-height-body-lg: 1.5;
+  /* body-md: dense product UI (toolbars, data-table controls) — a step
+     between body and caption so those surfaces never reach for a literal. */
+  --font-size-body-md: 0.9375rem;
+  --font-size-body: 1rem;
+  --line-height-body: 1.5;
+  --font-size-caption: 0.8125rem;
+  --line-height-caption: 1.4;
+  --font-size-overline: 0.75rem;
+  --line-height-overline: 1.4;
+
+  --color-primary: #7272ab;
+  --color-primary-hover: #8686c4;
+  --color-secondary: #586f7c;
+  --color-accent: #9da7ef;
+  --color-white: #ffffff;
+  --color-black: #000000;
+
+  --color-bg: #1a0b1e;
+  --color-surface-1: #241b31;
+  --color-surface-2: #2f2741;
+
+  --color-border: rgba(114, 114, 171, 0.35);
+  --color-border-strong: rgba(114, 114, 171, 0.55);
+  --color-border-subtle: rgba(255, 255, 255, 0.14);
+  /* The edge of a small control that has no other boundary (checkbox box,
+   * radio ring): 3:1 against every surface (WCAG 1.4.11). */
+  --color-control-border: #7a7392;
+
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #d2d9de;
+  --color-text-muted: #beb6cd;
+  --color-text-disabled: rgba(210, 217, 222, 0.45);
+
+  --color-overlay-soft: rgba(0, 0, 0, 0.2);
+  --color-overlay-strong: rgba(0, 0, 0, 0.4);
+  /* Recessed in-flow surface: code and output wells, preview toolbars,
+   * tool-result panels. Not the modal scrim (--color-overlay-strong): the two
+   * match in dark, but a light well inside a card must stay near-white. */
+  --color-surface-inset: var(--color-overlay-strong);
+
+  --color-success: #50fa7b;
+  --color-warning: #ff8847;
+  /* danger and info were #ff5555 / #8a8bc0, 4.49:1 and 4.39:1 as text on
+   * --color-surface-2; nudged toward white by the smallest step that clears
+   * 4.5:1 on every surface. */
+  --color-danger: #ff5757;
+  --color-info: #8e8ec2;
+  /* Text color used on top of --color-success fills (e.g. success buttons). */
+  --color-on-success: var(--color-black);
+
+  /* Filled controls. White on --color-primary is 4.46:1, just under WCAG AA,
+   * so a filled button, selected option or segmented choice paints its label
+   * (--color-on-primary-fill) on --color-primary-fill: the primary mixed 1%
+   * toward black, the smallest step that reaches 4.5:1 (4.53:1). Its hover is
+   * 11% toward black (5.43:1), so hovering only ever raises contrast. Every
+   * token here is a static value, precomputed rather than written as
+   * color-mix(): a browser without color-mix() would drop the whole custom
+   * property and paint a transparent button under a white label.
+   * The raw --color-primary stays for things with nothing painted on them
+   * (an active bar, a checkbox accent, tints, borders). From fleet's
+   * measured fill pair; see Flag's design-system/TOKENS.md "Filled controls". */
+  --color-primary-fill: #7171a9;
+  --color-primary-fill-hover: #656598;
+  /* The label color for primary fills. Pair it with --color-primary-fill
+   * (or --gradient-action-fill), not the raw primary (4.46:1). */
+  --color-on-primary: var(--color-white);
+  --color-on-primary-fill: var(--color-on-primary);
+  --color-secondary-fill: var(--color-secondary);
+  --color-secondary-fill-hover: #4f6470; /* secondary 10% toward black */
+
+  --color-status-pending-fg: #d3dde6;
+  --color-status-pending-bg: rgba(124, 140, 152, 0.2);
+  --color-status-pending-border: rgba(124, 140, 152, 0.6);
+
+  --color-status-scheduled-fg: #ffe4b8;
+  --color-status-scheduled-bg: rgba(224, 171, 74, 0.18);
+  --color-status-scheduled-border: rgba(224, 171, 74, 0.62);
+
+  --color-status-assigned-fg: #cfe3ff;
+  --color-status-assigned-bg: rgba(90, 132, 255, 0.2);
+  --color-status-assigned-border: rgba(90, 132, 255, 0.58);
+
+  --color-status-leased-fg: #e5d6ff;
+  --color-status-leased-bg: rgba(168, 119, 255, 0.2);
+  --color-status-leased-border: rgba(168, 119, 255, 0.58);
+
+  --color-status-running-fg: #c9f0ff;
+  --color-status-running-bg: rgba(47, 183, 220, 0.22);
+  --color-status-running-border: rgba(47, 183, 220, 0.62);
+
+  --color-status-analyzing-fg: #d6ddff;
+  --color-status-analyzing-bg: rgba(124, 107, 255, 0.22);
+  --color-status-analyzing-border: rgba(124, 107, 255, 0.62);
+
+  --color-status-success-fg: #cbfdd8;
+  --color-status-success-bg: rgba(80, 250, 123, 0.14);
+  --color-status-success-border: rgba(80, 250, 123, 0.6);
+
+  --color-status-warning-fg: #ffd2a1;
+  --color-status-warning-bg: rgba(255, 136, 71, 0.2);
+  --color-status-warning-border: rgba(255, 136, 71, 0.62);
+
+  --color-status-error-fg: #ffd2d2;
+  --color-status-error-bg: rgba(255, 85, 85, 0.14);
+  --color-status-error-border: rgba(255, 85, 85, 0.6);
+
+  --color-status-cancelled-fg: #c7ced4;
+  --color-status-cancelled-bg: rgba(108, 118, 130, 0.16);
+  --color-status-cancelled-border: rgba(108, 118, 130, 0.48);
+
+  --gradient-bg-home-signature:
+    radial-gradient(circle at 8% -4%, rgba(114, 114, 171, 0.34), transparent 34%),
+    radial-gradient(circle at 92% 2%, rgba(88, 111, 124, 0.28), transparent 32%),
+    radial-gradient(circle at 72% 82%, rgba(114, 114, 171, 0.18), transparent 30%),
+    linear-gradient(150deg, #0f0612 0%, #1a0b1e 52%, #090409 100%);
+
+  --gradient-bg-product-standard:
+    radial-gradient(circle at 10% 20%, rgba(114, 114, 171, 0.3), transparent 55%),
+    radial-gradient(circle at 80% 0%, rgba(88, 111, 124, 0.35), transparent 50%),
+    linear-gradient(160deg, #1a0b1e 0%, #000000 100%);
+
+  --gradient-bg-ops-console:
+    radial-gradient(ellipse at center, rgba(113, 114, 170, 0.06) 0%, transparent 60%),
+    linear-gradient(180deg, #1a0b1e 0%, #241b31 40%, #1a0b1e 100%);
+
+  --gradient-surface-panel:
+    linear-gradient(165deg, rgba(26, 11, 30, 0.88), rgba(52, 43, 73, 0.82));
+
+  --gradient-surface-card:
+    linear-gradient(145deg, rgba(38, 21, 44, 0.92), rgba(23, 13, 29, 0.88));
+
+  --gradient-surface-elevated:
+    linear-gradient(150deg, rgba(30, 17, 36, 0.94), rgba(22, 12, 28, 0.92));
+
+  --gradient-action-primary:
+    linear-gradient(140deg, #7272ab, #586f7c);
+
+  /* The action gradient under a label: measured stops, so
+   * --color-on-primary-fill holds 4.5:1 at every point of the blend. Put a
+   * label on this, never on --gradient-action-primary. */
+  --gradient-action-fill:
+    linear-gradient(140deg, var(--color-primary-fill), var(--color-secondary-fill));
+  --gradient-action-fill-hover:
+    linear-gradient(140deg, var(--color-primary-fill-hover), var(--color-secondary-fill-hover));
+
+  --gradient-action-success:
+    linear-gradient(155deg, rgba(44, 78, 59, 0.82), rgba(32, 53, 41, 0.9));
+
+  --gradient-action-disabled:
+    linear-gradient(150deg, rgba(69, 74, 86, 0.5), rgba(54, 59, 70, 0.38));
+
+  --gradient-featured-top-accent:
+    linear-gradient(90deg, rgba(200, 201, 237, 0.95), rgba(114, 114, 171, 0.45));
+
+  --gradient-featured-top-accent-selected:
+    linear-gradient(90deg, rgba(157, 167, 239, 0.98), rgba(114, 114, 171, 0.72));
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-7: 2rem;
+  --space-8: 2.5rem;
+  --space-9: 3rem;
+
+  --space-control-inline: var(--space-3);
+  --space-control-stack: var(--space-2);
+  --space-card-padding: var(--space-6);
+  --space-section-stack: var(--space-7);
+  --space-page-gutter: var(--space-6);
+
+  --radius-sm: 0.5rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+  --radius-pill: 999rem;
+
+  --shadow-sm: 0 10px 24px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 12px 24px rgba(0, 0, 0, 0.34);
+  --shadow-lg: 0 22px 54px rgba(0, 0, 0, 0.52);
+  --shadow-section: 0 6px 16px rgba(0, 0, 0, 0.22);
+  --shadow-control-selected: 0 0 0 2px var(--color-status-running-border);
+
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+
+  --container-default: 72.5rem;
+  --container-dense: 87.5rem;
+
+  --transition-fast: 140ms ease;
+  --transition-base: 200ms ease;
+  --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+  /* Keyboard focus on a calendar day. Days sit edge to edge, so an outer
+   * ring would be covered by the next day's fill: these rings are inset, in
+   * the color that holds 3:1 on the fill the day has (bare or hovered day,
+   * in-range day, selected / range-end day). */
+  --focus-ring-day: inset 0 0 0 2px var(--color-accent);
+  --focus-ring-day-on-fill: inset 0 0 0 2px var(--color-on-primary-fill);
+  --focus-ring-day-on-range: inset 0 0 0 2px var(--color-on-accent-strong);
+
+  /* Syntax highlighting for code blocks (keyword, string, ...). Every value
+   * holds 4.5:1 on a --color-surface-inset well over --color-bg,
+   * --color-surface-1 and --color-surface-2, in both themes. */
+  --color-syntax-keyword: #c49bff;
+  --color-syntax-string: #8fe7b8;
+  --color-syntax-number: #f1a976;
+  --color-syntax-comment: #8c8c8c;
+  --color-syntax-function: #f1d976;
+  --color-syntax-builtin: #7fc7ff;
+  --color-syntax-operator: #d2d9de;
+  --color-syntax-punctuation: #beb6cd;
+
+  /* Connection picker components (switch, compact search, small pill, status
+     kicker, group header, match highlight, state panels, scrim). Values from
+     the Tools picker design; see Flag's design-system/COMPONENTS.md "Connection Picker". */
+  --color-accent-strong: #5956d5;
+  --color-on-accent-strong: #eef0ff;
+  --color-link: #9da7ef;
+  --color-text-subtle: #9c96ae;
+  --color-divider: #3a3147;
+  --color-selected-bg: rgba(89, 86, 213, 0.2);
+  --color-selected-border: rgba(157, 167, 239, 0.4);
+  /* The active row's ring: the 40% border alone was 2.19:1 on the popover. */
+  --color-row-active-border: #9da7ef;
+  --color-pill-border: rgba(255, 255, 255, 0.14);
+  --color-pill-hover-bg: rgba(255, 255, 255, 0.06);
+  /* The on track is a state indicator and needs 3:1 (WCAG 1.4.11) on every
+   * surface it sits on, including the popover's active row (selected-bg over
+   * surface-2), where accent-strong was 2.5:1. 19% toward white: 3.1:1 on the
+   * active row, 3.66:1 on surface-2, knob 3.54:1 on it. Light keeps
+   * accent-strong. */
+  --color-switch-track-on: #7976dd;
+  /* 3.05:1 on the popover's active row, 3.61:1 on the popover, 3.59:1 under
+     the knob (the design's 14% white was 1.56:1; #7a7392 was 2.67:1 on the
+     active row). */
+  --color-switch-track-off: #837d9a;
+  --color-switch-knob: #f4f5f9;
+  --shadow-switch-knob: none;
+  --focus-ring-picker: var(--focus-ring);
+  --color-match-bg: rgba(157, 167, 239, 0.22);
+  --color-state-ok: #4ecb8f;
+  --color-state-warn: #e0a94a;
+  --color-state-deny: #e08aa3;
+  --color-panel-ok-bg: rgba(78, 203, 143, 0.12);
+  --color-panel-ok-border: rgba(78, 203, 143, 0.3);
+  --color-panel-warn-bg: rgba(224, 169, 74, 0.12);
+  --color-panel-warn-border: rgba(224, 169, 74, 0.32);
+  --color-panel-deny-bg: rgba(224, 138, 163, 0.12);
+  --color-panel-deny-border: rgba(224, 138, 163, 0.32);
+  --color-icon-tile: rgba(157, 167, 239, 0.14);
+  --color-rail-bg: rgba(0, 0, 0, 0.16);
+  --color-scrim: rgba(26, 11, 30, 0.55);
+  --shadow-popover: 0 24px 60px -22px rgba(0, 0, 0, 0.55);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"],
+body.theme-light {
+  color-scheme: light;
+  --color-bg: #f4f6fb;
+  --color-primary-hover: #5f5f97;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #e9eefc;
+  --color-border: rgba(38, 55, 92, 0.2);
+  --color-border-strong: rgba(38, 55, 92, 0.32);
+  --color-border-subtle: rgba(38, 55, 92, 0.18);
+  --color-control-border: #586f7c;
+  --color-text-primary: #141824;
+  --color-text-secondary: #33415f;
+  --color-text-muted: #5c6a87;
+  --color-text-disabled: rgba(92, 106, 135, 0.6);
+  --color-overlay-soft: rgba(114, 114, 171, 0.08);
+  --color-overlay-strong: rgba(20, 24, 36, 0.16);
+  /* The dark accent (#9da7ef) is 2.0-2.3:1 on the light surfaces, and accent
+   * marks focus rings, input focus borders and hover borders: state-bearing
+   * non-text that needs 3:1. Same hue, deep enough for 4.6:1+ (auth shipped
+   * this override first). */
+  --color-accent: #5a64b8;
+  /* Opaque in light: a well stays near-white inside any card (#eef1f2 is
+   * the code well's long-standing light color). */
+  --color-surface-inset: #eef1f2;
+
+  /* Light-mode accent overrides: the dark-theme accents are tuned for dark
+   * surfaces and fail WCAG AA as text on white (#ff5555 ≈ 2.9:1). These darker
+   * equivalents all reach ≥ 4.5:1 on --color-bg / --color-surface-1/2. */
+  --color-success: #1e7a3f;
+  --color-warning: #8f3e10;
+  --color-danger: #b3261e;
+  --color-info: #4f5496;
+  --color-on-success: var(--color-white);
+
+  --color-status-pending-fg: #33415f;
+  --color-status-pending-bg: rgba(124, 140, 152, 0.18);
+  --color-status-pending-border: rgba(124, 140, 152, 0.42);
+  --color-status-scheduled-fg: #7a4a12;
+  --color-status-scheduled-bg: rgba(224, 171, 74, 0.24);
+  --color-status-scheduled-border: rgba(224, 171, 74, 0.54);
+  --color-status-assigned-fg: #1f3f87;
+  --color-status-assigned-bg: rgba(90, 132, 255, 0.2);
+  --color-status-assigned-border: rgba(90, 132, 255, 0.44);
+  --color-status-leased-fg: #5a2f8f;
+  --color-status-leased-bg: rgba(168, 119, 255, 0.18);
+  --color-status-leased-border: rgba(168, 119, 255, 0.42);
+  --color-status-running-fg: #0f5e78;
+  --color-status-running-bg: rgba(47, 183, 220, 0.22);
+  --color-status-running-border: rgba(47, 183, 220, 0.46);
+  --color-status-analyzing-fg: #3b3391;
+  --color-status-analyzing-bg: rgba(124, 107, 255, 0.2);
+  --color-status-analyzing-border: rgba(124, 107, 255, 0.44);
+  --color-status-success-fg: #1c5a33;
+  --color-status-success-bg: rgba(80, 250, 123, 0.16);
+  --color-status-success-border: rgba(80, 250, 123, 0.42);
+  --color-status-warning-fg: #8f3e10;
+  --color-status-warning-bg: rgba(255, 136, 71, 0.24);
+  --color-status-warning-border: rgba(255, 136, 71, 0.48);
+  --color-status-error-fg: #7c1f1f;
+  --color-status-error-bg: rgba(255, 85, 85, 0.18);
+  --color-status-error-border: rgba(255, 85, 85, 0.44);
+  --color-status-cancelled-fg: #556074; /* was #59657a, 4.24:1 on its tint over surface-2 */
+  --color-status-cancelled-bg: rgba(108, 118, 130, 0.16);
+  --color-status-cancelled-border: rgba(108, 118, 130, 0.34);
+
+  --gradient-bg-home-signature:
+    radial-gradient(circle at 9% -8%, rgba(114, 114, 171, 0.28), transparent 42%),
+    radial-gradient(circle at 90% 0%, rgba(88, 111, 124, 0.24), transparent 38%),
+    linear-gradient(150deg, #f7f9ff 0%, #eaf0ff 52%, #e2e9fb 100%);
+  --gradient-bg-product-standard:
+    radial-gradient(circle at 12% 16%, rgba(114, 114, 171, 0.3), transparent 52%),
+    radial-gradient(circle at 82% 0%, rgba(88, 111, 124, 0.24), transparent 44%),
+    linear-gradient(160deg, #eef3ff 0%, #dde6fb 100%);
+  --gradient-bg-ops-console:
+    radial-gradient(circle at 18% 22%, rgba(88, 111, 124, 0.28), transparent 48%),
+    radial-gradient(circle at 80% 82%, rgba(114, 114, 171, 0.22), transparent 46%),
+    linear-gradient(180deg, #edf2ff 0%, #dce6fb 45%, #e7edfc 100%);
+  --gradient-surface-panel: linear-gradient(165deg, #ffffff, #f2f6ff);
+  --gradient-surface-card: linear-gradient(145deg, #ffffff, #eef3ff);
+  --gradient-surface-elevated: linear-gradient(150deg, #ffffff, #e8efff);
+  /* Light keeps the deeper action surface: the hover stops, which move away
+   * from the white label. */
+  --gradient-action-fill:
+    linear-gradient(140deg, var(--color-primary-fill-hover), var(--color-secondary-fill-hover));
+  --gradient-action-fill-hover:
+    linear-gradient(
+      140deg,
+      #5b5b89,
+      #475a64
+    );
+  --gradient-featured-top-accent:
+    linear-gradient(90deg, rgba(114, 114, 171, 0.42), rgba(88, 111, 124, 0.22));
+  --gradient-featured-top-accent-selected:
+    linear-gradient(90deg, rgba(114, 114, 171, 0.78), rgba(88, 111, 124, 0.42));
+
+  --shadow-sm: 0 6px 14px rgba(40, 52, 86, 0.12);
+  --shadow-md: 0 10px 18px rgba(38, 55, 92, 0.16);
+  --shadow-lg: 0 16px 34px rgba(38, 55, 92, 0.2);
+  --shadow-section: 0 4px 10px rgba(40, 52, 86, 0.08);
+  --shadow-control-selected: 0 0 0 2px var(--color-status-running-border);
+
+  --focus-ring: 0 0 0 2px var(--color-white), 0 0 0 4px var(--color-accent);
+
+  --color-syntax-keyword: #7b39eb;
+  --color-syntax-string: #0e7539;
+  --color-syntax-number: #9b5300;
+  --color-syntax-comment: #5f6572;
+  --color-syntax-function: #845f00;
+  --color-syntax-builtin: #0369a1;
+  --color-syntax-operator: #33415f;
+  --color-syntax-punctuation: #586682;
+
+  /* Connection picker components (switch, compact search, small pill, status
+     kicker, group header, match highlight, state panels, scrim). Values from
+     the Tools picker design; see Flag's design-system/COMPONENTS.md "Connection Picker". */
+  --color-accent-strong: #6262a0;
+  --color-on-accent-strong: #ffffff;
+  --color-link: #5f5f97;
+  --color-text-subtle: #586f7c;
+  --color-divider: #d9deec;
+  --color-selected-bg: #eaedf5;
+  --color-selected-border: #c7cbec;
+  --color-row-active-border: #6262a0;
+  --color-pill-border: #d7d5e6;
+  --color-pill-hover-bg: #f1f2f8;
+  /* The design's #e4e5ee read 1.08:1 on the popover; this is 3.2:1 there and
+     3.75:1 under the white knob. */
+  --color-switch-track-off: #80829e;
+  --color-switch-track-on: var(--color-accent-strong);
+  --color-switch-knob: #ffffff;
+  --shadow-switch-knob: 0 1px 2px rgba(26, 11, 30, 0.28);
+  --color-match-bg: #9da7ef;
+  --color-state-ok: #1b7950;
+  --color-state-warn: #8e611e;
+  --color-state-deny: #9c546a;
+  --color-panel-ok-bg: #f0f9f4;
+  --color-panel-ok-border: #cfe8da;
+  --color-panel-warn-bg: #fcf5e8;
+  --color-panel-warn-border: #f0debe;
+  --color-panel-deny-bg: rgba(178, 96, 121, 0.12);
+  --color-panel-deny-border: rgba(178, 96, 121, 0.32);
+  --color-icon-tile: #eef0fb;
+  --color-rail-bg: #fafafd;
+  --color-scrim: rgba(252, 252, 253, 0.55);
+  --shadow-popover: 0 24px 60px -22px rgba(36, 27, 49, 0.2);
+}

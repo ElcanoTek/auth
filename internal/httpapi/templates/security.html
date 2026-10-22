@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — Security</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+{{template "assets" .}}
+</head>
+<body>
+  {{template "theme-toggle"}}
+  <main class="card">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>Security</h1>
+    <p class="muted">Two-factor sign-in for <strong>{{.Email}}</strong>.</p>
+    {{if .Notice}}<div class="banner" role="status"><strong>Done.</strong> {{.Notice}}</div>{{end}}
+    {{if .UsedRecovery}}<div class="banner warn" role="status"><strong>Recovery code used.</strong> You signed in with a recovery code. If you lost your authenticator, replace it now.</div>{{end}}
+    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+    <div class="status-line"><span class="tag {{if .Enrolled}}on{{else if .Required}}need{{end}}">{{.Status}}</span>{{if .Enrolled}}<span class="muted">{{.Remaining}} recovery codes left</span>{{else if .Required}}<span class="muted">Set up an authenticator to continue.</span>{{end}}</div>
+    {{if not .Available}}<div class="err">Two-factor sign-in is not set up on this server. Ask your administrator to configure AUTH_MFA_KEY.</div>{{else}}
+    <div class="actions">
+      <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="start">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
+        <button class="btn" type="submit">{{if .Enrolled}}Replace authenticator{{else}}Set up authenticator{{end}}</button></form>
+      {{if .Enrolled}}
+      <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="regenerate">
+        <button class="btn-ghost" type="submit">New recovery codes</button></form>
+      {{if not .Required}}
+      <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="disable">
+        <button class="btn-ghost" type="submit">Turn off two-factor sign-in</button></form>
+      {{end}}
+      {{end}}
+    </div>
+    <p class="hint muted">Changes ask for your password{{if .Enrolled}} and current code{{end}} again if you signed in more than five minutes ago.</p>
+    {{end}}
+    <div class="link-row"><a href="/account">Back to your apps</a>{{if .IsAdmin}}<a href="/admin">Admin</a>{{end}}</div>
+  </main>
+</body>
+</html>
