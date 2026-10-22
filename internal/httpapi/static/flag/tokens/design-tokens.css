@@ -79,20 +79,23 @@
 
   /* Filled controls. White on --color-primary is 4.46:1, just under WCAG AA,
    * so a filled button, selected option or segmented choice paints its label
-   * (--color-on-primary-fill) on --color-primary-fill: the primary mixed
-   * toward black by the smallest step that reaches 4.5:1. Its hover moves a
-   * further 10 points the same way, so hovering only ever raises contrast.
+   * (--color-on-primary-fill) on --color-primary-fill: the primary mixed 1%
+   * toward black, the smallest step that reaches 4.5:1 (4.53:1). Its hover is
+   * 11% toward black (5.43:1), so hovering only ever raises contrast. Every
+   * token here is a static value, precomputed rather than written as
+   * color-mix(): a browser without color-mix() would drop the whole custom
+   * property and paint a transparent button under a white label.
    * The raw --color-primary stays for things with nothing painted on them
    * (an active bar, a checkbox accent, tints, borders). From fleet's
    * measured fill pair; see Flag's design-system/TOKENS.md "Filled controls". */
-  --color-primary-fill: color-mix(in srgb, var(--color-primary) 99%, #000);
-  --color-primary-fill-hover: color-mix(in srgb, var(--color-primary) 89%, #000);
+  --color-primary-fill: #7171a9;
+  --color-primary-fill-hover: #656598;
   /* The label color for primary fills. Pair it with --color-primary-fill
    * (or --gradient-action-fill), not the raw primary (4.46:1). */
   --color-on-primary: var(--color-white);
   --color-on-primary-fill: var(--color-on-primary);
   --color-secondary-fill: var(--color-secondary);
-  --color-secondary-fill-hover: color-mix(in srgb, var(--color-secondary) 90%, #000);
+  --color-secondary-fill-hover: #4f6470; /* secondary 10% toward black */
 
   --color-status-pending-fg: #d3dde6;
   --color-status-pending-bg: rgba(124, 140, 152, 0.2);
@@ -359,8 +362,8 @@ body.theme-light {
   --gradient-action-fill-hover:
     linear-gradient(
       140deg,
-      color-mix(in srgb, var(--color-primary-fill-hover) 90%, #000),
-      color-mix(in srgb, var(--color-secondary-fill-hover) 90%, #000)
+      #5b5b89,
+      #475a64
     );
   --gradient-featured-top-accent:
     linear-gradient(90deg, rgba(114, 114, 171, 0.42), rgba(88, 111, 124, 0.22));
