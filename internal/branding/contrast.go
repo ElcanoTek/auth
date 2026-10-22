@@ -151,40 +151,71 @@ func hslToRGB(h, s, l float64) rgb {
 	return rgb{hue(h+1.0/3) * 255, hue(h) * 255, hue(h-1.0/3) * 255}
 }
 
-// labelSafeFill returns the bundle's button stops moved, by the smallest
-// whole-percent step, away from the label until each reaches 4.5:1 (Flag's
-// rule for --color-primary-fill), plus the hover stops 10 points further the
-// same way, so hovering only raises contrast. ok is false when a colour is
-// unreadable or translucent, or no step reaches 4.5:1; the caller then keeps
-// Flag's measured fill.
-func labelSafeFill(label string, stops ...string) (fill, hover []string, ok bool) {
-	lc, ok := parseOpaque(label)
-	if !ok {
-		return nil, nil, false
+// gradientSamples is how many points along a two-stop gradient are measured
+// (ends included). sRGB interpolation between different hues can pass
+// through colours darker or lighter than either end, so the ends alone are
+// not enough (Flag's check_tokens measures the same way).
+const gradientSamples = 65
+
+// minGradientContrast is the lowest label contrast anywhere along the
+// gradient a→b, sampled after rounding each colour to the 8-bit hex a
+// browser paints.
+func minGradientContrast(a, b, label rgb) float64 {
+	low := math.Inf(1)
+	for i := 0; i < gradientSamples; i++ {
+		c, _ := parseOpaque(mix(a, b, float64(i)/(gradientSamples-1)).hex())
+		low = math.Min(low, contrast(c, label))
 	}
-	black, white := rgb{0, 0, 0}, rgb{255, 255, 255}
-	for _, s := range stops {
-		c, ok := parseOpaque(s)
-		if !ok {
-			return nil, nil, false
-		}
-		target := black
-		if lc.luminance() < c.luminance() {
-			target = white
-		}
-		step := -1
+	return low
+}
+
+// labelSafeFill returns a fill gradient and its hover for the label, both
+// holding 4.5:1 at every sampled point:
+//
+//   - The direction is whichever of black or white contrasts more with the
+//     label; every stop moves that way.
+//   - Each stop first moves by the smallest whole-percent step that makes it
+//     pass on its own (Flag's rule for --color-primary-fill).
+//   - If the gradient between the stops still dips under 4.5:1, both stops
+//     keep stepping together until every sample passes.
+//   - The hover stops sit 10 points further the same way, so hovering only
+//     raises contrast. They are measured too.
+//
+// ok is false when a colour is unreadable or translucent, or nothing passes;
+// the caller then falls back to Flag's measured fill and label.
+func labelSafeFill(label, from, to string) (fill, hover [2]string, ok bool) {
+	lc, ok1 := parseOpaque(label)
+	a, ok2 := parseOpaque(from)
+	b, ok3 := parseOpaque(to)
+	if !ok1 || !ok2 || !ok3 {
+		return fill, hover, false
+	}
+	target := rgb{0, 0, 0}
+	if contrast(lc, rgb{255, 255, 255}) > contrast(lc, target) {
+		target = rgb{255, 255, 255}
+	}
+	if contrast(lc, target) < minLabelContrast {
+		return fill, hover, false
+	}
+	at := func(c rgb, p int) rgb {
+		got, _ := parseOpaque(mix(c, target, math.Min(100, float64(p))/100).hex())
+		return got
+	}
+	own := func(c rgb) int {
 		for p := 0; p <= 100; p++ {
-			// Measure the rounded hex that is actually emitted.
-			if got, _ := parseOpaque(mix(c, target, float64(p)/100).hex()); contrast(got, lc) >= minLabelContrast {
-				step = p
-				break
+			if contrast(at(c, p), lc) >= minLabelContrast {
+				return p
 			}
 		}
-		if step < 0 {
-			return nil, nil, false
-		}
-		fill = append(fill, mix(c, target, float64(step)/100).hex())
-		hover = append(hover, mix(c, target, math.Min(100, float64(step+10))/100).hex())
+		return 100
 	}
-	return fill, hover, true
+	pa, pb := own(a), own(b)
+	for extra := 0; extra <= 100; extra++ {
+		fa, fb := at(a, pa+extra), at(b, pb+extra)
+		ha, hb := at(a, pa+extra+10), at(b, pb+extra+10)
+		if minGradientContrast(fa, fb, lc) >= minLabelContrast && minGradientContrast(ha, hb, lc) >= minLabelContrast {
+			return [2]string{fa.hex(), fb.hex()}, [2]string{ha.hex(), hb.hex()}, true
+		}
+	}
+	return fill, hover, false
 }

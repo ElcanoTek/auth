@@ -341,18 +341,6 @@ func declarations(mode map[string]string, light bool) (plain, mixed []string) {
 		_, setHover := valid["primary_hover"]
 		if setPrimary || setHover {
 			plain = append(plain, "--gradient-action-primary: linear-gradient(140deg, "+primary+", "+hover+");")
-			// Buttons paint their label on Flag's --gradient-action-fill: the
-			// bundle's primary-to-hover gradient, each stop moved away from the
-			// label just far enough for 4.5:1, and a hover 10 points further
-			// (Flag's rule: hovering only ever raises contrast). Values are
-			// computed here, so no color-mix() is involved. A palette that
-			// cannot be made to pass keeps Flag's measured fill.
-			label := pick("on_primary")
-			if fill, over, ok := labelSafeFill(label, primary, hover); ok {
-				plain = append(plain,
-					"--gradient-action-fill: linear-gradient(140deg, "+fill[0]+", "+fill[1]+");",
-					"--gradient-action-fill-hover: linear-gradient(140deg, "+over[0]+", "+over[1]+");")
-			}
 		}
 		if light {
 			mixed = append(mixed,
@@ -374,6 +362,85 @@ func declarations(mode map[string]string, light bool) (plain, mixed []string) {
 	return plain, mixed
 }
 
+// buttonFillInputs are the bundle colours a labelled button resolves through:
+// its two fill stops (primary/primary_hover, and secondary for Flag's dark
+// fill) and its label (on_primary).
+var buttonFillInputs = []string{"primary", "primary_hover", "secondary", "on_primary"}
+
+// flagFill is Flag's measured fill, hover and label per theme (light: true),
+// from tokens/design-tokens.css. A mode that sets no fill input gets exactly
+// these, and so does any palette that cannot be made to pass.
+var flagFill = map[bool]struct{ fill, hover [2]string }{
+	false: {[2]string{"#7171a9", "#586f7c"}, [2]string{"#656598", "#4f6470"}},
+	true:  {[2]string{"#656598", "#4f6470"}, [2]string{"#5b5b89", "#475a64"}},
+}
+
+func setsButtonFill(mode map[string]string) bool {
+	for _, name := range buttonFillInputs {
+		if v, ok := mode[name]; ok && ValidColor(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// buttonFill returns one mode's --gradient-action-fill, its hover and
+// --color-on-primary-fill, every point of each gradient measured at 4.5:1 or
+// more against the label (see labelSafeFill):
+//
+//   - The stops are the bundle's primary to primary_hover when it sets
+//     either. Otherwise they are Flag's own stops for the theme, with the
+//     bundle's secondary in Flag's dark second stop.
+//   - The label is the bundle's on_primary, or Flag's white.
+//   - A label nothing can pass under falls back to white. Colours that
+//     cannot pass even then fall back to Flag's measured fill and label.
+func buttonFill(mode map[string]string, light bool) []string {
+	valid := func(name string) (string, bool) {
+		v, ok := mode[name]
+		if ok && ValidColor(v) {
+			return strings.TrimSpace(v), true
+		}
+		return "", false
+	}
+	def := flagFill[light]
+	label, from, to := "#ffffff", def.fill[0], def.fill[1]
+	if v, ok := valid("on_primary"); ok {
+		label = v
+	}
+	_, setPrimary := valid("primary")
+	_, setHover := valid("primary_hover")
+	switch {
+	case setPrimary || setHover:
+		from, to = modeDefaults[light]["primary"], modeDefaults[light]["primary_hover"]
+		if v, ok := valid("primary"); ok {
+			from = v
+		}
+		if v, ok := valid("primary_hover"); ok {
+			to = v
+		}
+	case !light:
+		if v, ok := valid("secondary"); ok {
+			to = v
+		}
+	}
+	decls := func(label string, fill, hover [2]string) []string {
+		return []string{
+			"--color-on-primary-fill: " + label + ";",
+			"--gradient-action-fill: linear-gradient(140deg, " + fill[0] + ", " + fill[1] + ");",
+			"--gradient-action-fill-hover: linear-gradient(140deg, " + hover[0] + ", " + hover[1] + ");",
+		}
+	}
+	if !setsButtonFill(mode) {
+		return decls("#ffffff", def.fill, def.hover)
+	}
+	for _, l := range []string{label, "#ffffff"} {
+		if fill, hover, ok := labelSafeFill(l, from, to); ok {
+			return decls(l, fill, hover)
+		}
+	}
+	return decls("#ffffff", def.fill, def.hover)
+}
+
 // generateCSS renders the override block appended to Auth's own tokens. Dark
 // is the base (:root) and light overrides it, matching the stylesheet. The
 // color-mix() gradients sit behind an @supports guard so an older browser
@@ -387,6 +454,14 @@ func generateCSS(dark, light map[string]string) string {
 	}
 	darkPlain, darkMixed := declarations(dark, false)
 	lightPlain, lightMixed := declarations(light, true)
+	if setsButtonFill(dark) || setsButtonFill(light) {
+		// Both modes get explicit values: a :root (dark) label or colour
+		// would otherwise cascade into light mode over Flag's fill, unmeasured.
+		darkPlain = append(darkPlain, buttonFill(dark, false)...)
+		lightPlain = append(lightPlain, buttonFill(light, true)...)
+		sort.Strings(darkPlain)
+		sort.Strings(lightPlain)
+	}
 	block(":root", darkPlain)
 	block(`:root[data-theme="light"]`, lightPlain)
 	if len(darkMixed)+len(lightMixed) > 0 {
