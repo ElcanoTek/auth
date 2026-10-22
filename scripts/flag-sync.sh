@@ -29,7 +29,7 @@
 #                              (exit 3 when the vendor copy is stale).
 set -euo pipefail
 
-FLAG_SYNC_VERSION=5
+FLAG_SYNC_VERSION=8
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK="$ROOT/flag.lock"
 
@@ -72,6 +72,15 @@ read_lock() { # emits: kind fields...
   grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$LOCK"
 }
 
+# safe_path PATH: lock records are whitespace-separated, so a path must be a
+# plain relative path with no whitespace, control characters or ".." segment.
+safe_path() {
+  case "$1" in
+    ''|/*|*[[:space:][:cntrl:]]*) die "unsupported path '$1' (relative paths without whitespace only)" ;;
+  esac
+  case "/$1/" in */../*|*/./*) die "unsupported path '$1' (no . or .. segments)" ;; esac
+}
+
 # has_dest LIST PATH: does LIST ("sha flag-path repo-path" records) lock PATH?
 # Exact string comparison, so paths with regex characters ([ ] . *) are safe.
 has_dest() { awk -v p="$2" '$3 == p { found = 1 } END { exit !found }' "$1"; }
@@ -98,6 +107,7 @@ cmd_check() {
       flag) ;;
       dir) ;;
       file)
+        safe_path "$b"; safe_path "$c"
         echo "$c" >> "$locked"
         if [ ! -f "$ROOT/$c" ]; then echo "MISSING  $c (flag: $b)"; bad=1
         elif [ "$(sha "$ROOT/$c")" != "$a" ]; then echo "DRIFTED  $c (flag: $b) — re-run scripts/flag-sync.sh sync; never hand-edit"; bad=1
@@ -112,6 +122,9 @@ cmd_check() {
       f="${f#"$ROOT"/}"
       grep -qxF "$f" "$locked" || { echo "UNLOCKED $f (inside vendored dir $a — move product files out, or add it from flag)"; bad=1; }
     done < <(find "$ROOT/$a" -type f ! -name '.DS_Store' | sort)
+    while IFS= read -r f; do
+      echo "UNEXPECTED ${f#"$ROOT"/} (symlink or special file inside vendored dir $a)"; bad=1
+    done < <(find "$ROOT/$a" ! -type d ! -type f | sort)
   done < <(read_lock)
   if [ "$bad" -ne 0 ]; then echo "flag-sync: vendored Flag files drifted from flag.lock" >&2; exit 1; fi
   echo "flag-sync: $(grep -c '^file ' "$LOCK") vendored files match flag.lock ($(awk '$1=="flag"{print substr($2,1,12)}' "$LOCK"))"
@@ -138,6 +151,7 @@ cmd_sync() {
     [ -d "$fd/design-system/$prefix" ] || die "flag no longer has design-system/$prefix (locked as dir $d)"
     while IFS= read -r f; do
       rel="${f#"$fd/design-system/$prefix"/}"
+      safe_path "$prefix/$rel"; safe_path "$d/$rel"
       has_dest "$files" "$d/$rel" && continue
       mkdir -p "$(dirname "$ROOT/$d/$rel")"
       cp "$f" "$ROOT/$d/$rel"
@@ -159,23 +173,39 @@ cmd_sync() {
 }
 
 cmd_add() {
-  local fd src dest dirs files kind a b c f rel
+  local fd src dest dirs files stale kind a b c f rel
   if [ $# -eq 3 ]; then fd="$(flag_dir "$1")"; shift; else fd="$(flag_dir "")"; fi
   clean_flag "$fd"
   [ $# -eq 2 ] || die "usage: flag-sync.sh add [FLAG_DIR] <flag-path> <repo-path>"
   src="${1%/}"; dest="${2%/}"
-  dirs="$(mktemp)"; files="$(mktemp)"; trap 'rm -f "$dirs" "$files"' RETURN
+  dirs="$(mktemp)"; files="$(mktemp)"; stale="$(mktemp)"; trap 'rm -f "$dirs" "$files" "$stale"' RETURN
   touch "$LOCK"
+  # Entries at or under <repo-path> are being replaced: drop them from the
+  # lock, and remember their files so the old copies can be deleted (a
+  # replacement with fewer files must not leave unlocked leftovers behind).
   while read -r kind a b c; do
     case "$kind" in
-      dir) echo "$a" >> "$dirs" ;;
-      file) [ "$c" = "$dest" ] || [ "${c#"$dest"/}" != "$c" ] || echo "$a $b $c" >> "$files" ;;
+      dir) [ "$a" = "$dest" ] || [ "${a#"$dest"/}" != "$a" ] || echo "$a" >> "$dirs" ;;
+      file) if [ "$c" = "$dest" ] || [ "${c#"$dest"/}" != "$c" ]; then echo "$c" >> "$stale"; else echo "$a $b $c" >> "$files"; fi ;;
     esac
   done < <(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$LOCK" || true)
+  # The lock names one commit for every entry, so everything already locked
+  # (files and whole-dir mirrors) must match this checkout first; otherwise the
+  # rewritten commit line would be a lie.
+  if ! (cmd_status "$fd") >/dev/null 2>&1; then
+    die "the vendored copy differs from $(flag_commit "$fd" | cut -c1-12) (see: scripts/flag-sync.sh status $fd); run scripts/flag-sync.sh sync against this checkout first"
+  fi
+  safe_path "$src"; safe_path "$dest"
+  [ -e "$fd/design-system/$src" ] || die "flag has no design-system/$src"
+  while IFS= read -r f; do
+    safe_path "$f"
+    rm -f "$ROOT/$f"
+  done < "$stale"
   if [ -d "$fd/design-system/$src" ]; then
     echo "$dest" >> "$dirs"
     while IFS= read -r f; do
       rel="${f#"$fd/design-system/$src"/}"
+      safe_path "$src/$rel"
       mkdir -p "$(dirname "$ROOT/$dest/$rel")"
       cp "$f" "$ROOT/$dest/$rel"
       echo "$(sha "$ROOT/$dest/$rel") $src/$rel $dest/$rel" >> "$files"

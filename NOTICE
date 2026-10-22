@@ -20,10 +20,10 @@ binary. Each item stays under its own licence.
            internal/httpapi/static/auth.css.
 
   The fonts under static/flag/fonts/ are not covered by the Flag licence;
-  see items 2 and 3. Some glyphs of static/flag/icons/core-icons.svg are
-  drawn after Lucide (https://lucide.dev), ISC License, Copyright (c) Cole
-  Bemis 2013-2022 (Feather, MIT) and Lucide Contributors 2022; the full ISC
-  notice is the comment at the top of that file and is served with it.
+  see items 2 and 3. Icons: some glyphs in Flag's core-icons.svg are drawn
+  after Lucide (https://lucide.dev), ISC License — the full notice is
+  retained at the top of the vendored sprite
+  (internal/httpapi/static/flag/icons/core-icons.svg).
 
   Licence: MIT — full text in internal/httpapi/static/flag/LICENSE.txt
            (Flag's design-system/LICENSE, vendored and locked with the

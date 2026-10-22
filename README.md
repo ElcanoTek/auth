@@ -440,6 +440,9 @@ local checks, repository map, and pull-request expectations.
 Auth is available under the [MIT License](LICENSE). Bundled third-party
 material keeps its own licence; [`NOTICE`](NOTICE) lists it: the vendored Flag
 design-system files (MIT), the Nebula Sans fonts (SIL Open Font License 1.1),
-the Hack fonts (MIT + Bitstream Vera License), and the QR encoder in
+the Hack fonts (MIT + Bitstream Vera License), the icon sprite (icons: some
+glyphs in Flag's core-icons.svg are drawn after Lucide (https://lucide.dev),
+ISC License — the full notice is retained at the top of the vendored sprite,
+`internal/httpapi/static/flag/icons/core-icons.svg`), and the QR encoder in
 `internal/mfa/qr/`, derived from boombuler/barcode under the MIT License in
 [`internal/mfa/qr/LICENSE`](internal/mfa/qr/LICENSE).
