@@ -3,6 +3,7 @@ package branding
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -74,8 +75,10 @@ func TestLoadReadsOnlyBrandingAndValidatesValues(t *testing.T) {
 		"--color-primary: #0B6E4F;", "--color-primary-hover: #118A63;", "--color-on-primary: #FFFFFF;",
 		"--color-bg: #0E1512;", "--color-border: rgba(255, 255, 255, 0.14);",
 		"--gradient-action-primary: linear-gradient(140deg, #0B6E4F, #118A63);",
-		"--gradient-action-fill: linear-gradient(140deg, #0B6E4F, #118A63);",
-		"--gradient-action-fill-hover: linear-gradient(140deg, color-mix(in srgb, #0B6E4F 89%, #000), color-mix(in srgb, #118A63 89%, #000));",
+		// #0B6E4F is 6.3:1 under white and stays; #118A63 is 4.3:1 and moves
+		// 2% toward black. The hover is 10 points further.
+		"--gradient-action-fill: linear-gradient(140deg, #0b6e4f, #118761);",
+		"--gradient-action-fill-hover: linear-gradient(140deg, #0a6347, #0f7957);",
 		"color-mix(in srgb, #0B6E4F 34%, transparent)", "color-mix(in srgb, #586f7c 28%, transparent)",
 		"radial-gradient(circle at 72% 82%, color-mix(in srgb, #0B6E4F 18%, transparent), transparent 30%)",
 		"--gradient-surface-card: linear-gradient(145deg, color-mix(in srgb, color-mix(in srgb, #16201B 90%, #000) 92%, transparent)",
@@ -257,5 +260,120 @@ branding:
 	// The dark card still derives from the stock surface_1 and background.
 	if !strings.Contains(b.CSS, "color-mix(in srgb, color-mix(in srgb, #241b31 90%, #000) 92%, transparent)") {
 		t.Fatalf("dark card did not fall back to stock surface_1:\n%s", b.CSS)
+	}
+}
+
+// fillStops pulls the two stops out of an emitted gradient declaration.
+func fillStops(t *testing.T, css, prop string) []rgb {
+	t.Helper()
+	m := regexp.MustCompile(regexp.QuoteMeta(prop) + `: linear-gradient\(140deg, (#[0-9a-f]{6}), (#[0-9a-f]{6})\);`).FindStringSubmatch(css)
+	if m == nil {
+		t.Fatalf("%s not emitted as two hex stops:\n%s", prop, css)
+	}
+	var out []rgb
+	for _, h := range m[1:] {
+		c, ok := parseOpaque(h)
+		if !ok {
+			t.Fatal(h)
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// A bundle that changes only page colours (background, surfaces, secondary)
+// keeps Flag's measured, label-safe button fill and action gradient in both
+// themes; it used to re-derive them from Auth's stock primary/hover pair,
+// whose dark hover stop (#8686c4) is 3.4:1 under the white label.
+func TestSparseBundleKeepsFlagButtonFill(t *testing.T) {
+	for _, mode := range []string{"dark", "light"} {
+		for _, colour := range []string{"background", "surface_1", "surface_2", "secondary"} {
+			dir := writeBundle(t, "branding:\n  colors:\n    "+mode+":\n      "+colour+": \"#203040\"\n", nil)
+			b, err := Load(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(b.CSS, "--gradient-bg-home-signature") {
+				t.Fatalf("%s %s: page gradients no longer derived:\n%s", mode, colour, b.CSS)
+			}
+			if strings.Contains(b.CSS, "--gradient-action-") {
+				t.Fatalf("%s %s: a page-only palette overrode the button gradients:\n%s", mode, colour, b.CSS)
+			}
+		}
+	}
+}
+
+// When a bundle does set button colours, every stop of the fill and of its
+// hover holds 4.5:1 against the label, and hovering never lowers contrast,
+// in both themes and for light or dark labels.
+func TestBundleButtonFillHoldsLabelContrast(t *testing.T) {
+	cases := []struct{ name, colors string }{
+		{"stock hover only", "primary_hover: \"#8686c4\""},
+		{"pale primary, white label", "primary: \"#9da7ef\"\n      primary_hover: \"#c8c9ed\""},
+		{"bright primary, dark label", "primary: \"#ffd700\"\n      primary_hover: \"#ffe766\"\n      on_primary: \"#111111\""},
+		{"dark primary, light grey label", "primary: \"#303030\"\n      primary_hover: \"#505050\"\n      on_primary: \"#dddddd\""},
+		{"rgb and hsl", "primary: \"rgb(114, 114, 171)\"\n      primary_hover: \"hsl(240, 33%, 65%)\""},
+	}
+	for _, mode := range []string{"dark", "light"} {
+		for _, c := range cases {
+			dir := writeBundle(t, "branding:\n  colors:\n    "+mode+":\n      "+c.colors+"\n", nil)
+			b, err := Load(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			labelHex := "#ffffff"
+			if m := regexp.MustCompile(`--color-on-primary: (#[0-9a-fA-F]{6});`).FindStringSubmatch(b.CSS); m != nil {
+				labelHex = m[1]
+			}
+			label, _ := parseOpaque(labelHex)
+			fill := fillStops(t, b.CSS, "--gradient-action-fill")
+			hover := fillStops(t, b.CSS, "--gradient-action-fill-hover")
+			for i := range fill {
+				if got := contrast(fill[i], label); got < minLabelContrast {
+					t.Errorf("%s / %s: fill stop %s is %.2f:1 under %s", mode, c.name, fill[i].hex(), got, labelHex)
+				}
+				if contrast(hover[i], label) < contrast(fill[i], label) {
+					t.Errorf("%s / %s: hover stop %s lowers contrast", mode, c.name, hover[i].hex())
+				}
+			}
+		}
+	}
+}
+
+// A palette that cannot be measured (translucent) or made to pass keeps
+// Flag's fill rather than emitting an unreadable one.
+func TestUnmeasurableButtonColoursKeepFlagFill(t *testing.T) {
+	for _, colors := range []string{
+		"primary: \"rgba(114, 114, 171, 0.5)\"",
+		"primary: \"#777777\"\n      on_primary: \"#7a7a7a\"",
+		"primary: \"#202020\"\n      on_primary: \"#555555\"", // nothing reaches 4.5:1 under a mid-grey label
+	} {
+		dir := writeBundle(t, "branding:\n  colors:\n    dark:\n      "+colors+"\n", nil)
+		b, err := Load(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.CSS, "--gradient-action-fill") {
+			t.Fatalf("%q emitted a fill:\n%s", colors, b.CSS)
+		}
+	}
+}
+
+func TestParseOpaque(t *testing.T) {
+	for in, want := range map[string]string{
+		"#abc": "#aabbcc", "#ABCDEF": "#abcdef", "#abcf": "#aabbcc", "#11223344": "", "#112233ff": "#112233",
+		"rgb(1, 2, 3)": "#010203", "rgb(100% 0% 0%)": "#ff0000", "rgba(1, 2, 3, 1)": "#010203", "rgba(1, 2, 3, 0.5)": "",
+		"hsl(0, 100%, 50%)": "#ff0000", "hsl(120deg 100% 25%)": "#008000", "hsla(0, 0%, 0%, 0.2)": "", "red": "",
+	} {
+		c, ok := parseOpaque(in)
+		if want == "" {
+			if ok {
+				t.Errorf("parseOpaque(%q) = %s, want rejected", in, c.hex())
+			}
+			continue
+		}
+		if !ok || c.hex() != want {
+			t.Errorf("parseOpaque(%q) = %s %v, want %s", in, c.hex(), ok, want)
+		}
 	}
 }

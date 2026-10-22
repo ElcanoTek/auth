@@ -62,6 +62,9 @@ func fullPaletteCSS(t *testing.T, changed string) string {
 		b.WriteString("    " + mode + ":\n")
 		for _, name := range branding.ColorNames() {
 			value := "#123456"
+			if name == "on_primary" {
+				value = "#ffffff" // a label the #123456 fills can carry
+			}
 			if name == changed {
 				value = "#654321"
 			}

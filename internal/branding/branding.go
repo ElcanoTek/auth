@@ -290,8 +290,8 @@ func ValidColor(v string) bool {
 // these defaults, so a partial palette never keeps the stock purple glow
 // beside a client colour.
 var modeDefaults = map[bool]map[string]string{
-	false: {"primary": "#7272ab", "primary_hover": "#8686c4", "secondary": "#586f7c", "accent": "#9da7ef", "background": "#1a0b1e", "surface_1": "#241b31", "surface_2": "#2f2741"},
-	true:  {"primary": "#7272ab", "primary_hover": "#5f5f97", "secondary": "#586f7c", "accent": "#9da7ef", "background": "#f4f6fb", "surface_1": "#ffffff", "surface_2": "#e9eefc"},
+	false: {"on_primary": "#ffffff", "primary": "#7272ab", "primary_hover": "#8686c4", "secondary": "#586f7c", "accent": "#9da7ef", "background": "#1a0b1e", "surface_1": "#241b31", "surface_2": "#2f2741"},
+	true:  {"on_primary": "#ffffff", "primary": "#7272ab", "primary_hover": "#5f5f97", "secondary": "#586f7c", "accent": "#9da7ef", "background": "#f4f6fb", "surface_1": "#ffffff", "surface_2": "#e9eefc"},
 }
 
 // declarations turns one mode's map into sorted CSS declarations, dropping
@@ -333,12 +333,27 @@ func declarations(mode map[string]string, light bool) (plain, mixed []string) {
 		// the same background behind Auth's sign-in card as behind Fleet's.
 		// Any inputs the bundle leaves out come from Auth's stock values.
 		primary, hover, secondary, bg, s1, s2 := pick("primary"), pick("primary_hover"), pick("secondary"), pick("background"), pick("surface_1"), pick("surface_2")
-		plain = append(plain, "--gradient-action-primary: linear-gradient(140deg, "+primary+", "+hover+");")
-		// Buttons paint their label on Flag's --gradient-action-fill; a bundle
-		// palette keeps the same primary-to-hover gradient there, and its hover
-		// darkens it (Flag's rule: hovering only ever raises contrast).
-		plain = append(plain, "--gradient-action-fill: linear-gradient(140deg, "+primary+", "+hover+");")
-		mixed = append(mixed, "--gradient-action-fill-hover: linear-gradient(140deg, color-mix(in srgb, "+primary+" 89%, #000), color-mix(in srgb, "+hover+" 89%, #000));")
+		// Button colours are the bundle's only when it sets them. Changing
+		// just a background or surface keeps Flag's action gradient and its
+		// measured, label-safe fill instead of re-deriving them from Auth's
+		// stock primary/hover pair (whose hover stop is 3.4:1 under white).
+		_, setPrimary := valid["primary"]
+		_, setHover := valid["primary_hover"]
+		if setPrimary || setHover {
+			plain = append(plain, "--gradient-action-primary: linear-gradient(140deg, "+primary+", "+hover+");")
+			// Buttons paint their label on Flag's --gradient-action-fill: the
+			// bundle's primary-to-hover gradient, each stop moved away from the
+			// label just far enough for 4.5:1, and a hover 10 points further
+			// (Flag's rule: hovering only ever raises contrast). Values are
+			// computed here, so no color-mix() is involved. A palette that
+			// cannot be made to pass keeps Flag's measured fill.
+			label := pick("on_primary")
+			if fill, over, ok := labelSafeFill(label, primary, hover); ok {
+				plain = append(plain,
+					"--gradient-action-fill: linear-gradient(140deg, "+fill[0]+", "+fill[1]+");",
+					"--gradient-action-fill-hover: linear-gradient(140deg, "+over[0]+", "+over[1]+");")
+			}
+		}
 		if light {
 			mixed = append(mixed,
 				"--gradient-bg-home-signature: radial-gradient(circle at 9% -8%, color-mix(in srgb, "+primary+" 28%, transparent), transparent 42%), "+
