@@ -622,14 +622,18 @@ func TestVerifyWithoutCookieIs401(t *testing.T) {
 	}
 }
 
-// TestFontsServed confirms the self-hosted Nebula Sans woff2 files are
-// embedded and served at /fonts/ with the right content type — the login UI's
-// @font-face rules point here, so a missing/misnamed file silently drops
-// the brand font back to the system fallback.
+// TestFontsServed confirms the self-hosted Nebula Sans woff2 files (vendored
+// from Flag) are embedded and served with the right content type — Flag's
+// fonts.css points here, so a missing/misnamed file silently drops the brand
+// font back to the system fallback.
 func TestFontsServed(t *testing.T) {
 	ts, _, _, _ := newTestServer(t)
 	for _, name := range []string{"NebulaSans-400.woff2", "NebulaSans-700.woff2"} {
-		resp, err := http.Get(ts.URL + "/fonts/" + name)
+		url, err := assetURL("flag/fonts/nebula-sans/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.Get(ts.URL + url)
 		if err != nil {
 			t.Fatalf("GET %s: %v", name, err)
 		}
@@ -649,11 +653,15 @@ func TestFontsServed(t *testing.T) {
 
 // TestFontLicenceShipped guards the licence obligation, not the pixels: the
 // SIL OFL 1.1 requires its text to travel with the font binaries, so OFL.txt
-// is embedded alongside them and reachable at /fonts/OFL.txt. Deleting it to
+// is embedded alongside them and served next to them. Deleting it to
 // shave 4 KB off the binary would make the build non-redistributable.
 func TestFontLicenceShipped(t *testing.T) {
 	ts, _, _, _ := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/fonts/OFL.txt")
+	url, err := assetURL("flag/fonts/nebula-sans/OFL.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(ts.URL + url)
 	if err != nil {
 		t.Fatalf("GET OFL.txt: %v", err)
 	}
@@ -1735,28 +1743,41 @@ func TestPagesCarryNonceCSPAndNoUnnoncedInlineCode(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
-	csp := resp.Header.Get("Content-Security-Policy")
-	m := regexp.MustCompile(`script-src 'nonce-([A-Za-z0-9_-]+)'`).FindStringSubmatch(csp)
-	if m == nil {
-		t.Fatalf("no script nonce in CSP %q", csp)
+	if n := len(resp.Header.Values("Content-Security-Policy")); n != 1 {
+		t.Fatalf("%d CSP headers, want one (two comma-separated policies)", n)
 	}
-	nonce := m[1]
-	for _, want := range []string{"default-src 'none'", "style-src 'nonce-" + nonce + "'", "font-src 'self'", "frame-ancestors 'none'", "base-uri 'none'"} {
-		if !strings.Contains(csp, want) {
-			t.Errorf("CSP %q missing %q", csp, want)
+	csp := resp.Header.Get("Content-Security-Policy")
+	policies := strings.Split(csp, ", ")
+	if len(policies) != 2 {
+		t.Fatalf("CSP %q: want the page policy and the nonce policy", csp)
+	}
+	page, noncePolicy := policies[0], policies[1]
+	// The page policy: same-origin files only, so no inline code can run.
+	for _, want := range []string{"default-src 'none'", "script-src 'self';", "style-src 'self';", "font-src 'self'", "img-src 'self' data:", "frame-ancestors 'none'", "base-uri 'none'"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page policy %q missing %q", page, want)
 		}
 	}
+	if strings.Contains(csp, "unsafe-") || strings.Contains(csp, "http") || strings.Contains(csp, "*") {
+		t.Errorf("CSP %q allows inline code or another host", csp)
+	}
+	// The nonce policy: every script and stylesheet must also carry the nonce.
+	m := regexp.MustCompile(`^script-src 'nonce-([A-Za-z0-9_-]+)'; style-src 'nonce-([A-Za-z0-9_-]+)'$`).FindStringSubmatch(noncePolicy)
+	if m == nil || m[1] != m[2] {
+		t.Fatalf("nonce policy %q", noncePolicy)
+	}
+	nonce := m[1]
 	if strings.Contains(csp, "form-action") {
 		t.Error("form-action would block the post-login redirect to client hosts")
 	}
-	page := string(body)
-	if strings.Contains(page, "<script>") || strings.Contains(page, "<style>") {
-		t.Fatal("page contains inline script or style without a nonce; CSP would block it")
+	html := string(body)
+	if regexp.MustCompile(`<script[^>]*>[^<]`).MatchString(html) || strings.Contains(html, "<style") {
+		t.Fatal("page contains inline script or style")
 	}
-	if !strings.Contains(page, `<script nonce="`+nonce+`">`) || !strings.Contains(page, `<style nonce="`+nonce+`">`) {
-		t.Fatalf("inline code does not carry the CSP nonce %q", nonce)
+	if !strings.Contains(html, `<script nonce="`+nonce+`" src="/assets/`) || !strings.Contains(html, `<link rel="stylesheet" nonce="`+nonce+`" href="/assets/`) {
+		t.Fatalf("external script/stylesheet does not carry the CSP nonce %q", nonce)
 	}
-	if strings.Contains(page, `onclick=`) || strings.Contains(page, ` style="`) {
+	if strings.Contains(html, `onclick=`) || strings.Contains(html, ` style="`) {
 		t.Fatal("inline event handler or style attribute would be blocked by CSP")
 	}
 	second, _ := http.Get(ts.URL + "/")
@@ -1815,7 +1836,11 @@ func TestWriteJSONEscapesByJSONRules(t *testing.T) {
 
 func TestFontsAreCacheableDespiteNoStoreDefault(t *testing.T) {
 	ts, _, _, _ := newPasswordTestServer(t, false)
-	resp, err := http.Get(ts.URL + "/fonts/OFL.txt")
+	url, err := assetURL("flag/fonts/nebula-sans/NebulaSans-400.woff2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(ts.URL + url)
 	if err != nil {
 		t.Fatal(err)
 	}

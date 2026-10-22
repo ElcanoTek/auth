@@ -21,6 +21,8 @@
 //	                    downstream services that don't want to parse the
 //	                    token themselves.
 //	GET  /healthz    — for orchestration probes.
+//	GET  /assets/<hash>/… — embedded page CSS/JS and vendored Flag files (assets.go)
+//	GET  /brand/logo, /brand/theme-<hash>.css — client bundle mark and palette
 //
 // The HTTP server itself is plain net/http. No middleware library, no
 // router — chi/mux/gorilla are wonderful but overkill for this small surface.
@@ -150,8 +152,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/verify", s.handleVerify)
 	mux.HandleFunc("/me", s.handleMe)
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.Handle("/fonts/", fontHandler()) // self-hosted Nebula Sans woff2 for the login UI
+	// Page CSS/JS and the vendored Flag fonts, tokens and theme controller,
+	// embedded and content-addressed (assets.go).
+	mux.HandleFunc("/assets/{version}/{path...}", handleAsset)
 	mux.HandleFunc("/brand/logo", s.handleBrandLogo)
+	if b := s.cfg.Brand; b != nil && b.CSS != "" {
+		mux.HandleFunc(brandCSSPath(b.CSS), brandCSSHandler(b.CSS))
+	}
 	return logRequests(securityHeaders(mux))
 }
 
@@ -1926,12 +1933,22 @@ func logRequests(h http.Handler) http.Handler {
 	})
 }
 
-// render executes an HTML page with a per-response CSP nonce. The pages carry
-// one inline <style> and one inline <script> (the theme toggle); the nonce
-// lets exactly those run while the policy refuses every other script,
-// style, or resource origin. No form-action directive: browsers apply it to
-// the redirect that follows a form post, which would break the post-login
-// bounce to a client application host.
+// render executes an HTML page under two Content-Security-Policies, sent as
+// one comma-separated header so the browser enforces both:
+//
+//   - the page policy: scripts and styles only from this origin ('self', so
+//     no inline <script>, <style>, style="" or on*= handler can run), fonts
+//     from this origin, images from this origin or data: (the enrollment QR),
+//     no <base>, no framing;
+//   - a nonce policy: every <script> and <link rel=stylesheet> must also
+//     carry this response's nonce, so injected markup cannot load even one
+//     of our own same-origin files.
+//
+// A resource must satisfy both. The pages themselves contain no inline code;
+// their CSS and JavaScript are embedded static files (assets.go). No
+// form-action directive: browsers apply it to the redirect that follows a
+// form post, which would break the post-login bounce to a client
+// application host.
 func (s *Server) render(w http.ResponseWriter, name string, data map[string]any) error {
 	return s.renderStatus(w, 0, name, data)
 }
@@ -1950,9 +1967,7 @@ func (s *Server) renderStatus(w http.ResponseWriter, status int, name string, da
 	// Chromium also checks redirects after a form submission, including
 	// the 303 chain from sign-in through /authorize to an application's
 	// callback. A same-origin form action alone does not make it safe.
-	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'; "+
-			"font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", pageCSP+", script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if status != 0 {
 		w.WriteHeader(status)
@@ -1961,15 +1976,19 @@ func (s *Server) renderStatus(w http.ResponseWriter, status int, name string, da
 	return s.tmpl.ExecuteTemplate(w, name, data)
 }
 
+// pageCSP is the first of the two page policies (see render).
+const pageCSP = "default-src 'none'; script-src 'self'; style-src 'self'; " +
+	"font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'"
+
 // decorate adds the branding fields every page template reads. Without a
 // bundle the wordmark is the prose brand name and the rest is empty, which
-// renders exactly the pre-bundle pages. BrandCSS is template.CSS because the
-// branding package has already validated every value against a strict
-// grammar; nothing else may be marked that way.
+// renders exactly the pre-bundle pages. BrandCSSURL points at the bundle's
+// palette overrides, which the branding package validated against a strict
+// grammar at load and Handler serves as a stylesheet.
 func (s *Server) decorate(data map[string]any) {
 	data["Wordmark"] = s.cfg.BrandName
 	data["LogoURL"] = ""
-	data["BrandCSS"] = template.CSS("")
+	data["BrandCSSURL"] = ""
 	data["LoginTitle"] = ""
 	data["LoginTagline"] = ""
 	b := s.cfg.Brand
@@ -1982,7 +2001,7 @@ func (s *Server) decorate(data map[string]any) {
 	if len(b.Logo) > 0 {
 		data["LogoURL"] = "/brand/logo"
 	}
-	data["BrandCSS"] = template.CSS(b.CSS)
+	data["BrandCSSURL"] = brandCSSPath(b.CSS)
 	data["LoginTitle"] = b.LoginTitle
 	data["LoginTagline"] = b.LoginTagline
 }

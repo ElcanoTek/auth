@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — No access</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+{{template "assets" .}}
+</head>
+<body>
+  {{template "theme-toggle"}}
+  <main class="card">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>No access to {{.AppName}}</h1>
+    <p class="muted">You are signed in as <strong>{{.Email}}</strong>, but this account is not set up for {{.AppName}}. Ask your administrator to grant access, then try again.</p>
+    <a class="btn" href="/account">Back to your apps</a>
+  </main>
+</body>
+</html>

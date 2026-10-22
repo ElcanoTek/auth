@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — Admin Portal</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+{{template "assets" .}}
+</head>
+<body{{if .Reopen}} data-reopen="{{.Reopen}}"{{end}}>
+  <div class="corner-actions">
+    {{template "theme-toggle"}}
+    <a class="icon-btn close" href="/account" aria-label="Back to your apps" title="Back to your apps">{{template "icon" "close"}}</a>
+  </div>
+  <div class="corner-bottom">
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="redirect_to" value="/?notice=signed_out">
+      <button class="btn-ghost" type="submit">Sign out</button>
+    </form>
+  </div>
+  <main class="card admin">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <div class="topline">
+      <h1>Admin Portal</h1>
+      <p class="muted">Signed in as <strong>{{.Email}}</strong></p>
+    </div>
+    <nav class="tabs" aria-label="Admin sections">
+      {{range .Tabs}}<a class="tab{{if .Active}} active{{end}}" href="{{.URL}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}
+    </nav>
+    {{if .NeedVerify}}<div class="banner warn" role="alert"><strong>Confirm it is you.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need your authenticator code entered less than five minutes ago. <a href="/account/security/verify?return_to=%2Fadmin">Enter it now</a> and then repeat the change.</div>
+    {{else if .NeedEnroll}}<div class="banner warn" role="alert"><strong>Set up two-factor sign-in first.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need an administrator's own authenticator. <a href="/account/security?return_to=%2Fadmin">Set yours up</a> and then repeat the change.</div>
+    {{else if and .Error (ne .Reopen "add-user")}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+    {{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
+    {{if .Secret}}<div class="secret" role="status">
+      <p class="muted">Temporary password for <strong>{{.SecretFor}}</strong>. It is shown once and not stored: copy it now.</p>
+      <code>{{.Secret}}</code>
+      <p class="muted">They sign in with it and are asked to choose their own password before anything else. It does not expire on its own; if it is lost, run the action again for a new one. Reloading this page repeats the action.</p>
+    </div>{{end}}
+
+    {{if eq .Tab "accounts"}}
+    <section class="section" aria-labelledby="accounts-heading">
+      <div class="section-head">
+        <div class="account-title">
+          <h2 id="accounts-heading">Accounts</h2>
+          {{if .Accounts}}<div class="account-tools" role="search">
+            <label class="sr-only" for="account-search">Search accounts</label>
+            <input id="account-search" type="search" placeholder="Search accounts" autocomplete="off" data-account-search>
+            <label class="sr-only" for="account-filter">Filter accounts</label>
+            <select id="account-filter" data-account-filter>
+              <option value="">All accounts</option>
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+              <option value="admin">Auth administrators</option>
+              <option value="must-change">Must change password</option>
+              <option value="mfa-enabled">2FA enabled</option>
+              <option value="mfa-missing">2FA not enrolled</option>
+            </select>
+          </div>{{end}}
+        </div>
+        <div class="row-actions head-actions">
+          <button class="btn-ghost" type="button" commandfor="mfa-policy" command="show-modal" title="Two-factor policy" aria-label="Two-factor policy">2FA</button>
+          <button class="btn-add" type="button" commandfor="add-user" command="show-modal" title="Add user" aria-label="Add user">+</button>
+        </div>
+      </div>
+      {{if .Accounts}}
+      <div class="table-wrap"><table class="list">
+        <thead><tr><th class="sel"><input type="checkbox" data-select-all aria-label="Select every account"></th><th>Account</th><th>Status</th><th>Team</th><th>Applications</th><th></th></tr></thead>
+        <tbody>
+        {{range $i, $row := .Accounts}}<tr data-account-row data-account-search-value="{{$row.Email}} {{$row.Team}} {{$row.Status}} {{$row.MFAStatus}}{{if $row.IsAdmin}} administrator admin{{end}}{{range $row.Apps}}{{if .Granted}} {{.Name}}{{end}}{{end}}" data-account-filter-values="{{if eq $row.Status "Active"}}active{{else if eq $row.Status "Disabled"}}disabled{{else}}must-change{{end}}{{if $row.IsAdmin}} admin{{end}}{{if $row.MFAEnrolled}} mfa-enabled{{else}} mfa-missing{{end}}">
+          <td class="sel"><input type="checkbox" name="emails" value="{{$row.Email}}" form="batch-form" data-select aria-label="Select {{$row.Email}}"></td>
+          <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
+          <td><div class="chips"><span class="badge {{$row.StatusClass}}">{{$row.Status}}</span><span class="badge {{$row.MFAClass}}" title="Two-factor sign-in">2FA: {{$row.MFAStatus}}</span></div></td>
+          <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
+          <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
+          <td><div class="row-actions">
+            <button class="btn-ghost" type="button" commandfor="access-{{$i}}" command="show-modal" aria-label="Access: {{$row.Email}}">Access</button>
+            <button class="btn-ghost" type="button" commandfor="settings-{{$i}}" command="show-modal" aria-label="Settings: {{$row.Email}}">Settings</button>
+          </div>
+          <dialog id="access-{{$i}}" class="modal" aria-labelledby="access-{{$i}}-title">
+            <div class="modal-head"><h3 id="access-{{$i}}-title">Access</h3><button class="icon-btn close" type="button" commandfor="access-{{$i}}" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+            <p class="who">{{$row.Email}}</p>
+            <form method="post" action="/admin">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-access"><input type="hidden" name="email" value="{{$row.Email}}">
+              <div class="seg-group"><span class="seg-label">Auth Admin</span>
+                {{if or $row.Self (and $row.IsAdmin (not $row.CanDemote))}}<label class="permission-choice admin-choice locked"><input type="checkbox" checked disabled> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label><input type="hidden" name="admin" value="on">
+                {{else}}<label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"{{if $row.IsAdmin}} checked{{end}}> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>{{end}}
+                {{if $row.Self}}<p class="hint">You cannot remove your own administrator access.</p>{{else if and $row.IsAdmin (not $row.CanDemote)}}<p class="hint">The last enabled administrator cannot be removed.</p>{{end}}
+              </div>
+              <div class="seg-group"><span class="seg-label">Applications</span>
+                {{if $row.Apps}}<div role="group" aria-label="Applications for {{$row.Email}}">{{range $row.Apps}}{{if eq .ID "fleet"}}<div class="app-row"><label class="permission-choice application-choice"><input type="checkbox" name="apps" value="{{.ID}}" data-fleet-toggle{{if .Granted}} checked{{end}}> {{.Name}}<small>Can sign in to {{.Name}}.</small></label><button class="fleet-edit" type="button" data-fleet-edit commandfor="fleet-perms-{{$i}}" command="show-modal" aria-label="Fleet permissions for {{$row.Email}}">{{template "icon" "settings"}}<span data-fleet-summary>{{if $row.FleetAdmin}}Fleet Admin{{else}}Chat {{if eq $row.FleetChatRole "viewer"}}Viewer{{else}}Contributor{{end}} · Ops {{if eq $row.FleetOpsRole "readonly"}}Viewer{{else if eq $row.FleetOpsRole "client"}}Contributor{{else}}None{{end}}{{end}}</span></button></div>{{else}}<label class="permission-choice application-choice"><input type="checkbox" name="apps" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}<small>Can sign in to {{.Name}}.</small></label>{{end}}{{end}}</div>
+                <p class="hint">Deselecting an application signs them out of it now.</p>{{else}}<p class="muted">No applications are registered yet.</p>{{end}}
+              </div>
+              <dialog id="fleet-perms-{{$i}}" class="modal fleet-perms" data-fleet-permissions aria-labelledby="fleet-perms-{{$i}}-title">
+                <div class="modal-head"><h3 id="fleet-perms-{{$i}}-title">Fleet permissions</h3><button class="icon-btn close" type="button" commandfor="fleet-perms-{{$i}}" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+                <p class="who">{{$row.Email}}</p>
+                {{if $row.FleetChangedAt}}<p class="hint" data-fleet-changed>Changed in Fleet{{if $row.FleetChangedBy}} by {{$row.FleetChangedBy}}{{end}} <span class="dot">&middot;</span> {{$row.FleetChangedAt}}</p>{{end}}
+                <div class="seg-group"><span class="seg-label">Fleet Admin</span>
+                  <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"{{if $row.FleetAdmin}} checked{{end}}> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
+                </div>
+                <div class="seg-group"><span class="seg-label">Chat</span>
+                  <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="viewer"{{if eq $row.FleetChatRole "viewer"}} checked{{end}}> Viewer<small>Read-only Chat access: can view but cannot create or change content.</small></label>
+                  <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="member"{{if eq $row.FleetChatRole "member"}} checked{{end}}> Contributor<small>Can actively use Chat, including creating and updating content.</small></label>
+                </div>
+                <div class="seg-group"><span class="seg-label">Ops Center</span>
+                  <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="none"{{if eq $row.FleetOpsRole "none"}} checked{{end}}> None<small>No access to the Ops Center.</small></label>
+                  <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="readonly"{{if eq $row.FleetOpsRole "readonly"}} checked{{end}}> Viewer<small>Can view Ops Center tasks and logs but cannot change them.</small></label>
+                  <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="client"{{if eq $row.FleetOpsRole "client"}} checked{{end}}> Contributor<small>Can view, create, and run Ops Center tasks.</small></label>
+                </div>
+                <button class="btn" type="button" commandfor="fleet-perms-{{$i}}" command="close">Done</button>
+                <p class="hint">Saved with the rest of this account's access when you choose Save access.</p>
+              </dialog>
+              <button class="btn" type="submit">Save access</button>
+            </form>
+          </dialog>
+          <dialog id="settings-{{$i}}" class="modal" aria-labelledby="settings-{{$i}}-title">
+            <div class="modal-head"><h3 id="settings-{{$i}}-title">Settings</h3><button class="icon-btn close" type="button" commandfor="settings-{{$i}}" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+            <p class="who">{{$row.Email}} <span class="dot">&middot;</span> created {{$row.Created}} <span class="dot">&middot;</span> {{$row.Sessions}} active session{{if ne $row.Sessions 1}}s{{end}}</p>
+            <form method="post" action="/admin">
+              <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-team"><input type="hidden" name="email" value="{{$row.Email}}">
+              <div class="field"><label for="team-{{$i}}">Team</label>
+                <div class="with-btn"><input id="team-{{$i}}" name="team" type="text" list="teams" maxlength="64" value="{{$row.Team}}" placeholder="e.g. Trading"><button class="btn-ghost" type="submit">Save</button></div>
+                <p class="hint">A tag for grouping accounts. Leave blank to remove it.</p>
+              </div>
+            </form>
+            {{if $row.Self}}
+            <div class="setting">
+              <div><strong>Your authenticator</strong><p class="muted">{{if not $.MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.{{else if $row.MFAEnrolled}}Set up. Sensitive changes here need a code from it entered less than five minutes ago.{{end}}{{if and $.MFAAvailable (not $row.MFAEnrolled)}}Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one, so set it up before you need it.{{end}}</p></div>
+              {{if $.MFAAvailable}}<a class="{{if $row.MFAEnrolled}}btn-ghost{{else}}btn inline{{end}}" href="/account/security?return_to=%2Fadmin" aria-label="{{if $row.MFAEnrolled}}Manage your authenticator{{else}}Set up your authenticator{{end}}">{{if $row.MFAEnrolled}}Manage{{else}}Set up{{end}}</a>{{end}}
+            </div>
+            {{end}}
+            {{if not $row.Self}}
+            <div class="setting">
+              <div><strong>Reset password</strong><p class="muted">Signs them out of every app and device; shows a new temporary password they must change.</p></div>
+              <details class="confirm danger"><summary aria-label="Reset password: {{$row.Email}}">Reset</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">{{$row.Email}} is signed out everywhere and gets a new temporary password.</p>
+                  <button class="btn" type="submit">Confirm reset</button>
+                </form>
+              </details>
+            </div>
+            <div class="setting">
+              <div><strong>Two-factor sign-in</strong><p class="muted">{{if not $.MFAAvailable}}Not set up on this server (AUTH_MFA_KEY).{{else if $row.MFAPolicyBound}}Required by the deployment policy; {{$row.MFAStatus}}.{{else if $row.MFARequired}}Required for this account; {{$row.MFAStatus}}. They cannot turn it off.{{else if $row.MFAEnrolled}}Enrolled voluntarily. Requiring it means they cannot turn it off.{{else}}Not enrolled. Requiring it signs them out now; they set up an authenticator at their next sign-in.{{end}}</p></div>
+              {{if and $.MFAAvailable (not $row.MFAPolicyBound)}}<form method="post" action="/admin">
+                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-mfa-required"><input type="hidden" name="email" value="{{$row.Email}}"><input type="hidden" name="required" value="{{if $row.MFARequired}}off{{else}}on{{end}}">
+                <button class="btn-ghost" type="submit" aria-label="{{if $row.MFARequired}}Stop requiring two-factor: {{$row.Email}}{{else}}Require two-factor: {{$row.Email}}{{end}}">{{if $row.MFARequired}}Stop requiring{{else}}Require{{end}}</button>
+              </form>{{else if $row.MFAPolicyBound}}<span class="badge ok">Policy</span>{{end}}
+            </div>
+            <div class="setting">
+              <div><strong>Reset two-factor</strong><p class="muted">{{if $row.MFAEnrolled}}Lost authenticator: removes it and the recovery codes, signs them out everywhere; they set up a new one at their next sign-in.{{else}}No authenticator is set up ({{$row.MFAStatus}}).{{end}}</p></div>
+              {{if $row.MFAEnrolled}}{{if $.ActorEnrolled}}<details class="confirm danger"><summary aria-label="Reset two-factor: {{$row.Email}}">Reset</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-mfa"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">Confirm you verified it is really {{$row.Email}} (for example by phone or in person) and say how.</p>
+                  <label for="reason-{{$i}}">Reason</label>
+                  <input id="reason-{{$i}}" name="reason" type="text" required maxlength="200" placeholder="e.g. lost phone, verified by call">
+                  <button class="btn" type="submit">Confirm reset</button>
+                </form>
+              </details>{{else}}<a class="btn-ghost" href="/account/security" title="Set up your own authenticator first">Set up yours first</a>{{end}}{{end}}
+            </div>
+            <div class="setting">
+              <div><strong>Sign out everywhere</strong><p class="muted">Ends every session, in every application, on every device.</p></div>
+              <details class="confirm danger"><summary aria-label="Sign out: {{$row.Email}}">Sign out</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-sessions"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">Ends every session of {{$row.Email}}.</p>
+                  <button class="btn" type="submit">Confirm sign out</button>
+                </form>
+              </details>
+            </div>
+            <div class="setting">
+              {{if eq $row.StatusClass "off"}}
+              <div><strong>Enable account</strong><p class="muted">Lets {{$row.Email}} sign in again.</p></div>
+              <form method="post" action="/admin">
+                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="enable"><input type="hidden" name="email" value="{{$row.Email}}">
+                <button class="btn-ghost" type="submit" aria-label="Enable {{$row.Email}}">Enable</button>
+              </form>
+              {{else}}
+              <div><strong>Disable account</strong><p class="muted">Signs them out everywhere; they cannot sign in until enabled again.</p></div>
+              {{if $row.CanDisable}}<details class="confirm danger"><summary aria-label="Disable: {{$row.Email}}">Disable</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="disable"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">{{$row.Email}} is signed out everywhere and cannot sign in until enabled again.</p>
+                  <button class="btn" type="submit">Confirm disable</button>
+                </form>
+              </details>{{else}}<span class="badge off">Last admin</span>{{end}}
+              {{end}}
+            </div>
+            {{else}}
+            <div class="setting">
+              <div><strong>Reset password</strong><p class="muted">Your own password: change it with your current one. Every other device and app is signed out; this browser stays signed in.</p></div>
+              <a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>
+            </div>
+            <div class="setting">
+              <div><strong>Sign out everywhere</strong><p class="muted">Ends every one of your sessions, in every application, on every device, this one included.</p></div>
+              <details class="confirm danger"><summary aria-label="Sign out everywhere: {{$row.Email}}">Sign out</summary>
+                <form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-sessions"><input type="hidden" name="email" value="{{$row.Email}}">
+                  <p class="muted">You will be signed out here too and return to the sign-in page.</p>
+                  <button class="btn" type="submit">Confirm sign out</button>
+                </form>
+              </details>
+            </div>
+            {{end}}
+          </dialog></td>
+        </tr>{{end}}
+        <tr data-account-empty hidden><td class="search-empty" colspan="6">No matching accounts.</td></tr>
+        </tbody>
+      </table></div>
+      <form id="batch-form" class="batch" method="post" action="/admin" aria-label="Change the selected accounts" data-batch>
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="batch">
+        <span class="batch-count" data-batch-count aria-live="polite">0 selected</span>
+        <label class="sr-only" for="batch-op">What to do with the selected accounts</label>
+        <select id="batch-op" name="op">
+          <option value="team">Set team</option>
+          <option value="signout">Sign out everywhere</option>
+          <option value="require-mfa">Require two-factor</option>
+          <option value="unrequire-mfa">Stop requiring two-factor</option>
+        </select>
+        <input name="team" type="text" list="teams" maxlength="64" placeholder="Team (for Set team; blank removes it)" aria-label="Team for the selected accounts">
+        <button class="btn-ghost" type="submit">Apply to selected</button>
+      </form>
+      <noscript><link rel="stylesheet" nonce="{{.Nonce}}" href="{{asset "admin-noscript.css"}}"></noscript>
+      {{else}}<p class="empty">No accounts yet. Add the first one with the button above.</p>{{end}}
+      <datalist id="teams">{{range .Teams}}<option value="{{.}}">{{end}}</datalist>
+    </section>
+
+    <dialog id="add-user" class="modal" aria-labelledby="add-user-title">
+      <div class="modal-head"><h3 id="add-user-title">Add user</h3><button class="icon-btn close" type="button" commandfor="add-user" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+      {{/* A rejected Add user reopens this dialog (Reopen), and showModal makes the page behind it inert, so the reason has to be in here. */}}
+      {{if and .Error (eq .Reopen "add-user")}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+      <p class="who">A temporary password is shown once; they choose their own at first sign-in.</p>
+      <form method="post" action="/admin">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="create">
+        <div class="field"><label for="new-email">Work email</label>
+          <input id="new-email" name="email" type="email" required autocomplete="off" placeholder="name@company.com"></div>
+        <div class="field"><label for="new-team">Team <span class="muted">(optional)</span></label>
+          <input id="new-team" name="team" type="text" list="teams" maxlength="64" placeholder="e.g. Trading"></div>
+        <div class="field"><label for="new-password">Temporary password</label>
+          <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="Leave blank to generate one"><button class="btn-ghost" type="button" data-generate="new-password">Generate</button></div>
+          <p class="hint">At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>
+        <div class="seg-group"><span class="seg-label">Auth Admin</span>
+          <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>
+        </div>
+        <div class="seg-group"><span class="seg-label">Applications</span>
+          {{if .AppChoices}}<div role="group" aria-label="Applications">{{range .AppChoices}}{{if eq .ID "fleet"}}<div class="app-row">{{end}}<label class="permission-choice application-choice{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}<small>{{if .Granted}}Can sign in to {{.Name}}.{{else}}{{.Name}} is disabled for everyone.{{end}}</small></label>{{if eq .ID "fleet"}}<button class="fleet-edit" type="button" data-fleet-edit commandfor="fleet-perms-new" command="show-modal" aria-label="Fleet permissions for the new user">{{template "icon" "settings"}}<span data-fleet-summary>Chat Contributor · Ops None</span></button></div>{{end}}{{end}}</div>
+          {{else}}<p class="muted">No applications are registered yet; register them with <code>auth app create</code> on the server.</p>{{end}}
+        </div>
+        {{if .HasFleet}}<dialog id="fleet-perms-new" class="modal fleet-perms" data-fleet-permissions aria-labelledby="fleet-perms-new-title">
+          <div class="modal-head"><h3 id="fleet-perms-new-title">Fleet permissions</h3><button class="icon-btn close" type="button" commandfor="fleet-perms-new" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+          <p class="who">For the new user.</p>
+          <div class="seg-group"><span class="seg-label">Fleet Admin</span>
+            <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
+          </div>
+          <div class="seg-group"><span class="seg-label">Chat</span>
+            <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="viewer"> Viewer<small>Read-only Chat access: can view but cannot create or change content.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="member" checked> Contributor<small>Can actively use Chat, including creating and updating content.</small></label>
+          </div>
+          <div class="seg-group"><span class="seg-label">Ops Center</span>
+            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="none" checked> None<small>No access to the Ops Center.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="readonly"> Viewer<small>Can view Ops Center tasks and logs but cannot change them.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="client"> Contributor<small>Can view, create, and run Ops Center tasks.</small></label>
+          </div>
+          <button class="btn" type="button" commandfor="fleet-perms-new" command="close">Done</button>
+          <p class="hint">Saved with the account when you choose Create account.</p>
+        </dialog>{{end}}
+        <button class="btn" type="submit">Create account</button>
+      </form>
+    </dialog>
+
+    <dialog id="mfa-policy" class="modal" aria-labelledby="mfa-policy-title">
+      <div class="modal-head"><h3 id="mfa-policy-title">Two-factor policy</h3><button class="icon-btn close" type="button" commandfor="mfa-policy" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+      <p class="who">Who must enter a code from an authenticator app after their password. Anyone may set one up from their Security page, and once they have, they always use it; this policy decides who is made to. A per-account requirement (Settings) adds to whichever policy is chosen.</p>
+      {{if not .MFAAvailable}}<div class="err">Two-factor sign-in is not set up on this server: set AUTH_MFA_KEY (see <code>auth mfa keygen</code>) and restart.</div>{{else}}
+      <form method="post" action="/admin">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="set-policy"><input type="hidden" name="revision" value="{{.MFARevision}}">
+        <div class="seg-group"><span class="seg-label">Policy</span>
+          <div role="radiogroup" aria-label="Two-factor policy">{{range .MFAOptions}}<label class="permission-choice"><input type="radio" name="mode" value="{{.Mode}}"{{if .Current}} checked{{end}}> {{.Label}}<small>{{.Describe}}{{if not $.MFACountError}} {{if eq .ToEnroll 0}}Choosing it now makes nobody new enroll.{{else if eq .ToEnroll 1}}Choosing it now signs out 1 account without an authenticator; they set one up at their next sign-in.{{else}}Choosing it now signs out {{.ToEnroll}} accounts without an authenticator; they set one up at their next sign-in.{{end}}{{end}}</small></label>{{end}}</div>
+        </div>
+        {{if .MFACountError}}<div class="err">The affected-account counts could not be loaded, so the policy cannot be changed from here right now. Reload and try again.</div>{{else}}
+        <p class="hint">Relaxing the policy never removes anyone's authenticator. Changes take effect immediately{{if not .ActorEnrolled}} and need your own authenticator, which you have not set up yet{{else if not .ActorFresh}} and need your authenticator code entered less than five minutes ago{{end}}.</p>
+        {{if not .ActorEnrolled}}<p class="hint"><a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up yours</a></p>{{end}}
+        <button class="btn" type="submit">Save policy</button>{{end}}
+      </form>{{end}}
+    </dialog>
+    {{else}}{{with .App}}
+    <section class="section" aria-labelledby="app-heading">
+      <div class="topline">
+        <h2 id="app-heading">{{.Name}} {{if .Disabled}}<span class="badge off">Disabled</span>{{else}}<span class="badge ok">Enabled</span>{{end}}</h2>
+        {{if .Disabled}}
+        <form method="post" action="/admin">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="enable-app"><input type="hidden" name="app" value="{{.ID}}">
+          <button class="btn-ghost" type="submit">Enable application</button>
+        </form>
+        {{else}}
+        <details class="confirm danger"><summary>Disable application</summary>
+          <form class="pane" method="post" action="/admin">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="disable-app"><input type="hidden" name="app" value="{{.ID}}">
+            <p class="muted">Nobody can sign in to {{.Name}} until it is enabled again. Existing application sessions are not ended.</p>
+            <button class="btn" type="submit">Confirm disable</button>
+          </form>
+        </details>
+        {{end}}
+      </div>
+      <dl class="kv">
+        <dt>Accounts with access</dt><dd>{{.Granted}}</dd>
+        <dt>Registered</dt><dd>{{.Created}}</dd>
+      </dl>
+    </section>
+    <section class="section" aria-labelledby="signins-heading">
+      <h2 id="signins-heading">Who signs in here</h2>
+      <p class="muted">Accounts that have completed a sign-in to {{.Name}}, most recent first.</p>
+      {{if .SignIns}}<div class="table-wrap"><table class="list">
+        <thead><tr><th>Account</th><th class="num">Sign-ins</th><th>Last</th></tr></thead>
+        <tbody>{{range .SignIns}}<tr><td class="who">{{.Email}}{{if .Disabled}} <span class="badge off">Disabled</span>{{end}}</td><td class="num">{{.Count}}</td><td>{{.Last}}</td></tr>{{end}}</tbody>
+      </table></div>{{else}}<p class="empty">Nobody has signed in to {{.Name}} yet.</p>{{end}}
+    </section>
+    {{end}}{{end}}
+
+  </main>
+  <script nonce="{{.Nonce}}" src="{{asset "admin.js"}}"></script>
+</body>
+</html>

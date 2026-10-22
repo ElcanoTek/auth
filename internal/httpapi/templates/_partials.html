@@ -1,0 +1,23 @@
+{{/* Shared page fragments. Every page loads the same stylesheets and the Flag
+     theme controller from the embedded static tree; nothing is inline, and
+     each tag carries the response nonce (see renderStatus for the CSP). The
+     theme controller runs synchronously in <head> so the theme is set before
+     first paint. Order matters: Flag fonts and tokens, then auth.css (which
+     reads the tokens), then the client bundle's palette overrides. */}}
+{{define "assets"}}<link rel="stylesheet" nonce="{{.Nonce}}" href="{{asset "flag/fonts/fonts.css"}}">
+<link rel="stylesheet" nonce="{{.Nonce}}" href="{{asset "flag/tokens/design-tokens.css"}}">
+<link rel="stylesheet" nonce="{{.Nonce}}" href="{{asset "auth.css"}}">
+{{if .BrandCSSURL}}<link rel="stylesheet" nonce="{{.Nonce}}" href="{{.BrandCSSURL}}">
+{{end}}<script nonce="{{.Nonce}}" src="{{asset "flag/theme/theme-controller.js"}}"></script>{{end}}
+
+{{/* Icons are glyphs of Flag's core-icons sprite (vendored, flag.lock), used
+     by reference so the sprite's own licence header travels with them:
+     {{template "icon" "close"}}. Decorative; the control carries the label. */}}
+{{define "icon"}}<svg class="icon icon-{{.}}" aria-hidden="true" focusable="false"><use href="{{asset "flag/icons/core-icons.svg"}}#{{.}}"></use></svg>{{end}}
+
+{{/* The shared sun/moon control. The Flag theme controller wires every
+     [data-flag-theme-toggle]; auth.css swaps the glyph per data-theme. */}}
+{{define "theme-toggle"}}<button type="button" class="theme-toggle" data-flag-theme-toggle aria-label="Toggle color theme">
+  {{template "icon" "sun"}}
+  {{template "icon" "moon"}}
+</button>{{end}}

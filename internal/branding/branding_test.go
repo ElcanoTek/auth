@@ -74,6 +74,8 @@ func TestLoadReadsOnlyBrandingAndValidatesValues(t *testing.T) {
 		"--color-primary: #0B6E4F;", "--color-primary-hover: #118A63;", "--color-on-primary: #FFFFFF;",
 		"--color-bg: #0E1512;", "--color-border: rgba(255, 255, 255, 0.14);",
 		"--gradient-action-primary: linear-gradient(140deg, #0B6E4F, #118A63);",
+		"--gradient-action-fill: linear-gradient(140deg, #0B6E4F, #118A63);",
+		"--gradient-action-fill-hover: linear-gradient(140deg, color-mix(in srgb, #0B6E4F 89%, #000), color-mix(in srgb, #118A63 89%, #000));",
 		"color-mix(in srgb, #0B6E4F 34%, transparent)", "color-mix(in srgb, #586f7c 28%, transparent)",
 		"radial-gradient(circle at 72% 82%, color-mix(in srgb, #0B6E4F 18%, transparent), transparent 30%)",
 		"--gradient-surface-card: linear-gradient(145deg, color-mix(in srgb, color-mix(in srgb, #16201B 90%, #000) 92%, transparent)",

@@ -1,0 +1,4 @@
+/* Without JavaScript the batch bar has no selection count to reveal it, so
+   the admin console shows it permanently (loaded inside <noscript>). */
+.batch { display: flex; }
+.batch-count { display: none; }

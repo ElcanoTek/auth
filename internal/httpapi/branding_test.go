@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,25 @@ branding:
       background: "#F4F8F6"
 `
 
+// brandStylesheet fetches the page's linked bundle palette and checks how it
+// is served: CSS, immutable under a content-addressed URL.
+func brandStylesheet(t *testing.T, ts *httptest.Server, page string) string {
+	t.Helper()
+	m := regexp.MustCompile(`<link rel="stylesheet" nonce="[^"]+" href="(/brand/theme-[0-9a-f]{16}\.css)">`).FindStringSubmatch(page)
+	if m == nil {
+		t.Fatalf("page does not link the bundle palette:\n%s", page)
+	}
+	resp, body := get(t, ts.URL+m[1])
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/css; charset=utf-8" ||
+		resp.Header.Get("Cache-Control") != immutableCache || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("%s = %d %v", m[1], resp.StatusCode, resp.Header)
+	}
+	if other, _ := get(t, ts.URL+"/brand/theme-0000000000000000.css"); other.StatusCode != http.StatusNotFound {
+		t.Fatalf("an unknown palette hash = %d, want 404", other.StatusCode)
+	}
+	return string(body)
+}
+
 func TestPagesWearTheBundleBrand(t *testing.T) {
 	ts, _ := newBrandedServer(t, brandedManifest)
 	resp, err := http.Get(ts.URL + "/")
@@ -76,6 +96,7 @@ func TestPagesWearTheBundleBrand(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	page := string(body)
+	css := brandStylesheet(t, ts, page)
 	for _, want := range []string{
 		"<title>NORTHWIND — Sign in</title>",
 		`<link rel="icon" href="/brand/logo">`,
@@ -83,23 +104,28 @@ func TestPagesWearTheBundleBrand(t *testing.T) {
 		`<div class="brand">NORTHWIND</div>`,
 		"<h1>Welcome to Northwind.</h1>",
 		"Sign in to pick up where you left off.",
-		"--color-primary: #0B6E4F;",
-		"--color-bg: #0E1512;",
-		`:root[data-theme="light"] {`,
-		"--color-bg: #F4F8F6;",
 	} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("branded page missing %q:\n%s", want, page)
 		}
 	}
-	// The font faces legitimately use url("/fonts/..."); the rejected colour
-	// value must not appear anywhere.
-	if strings.Contains(page, "url(javascript") || strings.Contains(page, "--color-text-muted: url") {
+	for _, want := range []string{
+		"--color-primary: #0B6E4F;",
+		"--color-bg: #0E1512;",
+		`:root[data-theme="light"] {`,
+		"--color-bg: #F4F8F6;",
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("bundle palette missing %q:\n%s", want, css)
+		}
+	}
+	// The rejected colour value must not appear anywhere.
+	if strings.Contains(page+css, "javascript") || strings.Contains(css, "--color-text-muted: url") {
 		t.Fatal("an invalid colour value reached the page")
 	}
-	// The brand CSS sits inside the nonce'd <style>, not in a second block.
-	if strings.Count(page, "<style") != 1 {
-		t.Fatalf("expected one <style> block, page has %d", strings.Count(page, "<style"))
+	// The palette is a linked stylesheet; the page has no inline style.
+	if strings.Contains(page, "<style") {
+		t.Fatal("branded page carries an inline <style>")
 	}
 	if !strings.Contains(page, "Northwind app, on every device") && !strings.Contains(page, "Accounts are created by an administrator") {
 		t.Fatal("login card body missing")
@@ -152,7 +178,7 @@ func TestPagesWithoutABundleAreUnchanged(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	page := string(body)
-	for _, absent := range []string{"/brand/logo", `class="mark"`, `[data-theme="light"] {` + "\n  --color-primary"} {
+	for _, absent := range []string{"/brand/logo", `class="mark"`, "/brand/theme-"} {
 		if strings.Contains(page, absent) {
 			t.Fatalf("unbranded page contains %q", absent)
 		}
@@ -179,7 +205,7 @@ func TestSparsePaletteStillDerivesGradients(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	page := string(body)
+	page := brandStylesheet(t, ts, string(body))
 	if !strings.Contains(page, "@supports (color: color-mix(in srgb, red, blue))") {
 		t.Fatal("color-mix gradients are not guarded by @supports")
 	}

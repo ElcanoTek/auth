@@ -18,14 +18,19 @@ synthetic credentials, and the `stdout` email driver.
 
 ```bash
 make build      # auth-server + auth-admin in ./bin
-make test       # Go tests + operator CLI and doctor shell tests
-make lint       # gofmt -s check + golangci-lint
+make test       # Go tests + operator CLI, doctor and SSH shell tests
+make lint       # stack-check + gofmt -s check + golangci-lint
 make check      # lint + vet + build + test
+make stack-check # Elcano frontend standard + vendored Flag drift (offline)
 make smoke      # real end-to-end magic-link and password flows
 ```
 
 Run `make check` before opening a pull request. Changes to authentication,
 session, provisioning, or deployment behavior should also pass `make smoke`.
+UI changes follow the Elcano frontend standard described in
+[`AGENTS.md`](AGENTS.md): styles read Flag tokens, nothing is inline, and the
+vendored Flag files under `internal/httpapi/static/flag/` are updated only with
+`scripts/flag-sync.sh sync`.
 
 CI additionally runs gitleaks over the tree and full history,
 `go mod verify`, `go test -race`, govulncheck, ShellCheck over the install and
@@ -38,7 +43,8 @@ manually with `sudo`.
 ```text
 cmd/                 server and operator CLI entrypoints
 internal/config/     environment loading and startup validation
-internal/httpapi/    HTTP routes and embedded UI
+internal/httpapi/    HTTP routes; embedded UI: templates/ (pages), static/
+                     (auth.css, admin.js, vendored Flag files in flag/)
 internal/store/      SQLite state and migrations
 internal/token/      signed magic, identity, access, and logout tokens
 internal/password/   password policy and Argon2id hashing
@@ -47,7 +53,8 @@ internal/mfa/qr/     in-process QR encoder for enrollment (MIT, see LICENSE)
 internal/backchannel/ and internal/provisioning/
                      durable signed logout and access delivery to apps
 deploy/              systemd, Caddy, and the installed auth wrapper
-scripts/             bootstrap, update, doctor, and smoke tests
+scripts/             bootstrap, update, doctor, smoke tests, and the shared
+                     flag-sync.sh / stack-check.sh
 docs/                design, deployment, and integration guides
 ```
 

@@ -1,0 +1,64 @@
+NOTICE
+======
+
+Auth
+Copyright (c) 2026 ElcanoTek, Inc.
+
+Auth is licensed under the MIT License (see LICENSE). The third-party
+material below is bundled in this repository and embedded in the auth-server
+binary. Each item stays under its own licence.
+
+
+1. Flag design system
+---------------------
+
+  Files:   internal/httpapi/static/flag/  (listed with hashes in flag.lock)
+  Work:    Flag design system — Copyright (c) 2026 ElcanoTek, Inc. — MIT
+  Source:  https://github.com/ElcanoTek/flag (design-system/), copied
+           unmodified by scripts/flag-sync.sh at the commit in flag.lock.
+  Changes: Not modified. Auth's own styles live in
+           internal/httpapi/static/auth.css.
+
+  The fonts under static/flag/fonts/ are not covered by the Flag licence;
+  see items 2 and 3. Some glyphs of static/flag/icons/core-icons.svg are
+  drawn after Lucide (https://lucide.dev), ISC License, Copyright (c) Cole
+  Bemis 2013-2022 (Feather, MIT) and Lucide Contributors 2022; the full ISC
+  notice is the comment at the top of that file and is served with it.
+
+  Licence: MIT — full text in internal/httpapi/static/flag/LICENSE.txt
+           (Flag's design-system/LICENSE, vendored and locked with the
+           files it covers, and served at /assets/<hash>/flag/LICENSE.txt).
+
+
+2. Nebula Sans (font)
+---------------------
+
+  Files:   internal/httpapi/static/flag/fonts/nebula-sans/
+  Rights:  Copyright (c) 2024 Nebula Entertainment & Broadcasting LLC, with
+           Reserved Font Name "Nebula". Based on Source Sans, copyright
+           2010-2024 Adobe, with Reserved Font Name "Source".
+  Licence: SIL Open Font License 1.1 — full text in
+           internal/httpapi/static/flag/fonts/nebula-sans/OFL.txt, which is
+           embedded and served next to the font files.
+
+
+3. Hack (font)
+--------------
+
+  Files:   internal/httpapi/static/flag/fonts/hack/
+  Rights:  Copyright (c) 2018 Source Foundry Authors (MIT License). Includes
+           Bitstream Vera Sans Mono, copyright 2003 Bitstream Inc. (Bitstream
+           Vera License, Reserved Font Names "Bitstream" and "Vera"), and
+           public-domain work from the DejaVu project.
+  Licence: full texts in internal/httpapi/static/flag/fonts/hack/LICENSE.md,
+           which is embedded and served next to the font files.
+
+
+4. QR encoder
+-------------
+
+  Files:   internal/mfa/qr/
+  Work:    Derived from github.com/boombuler/barcode
+           (v1.0.1-0.20190219062509-6c824513bacc), trimmed to byte mode,
+           level M. Copyright (c) 2014 Florian Sundermann.
+  Licence: MIT — internal/mfa/qr/LICENSE.

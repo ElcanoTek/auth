@@ -322,6 +322,11 @@ func declarations(mode map[string]string, light bool) (plain, mixed []string) {
 		// Any inputs the bundle leaves out come from Auth's stock values.
 		primary, hover, secondary, bg, s1, s2 := pick("primary"), pick("primary_hover"), pick("secondary"), pick("background"), pick("surface_1"), pick("surface_2")
 		plain = append(plain, "--gradient-action-primary: linear-gradient(140deg, "+primary+", "+hover+");")
+		// Buttons paint their label on Flag's --gradient-action-fill; a bundle
+		// palette keeps the same primary-to-hover gradient there, and its hover
+		// darkens it (Flag's rule: hovering only ever raises contrast).
+		plain = append(plain, "--gradient-action-fill: linear-gradient(140deg, "+primary+", "+hover+");")
+		mixed = append(mixed, "--gradient-action-fill-hover: linear-gradient(140deg, color-mix(in srgb, "+primary+" 89%, #000), color-mix(in srgb, "+hover+" 89%, #000));")
 		if light {
 			mixed = append(mixed,
 				"--gradient-bg-home-signature: radial-gradient(circle at 9% -8%, color-mix(in srgb, "+primary+" 28%, transparent), transparent 42%), "+

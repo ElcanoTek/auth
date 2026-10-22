@@ -60,7 +60,7 @@ remains for stacks that intentionally share a parent-domain cookie.
 - [See it in action](#see-it-in-action) · [What it supports](#what-it-supports) · [Architecture](#architecture)
 - [Quickstart](#quickstart) · [Environment](#environment) · [Tests](#tests) · [Tools](#tools)
 - [Deploying to production](#deploying-to-production) · [Token format](#token-format) · [Layout](#layout)
-- [Login UI fonts](#login-ui-fonts) · [Why not a hosted provider?](#why-not-a-hosted-provider)
+- [Login UI](#login-ui) · [Why not a hosted provider?](#why-not-a-hosted-provider)
 - [Security](#security) · [Contributing](#contributing) · [License](#license)
 
 ## Architecture
@@ -368,8 +368,9 @@ internal/branding/       client bundle branding
 internal/backchannel/    durable back-channel logout delivery
 internal/provisioning/   durable application-access (grant/revoke) delivery
 internal/email/          SendGrid / SMTP / stdout drivers
-internal/httpapi/        HTTP routes + login, account and admin UI templates,
-                         signed application account reports (/apps/<id>/events)
+internal/httpapi/        HTTP routes, signed application account reports
+                         (/apps/<id>/events); templates/ (pages) and static/
+                         (CSS, JS, vendored Flag files) are embedded
 deploy/                  systemd units + Caddy + operator CLI
 scripts/                 bootstrap, update, doctor, envfile helpers, smoke tests
 docs/AUTH_V2_IMPLEMENTATION.md  password-mode design and invariants
@@ -377,23 +378,29 @@ docs/DEPLOY.md           production walkthrough
 docs/INTEGRATION.md      integration patterns and checklists
 ```
 
-## Login UI fonts
+## Login UI
 
-The pages self-host their typeface from the binary: `//go:embed` in
-`internal/httpapi/fonts.go`, served at `/fonts/` with
-`Cache-Control: immutable`. No Google Fonts, no CDN: an external font
-dependency on a login page is both a privacy leak and a third party in the
-login path, and a self-contained binary is the deploy model here anyway.
+The sign-in, MFA, account and admin pages follow the Elcano frontend standard
+(Tier A, see [`AGENTS.md`](AGENTS.md)): Go `html/template` pages in
+`internal/httpapi/templates/`, plain CSS and JavaScript in
+`internal/httpapi/static/`, all embedded in the binary with `//go:embed` and
+served at `/assets/<content-hash>/…` with `Cache-Control: immutable`. Pages
+carry no inline style or script; their Content-Security-Policy allows only
+same-origin files that also carry the response's nonce.
 
-The face is **Nebula Sans** (SIL OFL 1.1), Elcano's brand face. Only the two
-weights these pages render are embedded, 400 for body copy and 700 for
-headings, labels and the button, which keeps the payload at about 144 KB.
-`internal/httpapi/fonts/OFL.txt` ships and is served alongside the woff2 files
-because the licence requires the licence text to travel with the binaries. To
-change the face, replace the woff2 files and licence, then adjust the
-`@font-face` rules in `internal/httpapi/templates.go` and the embed patterns
-in `fonts.go` together. `TestFontsServed` and `TestFontLicenceShipped` fail if
-either drifts.
+The look comes from the **Flag** design system (`ElcanoTek/flag`):
+`internal/httpapi/static/flag/` holds byte-identical copies of Flag's tokens,
+theme controller and fonts, pinned with their hashes in
+[`flag.lock`](flag.lock). `auth.css` reads Flag's tokens; it never names a
+colour, face or size that Flag already defines. Update the copies with
+`scripts/flag-sync.sh sync ../flag`, never by hand; CI and `go test` fail on
+any drift.
+
+The faces are Flag's **Nebula Sans** (SIL OFL 1.1) for UI and **Hack** (MIT +
+Bitstream Vera) for codes and keys, self-hosted from the binary. No Google
+Fonts, no CDN: an external font or script on a login page is both a privacy
+leak and a third party in the login path. The licence texts ship and are
+served next to the font files, as both licences require.
 
 ## Why not a hosted provider?
 
@@ -430,8 +437,9 @@ local checks, repository map, and pull-request expectations.
 
 ## License
 
-Auth is available under the [MIT License](LICENSE). The embedded Nebula Sans
-font files are distributed separately under the SIL Open Font License 1.1 in
-[`internal/httpapi/fonts/OFL.txt`](internal/httpapi/fonts/OFL.txt). The QR
-encoder in `internal/mfa/qr/` is derived from boombuler/barcode under the MIT
-License in [`internal/mfa/qr/LICENSE`](internal/mfa/qr/LICENSE).
+Auth is available under the [MIT License](LICENSE). Bundled third-party
+material keeps its own licence; [`NOTICE`](NOTICE) lists it: the vendored Flag
+design-system files (MIT), the Nebula Sans fonts (SIL Open Font License 1.1),
+the Hack fonts (MIT + Bitstream Vera License), and the QR encoder in
+`internal/mfa/qr/`, derived from boombuler/barcode under the MIT License in
+[`internal/mfa/qr/LICENSE`](internal/mfa/qr/LICENSE).

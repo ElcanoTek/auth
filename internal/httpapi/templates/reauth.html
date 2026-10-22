@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — Confirm it is you</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+{{template "assets" .}}
+</head>
+<body>
+  {{template "theme-toggle"}}
+  <main class="card">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>Confirm it is you</h1>
+    <p class="muted">Enter your password{{if .Enrolled}} and the current code from your authenticator app{{end}} to change security settings for <strong>{{.Email}}</strong>.</p>
+    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+    <form method="post" action="/account/security/verify" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      {{if .Action}}<input type="hidden" name="action" value="{{.Action}}">{{end}}
+      {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required autofocus autocomplete="current-password">
+      {{if .Enrolled}}
+      <label for="code">Authenticator code</label>
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autocomplete="one-time-code" placeholder="000000">
+      {{end}}
+      <button class="btn" type="submit">Continue</button>
+    </form>
+    <div class="link-row"><a href="/account/security">Cancel</a><span></span></div>
+  </main>
+</body>
+</html>
