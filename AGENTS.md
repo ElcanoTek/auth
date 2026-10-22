@@ -157,7 +157,8 @@ After a sync, run `make check` (`TestEmbeddedFlagFilesMatchFlagLock`,
 the embed) and render the pages in both
 themes. The PR gate is offline (`scripts/stack-check.sh`); the weekly
 `.github/workflows/flag-drift.yml` reports when Flag upstream has moved on.
-`scripts/flag-sync.sh`, `scripts/stack-check.sh`, `flag-drift.yml` and the
+`scripts/flag-sync.sh`, `scripts/stack-check.sh` (vendored MIT copies of
+Flag's `tools/product/`, SPDX header included), `flag-drift.yml` and the
 standard block above are shared verbatim across Elcano repos: change them
 everywhere or not at all.
 
