@@ -556,29 +556,12 @@ if [[ "$HOSTNAME_ANSWER" == "localhost" || "$HOSTNAME_ANSWER" == "127.0.0.1" ]];
   COOKIE_SECURE="false"
   ALLOW_INSECURE_DEV="true"
 else
-  # DNS pre-check so a misconfigured A record fails BEFORE we ask ACME.
-  if command -v dig >/dev/null 2>&1; then
-    resolved_ip="$(dig +short "$HOSTNAME_ANSWER" A | tail -n1 2>/dev/null || true)"
-  else
-    resolved_ip="$(getent hosts "$HOSTNAME_ANSWER" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
-  fi
-  public_ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
-  if [[ -z "$public_ip" ]] && command -v ip >/dev/null 2>&1; then
-    iface="$(ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1 || true)"
-    [[ -n "$iface" ]] && public_ip="$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1 || true)"
-  fi
-  if [[ -n "$resolved_ip" && -n "$public_ip" && "$resolved_ip" != "$public_ip" ]]; then
-    warn "DNS mismatch:"
-    warn "  ${HOSTNAME_ANSWER} resolves to ${resolved_ip}"
-    warn "  this box's public IP is       ${public_ip}"
-    warn "  Let's Encrypt will fail until the A record is updated."
-    warn "  You can pick 'tls internal' (self-signed) below to skip ACME."
-  elif [[ -z "$resolved_ip" ]]; then
-    warn "${HOSTNAME_ANSWER} doesn't resolve yet."
-    [[ -n "$public_ip" ]] && warn "  Add an A record → ${public_ip} (or pick 'tls internal' below)."
-  elif [[ -n "$resolved_ip" ]]; then
-    ok "DNS resolves correctly (${resolved_ip})"
-  fi
+  # DNS pre-check so a misconfigured record shows up BEFORE we ask ACME. It
+  # asks public DNS, not this box's resolver: /etc/hosts points the box's own
+  # name at loopback, which is not what Let's Encrypt sees.
+  # shellcheck disable=SC1091
+  . "$SRC_DIR/scripts/lib/dnscheck.sh"
+  dns_precheck "$HOSTNAME_ANSWER" || warn "  You can pick 'tls internal' (self-signed) below to skip ACME."
 
   if confirm AUTH_BOOTSTRAP_SETUP_CADDY "Set up Caddy + auto-TLS for ${HOSTNAME_ANSWER}?" y; then
     SETUP_CADDY="y"
