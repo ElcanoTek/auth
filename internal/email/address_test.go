@@ -73,3 +73,20 @@ func TestDriversRefuseNonCanonicalRecipients(t *testing.T) {
 		t.Errorf("smtp accepted %q: %v", bad, err)
 	}
 }
+
+// Every byte CanonicalAddress accepts is in the header alphabet, and the
+// re-emitted address is the canonical one unchanged.
+func TestHeaderSafeAddressMatchesCanonical(t *testing.T) {
+	for _, in := range []string{"Alice.Smith+x@Example.com", "o'brien!#$%&*/=?^_`{|}~-@a-b.example.co"} {
+		want, err := CanonicalAddress(in)
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if got, err := headerSafeAddress(in); err != nil || got != want {
+			t.Fatalf("headerSafeAddress(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	if _, err := headerSafeAddress("alice@example.com\r\nBcc: x@outside.test"); !errors.Is(err, ErrInvalidAddress) {
+		t.Fatalf("header injection accepted: %v", err)
+	}
+}

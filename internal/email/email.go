@@ -41,6 +41,10 @@ type Sender interface {
 type Stdout struct{}
 
 func (Stdout) Send(_ context.Context, to, subject, textBody, _ string) error {
+	// The recipient is one log field: line breaks in it are dropped so it
+	// cannot start a forged line. The body is printed as the multi-line
+	// block it is, between the "--" markers.
+	to = strings.ReplaceAll(strings.ReplaceAll(to, "\n", ""), "\r", "")
 	log.Printf("[email/stdout] to=%s subject=%q\n--\n%s\n--", to, subject, textBody)
 	return nil
 }
@@ -137,8 +141,9 @@ type SMTP struct {
 func (s *SMTP) Send(ctx context.Context, to, subject, textBody, htmlBody string) error {
 	// The recipient is used exactly as validated: never parsed for a
 	// display name or angle brackets, so RCPT TO and the To header name the
-	// same mailbox the caller checked.
-	to, err := CanonicalAddress(to)
+	// same mailbox the caller checked, re-emitted from the address alphabet
+	// so no header-breaking byte can reach the message.
+	to, err := headerSafeAddress(to)
 	if err != nil {
 		return fmt.Errorf("recipient: %w", err)
 	}

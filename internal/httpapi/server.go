@@ -1979,12 +1979,21 @@ func (s *Server) absoluteURL(r *http.Request, path string) string {
 	return scheme + "://" + host + path
 }
 
+// emailTenant is the domain part of an address, the only part of it that is
+// ever logged. It strips CR and LF itself (logSafe) so a tenant can go into a
+// log line whatever validation its caller did.
 func emailTenant(email string) string {
 	at := strings.LastIndexByte(email, '@')
 	if at < 0 {
 		return ""
 	}
-	return strings.ToLower(email[at+1:])
+	return logSafe(strings.ToLower(email[at+1:]))
+}
+
+// logSafe removes line breaks from a value bound for a log line, so it can
+// never end the line and start a forged one.
+func logSafe(v string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(v, "\n", ""), "\r", "")
 }
 
 func looksLikeEmail(s string) bool {
@@ -2026,7 +2035,7 @@ func logField(v string) string {
 		if v == "" {
 			return "-"
 		}
-		return v
+		return logSafe(v) // already free of CR/LF; kept as the visible barrier
 	}
 	var b strings.Builder
 	for i := 0; i < len(v); i++ {
@@ -2037,7 +2046,7 @@ func logField(v string) string {
 		}
 		b.WriteByte(c)
 	}
-	return b.String()
+	return logSafe(b.String())
 }
 
 // render executes an HTML page under two Content-Security-Policies, sent as

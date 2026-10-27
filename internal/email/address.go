@@ -87,3 +87,27 @@ func validDomain(domain string) bool {
 	}
 	return true
 }
+
+// addressAlphabet is every byte CanonicalAddress lets through.
+const addressAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.@-!#$%&'*+/=?^_`{|}~"
+
+// headerSafeAddress re-emits a canonical address byte by byte from
+// addressAlphabet, refusing any byte outside it. It is the last step before an
+// address is written into the SMTP envelope or a message header: whatever the
+// caller validated, nothing but those characters (in particular no CR, LF,
+// ':' or '<') can reach the wire from here.
+func headerSafeAddress(addr string) (string, error) {
+	canonical, err := CanonicalAddress(addr)
+	if err != nil {
+		return "", err
+	}
+	out := make([]byte, len(canonical))
+	for i := 0; i < len(canonical); i++ {
+		j := strings.IndexByte(addressAlphabet, canonical[i])
+		if j < 0 {
+			return "", ErrInvalidAddress
+		}
+		out[i] = addressAlphabet[j]
+	}
+	return string(out), nil
+}
