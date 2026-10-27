@@ -191,7 +191,7 @@ Prefer the standard library or small owned code; add a dependency only when it
 clearly earns its place (cryptographic primitives and the SQLite driver do).
 Dependabot proposes updates daily, grouped, after a cooldown of 7 days (3 for
 patch releases); a human merges them only when the bump earns it — a security
-fix whose code path we use, or a specific commit we need. In-housed code is ours and is not tracked by
+fix whose code path we use, a security scanner update (such as CodeQL), or a specific commit we need. In-housed code is ours and is not tracked by
 Dependabot. For a CVE: check reachability with govulncheck first; if the
 affected code is unused, delete it; if it is in-housed, port the fix by hand.
 The Go toolchain is the `go` line in `go.mod` (Dependabot does not move it);
