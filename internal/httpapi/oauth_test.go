@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/elcanotek/auth/internal/store"
 	"github.com/elcanotek/auth/internal/token"
 )
 
@@ -237,7 +238,8 @@ func TestAuthorizePromptNoneNeverShowsAForm(t *testing.T) {
 
 // Signing out at any application is "sign out of every Elcano app": the
 // RP-initiated GET /logout?client_id=<app> revokes every central session of
-// the account, queues a back-channel logout to each registered application,
+// the account, queues a back-channel logout to each registered application
+// the account signed in to,
 // clears the cookies, and lands on the login page with a notice. Unknown or
 // missing client_ids are refused so the endpoint cannot enumerate apps.
 func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
@@ -259,7 +261,13 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 	if err := st.SetApplicationBackchannelLogoutURI(ctx, "lens", "https://lens.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetApplicationDisabled(ctx, "lens", true, time.Now().Unix()); err != nil {
+	// A third application the account may use but never signed in to holds
+	// no session: a global logout does not notify it.
+	if _, err := st.CreateApplication(ctx, "atlas", "Atlas", "https://atlas.example.com/auth/callback", "", hashSecret("atlas-secret"), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	grantAccess(t, st, "alice@example.com", "atlas")
+	if err := st.SetApplicationBackchannelLogoutURI(ctx, "atlas", "https://atlas.example.com/auth/backchannel-logout", time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
 	_, deviceOne, csrfOne := passwordLogin(t, ts, cfg, "alice@example.com", plain)
@@ -268,6 +276,17 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 		t.Fatal("logins did not issue sessions")
 	}
 	account, _ := st.PasswordAccountByEmail(ctx, "alice@example.com")
+	// Alice signs in to lens, then lens is disabled.
+	if err := st.IssueAuthorizationCode(ctx, hashSecret("lens-code"), store.AuthorizationGrant{
+		ClientID: "lens", UserID: account.ID, SessionTokenHash: hashSecret(deviceTwo.Value),
+		RedirectURI: "https://lens.example.com/auth/callback", Nonce: "n", CodeChallenge: pkceChallenge(strings.Repeat("l", 48)),
+		AuthTime: time.Now().Unix(),
+	}, time.Now().Unix(), time.Now().Add(time.Minute).Unix()); err != nil {
+		t.Fatalf("lens handoff: %v", err)
+	}
+	if err := st.SetApplicationDisabled(ctx, "lens", true, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
 	if n, _ := st.CountActiveAuthSessions(ctx, account.ID, time.Now().Unix()); n != 2 {
 		t.Fatalf("active sessions before logout = %d, want 2", n)
 	}
@@ -326,8 +345,8 @@ func TestRPInitiatedLogoutSignsOutEverywhere(t *testing.T) {
 		}
 		clients[d.ClientID] = true
 	}
-	if !clients[testOAuthClientID] || !clients["lens"] {
-		t.Fatalf("deliveries reached %v, want %s and the disabled lens", clients, testOAuthClientID)
+	if !clients[testOAuthClientID] || !clients["lens"] || clients["atlas"] {
+		t.Fatalf("deliveries reached %v, want %s and the disabled lens, not the never-used atlas", clients, testOAuthClientID)
 	}
 
 	late := exchangeOAuthCode(t, ts.URL, pendingCode, verifier, testOAuthClientSecret)

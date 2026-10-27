@@ -49,12 +49,16 @@ type AppReport struct {
 	EventID    string
 	Type       string // AppReportAccessChanged | AppReportDeleted
 	OccurredAt int64  // when the change was committed on the application
-	Source     string // admin_ui | cli | system | resync | identity_provider
-	Actor      string // who made the change there; may be empty
-	Email      string
-	Enabled    bool
-	ChatRole   string
-	OpsRole    string
+	// Sequence is the sender's own counter for its reports, increasing in
+	// commit order; 0 when the sender sends none. It orders two reports
+	// stamped with the same second.
+	Sequence int64
+	Source   string // admin_ui | cli | system | resync | identity_provider
+	Actor    string // who made the change there; may be empty
+	Email    string
+	Enabled  bool
+	ChatRole string
+	OpsRole  string
 	// Team is the account's team on the application side; HasTeam is false
 	// when the sender did not report one (an older Fleet), which leaves
 	// Auth's team alone.
@@ -199,9 +203,15 @@ func decideAppReport(ctx context.Context, q rowQuerier, clientID string, r AppRe
 	} else if err := q.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ?`, d.UserID).Scan(&d.FromTeam); err != nil {
 		return d, err
 	}
-	var lastOccurred, lastApplied int64
+	var lastOccurred, lastApplied, lastSequence int64
 	hasReport := true
-	err = q.QueryRowContext(ctx, `SELECT occurred_at, applied_at FROM application_access_reports WHERE user_id = ? AND application_id = ?`, d.UserID, clientID).Scan(&lastOccurred, &lastApplied)
+	// A read-only preview may run against a database from before schema
+	// v12, which has no sequence column; it reads as 0 (no tie-break).
+	sequenceCol := "0"
+	if hasColumnQ(ctx, q, "application_access_reports", "sequence") {
+		sequenceCol = "sequence"
+	}
+	err = q.QueryRowContext(ctx, `SELECT occurred_at, applied_at, `+sequenceCol+` FROM application_access_reports WHERE user_id = ? AND application_id = ?`, d.UserID, clientID).Scan(&lastOccurred, &lastApplied, &lastSequence)
 	if errors.Is(err, sql.ErrNoRows) {
 		hasReport = false
 	} else if err != nil {
@@ -215,9 +225,17 @@ func decideAppReport(ctx context.Context, q rowQuerier, clientID string, r AppRe
 	// before it. A change a report itself wrote is not "Auth's own", which is
 	// why the second comparison only applies when the latest change
 	// postdates the last report.
+	//
+	// occurred_at has one-second resolution, so two changes made in the
+	// same second tie on it. The sender's sequence breaks the tie: a report
+	// in the same second whose sequence is not above the last applied one
+	// was committed before it, and applying it would undo the newer state.
+	// Without a sequence on both sides the later arrival wins, as before.
 	authChangeAt := max(grantedAt, settingsAt, teamAt)
 	switch {
 	case hasReport && r.OccurredAt < lastOccurred:
+		return ignore(d, AppReportReasonStale)
+	case hasReport && r.OccurredAt == lastOccurred && r.Sequence > 0 && lastSequence > 0 && r.Sequence <= lastSequence:
 		return ignore(d, AppReportReasonStale)
 	case (!hasReport || authChangeAt > lastApplied) && r.OccurredAt < authChangeAt:
 		return ignore(d, AppReportReasonStale)
@@ -398,11 +416,12 @@ func (s *Store) ApplyAppReport(ctx context.Context, clientID string, r AppReport
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO application_access_reports(user_id, application_id, event_id, occurred_at, applied_at, source, actor, effect)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO application_access_reports(user_id, application_id, event_id, occurred_at, applied_at, source, actor, effect, sequence)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, application_id) DO UPDATE SET event_id = excluded.event_id, occurred_at = excluded.occurred_at,
-		  applied_at = excluded.applied_at, source = excluded.source, actor = excluded.actor, effect = excluded.effect`,
-		d.UserID, clientID, r.EventID, r.OccurredAt, now, r.Source, r.Actor, effect); err != nil {
+		  applied_at = excluded.applied_at, source = excluded.source, actor = excluded.actor, effect = excluded.effect,
+		  sequence = excluded.sequence`,
+		d.UserID, clientID, r.EventID, r.OccurredAt, now, r.Source, r.Actor, effect, r.Sequence); err != nil {
 		return AppReportDecision{}, err
 	}
 	return d, tx.Commit()

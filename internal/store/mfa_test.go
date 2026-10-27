@@ -1418,6 +1418,7 @@ func TestSaveAccountAccessSignsOutOnce(t *testing.T) {
 	if _, _, err := s.SetApplicationAccess(ctx, bob.ID, []string{"fleet"}, now); err != nil {
 		t.Fatal(err)
 	}
+	markApplicationUsed(t, s, bob.ID, "fleet")
 	yes := true
 	res, err := s.SaveAccountAccess(ctx, bob.Email, AccessSave{Admin: &yes, MFARequired: &yes}, alice.ID, nil, now+2)
 	if err != nil || !res.SignedOut || !res.AdminChanged || !res.MFAChanged {
@@ -1472,6 +1473,7 @@ func TestBackchannelEndpointChangeRebindsQueuedDeliveries(t *testing.T) {
 	if err := s.SetApplicationBackchannelLogoutURI(ctx, "fleet", "https://old.example/logout", now); err != nil {
 		t.Fatal(err)
 	}
+	markApplicationUsed(t, s, a.ID, "fleet")
 	session(t, s, a, "s1", now)
 	if _, err := s.RevokeAllAuthSessions(ctx, a.ID, now+1, "test"); err != nil {
 		t.Fatal(err)

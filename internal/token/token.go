@@ -32,10 +32,30 @@ import (
 	"time"
 )
 
+// Token types. Magic links and session cookies share one signed envelope,
+// so every payload names what it is and every verifier checks the name: a
+// magic link presented as a cookie (or the reverse) is refused even though
+// its signature is good.
+const (
+	TypeSession = "session"
+	TypeMagic   = "magic"
+)
+
 // Session is the payload inside the cookie. JSON-encoded, signed, and
-// base64url'd. Add fields freely — verifiers read only email and exp, so
-// extras are forward-compatible.
+// base64url'd. Add fields freely — verifiers must check typ, email and exp;
+// other extras are forward-compatible.
+//
+// Type is always "session" on a cookie minted by this service. A cookie
+// minted before the field existed has no typ; VerifySession still accepts
+// it, but only when the payload carries no magic-link nonce, so such a
+// cookie can never be a magic link in disguise.
+//
+// ID is a random per-sign-in identifier, so two sign-ins of one person in the
+// same second still produce different cookies (logout revokes one cookie, not
+// every identical copy of it). Older cookies have none.
 type Session struct {
+	Type   string `json:"typ,omitempty"`
+	ID     string `json:"sid,omitempty"`
 	Email  string `json:"email"`
 	Tenant string `json:"tenant,omitempty"`
 	IAT    int64  `json:"iat"`
@@ -47,6 +67,7 @@ type Session struct {
 // first /callback. ReturnTo is signed in so an attacker can't tamper
 // with the post-login redirect.
 type Magic struct {
+	Type     string `json:"typ,omitempty"`
 	Email    string `json:"email"`
 	Nonce    string `json:"nonce"`
 	ReturnTo string `json:"return_to,omitempty"`
@@ -110,10 +131,29 @@ func Verify[T any](pub ed25519.PublicKey, token string, out *T) error {
 
 // VerifySession is a convenience wrapper that also checks Exp against
 // wall-clock time. Returns the parsed session on success.
+//
+// It refuses any token whose typ names something other than a session,
+// and a legacy untyped token that carries a magic-link nonce: a magic
+// link is a one-time credential, and its signature must never make it a
+// cookie (a used or replaced link would otherwise keep working as a
+// session until it expired).
 func VerifySession(pub ed25519.PublicKey, token string) (*Session, error) {
-	var s Session
-	if err := Verify(pub, token, &s); err != nil {
+	var wire struct {
+		Session
+		Nonce string `json:"nonce"`
+	}
+	if err := Verify(pub, token, &wire); err != nil {
 		return nil, err
+	}
+	s := wire.Session
+	switch s.Type {
+	case TypeSession:
+	case "":
+		if wire.Nonce != "" {
+			return nil, ErrInvalid
+		}
+	default:
+		return nil, ErrInvalid
 	}
 	if s.Exp <= time.Now().Unix() {
 		return nil, ErrInvalid
@@ -131,6 +171,12 @@ func VerifyMagic(pub ed25519.PublicKey, token string) (*Magic, error) {
 	var m Magic
 	if err := Verify(pub, token, &m); err != nil {
 		return nil, err
+	}
+	// An untyped link predates the typ field (links live minutes, so only
+	// the ones in flight at deploy); it is still told apart from a session
+	// by its required nonce.
+	if m.Type != TypeMagic && m.Type != "" {
+		return nil, ErrInvalid
 	}
 	if m.Email == "" || m.Nonce == "" {
 		return nil, ErrInvalid

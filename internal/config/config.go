@@ -56,6 +56,7 @@ var allowedEnvVars = map[string]bool{
 	// Abuse limits on POST /magic (email-sending endpoint). Counts issued
 	// magic links over a rolling window; at the cap, the same "check your
 	// inbox" page is returned with no further send. Set to 0 to disable.
+	"AUTH_MAGIC_RATE_PER_IP":    true, // default 30  (per client address / 15 min)
 	"AUTH_MAGIC_RATE_PER_EMAIL": true, // default 10  (per email / 15 min)
 	"AUTH_MAGIC_GLOBAL_LIMIT":   true, // default 500 (all emails / 60 min)
 
@@ -151,6 +152,7 @@ type Config struct {
 	// fixed rolling window (15 min per-email, 60 min global) and, once the
 	// cap is reached, return the same "check your inbox" response without
 	// sending another email. <= 0 disables that limit.
+	MagicRatePerIP    int // max /magic requests per client per 15 min (default 30)
 	MagicRatePerEmail int // max links per email per 15 min (default 10)
 	MagicGlobalLimit  int // max links total per 60 min (default 500)
 
@@ -281,6 +283,7 @@ func Load(envFile string) (*Config, error) {
 	cfg.MFAKeyring = ring
 	cfg.MFAIssuer = strings.TrimSpace(envOr("AUTH_MFA_ISSUER", cfg.BrandName))
 	cfg.AuditRetention = time.Duration(env.integer("AUTH_AUDIT_RETENTION_DAYS", 90)) * 24 * time.Hour
+	cfg.MagicRatePerIP = env.integer("AUTH_MAGIC_RATE_PER_IP", 30)
 	cfg.MagicRatePerEmail = env.integer("AUTH_MAGIC_RATE_PER_EMAIL", 10)
 	cfg.MagicGlobalLimit = env.integer("AUTH_MAGIC_GLOBAL_LIMIT", 500)
 
@@ -411,7 +414,7 @@ func (c *Config) Validate() error {
 	// are built from the configured hostname: a secure deployment left at
 	// the default would build them from the request's Host header instead,
 	// which a proxy may pass through from the client.
-	if c.MagicRatePerEmail < 0 || c.MagicGlobalLimit < 0 {
+	if c.MagicRatePerIP < 0 || c.MagicRatePerEmail < 0 || c.MagicGlobalLimit < 0 {
 		return fmt.Errorf("magic-link rate limits must not be negative")
 	}
 	if c.MagicTTL <= 0 || c.MagicTTL > time.Hour {

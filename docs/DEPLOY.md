@@ -444,7 +444,8 @@ ending its own session, Explorer, Lens or Fleet sends the browser to
 `GET /logout?client_id=<its registered id>` on the Auth host. Auth revokes
 every central session of that account (all devices), queues the signed
 back-channel logout to every registered application with a back-channel
-endpoint in the same transaction,
+endpoint that the account has signed in to (an application it was never handed
+to holds no session and is not told) in the same transaction,
 clears its cookies and shows its login page with a "signed out" notice. The
 form on `/account` does the same. Scope and timing, stated plainly:
 
@@ -1029,18 +1030,28 @@ the marker only after the migration succeeds; do not introduce a separate
 
 ### Abuse limits on POST /magic
 
-`/magic` is rate-limited so it can't be used to flood an inbox or burn the
-SendGrid quota. Two caps, each counting magic links *issued* over a fixed
-rolling window; on a hit the user gets the same "check your inbox" page (no
-enumeration leak) and the journal logs `magic rate limit hit (...)`:
+`/magic` is rate-limited so it can't be used to flood an inbox, burn the
+SendGrid quota, or let one client spend everyone's budget. Three caps over
+fixed rolling windows; on a hit the user gets the same "check your inbox" page
+(no enumeration leak) and the journal logs `magic rate limit hit (...)`:
 
+- `AUTH_MAGIC_RATE_PER_IP` — max `/magic` requests per client address per
+  **15 min** (default `30`). Checked first, before the domain allowlist, so
+  every request counts, including ones for a disallowed domain. The client
+  address is Caddy's forwarded address (the last `X-Forwarded-For` hop, trusted
+  only from loopback) and is stored only as a keyed hash.
 - `AUTH_MAGIC_RATE_PER_EMAIL` — max links per email per **15 min** (default `10`).
 - `AUTH_MAGIC_GLOBAL_LIMIT` — max links across all emails per **60 min** (default `500`).
 
-The windows are fixed; only the caps are configurable. Set either to `0` to
-disable that limit; leave them unset to get the defaults. There is no per-IP
-limit yet — a single client can still consume the global budget — so treat the
-global cap as a spend backstop, not a DoS defense.
+The windows are fixed; only the caps are configurable. Set any of them to `0`
+to disable that limit; leave them unset to get the defaults. Behind a shared
+office NAT, raise `AUTH_MAGIC_RATE_PER_IP` rather than disabling it.
+
+The address typed into the form is reduced to one canonical form (lowercase,
+a bare `local@domain`, no display name, angle brackets, quotes, comments or
+second `@`/recipient) before anything else; the allowlist check, the rate
+limits, the signed link and the mail driver all use that same string, and the
+SendGrid and SMTP drivers refuse any recipient that is not in that form.
 
 ### Sign-in codes (POST /magic/code)
 

@@ -379,6 +379,10 @@ func TestLoadTTLsHaveSensibleDefaults(t *testing.T) {
 	if cfg.PasswordAbsoluteTTL != 30*24*time.Hour || cfg.PasswordIdleTTL != 7*24*time.Hour {
 		t.Errorf("password TTLs = absolute %v idle %v, want 30d/7d", cfg.PasswordAbsoluteTTL, cfg.PasswordIdleTTL)
 	}
+	if cfg.MagicRatePerIP != 30 || cfg.MagicRatePerEmail != 10 || cfg.MagicGlobalLimit != 500 {
+		t.Errorf("magic limits = per-client %d per-email %d global %d, want 30/10/500",
+			cfg.MagicRatePerIP, cfg.MagicRatePerEmail, cfg.MagicGlobalLimit)
+	}
 }
 
 func TestPasswordModeSecurityConfiguration(t *testing.T) {
@@ -562,6 +566,11 @@ func TestValidateMagicModeRangesAndHostname(t *testing.T) {
 	c.MagicGlobalLimit = -1
 	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "negative") {
 		t.Fatalf("negative limit: %v", err)
+	}
+	c = base()
+	c.MagicRatePerIP = -1
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Fatalf("negative per-client limit: %v", err)
 	}
 	c = base()
 	c.Hostname = "localhost"

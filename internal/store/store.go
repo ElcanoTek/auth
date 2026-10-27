@@ -470,7 +470,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateTeamSync(ctx); err != nil {
 		return err
 	}
-	return s.migrateMagicCodes(ctx)
+	if err := s.migrateMagicCodes(ctx); err != nil {
+		return err
+	}
+	return s.migrateSessionState(ctx)
 }
 
 // migrateAccessProvisioning is schema v8. It snapshots every existing grant
@@ -618,10 +621,18 @@ func (s *Store) ListDomains(ctx context.Context) ([]string, error) {
 // empty (open enrollment), false when at least one row exists and email's
 // domain isn't among them. The HTTP layer ANDs this with the env-driven
 // AllowedDomains check from config so either source can be the gate.
+//
+// The caller passes the canonical address it will also send to (see
+// email.CanonicalAddress). As a second line, anything with a second '@' or a
+// character a mail parser treats as structure (brackets, quotes, separators,
+// whitespace) is refused here rather than judged by its last '@'.
 func (s *Store) DomainAllowed(ctx context.Context, email string) (bool, error) {
 	at := strings.LastIndexByte(email, '@')
 	// Reject "no @", "@ at start" (no local part), "@ at end" (no domain).
 	if at <= 0 || at == len(email)-1 {
+		return false, nil
+	}
+	if strings.IndexByte(email, '@') != at || strings.ContainsAny(email, "<>,;:\"()[]\\ \t\r\n") {
 		return false, nil
 	}
 	dom := strings.ToLower(email[at+1:])
@@ -793,6 +804,11 @@ func (s *Store) SweepExpired(ctx context.Context, now int64, keep time.Duration)
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
+	// A signed-out session cookie needs remembering only until it would
+	// have expired anyway. Not counted: the caller reports magic links.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM revoked_session_tokens WHERE expires_at <= ?`, now); err != nil {
+		return n, err
+	}
 	return n, nil
 }
 
@@ -2057,16 +2073,25 @@ type LogoutDelivery struct {
 }
 
 // enqueueLogoutEventTx queues one logout event and one delivery per
-// application that has a back-channel endpoint. Disabled applications are
-// included on purpose: disabling stops new handoffs, but sessions minted
-// before that still exist there and must end with everything else.
+// application that has a back-channel endpoint AND that the account has been
+// handed to (application_sign_ins). An application the account never signed
+// in to holds no session for it and is not told about it. Disabled
+// applications are included on purpose: disabling stops new handoffs, but
+// sessions minted before that still exist there and must end with everything
+// else.
 func enqueueLogoutEventTx(ctx context.Context, tx *sql.Tx, userID, reason string, now int64) error {
 	return enqueueLogoutEventForTx(ctx, tx, userID, "", reason, now)
 }
 
 // enqueueLogoutEventForTx queues a back-channel logout for one account to
-// every application with a receiver, or to the single application clientID
-// when it is non-empty (access revoked from that application only).
+// every application with a receiver that the account has used, or to the
+// single application clientID when it is non-empty (access revoked from that
+// application only; sent whether or not a sign-in was recorded).
+// logoutTargetFilter selects, for applications aliased app, the receivers of
+// one logout. Parameters: clientID, userID, clientID.
+const logoutTargetFilter = `((? = '' AND EXISTS (SELECT 1 FROM application_sign_ins u
+		WHERE u.user_id = ? AND u.application_id = app.id)) OR app.id = ?)`
+
 func enqueueLogoutEventForTx(ctx context.Context, tx *sql.Tx, userID, clientID, reason string, now int64) error {
 	var email string
 	if err := tx.QueryRowContext(ctx, `SELECT normalized_email FROM accounts WHERE id = ?`, userID).Scan(&email); err != nil {
@@ -2080,15 +2105,16 @@ func enqueueLogoutEventForTx(ctx context.Context, tx *sql.Tx, userID, clientID, 
 		INSERT INTO logout_events(id, user_id, email, reason, issued_at)
 		SELECT ?, ?, ?, ?, ?
 		WHERE EXISTS (
-			SELECT 1 FROM applications WHERE COALESCE(backchannel_logout_uri, '') <> ''
-			  AND (? = '' OR id = ?)
-		)`, eventID, userID, email, reason, now, clientID, clientID); err != nil {
+			SELECT 1 FROM applications app WHERE COALESCE(app.backchannel_logout_uri, '') <> ''
+			  AND `+logoutTargetFilter+`
+		)`, eventID, userID, email, reason, now, clientID, userID, clientID); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO logout_deliveries(event_id, client_id, endpoint, next_attempt_at)
-		SELECT ?, id, backchannel_logout_uri, ? FROM applications
-		WHERE COALESCE(backchannel_logout_uri, '') <> '' AND (? = '' OR id = ?)`, eventID, now, clientID, clientID)
+		SELECT ?, app.id, app.backchannel_logout_uri, ? FROM applications app
+		WHERE COALESCE(app.backchannel_logout_uri, '') <> '' AND `+logoutTargetFilter,
+		eventID, now, clientID, userID, clientID)
 	return err
 }
 
@@ -2299,6 +2325,11 @@ func (s *Store) IssueAuthorizationCode(ctx context.Context, codeHash string, gra
 		return ErrInvalidGrant
 	}
 	if err := insertApplicationAudit(ctx, tx, "authorization.code_issued", grant.ClientID, grant.UserID, createdAt); err != nil {
+		return err
+	}
+	// Recorded at issue, not exchange: a code issued just before a global
+	// logout may still be exchanged, and that application must hear of it.
+	if err := recordApplicationUseTx(ctx, tx, grant.UserID, grant.ClientID, createdAt); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -105,3 +105,46 @@ func TestMagicRoundtrip(t *testing.T) {
 		t.Fatalf("roundtrip mismatch: got %+v want %+v", got, m)
 	}
 }
+
+// A magic link and a session cookie share one signed envelope. A link, typed
+// or from before typ existed, must never verify as a session, and a session
+// must never verify as a link.
+func TestTokenTypesAreNotInterchangeable(t *testing.T) {
+	priv, pub := testKeypair(t)
+	now := time.Now()
+	exp := now.Add(time.Hour).Unix()
+
+	typedMagic, _ := Sign(priv, Magic{Type: TypeMagic, Email: "alice@example.com", Nonce: "n1", IAT: now.Unix(), Exp: exp})
+	legacyMagic, _ := Sign(priv, Magic{Email: "alice@example.com", Nonce: "n2", IAT: now.Unix(), Exp: exp})
+	for name, tok := range map[string]string{"typed": typedMagic, "legacy": legacyMagic} {
+		if _, err := VerifySession(pub, tok); err == nil {
+			t.Fatalf("%s magic link verified as a session", name)
+		}
+		if _, err := VerifyMagic(pub, tok); err != nil {
+			t.Fatalf("%s magic link no longer verifies as a link: %v", name, err)
+		}
+	}
+
+	typedSession, _ := Sign(priv, Session{Type: TypeSession, Email: "alice@example.com", IAT: now.Unix(), Exp: exp})
+	if _, err := VerifyMagic(pub, typedSession); err == nil {
+		t.Fatal("session verified as a magic link")
+	}
+	if _, err := VerifySession(pub, typedSession); err != nil {
+		t.Fatalf("typed session: %v", err)
+	}
+
+	// A cookie minted before typ existed keeps working until it expires.
+	legacySession, _ := Sign(priv, Session{Email: "alice@example.com", IAT: now.Unix(), Exp: exp})
+	if _, err := VerifySession(pub, legacySession); err != nil {
+		t.Fatalf("legacy session must stay valid: %v", err)
+	}
+
+	// Any other declared type is refused by both.
+	other, _ := Sign(priv, map[string]any{"typ": "logout", "email": "alice@example.com", "nonce": "n3", "exp": exp})
+	if _, err := VerifySession(pub, other); err == nil {
+		t.Fatal("foreign typ verified as a session")
+	}
+	if _, err := VerifyMagic(pub, other); err == nil {
+		t.Fatal("foreign typ verified as a magic link")
+	}
+}
