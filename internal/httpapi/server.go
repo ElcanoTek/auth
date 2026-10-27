@@ -278,10 +278,11 @@ func (s *Server) handleSent(w http.ResponseWriter, r *http.Request) {
 // ── /magic — issue + email ───────────────────────────────────────────
 
 // Rolling windows for the POST /magic abuse limits. The per-window caps
-// live in config (cfg.MagicRatePerEmail / cfg.MagicGlobalLimit; 0 disables
-// a limit); these fix the window each cap is measured over.
+// live in config (cfg.MagicRatePerIP / cfg.MagicRatePerEmail /
+// cfg.MagicGlobalLimit; 0 disables a limit); these fix the window each cap
+// is measured over.
 const (
-	magicRateWindow   = 15 * time.Minute // per-email issuance window
+	magicRateWindow   = 15 * time.Minute // per-client and per-email window
 	magicGlobalWindow = 60 * time.Minute // stack-wide issuance window
 )
 
@@ -299,11 +300,35 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	rawEmail := strings.TrimSpace(r.FormValue("email"))
-	email := strings.ToLower(rawEmail)
-	if !looksLikeEmail(email) {
+	// One canonical address for everything below: the allowlist, the rate
+	// limits, the signed link and the recipient handed to the mail driver.
+	// Anything a mail parser could read as a different mailbox (display
+	// names, angle brackets, a second '@' or recipient) is refused here, so
+	// the domain that was checked is the domain that receives the link.
+	canonical, addrErr := email.CanonicalAddress(r.FormValue("email"))
+	if addrErr != nil {
 		s.bounceWithErr(w, r, errInvalidEmail)
 		return
+	}
+	email := canonical
+	now := time.Now()
+	// Per-client limit, first: before the allowlist lookup and before any
+	// per-address or stack-wide count, so one client cycling through
+	// addresses cannot spend the stack-wide budget everyone else shares.
+	// Every request counts, including ones for a disallowed domain. A hit
+	// looks exactly like a send.
+	if s.cfg.MagicRatePerIP > 0 {
+		limited, err := s.reserveMagicClientAttempt(r.Context(), s.rateKey("magic-ip", clientIP(r)), now)
+		if err != nil {
+			logUnlessCancelled("rate count (per-client)", err)
+			s.bounceWithErr(w, r, errInternal)
+			return
+		}
+		if limited {
+			log.Printf("magic rate limit hit (per-client)")
+			s.fakeSentResponse(w, r, email)
+			return
+		}
 	}
 	// DB is the source of truth at runtime — env AUTH_ALLOWED_DOMAINS
 	// is seeded into the DB at startup, and `auth domain add` updates
@@ -331,13 +356,12 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 	// limit or whether the address exists — and log a domain-only warning so
 	// an operator can see an attack in progress. A cap of 0 disables it.
 	//
-	// Two deliberate limits of this approach: (1) the count and the issuance
+	// One deliberate limit of this approach: the count and the issuance
 	// aren't a single transaction, so a concurrent burst can overshoot a cap
 	// by roughly the in-flight request count — acceptable for a spam throttle
 	// (the single-use + collapse-to-newest guarantees stay transactional).
-	// (2) one client can still spend the whole global budget; a per-IP limit
-	// / CAPTCHA in front of /magic is the intended next layer.
-	now := time.Now()
+	// The per-client limit above is reserved under attemptGate and does not
+	// overshoot.
 	if s.cfg.MagicRatePerEmail > 0 {
 		n, err := s.store.CountRecentByEmail(r.Context(), email, now.Add(-magicRateWindow).Unix())
 		if err != nil {
@@ -397,6 +421,7 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tok, err := token.Sign(s.cfg.SigningKey, token.Magic{
+		Type:     token.TypeMagic,
 		Email:    email,
 		Nonce:    nonce,
 		ReturnTo: returnTo,
@@ -435,6 +460,27 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 
 	s.setMagicTxCookie(w, txRaw)
 	http.Redirect(w, r, sentLocation(email, "", returnTo), http.StatusSeeOther)
+}
+
+// reserveMagicClientAttempt counts the client's /magic requests in the
+// last magicRateWindow and, when it is under cfg.MagicRatePerIP, records this
+// one, all under attemptGate so a parallel burst cannot overshoot. The rows
+// share login_attempts (keyed by an HMAC of the client address, never the
+// address itself) and its 24-hour sweep.
+func (s *Server) reserveMagicClientAttempt(ctx context.Context, key string, now time.Time) (bool, error) {
+	if err := acquire(ctx, s.attemptGate); err != nil {
+		return false, err
+	}
+	defer release(s.attemptGate)
+	n, err := s.store.CountFailedLoginAttempts(ctx, key, now.Add(-magicRateWindow).Unix())
+	if err != nil {
+		return false, err
+	}
+	if n >= s.cfg.MagicRatePerIP {
+		return true, nil
+	}
+	_, err = s.store.ReserveLoginAttempts(ctx, now.Unix(), key)
+	return false, err
 }
 
 // fakeSentResponse exits the magic flow with a "check your inbox" page
@@ -1430,6 +1476,22 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.handlePasswordLogout(w, r)
 		return
 	}
+	// The magic-mode cookie is a self-contained signed token, so clearing it
+	// in this browser is not enough: a copy taken earlier would keep working
+	// until it expired. Record it as signed out; currentSession (/verify,
+	// /me) refuses it from now on. Only a cookie that verifies is recorded,
+	// so the table holds nothing a stranger can make up. Fail closed like the
+	// password-mode logout: keep the cookie and say so when the database did
+	// not record the sign-out.
+	if c, err := r.Cookie(s.cfg.CookieName); err == nil && c.Value != "" {
+		if sess, err := token.VerifySession(s.cfg.PublicKey, c.Value); err == nil {
+			if err := s.store.RevokeSessionToken(r.Context(), hashSecret(c.Value), sess.Exp, time.Now().Unix()); err != nil {
+				log.Printf("magic logout revoke: %v", err)
+				http.Error(w, "sign-out failed, please try again", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
 	s.clearSessionCookie(w)
 	if r.Method == http.MethodPost {
 		// XHR-style logout from a downstream service.
@@ -1646,6 +1708,16 @@ func (s *Server) currentSession(r *http.Request) *token.Session {
 	}
 	sess, err := token.VerifySession(s.cfg.PublicKey, c.Value)
 	if err != nil {
+		return nil
+	}
+	// A cookie signed out at /logout stays refused until it expires. A
+	// database error fails closed: no identity is vouched for unchecked.
+	revoked, err := s.store.SessionTokenRevoked(r.Context(), hashSecret(c.Value))
+	if err != nil {
+		logUnlessCancelled("session revocation check", err)
+		return nil
+	}
+	if revoked {
 		return nil
 	}
 	return sess
@@ -1923,14 +1995,49 @@ func looksLikeEmail(s string) bool {
 // logRequests is the only middleware: status + duration + remote addr +
 // method + path. Avoids dragging in a real logger; structured logging
 // can come later if any operator asks for it.
+//
+// Every request-controlled field is written in an escaped form: the path as
+// the browser would send it (r.URL.Path is percent-DECODED, so an encoded
+// newline in the request would otherwise start a forged log line), and the
+// method through logField.
 func logRequests(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &statusRecorder{ResponseWriter: w, status: 200}
 		h.ServeHTTP(rw, r)
 		log.Printf("%s %s %s %d %s",
-			r.RemoteAddr, r.Method, r.URL.Path, rw.status, time.Since(start))
+			logField(r.RemoteAddr), logField(r.Method), logField(r.URL.EscapedPath()), rw.status, time.Since(start))
 	})
+}
+
+// logField makes a request-supplied value safe for one space-separated log
+// line: control characters, spaces, backslashes and non-ASCII bytes are
+// written as \xNN, so the value can neither end the line nor pose as another
+// field. Ordinary printable ASCII passes unchanged.
+func logField(v string) string {
+	clean := true
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c <= 0x20 || c >= 0x7f || c == '\\' {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		if v == "" {
+			return "-"
+		}
+		return v
+	}
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c <= 0x20 || c >= 0x7f || c == '\\' {
+			fmt.Fprintf(&b, "\\x%02x", c)
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // render executes an HTML page under two Content-Security-Policies, sent as

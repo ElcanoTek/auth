@@ -77,6 +77,10 @@ type sgContent struct {
 }
 
 func (s *SendGrid) Send(ctx context.Context, to, subject, textBody, htmlBody string) error {
+	to, err := CanonicalAddress(to)
+	if err != nil {
+		return fmt.Errorf("recipient: %w", err)
+	}
 	fromAddr, fromName := splitAddress(s.From)
 	body, err := json.Marshal(sgMail{
 		Personalizations: []sgPersonalization{{To: []sgAddress{{Email: to}}}},
@@ -131,6 +135,13 @@ type SMTP struct {
 }
 
 func (s *SMTP) Send(ctx context.Context, to, subject, textBody, htmlBody string) error {
+	// The recipient is used exactly as validated: never parsed for a
+	// display name or angle brackets, so RCPT TO and the To header name the
+	// same mailbox the caller checked.
+	to, err := CanonicalAddress(to)
+	if err != nil {
+		return fmt.Errorf("recipient: %w", err)
+	}
 	addr := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
 
 	// Connect with a context-aware dialer so a hung relay times out
@@ -177,11 +188,11 @@ func (s *SMTP) Send(ctx context.Context, to, subject, textBody, htmlBody string)
 	}
 
 	// MAIL FROM uses just the address part, even if the From header
-	// includes a display name ("Sign in <login@…>"). RCPT TO likewise.
+	// includes a display name ("Sign in <login@…>").
 	if err := c.Mail(addressOnly(s.From)); err != nil {
 		return fmt.Errorf("mail from: %w", err)
 	}
-	if err := c.Rcpt(addressOnly(to)); err != nil {
+	if err := c.Rcpt(to); err != nil {
 		return fmt.Errorf("rcpt to: %w", err)
 	}
 

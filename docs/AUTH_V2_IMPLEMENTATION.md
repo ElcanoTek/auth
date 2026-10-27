@@ -230,7 +230,9 @@ the same shape, and any future service should too:
 - Touching a session extends idle time but never absolute time.
 - Logout (the /account form or an application's GET /logout?client_id) revokes
   every session of the account and queues the back-channel logout to every
-  application with a receiver, disabled ones included.
+  application with a receiver that the account has been handed to (an
+  authorization code was issued), disabled ones included; an application the
+  account never used is not notified.
 - Password replacement and account disablement revoke every user session in
   the same transaction.
 - A disabled account cannot create or validate a session.

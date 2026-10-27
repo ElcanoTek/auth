@@ -55,6 +55,12 @@ func TestDomainAllowlistCaseInsensitive(t *testing.T) {
 		{"alice@", false},
 		{"alice", false},
 		{"@example.com", false},
+		// An outside mailbox dressed up to end in the allowed domain.
+		{"<attacker@outside.test>alice@example.com", false},
+		{"attacker@outside.test,alice@example.com", false},
+		{"attacker@outside.test@example.com", false},
+		{`"attacker@outside.test"@example.com`, false},
+		{"attacker@outside.test alice@example.com", false},
 	}
 	for _, tc := range cases {
 		got, err := s.DomainAllowed(ctx, tc.email)

@@ -26,6 +26,7 @@ func TestPasswordReplacementAtomicallyQueuesRegisteredApplications(t *testing.T)
 	account := createPasswordAccountForOAuthTest(t, s)
 	registerBackchannelApp(t, s, "explorer")
 	registerBackchannelApp(t, s, "lens")
+	markApplicationUsed(t, s, account.ID, "explorer", "lens")
 
 	if err := s.SetPassword(ctx, account.Email, "replacement-hash", false, 1_000); err != nil {
 		t.Fatal(err)
@@ -49,6 +50,7 @@ func TestAccountDisableAndRevokeAllQueueButSingleSessionLogoutDoesNot(t *testing
 	ctx := context.Background()
 	account := createPasswordAccountForOAuthTest(t, s)
 	registerBackchannelApp(t, s, "explorer")
+	markApplicationUsed(t, s, account.ID, "explorer")
 	if err := s.CreateAuthSession(ctx, "one-session", account.ID, account.PasswordHash, 900, 2_000, 3_000); err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +73,7 @@ func TestLogoutDeliverySurvivesReopenAndRetries(t *testing.T) {
 	ctx := context.Background()
 	account := createPasswordAccountForOAuthTest(t, s)
 	registerBackchannelApp(t, s, "explorer")
+	markApplicationUsed(t, s, account.ID, "explorer")
 	if _, err := s.RevokeAllAuthSessions(ctx, account.ID, 1_000, "admin_revoked"); err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +115,7 @@ func TestSweepDropsDeliveredLogoutEventsButKeepsPendingOnes(t *testing.T) {
 	account := createPasswordAccountForOAuthTest(t, s)
 	registerBackchannelApp(t, s, "explorer")
 	registerBackchannelApp(t, s, "lens")
+	markApplicationUsed(t, s, account.ID, "explorer", "lens")
 	if _, err := s.RevokeAllAuthSessions(ctx, account.ID, 1_000, "admin_revoked"); err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +196,7 @@ func TestUndeliveredEventsStopRetryingAfterRetentionAndAreListed(t *testing.T) {
 	ctx := context.Background()
 	account := createPasswordAccountForOAuthTest(t, s)
 	registerBackchannelApp(t, s, "explorer")
+	markApplicationUsed(t, s, account.ID, "explorer")
 	if _, err := s.RevokeAllAuthSessions(ctx, account.ID, 1_000, "admin_revoked"); err != nil {
 		t.Fatal(err)
 	}
@@ -256,6 +261,7 @@ func TestEndpointRotationDuringAClaimedDeliveryKeepsTheLogoutOwed(t *testing.T) 
 	if err := s.SetApplicationBackchannelLogoutURI(ctx, "fleet", "https://old.example/logout", 1_000); err != nil {
 		t.Fatal(err)
 	}
+	markApplicationUsed(t, s, a.ID, "fleet")
 	if _, err := s.RevokeAllAuthSessions(ctx, a.ID, 1_001, "test"); err != nil {
 		t.Fatal(err)
 	}
@@ -292,5 +298,91 @@ func TestEndpointRotationDuringAClaimedDeliveryKeepsTheLogoutOwed(t *testing.T) 
 	}
 	if left, _ := s.ClaimDueLogoutDeliveries(ctx, 1_008, 10, time.Minute); len(left) != 0 {
 		t.Fatalf("delivered row still due: %+v", left)
+	}
+}
+
+// markApplicationUsed records that the account has been handed to each
+// application, as an authorization code issue does.
+func markApplicationUsed(t *testing.T, s *Store, userID string, applicationIDs ...string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, id := range applicationIDs {
+		if err := recordApplicationUseTx(ctx, tx, userID, id, 900); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A global logout reaches only the applications the account was handed to;
+// one it never signed in to holds no session and is not told about it.
+func TestGlobalLogoutNotifiesOnlyApplicationsTheAccountUsed(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	account := createPasswordAccountForOAuthTest(t, s)
+	registerBackchannelApp(t, s, "explorer")
+	registerBackchannelApp(t, s, "lens")
+	markApplicationUsed(t, s, account.ID, "explorer")
+
+	if _, err := s.RevokeAllAuthSessions(ctx, account.ID, 1_000, "user_logout"); err != nil {
+		t.Fatal(err)
+	}
+	due, err := s.ClaimDueLogoutDeliveries(ctx, 1_000, 10, time.Minute)
+	if err != nil || len(due) != 1 || due[0].ClientID != "explorer" {
+		t.Fatalf("deliveries = %+v, %v; want explorer only", due, err)
+	}
+
+	// A targeted logout (access revoked from one application) still reaches
+	// that application whether or not a sign-in was recorded.
+	other, err := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, 1_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueueLogoutEventForTx(ctx, tx, other.ID, "lens", "access_revoked", 1_001); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	due, err = s.ClaimDueLogoutDeliveries(ctx, 1_001, 10, time.Minute)
+	if err != nil || len(due) != 1 || due[0].ClientID != "lens" || due[0].Subject != other.ID {
+		t.Fatalf("targeted deliveries = %+v, %v", due, err)
+	}
+}
+
+// An authorization code records the application as used, so a logout right
+// after a handoff reaches it.
+func TestAuthorizationCodeRecordsApplicationUse(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	account := createPasswordAccountForOAuthTest(t, s)
+	registerBackchannelApp(t, s, "explorer")
+	if used, err := s.ApplicationsUsed(ctx, account.ID); err != nil || len(used) != 0 {
+		t.Fatalf("used before any handoff = %v, %v", used, err)
+	}
+	if _, _, err := s.SetApplicationAccess(ctx, account.ID, []string{"explorer"}, 950); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAuthSession(ctx, "sess", account.ID, account.PasswordHash, 950, 5_000, 6_000); err != nil {
+		t.Fatal(err)
+	}
+	grant := AuthorizationGrant{ClientID: "explorer", UserID: account.ID, SessionTokenHash: "sess",
+		RedirectURI: "https://explorer.example.com/auth/callback", Nonce: "n", CodeChallenge: "c", AuthTime: 950}
+	if err := s.IssueAuthorizationCode(ctx, "code", grant, 1_000, 1_060); err != nil {
+		t.Fatal(err)
+	}
+	if used, err := s.ApplicationsUsed(ctx, account.ID); err != nil || len(used) != 1 || used[0] != "explorer" {
+		t.Fatalf("used after handoff = %v, %v", used, err)
 	}
 }

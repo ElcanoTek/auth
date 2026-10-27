@@ -190,7 +190,7 @@ func parseAppEvent(body []byte, now time.Time) (store.AppReport, bool) {
 	if ev.ID == "" || len(ev.ID) > appEventMaxIDLength || !printableASCII(ev.ID) {
 		return store.AppReport{}, false
 	}
-	if ev.OccurredAt <= 0 || time.Unix(ev.OccurredAt, 0).After(now.Add(appEventMaxSkew)) {
+	if ev.OccurredAt <= 0 || time.Unix(ev.OccurredAt, 0).After(now.Add(appEventMaxSkew)) || ev.Sequence < 0 {
 		return store.AppReport{}, false
 	}
 	switch ev.Source {
@@ -228,7 +228,7 @@ func parseAppEvent(body []byte, now time.Time) (store.AppReport, bool) {
 		return store.AppReport{}, false
 	}
 	report := store.AppReport{
-		EventID: ev.ID, Type: ev.Type, OccurredAt: ev.OccurredAt, Source: ev.Source,
+		EventID: ev.ID, Type: ev.Type, OccurredAt: ev.OccurredAt, Sequence: ev.Sequence, Source: ev.Source,
 		Actor: strings.TrimSpace(ev.Actor), Email: email, Enabled: ev.User.Enabled,
 		ChatRole: ev.User.ChatRole, OpsRole: ev.User.OpsRole,
 	}

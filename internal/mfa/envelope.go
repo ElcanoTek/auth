@@ -75,7 +75,10 @@ func ParseKeyring(active, activeID, previous string) (*Keyring, error) {
 		return nil, fmt.Errorf("AUTH_MFA_KEY: %w", err)
 	}
 	ring := &Keyring{activeID: activeID, keys: map[string][]byte{activeID: key}}
-	for _, entry := range strings.Split(previous, ",") {
+	// Errors below name an entry by its position and never echo it: a
+	// mistyped entry is usually key material (a key pasted without its id,
+	// or id and key swapped), and this message ends up in the system log.
+	for i, entry := range strings.Split(previous, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
@@ -83,7 +86,7 @@ func ParseKeyring(active, activeID, previous string) (*Keyring, error) {
 		id, b64, found := strings.Cut(entry, ":")
 		id = strings.TrimSpace(id)
 		if !found || validateKeyID(id) != nil {
-			return nil, fmt.Errorf("AUTH_MFA_PREVIOUS_KEYS: entry %q is not id:base64", entry)
+			return nil, fmt.Errorf("AUTH_MFA_PREVIOUS_KEYS: entry %d is not id:base64 (id: 1-%d letters, digits, '-', '_' or '.')", i+1, maxKeyIDLen)
 		}
 		if _, dup := ring.keys[id]; dup {
 			return nil, fmt.Errorf("AUTH_MFA_PREVIOUS_KEYS: key id %q repeated", id)
@@ -195,14 +198,17 @@ func decodeKey(b64 string) ([]byte, error) {
 	return key, nil
 }
 
+// validateKeyID never echoes the rejected value: a key id that fails these
+// rules is most often a key pasted into the wrong variable, and the error is
+// logged.
 func validateKeyID(id string) error {
 	if id == "" || len(id) > maxKeyIDLen {
-		return fmt.Errorf("mfa: key id %q must be 1-%d characters", id, maxKeyIDLen)
+		return fmt.Errorf("mfa: key id must be 1-%d characters", maxKeyIDLen)
 	}
 	for _, r := range id {
 		isAlnum := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
 		if !isAlnum && r != '-' && r != '_' && r != '.' {
-			return fmt.Errorf("mfa: key id %q may use only letters, digits, '-', '_' and '.'", id)
+			return errors.New("mfa: key id may use only letters, digits, '-', '_' and '.'")
 		}
 	}
 	return nil

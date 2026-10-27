@@ -228,9 +228,10 @@ For anything beyond localhost, also set:
 
 Optional abuse caps on `/magic` (sensible defaults apply if unset):
 
+- `AUTH_MAGIC_RATE_PER_IP`: requests per client address per 15 min (default `30`).
 - `AUTH_MAGIC_RATE_PER_EMAIL`: links per email per 15 min (default `10`).
 - `AUTH_MAGIC_GLOBAL_LIMIT`: links across all emails per 60 min (default `500`).
-  Set either to `0` to disable. See [docs/DEPLOY.md](docs/DEPLOY.md) for
+  Set any of them to `0` to disable. See [docs/DEPLOY.md](docs/DEPLOY.md) for
   details.
 
 ## Tests
@@ -336,8 +337,10 @@ service verifies identity in each mode, plus a checklist for new services.
 
 **Magic-link mode.** The session cookie value is
 `base64url(payload_json).base64url(ed25519_sig)`. Payload is
-`{"email":"…","tenant":"…","iat":…,"exp":…}`. The signature is Ed25519 over
-the base64url body string.
+`{"typ":"session","sid":"…","email":"…","tenant":"…","iat":…,"exp":…}`. The
+signature is Ed25519 over the base64url body string. Magic links use the same
+envelope with `"typ":"magic"`, so a verifier must check `typ` (see
+[docs/INTEGRATION.md](docs/INTEGRATION.md), "Pattern B: what to verify").
 
 Signing is asymmetric: auth-server holds the private key (`AUTH_SIGNING_KEY`)
 and is the only party that can mint a token. Verifying services hold only the

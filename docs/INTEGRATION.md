@@ -73,7 +73,8 @@ should too.
    - Your logout control revokes your session, clears your cookie, and sends
      the browser to Auth's `GET /logout?client_id=<your id>`. Auth revokes
      every central session of the account, fans a signed back-channel logout
-     out to every application with a back-channel endpoint, and lands on its
+     out to every application with a back-channel endpoint that the account
+     has signed in to, and lands on its
      login page. Never
      end only your own session from a user-facing logout: a silent sign-in
      would put the person straight back in.
@@ -163,7 +164,11 @@ repeated `id` is a no-op. Then, in one transaction:
 - A report older than the last applied one, or older than an Auth-side change
   made after it (a console save or a re-grant), is ignored as stale. Auth
   compares the application's `occurred_at` with its own clock for that second
-  test, so the two hosts' clocks must roughly agree.
+  test, so the two hosts' clocks must roughly agree. `occurred_at` is in whole
+  seconds; for two reports in the same second, `sequence` decides: one whose
+  `sequence` is not above the last applied report's is stale. Send a
+  `sequence` that increases with commit order (a sender without one keeps the
+  older rule: the later arrival wins).
 - `user.deleted`, or `enabled: false`, removes the grant through the normal
   revoke path: back-channel logout, a provisioning revoke and dropped
   authorization codes. The stored roles are kept for a later re-grant.
@@ -339,9 +344,21 @@ Then in the upstream app, read the headers:
 
 The cookie value is `base64url(payload).base64url(signature)`. Verify the
 Ed25519 signature over the base64url payload string with the public key,
-decode the payload `{email, tenant, iat, exp}`, reject when `exp` has passed,
-and treat `email` as the identity. Logout is a link that POSTs to the Auth
-host's `/logout`; the service simply starts seeing an absent cookie.
+decode the payload `{typ, sid, email, tenant, iat, exp}`, and then:
+
+- **Check `typ`.** Magic links are signed with the same key in the same
+  envelope (`"typ":"magic"`). Accept `"typ":"session"`; accept a payload with
+  no `typ` only when it also has no `nonce` (a cookie minted before `typ`
+  existed); reject everything else. Without this check a sign-in link, even a
+  used or replaced one, works as a cookie until it expires.
+- Reject when `exp` has passed, and treat `email` as the identity.
+
+Logout is a link that POSTs to the Auth host's `/logout`; the service simply
+starts seeing an absent cookie. Auth also records the signed-out cookie and
+refuses it on `/verify` and `/me` until it expires, so a copy of it stops
+working behind Pattern A. A Pattern-B service that verifies locally cannot
+see that record; it should keep its own sessions short or check `/verify`
+for sensitive actions.
 
 ## New service checklist (magic-link mode)
 
@@ -440,18 +457,21 @@ Auth is a normal top-level navigation (not a `fetch`) and it sends
 - **Per-user blocking in magic mode.** The allowlist is domain-grain. To block
   one person without their whole domain you need a denylist or a per-service
   gate. Password mode has per-account `auth user disable`.
-- **Token revocation in magic mode.** Those cookies are stateless and live
-  until they expire; rotating `AUTH_SIGNING_KEY` and redistributing the public
-  key is the global big red button. Password mode is different: central
+- **Token revocation in magic mode.** Those cookies are signed and
+  self-contained. `/logout` records the cookie it receives, and `/verify` and
+  `/me` refuse it from then on, but a Pattern-B service verifying locally
+  still accepts it until it expires, and there is no "sign out everywhere" for
+  one person; rotating `AUTH_SIGNING_KEY` and redistributing the public key is
+  the global big red button. Password mode is different: central
   sessions are server-side rows, so `auth user disable`, `auth user
   set-password`, `auth user revoke-sessions` and every sign-out end them at
   once and fan out a signed back-channel logout to every application that
   registered a back-channel endpoint.
-- **Per-IP rate limiting or CAPTCHA on `/magic`.** `/magic` has per-email and
-  global send caps (`AUTH_MAGIC_RATE_PER_EMAIL`, `AUTH_MAGIC_GLOBAL_LIMIT`), so
-  it can't flood one inbox or burn the quota, but one client can still spend
-  the global budget. Password mode has persistent per-account and per-IP
-  failure limits.
+- **CAPTCHA on `/magic`.** `/magic` has per-client, per-email and global send
+  caps (`AUTH_MAGIC_RATE_PER_IP`, `AUTH_MAGIC_RATE_PER_EMAIL`,
+  `AUTH_MAGIC_GLOBAL_LIMIT`), so one client can neither flood one inbox nor
+  spend the global budget, but many clients together still can. Password mode
+  has persistent per-account and per-IP failure limits.
 
 If any of those start mattering, file an issue or extend the service; the
 surface stays small.

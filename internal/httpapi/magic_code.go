@@ -321,7 +321,15 @@ func (s *Server) reserveMagicCodeAttempt(r *http.Request, key string, now time.T
 // browser to its re-validated destination.
 func (s *Server) completeMagicSignIn(w http.ResponseWriter, r *http.Request, email, returnTo string, now time.Time) {
 	tenant := emailTenant(email)
+	sid, err := token.NewNonce()
+	if err != nil {
+		log.Printf("session id: %v", err)
+		s.bounceWithErr(w, r, errInternal)
+		return
+	}
 	sessTok, err := token.Sign(s.cfg.SigningKey, token.Session{
+		Type:   token.TypeSession,
+		ID:     sid,
 		Email:  email,
 		Tenant: tenant,
 		IAT:    now.Unix(),

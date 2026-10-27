@@ -308,3 +308,30 @@ func TestVerifyCollisionRecordsTheLaterStep(t *testing.T) {
 		t.Fatal("collided value replayed at the later step")
 	}
 }
+
+// A mistyped AUTH_MFA_PREVIOUS_KEYS or AUTH_MFA_KEY_ID usually holds key
+// material (a key without its id, id and key swapped, a key pasted as the
+// id). The error is logged at startup, so it must never repeat the value.
+func TestParseKeyringErrorsNeverEchoKeyMaterial(t *testing.T) {
+	good, _ := NewKey()
+	old, _ := NewKey()
+	cases := []struct{ name, id, previous, secret string }{
+		{"previous key without id", "1", old, old},
+		{"previous id and key swapped", "1", old + ":2026a", old},
+		{"previous key with a bad id", "1", "bad id!:" + old, old},
+		{"key pasted as active id", old, "", old},
+		{"key pasted as previous id", "1", old + ":" + good, old},
+	}
+	for _, c := range cases {
+		_, err := ParseKeyring(good, c.id, c.previous)
+		if err == nil {
+			t.Errorf("%s: accepted", c.name)
+			continue
+		}
+		msg := err.Error()
+		// The whole key, or any recognisable piece of it, must be absent.
+		if strings.Contains(msg, c.secret) || strings.Contains(msg, c.secret[:12]) || strings.Contains(msg, good[:12]) {
+			t.Errorf("%s: error repeats key material: %s", c.name, msg)
+		}
+	}
+}

@@ -371,3 +371,35 @@ func TestAppEventsSecretRequiresTheMFAKeyAndMigrates(t *testing.T) {
 		t.Fatal("v9 not applied on reopen")
 	}
 }
+
+// Two Fleet changes in the same second carry the same occurred_at; the
+// sender's sequence orders them, so the older one arriving last is stale
+// instead of undoing the newer state.
+func TestAppReportSameSecondOrderedBySequence(t *testing.T) {
+	f := newReportFixture(t)
+	newer := f.report(2000, "member", "client")
+	newer.EventID, newer.Sequence = "evt-seq-8", 8
+	older := f.report(2000, "viewer", "none")
+	older.EventID, older.Sequence = "evt-seq-7", 7
+	if d := f.apply(t, newer, 2001); d.Action != AppReportChange {
+		t.Fatalf("newer = %+v", d)
+	}
+	if d := f.apply(t, older, 2002); d.Action != AppReportIgnored || d.Reason != AppReportReasonStale {
+		t.Fatalf("older in the same second applied: %+v", d)
+	}
+	if got := f.fleetSettings(t); got != `{"chat_role":"member","ops_role":"client"}` {
+		t.Fatalf("settings = %s, want the newer report's", got)
+	}
+	// A later sequence in the same second still applies.
+	latest := f.report(2000, "viewer", "readonly")
+	latest.EventID, latest.Sequence = "evt-seq-9", 9
+	if d := f.apply(t, latest, 2003); d.Action != AppReportChange {
+		t.Fatalf("later sequence = %+v", d)
+	}
+	// A sender without sequences keeps the old rule (later arrival wins).
+	unsequenced := f.report(2000, "member", "none")
+	unsequenced.EventID = "evt-noseq"
+	if d := f.apply(t, unsequenced, 2004); d.Action != AppReportChange {
+		t.Fatalf("unsequenced = %+v", d)
+	}
+}
