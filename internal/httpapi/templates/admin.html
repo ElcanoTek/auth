@@ -32,13 +32,19 @@
     </nav>
     {{if .NeedVerify}}<div class="banner warn" role="alert"><strong>Confirm it is you.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need your authenticator code entered less than five minutes ago. <a href="/account/security/verify?return_to=%2Fadmin">Enter it now</a> and then repeat the change.</div>
     {{else if .NeedEnroll}}<div class="banner warn" role="alert"><strong>Set up two-factor sign-in first.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need an administrator's own authenticator. <a href="/account/security?return_to=%2Fadmin">Set yours up</a> and then repeat the change.</div>
-    {{else if and .Error (not .Reopen)}}<div class="err" role="alert">{{.Error}}</div>{{end}}
-    {{if and .Notice (not .Reopen)}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
-    {{if .Secret}}<div class="secret" role="status">
-      <p class="muted">Temporary password for <strong>{{.SecretFor}}</strong>. It is shown once and not stored: copy it now.</p>
-      <code>{{.Secret}}</code>
-      <p class="muted">They sign in with it and are asked to choose their own password before anything else. It does not expire on its own; if it is lost, run the action again for a new one. Reloading this page repeats the action.</p>
-    </div>{{end}}
+    {{else if and .Error (or (not .Reopen) .Secret)}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+    {{if .Secret}}<div class="notice" role="status">{{.Notice}} <button class="linkish" type="button" commandfor="temp-password" command="show-modal">Show the temporary password</button></div>
+    {{/* The one-time password gets a popup of its own (rendered open, so it shows without script; admin.js makes it modal and keeps a stray click outside from closing it). The notice above reopens it. */}}
+    <dialog id="temp-password" class="modal temp-password" aria-labelledby="temp-password-title" aria-describedby="temp-password-for temp-password-warn" open data-keep-open>
+      <div class="modal-head"><h3 id="temp-password-title">{{.SecretTitle}}</h3><button class="icon-btn close" type="button" commandfor="temp-password" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+      <p class="who" id="temp-password-for">Temporary password for <strong>{{.SecretFor}}</strong></p>
+      <div class="secret"><code id="temp-password-value">{{.Secret}}</code><button class="btn-ghost" type="button" data-copy="temp-password-value" hidden>Copy</button></div>
+      <div class="banner warn" id="temp-password-warn"><strong>Save it now.</strong> It is shown only this once and is not stored anywhere. If it is lost, reset the password again for a new one.</div>
+      <p class="hint">They sign in with it and must choose their own password before anything else. It does not expire on its own. Reloading this page repeats the action.</p>
+      {{/* method="dialog" closes it natively, with no script and no invoker-command support. */}}
+      <form method="dialog"><button class="btn" type="submit">I have saved it</button></form>
+    </dialog>
+    {{else if and .Notice (not .Reopen)}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
 
     {{if eq .Tab "accounts"}}
     <section class="section" aria-labelledby="accounts-heading">
