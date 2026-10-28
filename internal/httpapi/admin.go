@@ -57,10 +57,6 @@ type adminAccountRow struct {
 	FleetAdmin    bool
 	FleetChatRole string
 	FleetOpsRole  string
-	// Set when the latest change to the Fleet permissions came from a
-	// report Fleet sent (store.AppReportHints).
-	FleetChangedBy string
-	FleetChangedAt string
 	// Second factor: the console shows the status the issue names and lets
 	// an administrator require it per account or reset a lost one.
 	MFAStatus      string // Enabled | Enrollment required | Not enrolled
@@ -213,6 +209,7 @@ var pendingFields = map[string][]string{
 	"set-access":       {"email", "apps", "admin", "fleet_admin", "fleet_chat_role", "fleet_ops_role"},
 	"disable-app":      {"app"},
 	"enable-app":       {"app"},
+	"rename-team":      {"from", "to"},
 	"batch":            {"op", "emails"},
 }
 
@@ -346,6 +343,8 @@ func (s *Server) describeChange(r *http.Request, p *pendingChange) {
 			p.Question = fmt.Sprintf("Enable %s?", name)
 			p.Detail = "Everyone granted it can sign in to it again."
 		}
+	case "rename-team":
+		p.Question, p.Detail = s.describeTeamRename(r, v.Get("from"), v.Get("to"))
 	case "batch":
 		emails := v["emails"]
 		list := strings.Join(emails, ", ")
@@ -500,6 +499,69 @@ var sensitiveActions = map[string]string{
 	"set-mfa-required": "changing a two-factor requirement",
 	"disable-app":      "disabling an application",
 	"enable-app":       "enabling an application",
+	"rename-team":      "renaming a team",
+}
+
+// adminRenameTeam renames a team on every account (store.RenameTeam). Where
+// team sync sends teams to Fleet the rename goes there as one message, so
+// what is shared with the team stays shared; the store re-checks the actor
+// proof in its transaction.
+func (s *Server) adminRenameTeam(r *http.Request, res adminResult, actorID string, proof *store.ActorProof, now time.Time,
+	needVerify func() adminResult, audit func(event, targetID, appID string)) adminResult {
+	res.Tab = adminAccountsTab
+	from := strings.TrimSpace(r.FormValue("from"))
+	result, err := s.store.RenameTeam(r.Context(), from, r.FormValue("to"), actorID, proof, now.Unix())
+	switch {
+	case errors.Is(err, store.ErrActorNotFresh):
+		return needVerify()
+	case errors.Is(err, store.ErrInvalidTeam):
+		res.Error = "A team name must be 1 to 64 bytes (64 plain letters) with no control characters."
+		return res
+	case errors.Is(err, store.ErrTeamNotFound):
+		res.Error = fmt.Sprintf("No account is on team %s any more.", from)
+		return res
+	case errors.Is(err, store.ErrTeamRenameNoChange):
+		res.Error = fmt.Sprintf("%s is already the team's name.", result.To)
+		return res
+	case err != nil:
+		return res.failed("rename team", err)
+	}
+	audit("admin.team_renamed", "", "")
+	res.Notice = fmt.Sprintf("Renamed team %s to %s (%s).", result.From, result.To, plural(int(result.Accounts), "account"))
+	if result.Merged {
+		res.Notice = fmt.Sprintf("Merged team %s into %s (%s moved).", result.From, result.To, plural(int(result.Accounts), "account"))
+	}
+	if result.Sent {
+		res.Notice += " Fleet is updated in the background."
+	}
+	return res
+}
+
+// describeTeamRename words the confirm popup for a team rename from the live
+// teams, resolved exactly as the rename will be (store.PreviewTeamRename): how
+// many accounts move, whether it merges into an existing team, and what Fleet
+// keeps.
+func (s *Server) describeTeamRename(r *http.Request, from, to string) (question, detail string) {
+	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+	question = fmt.Sprintf("Rename team %s to %s?", from, to)
+	p, err := s.store.PreviewTeamRename(r.Context(), from, to)
+	if err != nil {
+		return question, ""
+	}
+	synced, _ := s.store.ApplicationTeamSync(r.Context(), store.FleetApplicationID)
+	if p.Merged {
+		question = fmt.Sprintf("Merge team %s (%s) into %s?", from, plural(p.Members, "account"), p.To)
+		detail = fmt.Sprintf("%s already has %s: the two become one team.", p.To, plural(p.MergeMembers, "account"))
+		if synced {
+			detail += " In Fleet, each side then sees what the other shared with its team."
+		}
+		return question, detail
+	}
+	question = fmt.Sprintf("Rename team %s (%s) to %s?", from, plural(p.Members, "account"), p.To)
+	if synced {
+		detail = fmt.Sprintf("Fleet gets the rename too: everything shared with %s there stays shared with %s.", from, p.To)
+	}
+	return question, detail
 }
 
 // failed logs an unexpected error and marks the result as a 500.
@@ -719,6 +781,10 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Notice = fmt.Sprintf("%s is enabled.", app.Name)
 		}
 		return res
+	}
+
+	if action == "rename-team" {
+		return s.adminRenameTeam(r, res, actor.ID, proof, now, needVerify, audit)
 	}
 
 	if action == "set-policy" {
@@ -1361,10 +1427,6 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 			logUnlessCancelled("admin list access settings", err)
 			data["Error"] = joinMessages(result.Error, "Application permissions could not be loaded.")
 		}
-		reportHints, err := s.store.AppReportHints(ctx, store.FleetApplicationID)
-		if err != nil {
-			logUnlessCancelled("admin list app report hints", err)
-		}
 		enabledAdmins := 0
 		for _, a := range accounts {
 			if a.IsAdmin && a.DisabledAt == nil {
@@ -1408,9 +1470,6 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 			row.FleetGranted = granted["fleet"]
 			row.FleetAdmin = fleetSettings.ChatRole == "admin" && fleetSettings.OpsRole == "admin"
 			row.FleetChatRole, row.FleetOpsRole = fleetSettings.ChatRole, fleetSettings.OpsRole
-			if hint, ok := reportHints[a.ID]; ok {
-				row.FleetChangedBy, row.FleetChangedAt = hint.Actor, hint.At.UTC().Format("2006-01-02 15:04 UTC")
-			}
 			for _, app := range apps {
 				row.Apps = append(row.Apps, adminAppChoice{ID: app.ID, Name: app.Name, Granted: granted[app.ID]})
 				if granted[app.ID] {
@@ -1438,6 +1497,12 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		data["Accounts"] = rows
 		data["AppChoices"] = choices
 		data["Teams"] = teams
+		if counts, err := s.store.TeamCounts(ctx); err != nil {
+			logUnlessCancelled("admin team counts", err)
+		} else {
+			data["TeamCounts"] = counts
+		}
+		data["TeamSync"], _ = s.store.ApplicationTeamSync(ctx, store.FleetApplicationID)
 		// The policy popup shows, for each choice, how many enabled accounts
 		// would have to enroll (and be signed out now) if it were chosen.
 		var options []adminMFAOption

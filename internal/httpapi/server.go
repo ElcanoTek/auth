@@ -143,7 +143,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin", s.handleAdmin)
 	mux.HandleFunc("/authorize", s.handleAuthorize)
 	mux.HandleFunc("/token", s.handleToken)
-	mux.HandleFunc("/apps/{client_id}/events", s.handleAppEvents)
 	mux.HandleFunc("/.well-known/openid-configuration", s.handleDiscovery)
 	mux.HandleFunc("/jwks.json", s.handleJWKS)
 	mux.HandleFunc("/sent", s.handleSent)
@@ -1994,11 +1993,6 @@ func emailTenant(email string) string {
 // never end the line and start a forged one.
 func logSafe(v string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(v, "\n", ""), "\r", "")
-}
-
-func looksLikeEmail(s string) bool {
-	at := strings.LastIndexByte(s, '@')
-	return at > 0 && at < len(s)-3 && !strings.ContainsAny(s, " \t\r\n")
 }
 
 // logRequests is the only middleware: status + duration + remote addr +

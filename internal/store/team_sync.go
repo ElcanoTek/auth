@@ -11,13 +11,13 @@ import (
 	"time"
 )
 
-// Team sync (schema v10). Fleet's teams are canonical: an operator imports
-// them once (ImportTeams, `auth app import-teams`), which also switches the
-// application's team_sync flag on. From then on a team change on either side
-// follows to the other: Auth adds the account's team to its pushes and queues
-// a push when an Auth-side team change touches a granted account, and a
-// report carrying a team updates the account's team. With the flag off the
-// team is neither sent nor mirrored.
+// Team sync (schema v10). Auth's teams are the source and flow one way: with
+// the application's team_sync flag on, Auth adds the account's team to its
+// pushes and queues a push when an Auth-side team change touches a granted
+// account. A Fleet that already had teams is brought in once with
+// ImportTeams (`auth app import-teams`), which also switches the flag on;
+// that is a migration, not ongoing sync. With the flag off the team is not
+// sent.
 
 // ErrTeamSyncUnsupported is returned for an application other than Fleet:
 // no other application has a team vocabulary.
@@ -87,6 +87,10 @@ func setTeamSyncTx(ctx context.Context, tx *sql.Tx, id string, on bool, now int6
 	event := "application.team_sync_off"
 	if on {
 		event = "application.team_sync_on"
+	} else if err := dropTeamRenamesTx(ctx, tx, id, now); err != nil {
+		// With sync off nothing about teams is sent, so a queued rename would
+		// only hold the application's other pushes (team_rename.go).
+		return err
 	}
 	return insertApplicationAuditMeta(ctx, tx, event, id, "", now, metadata)
 }

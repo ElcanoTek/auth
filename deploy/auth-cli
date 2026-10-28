@@ -352,7 +352,7 @@ if [[ "$cmd" != "doctor" ]]; then
 fi
 
 case "$cmd" in
-  domain|user|audit|app|mfa|keygen|pubkey)
+  domain|user|audit|app|team|mfa|keygen|pubkey)
     # domain: the magic-link allowlist. user: password accounts and the
     # legacy audit. audit: security events. app: confidential clients (the
     # secret is printed once, only its hash is kept). mfa: AUTH_MFA_KEY
@@ -481,6 +481,8 @@ USERS
   auth user admin <email> on|off    grant or remove access to the web admin console
   auth user access <email> <app> on|off  let (or stop letting) an account sign in to one application
   auth user team <email> <team|->   set or clear the account's team tag
+  auth team list                    every team and how many accounts are on it
+  auth team rename <from> <to>      rename a team on every account (and in Fleet, keeping its shares)
   auth user show <email>            show account state and active sessions
   auth user revoke-sessions <email> revoke all sessions for one account
   auth user mfa-required <email> on|off  require two-factor sign-in for one account
@@ -495,11 +497,8 @@ APPLICATIONS
   auth app create <id> <callback> [logout]  register a confidential client
   auth app list | show <id>                 inspect registered clients
   auth app rotate-secret <id>               replace + print the secret once
-  auth app set-events-secret <id>           accept signed account reports (prints secret once)
-  auth app clear-events-secret <id>         stop accepting account reports
-  auth app compare <id> -                   preview an account export read from stdin
-  auth app import-teams <id> - [--apply]    take the app's teams from its export (dry run unless --apply)
-  auth app team-sync <id> on|off            send and mirror team changes with the app (fleet only)
+  auth app import-teams <id> - [--apply]    one-time import of the app's teams (dry run unless --apply)
+  auth app team-sync <id> on|off            send team changes to the app (fleet only)
   auth app disable|enable <id>              control new login handoffs
 
 CRYPTO

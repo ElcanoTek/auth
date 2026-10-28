@@ -272,20 +272,3 @@ func TestRequestLogCannotBeSplit(t *testing.T) {
 		}
 	}
 }
-
-// The report's sequence reaches the store (it orders two reports from the
-// same second); a negative one is a malformed report.
-func TestAppEventSequenceIsParsed(t *testing.T) {
-	now := time.Unix(1_790_000_100, 0)
-	body := func(seq string) []byte {
-		return []byte(`{"id":"evt_1","type":"user.access_changed","occurred_at":1790000000,"sequence":` + seq +
-			`,"source":"admin_ui","actor":"admin@example.com","user":{"email":"person@example.com","enabled":true,"chat_role":"member","ops_role":"none"}}`)
-	}
-	r, ok := parseAppEvent(body("42"), now)
-	if !ok || r.Sequence != 42 {
-		t.Fatalf("sequence = %d, %v", r.Sequence, ok)
-	}
-	if _, ok := parseAppEvent(body("-1"), now); ok {
-		t.Fatal("negative sequence accepted")
-	}
-}

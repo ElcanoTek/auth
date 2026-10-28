@@ -493,6 +493,34 @@ func TestPasswordModeDoesNotExposeMagicLinkRoutes(t *testing.T) {
 	}
 }
 
+// Membership flows one way, Auth to the application: the endpoint that once
+// took signed account reports from Fleet is gone, even for a registered
+// application, so nothing an application sends can change identity data.
+func TestApplicationsCannotReportBackToAuth(t *testing.T) {
+	ts, st, _, _ := newPasswordTestServer(t, false)
+	if _, err := st.CreateApplication(context.Background(), "fleet", "Fleet", "https://fleet.example.com/cb", "", "hash", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"id":"evt_1","type":"user.access_changed","occurred_at":1790000000,"source":"admin_ui","user":{"email":"person@example.com","enabled":true,"chat_role":"admin","ops_role":"admin"}}`
+	resp, err := http.Post(ts.URL+"/apps/fleet/events", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /apps/fleet/events = %d, want 404", resp.StatusCode)
+	}
+	// No route at all: the receiver answered any other method with 405.
+	resp, err = http.Get(ts.URL + "/apps/fleet/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /apps/fleet/events = %d, want 404 (no route)", resp.StatusCode)
+	}
+}
+
 func (c *captureSender) Send(_ context.Context, to, _, textBody, _ string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

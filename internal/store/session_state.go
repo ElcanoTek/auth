@@ -18,8 +18,9 @@ import (
 //   - application_sign_ins: which applications each account has been handed
 //     to. A global logout notifies only these applications; an application
 //     the account never signed in to holds no session to end.
-//   - application_access_reports.sequence: the sender's sequence number of
-//     the last applied report, the tie-break for two reports stamped with
+//   - application_access_reports.sequence (no longer written: Auth stopped
+//     accepting reports): the sender's sequence number of the last applied
+//     report, the tie-break for two reports stamped with
 //     the same second.
 const sessionStateSchema = `
 CREATE TABLE IF NOT EXISTS revoked_session_tokens (

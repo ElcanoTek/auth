@@ -282,11 +282,10 @@ CREATE TABLE IF NOT EXISTS access_provisioning (
 );
 CREATE INDEX IF NOT EXISTS idx_access_provisioning_due
   ON access_provisioning(delivered_at, next_attempt_at, lease_until);
--- Signed account reports an application sends about its own users (schema
--- v9). Receipts make a redelivered event a no-op; they are pruned after
--- AppEventReceiptRetention. The last applied report per account and
--- application backs the stale-report guard and the console's "Changed in"
--- hint.
+-- Signed account reports an application once sent about its own users
+-- (schema v9). Auth no longer accepts them (membership flows one way, Auth
+-- to the application); the tables stay so existing databases keep their
+-- schema, and nothing writes or reads them.
 CREATE TABLE IF NOT EXISTS app_event_receipts (
   client_id   TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
   event_id    TEXT NOT NULL,
@@ -473,7 +472,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateMagicCodes(ctx); err != nil {
 		return err
 	}
-	return s.migrateSessionState(ctx)
+	if err := s.migrateSessionState(ctx); err != nil {
+		return err
+	}
+	return s.migrateTeamRenames(ctx)
 }
 
 // migrateAccessProvisioning is schema v8. It snapshots every existing grant
@@ -1407,8 +1409,8 @@ func (s *Store) SetAccountTeam(ctx context.Context, email, team string, now int6
 // would detach the person from their team's shared projects), so a case-only
 // edit made here would leave Auth showing a spelling Fleet never adopts.
 // Writing the spelling already in use keeps the two identical, and keeps an
-// admin from splitting one team into "Growth" and "growth". Reports and the
-// team import write Fleet's exact value and do not pass through here.
+// admin from splitting one team into "Growth" and "growth". The team import
+// writes Fleet's exact value and does not pass through here.
 func canonicalTeamSpellingTx(ctx context.Context, tx *sql.Tx, userID, team string) (string, error) {
 	if team == "" {
 		return team, nil
@@ -1449,11 +1451,10 @@ func canonicalTeamSpellingTx(ctx context.Context, tx *sql.Tx, userID, team strin
 }
 
 // setAccountTeamTx writes an account's team inside the caller's transaction
-// and audits it. A real change also stamps team_updated_at (the stale guard
-// counts it as an Auth-side change) and, when push is true, queues a
-// provisioning push to every team-synced application the account is granted,
-// so Fleet follows an Auth team change. Report and import writes pass
-// push=false and decide themselves.
+// and audits it. A real change also stamps team_updated_at and, when push is
+// true, queues a provisioning push to every team-synced application the
+// account is granted, so Fleet follows an Auth team change. Import writes
+// pass push=false: the application already holds those teams.
 func setAccountTeamTx(ctx context.Context, tx *sql.Tx, userID, team string, now int64, metadata string, push bool) error {
 	var previous string
 	if err := tx.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ?`, userID).Scan(&previous); err != nil {
@@ -1696,8 +1697,8 @@ func (s *Store) AllApplicationAccessSettings(ctx context.Context) (map[string]ma
 // administrator flag and the two-factor requirement.
 //
 // auditMeta, when non-empty, is the JSON metadata recorded on the
-// access.granted / access.settings_changed / access.revoked events (an
-// application report names its source there); "" records '{}'.
+// access.granted / access.settings_changed / access.revoked events; "" (what
+// every caller passes since application reports were removed) records '{}'.
 func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, applicationIDs []string, settings map[string]string, now int64, auditMeta string) (added, removed, updated []string, err error) {
 	if userID == "" {
 		return nil, nil, nil, errors.New("user id is required")
@@ -2175,6 +2176,11 @@ func (s *Store) SetApplicationBackchannelLogoutURI(ctx context.Context, id, endp
 			WHERE client_id = ? AND delivered_at IS NULL AND endpoint != ?`, endpoint, now, id, endpoint)
 	}
 	if err != nil {
+		return err
+	}
+	// Team renames are ordered commands the access pushes wait behind: they
+	// follow the endpoint too (team_rename.go).
+	if err := retargetTeamRenamesTx(ctx, tx, id, endpoint, now); err != nil {
 		return err
 	}
 	// Provisioning rows are desired state, not disposable events. Keep them

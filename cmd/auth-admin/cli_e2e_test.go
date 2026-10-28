@@ -300,112 +300,6 @@ func TestCLIApplicationsAndKeys(t *testing.T) {
 	}
 }
 
-func TestCLIApplicationEventsSecretAndCompare(t *testing.T) {
-	c := newCLI(t)
-	c.env = append(c.env, "AUTH_ISSUER_URL=https://auth.example.test/")
-	c.must("", "app", "create", "fleet", "https://fleet.example.com/api/auth/oidc/callback")
-	out := c.must("", "app", "set-events-secret", "fleet")
-	if !strings.Contains(out, "FLEET_ACCOUNT_EVENTS_URL=https://auth.example.test/apps/fleet/events") {
-		t.Fatalf("set-events-secret URL:\n%s", out)
-	}
-	var secret string
-	for _, line := range strings.Split(out, "\n") {
-		if v, ok := strings.CutPrefix(line, "FLEET_ACCOUNT_EVENTS_SECRET="); ok {
-			secret = v
-		}
-	}
-	if len(secret) != 64 {
-		t.Fatalf("secret %q in:\n%s", secret, out)
-	}
-	// Stored sealed: the plaintext is nowhere in the database, and the
-	// configured key opens it back to the printed value.
-	st := c.store()
-	ctx := context.Background()
-	sealed, err := st.ApplicationEventsSecret(ctx, "fleet")
-	if err != nil || sealed == nil || bytes.Contains(sealed, []byte(secret)) {
-		t.Fatalf("sealed = %q %v", sealed, err)
-	}
-	ring, err := mfa.ParseKeyring(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)), "1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plain, _, err := ring.Open(sealed, mfa.ApplicationSecretAAD("fleet")); err != nil || string(plain) != secret {
-		t.Fatalf("open = %q %v", plain, err)
-	}
-	if show := c.must("", "app", "show", "fleet"); !strings.Contains(show, "account reports: accepted at https://auth.example.test/apps/fleet/events") {
-		t.Fatalf("app show:\n%s", show)
-	}
-	// Without AUTH_MFA_KEY there is nothing to seal with.
-	noKey := &cli{t: t, dataDir: c.dataDir}
-	for _, kv := range c.env {
-		if !strings.HasPrefix(kv, "AUTH_MFA_KEY") {
-			noKey.env = append(noKey.env, kv)
-		}
-	}
-	if out, code := noKey.run("", "app", "set-events-secret", "fleet"); code == 0 || !strings.Contains(out, "AUTH_MFA_KEY") {
-		t.Fatalf("set without key exited %d:\n%s", code, out)
-	}
-
-	// compare: one account per outcome.
-	now := time.Now().Unix()
-	for _, email := range []string{"change@example.com", "same@example.com", "gone@example.com", "nogrant@example.com", "odd@example.com"} {
-		a, err := st.CreatePasswordAccount(ctx, email, "hash", false, now)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if email == "nogrant@example.com" {
-			continue
-		}
-		if _, _, err := st.SetApplicationAccessWithSettings(ctx, a.ID, []string{"fleet"}, map[string]string{"fleet": `{"chat_role":"member","ops_role":"none"}`}, now); err != nil {
-			t.Fatal(err)
-		}
-	}
-	export := strings.Join([]string{
-		`{"email":"change@example.com","enabled":true,"chat_role":"viewer","ops_role":"client"}`,
-		`{"email":"same@example.com","enabled":true,"chat_role":"member","ops_role":"none"}`,
-		`{"email":"gone@example.com","enabled":false,"chat_role":"member","ops_role":"none"}`,
-		`{"email":"nogrant@example.com","enabled":true,"chat_role":"member","ops_role":"none"}`,
-		`{"email":"stranger@example.com","enabled":true,"chat_role":"member","ops_role":"none"}`,
-		`{"email":"odd@example.com","enabled":true,"chat_role":"member","ops_role":"admin"}`,
-	}, "\n") + "\n"
-	before := settingsSnapshot(t, st)
-	out = c.must(export, "app", "compare", "fleet", "-")
-	for _, want := range []string{
-		"change@example.com", "chat member -> viewer, ops none -> client",
-		"same@example.com", "no-op",
-		"gone@example.com", "revoke",
-		"nogrant@example.com", "no fleet access in Auth",
-		"stranger@example.com", "no Auth account",
-		"odd@example.com", "unrepresentable",
-		"1 change, 1 revoke, 1 no-op, 2 ignored-not-granted, 1 unrepresentable",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("compare lacks %q:\n%s", want, out)
-		}
-	}
-	if after := settingsSnapshot(t, st); after != before {
-		t.Fatal("compare wrote to the database")
-	}
-	// A file argument works too; a malformed line names its number.
-	path := filepath.Join(t.TempDir(), "export.jsonl")
-	if err := os.WriteFile(path, []byte(export+"not json\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if out, code := c.run("", "app", "compare", "fleet", path); code == 0 || !strings.Contains(out, "line 7") {
-		t.Fatalf("malformed export exited %d:\n%s", code, out)
-	}
-
-	out = c.must("", "app", "clear-events-secret", "fleet")
-	if !strings.Contains(out, "cleared") {
-		t.Fatalf("clear:\n%s", out)
-	}
-	if sealed, _ := st.ApplicationEventsSecret(ctx, "fleet"); sealed != nil {
-		t.Fatal("secret not cleared")
-	}
-}
-
-// settingsSnapshot renders every grant, setting and provisioning version so
-// a read-only command can be shown to have changed nothing.
 func settingsSnapshot(t *testing.T, st *store.Store) string {
 	t.Helper()
 	ctx := context.Background()
@@ -429,7 +323,7 @@ func settingsSnapshot(t *testing.T, st *store.Store) string {
 	return b.String()
 }
 
-func TestCLITeamSyncImportTeamsAndCompare(t *testing.T) {
+func TestCLITeamSyncImportTeams(t *testing.T) {
 	c := newCLI(t)
 	c.must("", "app", "create", "fleet", "https://fleet.example.com/api/auth/oidc/callback")
 	c.must("", "app", "create", "explorer", "https://explorer.example.com/auth/callback")
@@ -474,16 +368,9 @@ func TestCLITeamSyncImportTeamsAndCompare(t *testing.T) {
 	if show := c.must("", "app", "show", "fleet"); !strings.Contains(show, "team sync: off") {
 		t.Fatalf("app show:\n%s", show)
 	}
-	// compare shows team differences even with sync off.
-	out := c.must(export, "app", "compare", "fleet", "-")
-	for _, want := range []string{`"Elcano Dev" -> "Reklaim Internal"`, "same", "1 team differences"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("compare lacks %q:\n%s", want, out)
-		}
-	}
 	// Dry run: the plan, nothing written, sync still off.
 	before, beforeSettings := teams(), settingsSnapshot(t, st)
-	out = c.must(export, "app", "import-teams", "fleet", "-")
+	out := c.must(export, "app", "import-teams", "fleet", "-")
 	for _, want := range []string{
 		"move@example.com", `set`, `"Elcano Dev" -> "Reklaim Internal"`,
 		"same@example.com", "no-op",
@@ -531,5 +418,61 @@ func TestCLITeamSyncImportTeamsAndCompare(t *testing.T) {
 	}
 	if out, code := c.run("", "app", "team-sync", "fleet", "maybe"); code == 0 || !strings.Contains(out, "usage") {
 		t.Fatalf("bad team-sync arg exited %d:\n%s", code, out)
+	}
+}
+
+// Membership flows one way, Auth to Fleet: the commands that set up and
+// previewed Fleet's account reports are gone, and app show no longer
+// mentions reports.
+func TestCLIHasNoApplicationReportCommands(t *testing.T) {
+	c := newCLI(t)
+	c.must("", "app", "create", "fleet", "https://fleet.example.com/api/auth/oidc/callback")
+	for _, args := range [][]string{
+		{"app", "set-events-secret", "fleet"},
+		{"app", "clear-events-secret", "fleet"},
+		{"app", "compare", "fleet", "-"},
+	} {
+		if out, code := c.run("", args...); code == 0 || !strings.Contains(out, "unknown app subcommand") {
+			t.Errorf("%v: code %d\n%s", args, code, out)
+		}
+	}
+	if show := c.must("", "app", "show", "fleet"); strings.Contains(show, "account reports") {
+		t.Fatalf("app show mentions reports:\n%s", show)
+	}
+}
+
+// `team list` and `team rename`: a rename relabels every account and, with
+// team sync on, queues one rename for Fleet that `app show` reports until it
+// is delivered.
+func TestCLITeamListAndRename(t *testing.T) {
+	c := newCLI(t)
+	c.must("", "app", "create", "fleet", "https://fleet.example.com/api/auth/oidc/callback")
+	c.must("", "app", "set-backchannel", "fleet", "https://fleet.example.com/api/auth/backchannel-logout")
+	c.must("", "app", "team-sync", "fleet", "on")
+	st := c.store()
+	ctx := context.Background()
+	for _, e := range []string{"ann@example.com", "ben@example.com"} {
+		if _, err := st.CreatePasswordAccount(ctx, e, "hash", false, time.Now().Unix()); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetAccountTeam(ctx, e, "Trading", time.Now().Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out := c.must("", "team", "list"); !strings.Contains(out, "Trading\t2") {
+		t.Fatalf("team list:\n%s", out)
+	}
+	out := c.must("", "team", "rename", "Trading", "Research")
+	if !strings.Contains(out, `renamed team "Trading" into "Research" (2 accounts)`) || !strings.Contains(out, "Fleet gets the rename next") {
+		t.Fatalf("team rename:\n%s", out)
+	}
+	if out := c.must("", "team", "list"); !strings.Contains(out, "Research\t2") || strings.Contains(out, "Trading") {
+		t.Fatalf("team list after rename:\n%s", out)
+	}
+	if show := c.must("", "app", "show", "fleet"); !strings.Contains(show, `team rename pending: "Trading" -> "Research" (version 1`) {
+		t.Fatalf("app show:\n%s", show)
+	}
+	if out, code := c.run("", "team", "rename", "Nobody", "X"); code == 0 || !strings.Contains(out, `no account is on team "Nobody"`) {
+		t.Fatalf("unknown team: %d\n%s", code, out)
 	}
 }

@@ -929,3 +929,82 @@ func TestEveryGatedActionCanBeCarried(t *testing.T) {
 		}
 	}
 }
+
+// Teams: the dialog lists each team with its account count and a Rename form.
+// A rename goes through the code and confirm popups like any gated change, the
+// confirm popup says what moves (and when it merges), and Confirm renames the
+// team on every account, queueing one rename for Fleet when team sync is on.
+func TestTeamRenameFromTheConsole(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice, secret := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	for _, e := range []string{"bob@example.com", "alice@example.com"} {
+		if err := st.SetAccountTeam(ctx, e, "Trading", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SetApplicationBackchannelLogoutURI(ctx, "fleet", "https://fleet.example.com/api/auth/backchannel-logout", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetApplicationTeamSync(ctx, "fleet", true, now); err != nil {
+		t.Fatal(err)
+	}
+	_, page := alice.get("/admin")
+	// The Teams button opens the dialog, not the team-name datalist (id
+	// "teams"): one element per id, and the button names the dialog.
+	if strings.Count(page, `id="teams-dialog"`) != 1 || !strings.Contains(page, `commandfor="teams-dialog" command="show-modal"`) ||
+		strings.Count(page, `id="teams"`) != 1 || strings.Contains(page, `commandfor="teams"`) {
+		t.Fatal("the Teams button does not name a unique dialog")
+	}
+	teams := dialogForm(t, page, "teams-dialog")
+	if !strings.Contains(teams, "Trading") || !strings.Contains(teams, "2 accounts") || !strings.Contains(teams, `name="action" value="rename-team"`) ||
+		!strings.Contains(teams, "stays shared") {
+		t.Fatalf("teams dialog:\n%s", teams)
+	}
+
+	cfg.MFAReauthWindow = time.Nanosecond
+	_, page = alice.post("/admin", url.Values{"action": {"rename-team"}, "from": {"Trading"}, "to": {"Research"}})
+	stepUp := dialogForm(t, page, "step-up")
+	if !strings.Contains(stepUp, "Renaming a team needs your authenticator code") {
+		t.Fatalf("step-up:\n%s", stepUp)
+	}
+	_, page = alice.post("/admin", withValues(renderedForm(t, page, "step-up"), url.Values{"code": {codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))}}))
+	confirm := dialogForm(t, page, "confirm-change")
+	if !strings.Contains(confirm, "Rename team Trading (2 accounts) to Research?") || !strings.Contains(confirm, "everything shared with Trading there stays shared with Research") {
+		t.Fatalf("confirm:\n%s", confirm)
+	}
+	if a, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); a.Team != "Trading" {
+		t.Fatal("renamed before Confirm")
+	}
+	cfg.MFAReauthWindow = 0
+	_, page = alice.post("/admin", renderedForm(t, page, "confirm-change"))
+	if !strings.Contains(page, "Renamed team Trading to Research (2 accounts). Fleet is updated in the background.") {
+		t.Fatalf("notice:\n%s", page)
+	}
+	if a, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); a.Team != "Research" {
+		t.Fatalf("bob's team = %q", a.Team)
+	}
+	if pending, _ := st.PendingTeamRenames(ctx, "fleet"); len(pending) != 1 || pending[0].From != "Trading" || pending[0].To != "Research" {
+		t.Fatalf("queued renames = %+v", pending)
+	}
+
+	// A merge is described as one, and refusals are said plainly.
+	if err := st.SetAccountTeam(ctx, "bob@example.com", "Desk", now); err != nil {
+		t.Fatal(err)
+	}
+	p := &pendingChange{Action: "rename-team", Fields: []pendingField{{"from", "Desk"}, {"to", "research"}}}
+	(&Server{store: st, cfg: cfg}).describeChange(httptest.NewRequest(http.MethodPost, "/admin", nil), p)
+	if p.Question != "Merge team Desk (1 account) into Research?" || !strings.Contains(p.Detail, "Research already has 1 account: the two become one team.") ||
+		!strings.Contains(p.Detail, "each side then sees what the other shared") {
+		t.Fatalf("merge confirm = %q %q", p.Question, p.Detail)
+	}
+	for to, want := range map[string]string{"Desk": "Desk is already the team&#39;s name.", "a\x01b": "A team name must be 1 to 64 bytes"} {
+		if _, page := alice.post("/admin", url.Values{"action": {"rename-team"}, "from": {"Desk"}, "to": {to}}); !strings.Contains(page, want) {
+			t.Errorf("rename to %q: want %q", to, want)
+		}
+	}
+	if _, page := alice.post("/admin", url.Values{"action": {"rename-team"}, "from": {"Nobody"}, "to": {"X"}}); !strings.Contains(page, "No account is on team Nobody any more.") {
+		t.Error("unknown team not refused plainly")
+	}
+}

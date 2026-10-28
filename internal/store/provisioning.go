@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -66,6 +67,11 @@ func (s *Store) ClaimDueAccessProvisioning(ctx context.Context, now int64, limit
 		FROM access_provisioning
 		WHERE endpoint <> '' AND delivered_at IS NULL AND next_attempt_at <= ?
 		  AND (lease_until IS NULL OR lease_until <= ?)
+		  -- Held while a team rename for the application is undelivered, so
+		  -- the application never sees a renamed team before the rename
+		  -- (team_rename.go).
+		  AND NOT EXISTS (SELECT 1 FROM team_renames r WHERE r.application_id = access_provisioning.client_id
+		                    AND r.delivered_at IS NULL AND r.dropped_at IS NULL)
 		ORDER BY next_attempt_at, user_id, client_id LIMIT ?`, now, now, limit)
 	if err != nil {
 		return nil, err
@@ -167,6 +173,14 @@ func withSyncedTeamTx(ctx context.Context, tx *sql.Tx, userID, clientID, setting
 		return "", err
 	}
 	values["team"] = team
+	// The last team rename for the application as of this write, so the
+	// application can ignore a team that reaches it after a rename it has
+	// already applied (team_rename.go).
+	generation, err := lastTeamRenameVersionTx(ctx, tx, clientID)
+	if err != nil {
+		return "", err
+	}
+	values["team_rename"] = strconv.FormatInt(generation, 10)
 	raw, err := json.Marshal(values)
 	if err != nil {
 		return "", err
