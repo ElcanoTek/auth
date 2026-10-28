@@ -820,6 +820,54 @@ func recentlyVerified(sess store.AuthSession, now time.Time, window time.Duratio
 	return sess.ReauthAt != nil && now.Sub(*sess.ReauthAt) <= window
 }
 
+// factorRecentlyVerified: the account's authenticator code (not a recovery
+// code) was accepted for this session within the window, at sign-in or at a
+// step-up. The console's sensitive actions ask for exactly this; the store
+// re-checks the same facts (store.ActorProof with RequireFactor).
+func factorRecentlyVerified(sess store.AuthSession, now time.Time, window time.Duration) bool {
+	return hasMethod(sess.AMR, "otp") && sess.MFAVerifiedAt != nil && now.Sub(*sess.MFAVerifiedAt) <= window
+}
+
+// verifySessionCode checks a code for a signed-in, enrolled account: the
+// same persistent attempt limits as a login, the account's current
+// authenticator code (a recovery code never counts), then the replay guard
+// and evidence upgrade in one store transaction on the active
+// authenticator, so a factor disabled meanwhile refuses the proof.
+// stampReauth also marks the session as password-verified, which the
+// Security page honours; only a caller that has just checked the password
+// may pass it. refusal is the message to show; err is
+// store.ErrInvalidSession when the session ended meanwhile, or an
+// unexpected failure.
+func (s *Server) verifySessionCode(r *http.Request, identity *passwordIdentity, code string, now time.Time, stampReauth bool) (refusal string, err error) {
+	account := identity.Account
+	ids, ipKey, limited, err := s.mfaAttempt(r, account.ID, now)
+	if err != nil {
+		return "", err
+	}
+	if limited {
+		_, _ = s.store.RecordAuditIfAbsent(r.Context(), "reauth.mfa_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
+		return "Too many attempts. Wait a few minutes and try again.", nil
+	}
+	proof, ok := s.factorProof(r, account, code, "", now)
+	if !ok || proof.Kind != store.ProofTOTP {
+		_ = s.store.RecordAudit(r.Context(), "reauth.mfa_failed", account.ID, ipKey, now.Unix())
+		return "That code did not work. Enter the current code from your authenticator app.", nil
+	}
+	verify := s.store.VerifyFactorOnSession
+	if stampReauth {
+		verify = s.store.VerifyFactorAndStampReauth
+	}
+	err = verify(r.Context(), identity.Session.TokenHash, proof.AuthenticatorID, proof.Step, proof.Rewrapped, proof.KeyID, now.Unix())
+	if errors.Is(err, store.ErrInvalidProof) {
+		return "That code was already used. Wait for the next one.", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
+	return "", nil
+}
+
 // reauthWindow is five minutes unless the configuration says otherwise
 // (tests shrink it to force the step-up).
 func (s *Server) reauthWindow() time.Duration {
@@ -1126,32 +1174,10 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if account.MFAEnrolled {
-		// The same persistent limits as a login: a valid password must not
-		// buy unlimited code guesses.
-		ids, _, limited, err := s.mfaAttempt(r, account.ID, now)
-		if err != nil {
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
-			return
-		}
-		if limited {
-			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "reauth.mfa_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
-			render("Too many attempts. Wait a few minutes and try again.")
-			return
-		}
-		proof, ok := s.factorProof(r, account, r.FormValue("code"), "", now)
-		if !ok || proof.Kind != store.ProofTOTP {
-			_ = s.store.RecordAudit(r.Context(), "reauth.mfa_failed", account.ID, ipKey, now.Unix())
-			render("That code did not work. Enter the current code from your authenticator app.")
-			return
-		}
-		// Replay guard and evidence upgrade in one store transaction, on the
-		// account's active authenticator: a factor disabled meanwhile
-		// refuses the proof instead of being papered over.
-		err = s.store.VerifyFactorAndStampReauth(r.Context(), identity.Session.TokenHash, proof.AuthenticatorID, proof.Step, proof.Rewrapped, proof.KeyID, now.Unix())
+		// The password was just checked, so this step-up may also stamp the
+		// session as password-verified.
+		refusal, err := s.verifySessionCode(r, identity, r.FormValue("code"), now, true)
 		switch {
-		case errors.Is(err, store.ErrInvalidProof):
-			render("That code was already used. Wait for the next one.")
-			return
 		case errors.Is(err, store.ErrInvalidSession):
 			s.clearPasswordCookies(w)
 			http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -1160,8 +1186,10 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 			logUnlessCancelled("step-up", err)
 			http.Error(w, "something went wrong", http.StatusInternalServerError)
 			return
+		case refusal != "":
+			render(refusal)
+			return
 		}
-		_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
 	} else if err := s.store.StampSessionReauth(r.Context(), identity.Session.TokenHash, now.Unix()); err != nil {
 		s.clearPasswordCookies(w)
 		http.Redirect(w, r, "/", http.StatusSeeOther)

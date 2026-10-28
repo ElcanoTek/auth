@@ -1069,6 +1069,143 @@ func TestActorProofIsCheckedInsideTheTransaction(t *testing.T) {
 	}
 }
 
+// The console's code-only step-up proves the factor for the actor proof but
+// never stamps the password re-verification the Security page relies on.
+func TestCodeOnlyStepUpLeavesThePasswordStampAlone(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, now)
+	fa := enroll(t, s, alice, "", now)
+	evidenceSession(t, s, alice, "alice-s", "pwd otp", now, now)
+	if err := s.VerifyFactorOnSession(ctx, "alice-s", fa.ID, fa.LastAcceptedStep+1, nil, "", now+1000); err != nil {
+		t.Fatalf("code-only step-up: %v", err)
+	}
+	if _, sess, err := s.ValidateAuthSession(ctx, "alice-s", now+1000, time.Hour, time.Minute); err != nil || sess.ReauthAt != nil || sess.MFAVerifiedAt == nil || sess.MFAVerifiedAt.Unix() != now+1000 {
+		t.Fatalf("code-only step-up evidence: %+v %v", sess, err)
+	}
+	// An older password re-verification is kept as it was, not refreshed.
+	evidenceSession(t, s, alice, "alice-old", "pwd otp", now, now)
+	if err := s.StampSessionReauth(ctx, "alice-old", now+10); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyFactorOnSession(ctx, "alice-old", fa.ID, fa.LastAcceptedStep+2, nil, "", now+1000); err != nil {
+		t.Fatalf("code-only step-up on a re-verified session: %v", err)
+	}
+	if _, sess, err := s.ValidateAuthSession(ctx, "alice-old", now+1000, time.Hour, time.Minute); err != nil || sess.ReauthAt == nil || sess.ReauthAt.Unix() != now+10 {
+		t.Fatalf("code-only step-up moved an existing reauth_at: %+v %v", sess, err)
+	}
+	// A factor proof (console) is fresh; a password-freshness proof is not.
+	if _, err := s.SetAccountMFARequiredBy(ctx, bob.Email, true, alice.ID, &ActorProof{SessionHash: "alice-s", FreshAfter: now + 900}, now+1001); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("code-only step-up counted as a password re-verification: %v", err)
+	}
+	if _, err := s.SetAccountMFARequiredBy(ctx, bob.Email, true, alice.ID, &ActorProof{SessionHash: "alice-s", FreshAfter: now + 900, RequireFactor: true}, now+1002); err != nil {
+		t.Fatalf("code-only step-up refused as a factor proof: %v", err)
+	}
+	// Single use, like every factor check.
+	if err := s.VerifyFactorOnSession(ctx, "alice-s", fa.ID, fa.LastAcceptedStep+2, nil, "", now+1003); !errors.Is(err, ErrInvalidProof) {
+		t.Fatalf("replayed step accepted: %v", err)
+	}
+	// The password step-up still stamps both.
+	if err := s.VerifyFactorAndStampReauth(ctx, "alice-s", fa.ID, fa.LastAcceptedStep+3, nil, "", now+1004); err != nil {
+		t.Fatal(err)
+	}
+	if _, sess, _ := s.ValidateAuthSession(ctx, "alice-s", now+1004, time.Hour, time.Minute); sess.ReauthAt == nil || sess.ReauthAt.Unix() != now+1004 {
+		t.Fatalf("password step-up did not stamp reauth_at: %+v", sess)
+	}
+}
+
+// Add user is one transaction behind the actor proof: a stale or revoked
+// administrator, an unknown application or an existing address creates
+// nothing, and a success has everything that was chosen.
+func TestCreateAccountByIsAtomicAndChecksTheActor(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateApplication(ctx, "fleet", "Fleet", "https://fleet.example/cb", "", "hash", now); err != nil {
+		t.Fatal(err)
+	}
+	enroll(t, s, alice, "", now)
+	evidenceSession(t, s, alice, "alice-s", "pwd otp", now, now)
+	fresh := &ActorProof{SessionHash: "alice-s", FreshAfter: now - 60, RequireFactor: true}
+	carol := AccountCreate{
+		Email: "Carol@Example.com", PasswordHash: "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Y2Fyb2w", Team: " Trading ", Admin: true,
+		Applications: []string{"fleet"}, ApplicationSettings: map[string]string{"fleet": `{"chat_role":"viewer","ops_role":"readonly"}`},
+	}
+	absent := func(when string) {
+		t.Helper()
+		if _, err := s.PasswordAccountByEmail(ctx, carol.Email); !errors.Is(err, ErrAccountNotFound) {
+			t.Fatalf("account exists %s: %v", when, err)
+		}
+	}
+	if _, _, err := s.CreateAccountBy(ctx, carol, alice.ID, &ActorProof{SessionHash: "alice-s", FreshAfter: now + 30, RequireFactor: true}, now+31); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("stale proof: %v", err)
+	}
+	absent("after a stale proof")
+	unknown := carol
+	unknown.Applications = []string{"fleet", "nope"}
+	if _, _, err := s.CreateAccountBy(ctx, unknown, alice.ID, fresh, now+1); !errors.Is(err, ErrApplicationNotFound) {
+		t.Fatalf("unknown application: %v", err)
+	}
+	absent("after an unknown application")
+
+	// Under "Required for administrators", with Fleet syncing teams; the
+	// form sent Fleet twice and a blank entry.
+	if _, _, err := s.SetMFAPolicy(ctx, mfa.ModeAdmins, alice.ID, now+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetApplicationTeamSync(ctx, "fleet", true, now+1); err != nil {
+		t.Fatal(err)
+	}
+	carol.Applications = []string{"fleet", " fleet", ""}
+	got, granted, err := s.CreateAccountBy(ctx, carol, alice.ID, fresh, now+2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(granted, ",") != "fleet" {
+		t.Fatalf("granted = %q", granted)
+	}
+	// Fleet is told about the new account with its roles and team.
+	d, ok, err := s.AccessProvisioningState(ctx, got.ID, "fleet")
+	if err != nil || !ok || !d.Allowed || d.Email != "carol@example.com" || !strings.Contains(d.Settings, `"team":"Trading"`) || !strings.Contains(d.Settings, `"chat_role":"viewer"`) {
+		t.Fatalf("fleet provisioning: %+v %v %v", d, ok, err)
+	}
+	if got.Email != "Carol@Example.com" || !got.IsAdmin || got.Team != "Trading" || !got.MustChangePassword {
+		t.Fatalf("created account: %+v", got)
+	}
+	if ok, _ := s.HasApplicationAccess(ctx, got.ID, "fleet"); !ok {
+		t.Fatal("fleet access not granted")
+	}
+	if settings, _ := s.AllApplicationAccessSettings(ctx); settings[got.ID]["fleet"] != carol.ApplicationSettings["fleet"] {
+		t.Fatalf("fleet settings: %q", settings[got.ID]["fleet"])
+	}
+	for _, event := range []string{"account.created", "account.admin_granted", "account.team_set"} {
+		if !contains(auditTypes(t, s, got.ID), event) {
+			t.Fatalf("no %s audit event: %v", event, auditTypes(t, s, got.ID))
+		}
+	}
+	if _, _, err := s.CreateAccountBy(ctx, carol, alice.ID, fresh, now+3); !errors.Is(err, ErrAccountExists) {
+		t.Fatalf("existing address: %v", err)
+	}
+
+	// A revoked administrator session creates nothing.
+	dave := carol
+	dave.Email = "dave@example.com"
+	if _, err := s.RevokeAuthSession(ctx, "alice-s", now+4, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.CreateAccountBy(ctx, dave, alice.ID, fresh, now+5); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("revoked session: %v", err)
+	}
+	if _, err := s.PasswordAccountByEmail(ctx, dave.Email); !errors.Is(err, ErrAccountNotFound) {
+		t.Fatalf("account created by a revoked session: %v", err)
+	}
+}
+
 // The Access popup's save is all or nothing: an unknown application, or a
 // refused demotion, leaves the flags and grants exactly as they were.
 func TestSaveAccountAccessIsAtomic(t *testing.T) {

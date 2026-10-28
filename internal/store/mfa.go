@@ -186,8 +186,8 @@ var (
 // ActorProof lets a console action be re-checked inside the store
 // transaction that performs it, closing the gap between reading the request
 // and writing: the actor's session must still be live and an enabled
-// administrator's, created (with the factor, when RequireFactor) or
-// re-verified at or after FreshAfter. The CLI passes nil: the box operator
+// administrator's, with the authenticator code accepted (RequireFactor), or
+// else created or re-verified, at or after FreshAfter. The CLI passes nil: the box operator
 // is trusted by virtue of being root on the host.
 type ActorProof struct {
 	SessionHash   string
@@ -218,18 +218,21 @@ func requireActorTx(ctx context.Context, tx *sql.Tx, actorID string, proof *Acto
 	if isAdmin == 0 || disabled.Valid || revoked.Valid || now >= idle || now >= absolute {
 		return ErrActorNotFresh
 	}
-	// Fresh: signed in, or re-verified, at or after FreshAfter. With
-	// RequireFactor the authenticator code itself must have been accepted
-	// inside the window (mfa_verified_at, which a sign-in with the code and
-	// VerifyFactorAndStampReauth both write) and the evidence must still
-	// say "otp": a recovery-code sign-in does not qualify, a password-only
+	// Fresh, with RequireFactor: the authenticator code itself was accepted
+	// at or after FreshAfter (mfa_verified_at, which a sign-in with the code,
+	// VerifyFactorAndStampReauth and the console's code-only
+	// VerifyFactorOnSession all write) and the evidence still says "otp": a
+	// recovery-code sign-in does not qualify, a password-only
 	// re-verification (reauth_at alone) does not qualify, and a concurrent
-	// disable, which downgrades the evidence, is seen here.
-	fresh := created >= proof.FreshAfter || (reauthAt.Valid && reauthAt.Int64 >= proof.FreshAfter)
-	if !fresh {
-		return ErrActorNotFresh
+	// disable, which downgrades the evidence, is seen here. Without it:
+	// signed in, or re-verified, at or after FreshAfter.
+	if proof.RequireFactor {
+		if !hasMethodIn(amr, "otp") || enrolled == 0 || !mfaAt.Valid || mfaAt.Int64 < proof.FreshAfter {
+			return ErrActorNotFresh
+		}
+		return nil
 	}
-	if proof.RequireFactor && (!hasMethodIn(amr, "otp") || enrolled == 0 || !mfaAt.Valid || mfaAt.Int64 < proof.FreshAfter) {
+	if created < proof.FreshAfter && (!reauthAt.Valid || reauthAt.Int64 < proof.FreshAfter) {
 		return ErrActorNotFresh
 	}
 	return nil
@@ -1340,6 +1343,21 @@ func (s *Store) StampSessionReauth(ctx context.Context, tokenHash string, now in
 // session that began with a recovery code, or before enrollment, thereby
 // gains the proof that resets and other factor-gated actions demand.
 func (s *Store) VerifyFactorAndStampReauth(ctx context.Context, tokenHash, authenticatorID string, step int64, rewrapped []byte, keyID string, now int64) error {
+	return s.verifyFactorOnSession(ctx, tokenHash, authenticatorID, step, rewrapped, keyID, now, true)
+}
+
+// VerifyFactorOnSession is the code-only step-up the admin console offers
+// in a popup: the same replay-guarded TOTP check and evidence upgrade as
+// VerifyFactorAndStampReauth, but reauth_at is left alone. That stamp means
+// "password re-entered", which the Security page demands before an
+// authenticator is replaced or removed; a code alone must not unlock that.
+// Console actions need the factor itself inside the window (ActorProof with
+// RequireFactor reads mfa_verified_at), which this writes.
+func (s *Store) VerifyFactorOnSession(ctx context.Context, tokenHash, authenticatorID string, step int64, rewrapped []byte, keyID string, now int64) error {
+	return s.verifyFactorOnSession(ctx, tokenHash, authenticatorID, step, rewrapped, keyID, now, false)
+}
+
+func (s *Store) verifyFactorOnSession(ctx context.Context, tokenHash, authenticatorID string, step int64, rewrapped []byte, keyID string, now int64, stampReauth bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1359,9 +1377,13 @@ func (s *Store) VerifyFactorAndStampReauth(ctx context.Context, tokenHash, authe
 	if !ok {
 		return ErrInvalidProof
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = ?, amr = 'pwd otp', mfa_verified_at = ?,
+	var reauth any
+	if stampReauth {
+		reauth = now
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = COALESCE(?, reauth_at), amr = 'pwd otp', mfa_verified_at = ?,
 		security_version = (SELECT a.security_version FROM accounts a WHERE a.id = auth_sessions.user_id)
-		WHERE token_hash = ? AND user_id = ? AND revoked_at IS NULL`, now, now, tokenHash, userID)
+		WHERE token_hash = ? AND user_id = ? AND revoked_at IS NULL`, reauth, now, tokenHash, userID)
 	if err != nil {
 		return err
 	}
