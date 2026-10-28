@@ -611,11 +611,15 @@ password. A stolen console session is
 therefore not enough to lock people out, mint an account or widen what one
 can reach. Team tags (alone or in a batch) and signing yourself out are the
 only console writes that are not gated. On a server without `AUTH_MFA_KEY`
-the sensitive actions are only available from the `auth` CLI on the box. An
-application enable/disable repeats the live-session, administrator and fresh
-authenticator checks inside the same transaction as the toggle, and so does
-**Create account**, which creates the account together with its team,
-administrator status and applications, or nothing at all.
+the sensitive actions are only available from the `auth` CLI on the box.
+Every gated change repeats the live-session, administrator and fresh
+authenticator checks inside the same transaction that makes it, so an
+administrator signed out, demoted or past the window while a request is in
+flight changes nothing. Freshness is judged when each write runs, so password
+hashing, a wait for the database lock or the earlier accounts of a batch
+cannot stretch the five minutes. **Create account** creates the account together with its team,
+administrator status and applications, or nothing at all. The `auth` CLI on
+the box is the operator's path and is not checked this way.
 
 An administrator who has no authenticator yet is pointed at one from the
 console itself: their own row's **Settings** opens with **Your authenticator**

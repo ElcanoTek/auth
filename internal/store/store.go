@@ -1080,11 +1080,25 @@ func scanAccount(row rowScanner) (Account, error) {
 // revokes every session. mustChange forces the user to pick their own
 // password at next login.
 func (s *Store) SetPassword(ctx context.Context, email, passwordHash string, mustChange bool, now int64) error {
+	return s.SetPasswordBy(ctx, email, passwordHash, mustChange, "", nil, now)
+}
+
+// SetPasswordBy is SetPassword with the acting administrator re-checked
+// (ActorProof) in the same transaction as the replacement. The CLI passes
+// nil.
+func (s *Store) SetPasswordBy(ctx context.Context, email, passwordHash string, mustChange bool, actorID string, proof *ActorProof, now int64) error {
 	a, err := s.PasswordAccountByEmail(ctx, email)
 	if err != nil {
 		return err
 	}
-	return s.replacePassword(ctx, a.ID, "", passwordHash, mustChange, nil, now)
+	return s.replacePassword(ctx, a.ID, "", passwordHash, mustChange, nil, &actorCheck{id: actorID, proof: proof}, now)
+}
+
+// actorCheck is the acting administrator a store write re-checks, when a
+// console made it.
+type actorCheck struct {
+	id    string
+	proof *ActorProof
 }
 
 // ReplacePasswordIfCurrent is the user path: a compare-and-swap that only
@@ -1096,7 +1110,7 @@ func (s *Store) ReplacePasswordIfCurrent(ctx context.Context, userID, expectedHa
 	if expectedHash == "" {
 		return errors.New("expected hash is required")
 	}
-	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, nil, now)
+	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, nil, nil, now)
 }
 
 // ReplacePasswordRotatingSession is ReplacePasswordIfCurrent for the person
@@ -1112,14 +1126,14 @@ func (s *Store) ReplacePasswordRotatingSession(ctx context.Context, userID, expe
 	if expectedHash == "" || oldSessionHash == "" || newSessionHash == "" || oldSessionHash == newSessionHash {
 		return errors.New("expected hash and distinct old and new sessions are required")
 	}
-	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, &sessionRotation{old: oldSessionHash, next: newSessionHash}, now)
+	return s.replacePassword(ctx, userID, expectedHash, passwordHash, false, &sessionRotation{old: oldSessionHash, next: newSessionHash}, nil, now)
 }
 
 // sessionRotation names the browser session a password change carries
 // forward under a new token.
 type sessionRotation struct{ old, next string }
 
-func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passwordHash string, mustChange bool, rotate *sessionRotation, now int64) error {
+func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passwordHash string, mustChange bool, rotate *sessionRotation, actor *actorCheck, now int64) error {
 	if userID == "" || passwordHash == "" {
 		return errors.New("user id and password hash are required")
 	}
@@ -1128,6 +1142,11 @@ func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passw
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if actor != nil {
+		if err := requireActorTx(ctx, tx, actor.id, actor.proof, now); err != nil {
+			return err
+		}
+	}
 	var res sql.Result
 	if expectedHash == "" {
 		res, err = tx.ExecContext(ctx, `UPDATE password_credentials SET password_hash = ?, changed_at = ? WHERE user_id = ?`,
@@ -1185,6 +1204,12 @@ func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passw
 }
 
 func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled bool, now int64) error {
+	return s.SetAccountDisabledBy(ctx, email, disabled, "", nil, now)
+}
+
+// SetAccountDisabledBy is SetAccountDisabled with the acting administrator
+// re-checked (ActorProof) in the same transaction. The CLI passes nil.
+func (s *Store) SetAccountDisabledBy(ctx context.Context, email string, disabled bool, actorID string, proof *ActorProof, now int64) error {
 	a, err := s.PasswordAccountByEmail(ctx, email)
 	if err != nil {
 		return err
@@ -1194,6 +1219,9 @@ func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled b
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
+		return err
+	}
 	var disabledAt any
 	event := "account.enabled"
 	if disabled {
@@ -1256,6 +1284,12 @@ func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 // the last enabled administrator is refused with ErrLastAdmin: the console
 // must always have someone who can open it. Granting is never refused.
 func (s *Store) SetAccountAdmin(ctx context.Context, email string, admin bool, now int64) error {
+	return s.SetAccountAdminBy(ctx, email, admin, "", nil, now)
+}
+
+// SetAccountAdminBy is SetAccountAdmin with the acting administrator
+// re-checked (ActorProof) in the same transaction. The CLI passes nil.
+func (s *Store) SetAccountAdminBy(ctx context.Context, email string, admin bool, actorID string, proof *ActorProof, now int64) error {
 	a, err := s.PasswordAccountByEmail(ctx, email)
 	if err != nil {
 		return err
@@ -1265,6 +1299,9 @@ func (s *Store) SetAccountAdmin(ctx context.Context, email string, admin bool, n
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
+		return err
+	}
 	if err := setAccountAdminTx(ctx, tx, a, admin, now); err != nil {
 		return err
 	}
@@ -1906,11 +1943,21 @@ func (s *Store) RevokeAuthSession(ctx context.Context, tokenHash string, now int
 }
 
 func (s *Store) RevokeAllAuthSessions(ctx context.Context, userID string, now int64, reason string) (int64, error) {
+	return s.RevokeAllAuthSessionsBy(ctx, userID, "", nil, now, reason)
+}
+
+// RevokeAllAuthSessionsBy is RevokeAllAuthSessions with the acting
+// administrator re-checked (ActorProof) in the same transaction. The CLI,
+// and an administrator signing themself out, pass nil.
+func (s *Store) RevokeAllAuthSessionsBy(ctx context.Context, userID, actorID string, proof *ActorProof, now int64, reason string) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
+		return 0, err
+	}
 	n, err := revokeSessionsTx(ctx, tx, userID, now, reason)
 	if err != nil {
 		return 0, err
