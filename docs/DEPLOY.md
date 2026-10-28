@@ -510,10 +510,11 @@ password. What people see:
   requires it); the batch bar above the table requires it of several
   accounts at once. Every sensitive change in the console (see the admin
   console section) needs the acting administrator's own authenticator code
-  entered less than five minutes ago; otherwise the page offers **Enter it
-  now** (password, plus their code) and the change is repeated. **Create
-  account** asks for the code in a popup instead and then reopens Add user
-  with everything that was typed. An
+  entered less than five minutes ago; otherwise a popup asks for the code,
+  then a second popup says what will change (for example "Change the
+  two-factor policy from Optional to Required for administrators?") and
+  **Confirm** makes it. **Create account** instead reopens Add user with
+  everything that was typed. An
   administrator without an authenticator is sent to set one up first.
   Recommended rollout: leave the policy
   Optional, have every administrator enroll from Security, then switch to
@@ -595,11 +596,15 @@ enabling it, resetting a password, signing someone else out, changing the
 two-factor policy or a per-account requirement, resetting someone's
 authenticator, and disabling or enabling an application all require that the acting
 administrator has an authenticator and entered its code less than five
-minutes ago (a sign-in with the code counts; the **Enter it now** step-up
-counts; a recovery-code sign-in does not). When **Create account** is
-refused for that reason, a popup asks for the current code alone and then
-reopens Add user filled in, to be submitted again; nothing is created until
-then. That code-only check counts for console changes but is not a password
+minutes ago (a sign-in with the code counts; the Security page's step-up
+counts; a recovery-code sign-in does not). When a change is refused for that
+reason, a popup asks for the current code alone, carrying only the fields
+that change reads. Once the code is accepted nothing has changed yet: a
+confirm popup describes the change from the live state and **Confirm**
+repeats the request, which passes the CSRF, freshness and (where the store
+re-checks it) actor checks again. **Create account** reopens Add user filled
+in instead, to be submitted again. A batch whose code expires partway is not
+offered for repeating; it reports what was done. That code-only check counts for console changes but is not a password
 re-verification, so it does not unlock the Security page (replacing or
 removing an authenticator, new recovery codes), which still asks for the
 password. A stolen console session is

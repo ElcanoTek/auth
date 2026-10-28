@@ -169,9 +169,10 @@ type adminResult struct {
 	Status      int
 	Reopen      string
 	Redirect    string // send the browser here instead of rendering (own sign-out)
-	// NeedVerify: the action is sensitive and the administrator's sign-in is
-	// older than the re-verification window; the page offers the step-up.
-	NeedVerify bool
+	// Pending is a gated change refused only because the administrator's
+	// code is not fresh: the code popup carries it, and once the code is
+	// accepted the confirm popup offers to repeat it.
+	Pending *pendingChange
 	// NeedEnroll: the action is sensitive and the administrator has no
 	// authenticator yet; the page points at Security.
 	NeedEnroll bool
@@ -189,7 +190,268 @@ const (
 	// reopenTempPassword shows a one-time temporary password in a popup, so
 	// it cannot scroll past unnoticed the way a banner can.
 	reopenTempPassword = "temp-password"
+	// reopenStepUp asks for the code before any other gated change, and
+	// reopenConfirmChange then asks to confirm that change (Pending).
+	reopenStepUp        = "step-up"
+	reopenConfirmChange = "confirm-change"
 )
+
+// pendingFields lists, for every gated action but create (whose Add user
+// draft has its own flow), the form fields its handler reads. Only these
+// are carried through the code and confirm popups, and only from the
+// request body, so the repeated request is the one the administrator made.
+var pendingFields = map[string][]string{
+	"set-policy":       {"mode", "revision"},
+	"set-mfa-required": {"email", "required"},
+	"disable":          {"email"},
+	"enable":           {"email"},
+	"reset-password":   {"email"},
+	"revoke-sessions":  {"email"},
+	"grant-admin":      {"email"},
+	"revoke-admin":     {"email"},
+	"reset-mfa":        {"email", "reason"},
+	"set-access":       {"email", "apps", "admin", "fleet_admin", "fleet_chat_role", "fleet_ops_role"},
+	"disable-app":      {"app"},
+	"enable-app":       {"app"},
+	"batch":            {"op", "emails"},
+}
+
+// batchGated names the batch operations that are sensitive (team tags are
+// not), with how the popups describe them.
+var batchGated = map[string]string{
+	"signout":       "signing accounts out everywhere",
+	"require-mfa":   "changing two-factor requirements",
+	"unrequire-mfa": "changing two-factor requirements",
+}
+
+// pendingChange is a gated request carried through the code popup and
+// repeated from the confirm popup. Repeating it is an ordinary POST: it
+// passes the CSRF check, the freshness gate and the store's actor proof
+// again, so the popups grant nothing by themselves.
+type pendingChange struct {
+	Action   string
+	Fields   []pendingField // the allowlisted body fields, every value, in pendingFields order
+	Why      string         // "Changing the two-factor policy": what needs the code
+	Question string         // the confirm popup's summary of the change
+	Detail   string         // what else it does, when that matters
+}
+
+type pendingField struct{ Name, Value string }
+
+// newPendingChange captures action's allowlisted fields from the request
+// body. ok is false for an action that cannot be carried (not gated, a
+// batch operation that is not gated) or for a request that supplies one of
+// those fields in the URL, which the popups would otherwise drop.
+func newPendingChange(r *http.Request, action string) (*pendingChange, bool) {
+	names, ok := pendingFields[action]
+	if !ok {
+		return nil, false
+	}
+	what := sensitiveActions[action]
+	if action == "batch" {
+		if what, ok = batchGated[r.PostFormValue("op")]; !ok {
+			return nil, false
+		}
+	}
+	query := r.URL.Query()
+	p := &pendingChange{Action: action, Why: strings.ToUpper(what[:1]) + what[1:]}
+	for _, name := range names {
+		if _, inQuery := query[name]; inQuery {
+			return nil, false
+		}
+		for _, value := range r.PostForm[name] {
+			p.Fields = append(p.Fields, pendingField{Name: name, Value: value})
+		}
+	}
+	return p, true
+}
+
+func (p *pendingChange) values() url.Values {
+	v := url.Values{}
+	for _, f := range p.Fields {
+		v.Add(f.Name, f.Value)
+	}
+	return v
+}
+
+// describeChange words the confirm popup from the live state: what the
+// policy is now, which applications an access save removes, what an
+// application is called. Lookups are best effort (a failed one leaves
+// plainer wording); the change itself is checked again when confirmed.
+func (s *Server) describeChange(r *http.Request, p *pendingChange) {
+	ctx := r.Context()
+	v := p.values()
+	email := v.Get("email")
+	switch p.Action {
+	case "set-policy":
+		current := s.mfaPolicy(r)
+		mode, err := mfa.ParseMode(v.Get("mode"))
+		if err != nil {
+			p.Question = "Change the two-factor policy?"
+			return
+		}
+		if mode == current.Mode {
+			p.Question = fmt.Sprintf("Keep the two-factor policy at %s?", mode.Label())
+			p.Detail = "It is already set to that, so nothing changes."
+			return
+		}
+		p.Question = fmt.Sprintf("Change the two-factor policy from %s to %s?", current.Mode.Label(), mode.Label())
+		if n, err := s.store.CountNewlyRequiredWithoutFactor(ctx, mode); err == nil && n > 0 {
+			p.Detail = fmt.Sprintf("By the current count, %s without an authenticator %s signed out now and set one up at their next sign-in.", plural(int(n), "account"), map[bool]string{true: "is", false: "are"}[n == 1])
+		}
+	case "set-mfa-required":
+		if v.Get("required") != "on" {
+			p.Question = fmt.Sprintf("Stop requiring two-factor sign-in for %s?", email)
+			p.Detail = "They keep their authenticator but may turn it off."
+			if target, err := s.store.PasswordAccountByEmail(ctx, email); err == nil && mfa.Required(s.mfaPolicy(r).Mode, target.IsAdmin, false) {
+				p.Detail = "Only this account's own requirement is removed: the deployment policy still requires two-factor sign-in of them."
+			}
+			return
+		}
+		p.Question = fmt.Sprintf("Require two-factor sign-in for %s?", email)
+		if target, err := s.store.PasswordAccountByEmail(ctx, email); err == nil && !target.MFAEnrolled {
+			p.Detail = "They have no authenticator yet, so they are signed out now and set one up at their next sign-in."
+		}
+	case "disable":
+		p.Question = fmt.Sprintf("Disable %s?", email)
+		p.Detail = "They are signed out of every app and device and cannot sign in until the account is enabled again."
+	case "enable":
+		p.Question = fmt.Sprintf("Enable %s?", email)
+		p.Detail = "They can sign in again with their current password."
+	case "reset-password":
+		p.Question = fmt.Sprintf("Reset the password for %s?", email)
+		p.Detail = "They are signed out everywhere, and you get a new temporary password to give them."
+	case "revoke-sessions":
+		p.Question = fmt.Sprintf("Sign %s out of every app and device?", email)
+	case "grant-admin":
+		p.Question = fmt.Sprintf("Make %s an administrator?", email)
+		p.Detail = "They can open this console and manage every account." + s.promotionSignOut(r, email)
+	case "revoke-admin":
+		p.Question = fmt.Sprintf("Remove administrator access from %s?", email)
+	case "reset-mfa":
+		p.Question = fmt.Sprintf("Reset two-factor sign-in for %s?", email)
+		p.Detail = fmt.Sprintf("Their authenticator is removed and they are signed out everywhere; they set up a new one at their next sign-in. Reason recorded: %q.", v.Get("reason"))
+	case "set-access":
+		p.Question = fmt.Sprintf("Save access for %s?", email)
+		p.Detail = s.describeAccess(r, email, v)
+	case "disable-app", "enable-app":
+		name := v.Get("app")
+		if app, err := s.store.ApplicationByID(ctx, name); err == nil {
+			name = app.Name
+		}
+		if p.Action == "disable-app" {
+			p.Question = fmt.Sprintf("Disable %s for everyone?", name)
+			p.Detail = "Nobody can sign in to it until it is enabled again."
+		} else {
+			p.Question = fmt.Sprintf("Enable %s?", name)
+			p.Detail = "Everyone granted it can sign in to it again."
+		}
+	case "batch":
+		emails := v["emails"]
+		list := strings.Join(emails, ", ")
+		if len(emails) > 5 {
+			list = fmt.Sprintf("%s and %d more", strings.Join(emails[:5], ", "), len(emails)-5)
+		}
+		switch v.Get("op") {
+		case "signout":
+			p.Question = fmt.Sprintf("Sign %s out of every app and device?", plural(len(emails), "account"))
+			p.Detail = list + "."
+		case "require-mfa":
+			p.Question = fmt.Sprintf("Require two-factor sign-in for %s?", plural(len(emails), "account"))
+			p.Detail = list + ". Those without an authenticator are signed out now and set one up at their next sign-in."
+		case "unrequire-mfa":
+			p.Question = fmt.Sprintf("Stop requiring two-factor sign-in for %s?", plural(len(emails), "account"))
+			p.Detail = list + "."
+		}
+	}
+	if p.Question == "" {
+		p.Question = "Make this change?"
+	}
+}
+
+// describeAccess spells out an Access save: the applications after it
+// (with Fleet's roles), the ones it removes, and the Auth Admin flag.
+func (s *Server) describeAccess(r *http.Request, email string, v url.Values) string {
+	ctx := r.Context()
+	names := map[string]string{}
+	if apps, err := s.store.ListApplications(ctx); err == nil {
+		for _, app := range apps {
+			names[app.ID] = app.Name
+		}
+	}
+	name := func(id string) string {
+		if n, ok := names[id]; ok {
+			return n
+		}
+		return id
+	}
+	want := map[string]bool{}
+	var after []string
+	for _, id := range v["apps"] {
+		id = strings.TrimSpace(id)
+		if id == "" || want[id] {
+			continue
+		}
+		want[id] = true
+		label := name(id)
+		if id == store.FleetApplicationID {
+			label += " (" + fleetRoleSummary(v) + ")"
+		}
+		after = append(after, label)
+	}
+	parts := []string{"Applications: " + orNone(after) + "."}
+	if target, err := s.store.PasswordAccountByEmail(ctx, email); err == nil {
+		if have, err := s.store.ApplicationAccess(ctx, target.ID); err == nil {
+			var removed []string
+			for _, id := range have {
+				if !want[id] {
+					removed = append(removed, name(id))
+				}
+			}
+			if len(removed) > 0 {
+				parts = append(parts, "Removed, which signs them out of it now: "+strings.Join(removed, ", ")+".")
+			}
+		}
+	}
+	admin := v.Get("admin") == "on"
+	parts = append(parts, "Auth Admin: "+map[bool]string{true: "yes", false: "no"}[admin]+"."+map[bool]string{true: s.promotionSignOut(r, email), false: ""}[admin])
+	return strings.Join(parts, " ")
+}
+
+// promotionSignOut is what promoting email also does, worded for the
+// confirm popup: under "Required for administrators" a new administrator
+// without an authenticator is signed out to set one up.
+func (s *Server) promotionSignOut(r *http.Request, email string) string {
+	target, err := s.store.PasswordAccountByEmail(r.Context(), email)
+	if err != nil || target.IsAdmin || target.MFAEnrolled || s.mfaPolicy(r).Mode != mfa.ModeAdmins {
+		return ""
+	}
+	return " The policy requires two-factor sign-in of administrators and they have no authenticator, so they are signed out now and set one up at their next sign-in."
+}
+
+// fleetRoleSummary is the Fleet permissions an Access form chose, worded
+// like the console's Fleet button.
+func fleetRoleSummary(v url.Values) string {
+	if v.Get("fleet_admin") == "on" {
+		return "Fleet Admin"
+	}
+	chat := map[string]string{"viewer": "Viewer"}[v.Get("fleet_chat_role")]
+	if chat == "" {
+		chat = "Contributor"
+	}
+	ops := map[string]string{"readonly": "Viewer", "client": "Contributor"}[v.Get("fleet_ops_role")]
+	if ops == "" {
+		ops = "None"
+	}
+	return "Chat " + chat + " \u00b7 Ops " + ops
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
 
 // addUserDraft is the Add user form as submitted. It is echoed back only
 // into this administrator's own no-store page, never logged, and dropped
@@ -339,12 +601,18 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	if action == "create" || action == "step-up" {
 		draft = addUserDraftFromForm(r)
 	}
-	needVerify := func() adminResult {
-		res.Tab = adminAccountsTab
-		res.NeedVerify = true
-		res.Error = "Confirm it is you before making that change."
+	// stepUp is every other gated action's answer to a stale proof: the code
+	// popup, carrying the request so that the confirm popup can repeat it.
+	stepUp := func() adminResult {
+		p, ok := newPendingChange(r, action)
+		if !ok {
+			res.Status = http.StatusBadRequest
+			return res
+		}
+		res.Tab, res.Reopen, res.Pending, res.Error = adminAccountsTab, reopenStepUp, p, ""
 		return res
 	}
+	needVerify := stepUp
 	// askForCode is Add user's answer to a stale proof: the code popup,
 	// keeping what was typed; Create account is then chosen again. The
 	// popup says why; Error is kept for a refused code.
@@ -370,21 +638,33 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			if draft != nil {
 				return askForCode(), false
 			}
-			r := needVerify()
-			r.Error = "Confirm it is you before " + what + "."
-			return r, false
+			return stepUp(), false
 		}
 		return res, true
 	}
 	if action == "step-up" {
-		// The Add user code popup. It is not itself a change, but it is
-		// refused the same way when the server or the administrator has no
-		// authenticator to check.
+		// The code popup. It is not itself a change, but it is refused the
+		// same way when the server or the administrator has no
+		// authenticator to check. Without pending_action it is Add user's.
+		then := r.PostFormValue("pending_action")
+		if len(r.PostForm["pending_action"]) > 1 || then == "create" {
+			res.Status = http.StatusBadRequest
+			return res
+		}
+		var pending *pendingChange
+		if then != "" {
+			var ok bool
+			if pending, ok = newPendingChange(r, then); !ok {
+				res.Status = http.StatusBadRequest
+				return res
+			}
+			draft = nil
+		}
 		if !s.mfaAvailable() || !actor.MFAEnrolled {
 			r, _ := gate(sensitiveActions["create"])
 			return r
 		}
-		return s.adminStepUp(r, identity, res, draft, now)
+		return s.adminStepUp(r, identity, res, draft, pending, now)
 	}
 	if what, sensitive := sensitiveActions[action]; sensitive && action != "revoke-sessions" {
 		// revoke-sessions is gated below, once the target is resolved by
@@ -841,8 +1121,8 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 // and it never marks the session as password-verified, so it does not
 // unlock the Security page. Accepted, Add user reopens filled in for
 // Create account to be chosen again; refused, the popup reopens with why.
-func (s *Server) adminStepUp(r *http.Request, identity *passwordIdentity, res adminResult, draft *addUserDraft, now time.Time) adminResult {
-	res.Tab, res.Draft = adminAccountsTab, draft
+func (s *Server) adminStepUp(r *http.Request, identity *passwordIdentity, res adminResult, draft *addUserDraft, pending *pendingChange, now time.Time) adminResult {
+	res.Tab, res.Draft, res.Pending = adminAccountsTab, draft, pending
 	refusal, err := s.verifySessionCode(r, identity, r.FormValue("code"), now, false)
 	switch {
 	case errors.Is(err, store.ErrInvalidSession):
@@ -850,6 +1130,9 @@ func (s *Server) adminStepUp(r *http.Request, identity *passwordIdentity, res ad
 		return res
 	case err != nil:
 		return res.failed("step-up", err)
+	case refusal != "" && pending != nil:
+		res.Reopen, res.Error = reopenStepUp, refusal
+		return res
 	case refusal != "":
 		res.Reopen, res.Error = reopenAddUserCode, refusal
 		return res
@@ -858,6 +1141,13 @@ func (s *Server) adminStepUp(r *http.Request, identity *passwordIdentity, res ad
 	// popup's hint reads it).
 	at := time.Unix(now.Unix(), 0)
 	identity.Session.MFAVerifiedAt, identity.Session.AMR = &at, []string{"pwd", "otp"}
+	if pending != nil {
+		// Nothing changes yet: the confirm popup says what will, and its
+		// Confirm repeats the request through every check again.
+		s.describeChange(r, pending)
+		res.Reopen = reopenConfirmChange
+		return res
+	}
 	res.Reopen = reopenAddUser
 	res.Notice = "Code accepted. Check the details and choose Create account."
 	return res
@@ -889,12 +1179,8 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
 			return res
 		}
-	case "signout":
-		if r, ok := gate("signing accounts out everywhere"); !ok {
-			return r
-		}
-	case "require-mfa", "unrequire-mfa":
-		if r, ok := gate("changing two-factor requirements"); !ok {
+	case "signout", "require-mfa", "unrequire-mfa":
+		if r, ok := gate(batchGated[op]); !ok {
 			return r
 		}
 	default:
@@ -958,8 +1244,10 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 			}
 			if _, err := s.store.SetAccountMFARequiredBy(ctx, target.Email, want, actor.ID, proof, now.Unix()); err != nil {
 				if errors.Is(err, store.ErrActorNotFresh) {
-					res.NeedVerify = true
-					res.Error = fmt.Sprintf("Confirm it is you before changing two-factor requirements. Already done: %s.", orNone(done))
+					// Not offered for repeating: part of the selection is
+					// already done, and repeating all of it could undo what
+					// someone changed since.
+					res.Error = fmt.Sprintf("Your authenticator code expired partway through. Already done: %s. Select the accounts that remain and repeat the change.", orNone(done))
 					return res
 				}
 				return stopped(target.Email, "mfa required", err)
@@ -1030,7 +1318,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		"Brand": s.cfg.BrandName, "Email": actor.Email, "CSRF": csrf,
 		"Tabs": tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
 		"Secret": result.Secret, "SecretTitle": result.SecretTitle, "SecretFor": result.ForEmail, "Reopen": result.Reopen, "Draft": result.Draft,
-		"NeedVerify": result.NeedVerify, "NeedEnroll": result.NeedEnroll, "MFAAvailable": s.mfaAvailable(),
+		"Pending": result.Pending, "NeedEnroll": result.NeedEnroll, "MFAAvailable": s.mfaAvailable(),
 		"ActorEnrolled": actor.MFAEnrolled, "ActorFresh": actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
 		"MFAPolicy": policy.Mode.Label(), "MFARevision": policy.Revision,
 	}

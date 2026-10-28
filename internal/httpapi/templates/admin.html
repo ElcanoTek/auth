@@ -30,8 +30,7 @@
     <nav class="tabs" aria-label="Admin sections">
       {{range .Tabs}}<a class="tab{{if .Active}} active{{end}}" href="{{.URL}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}
     </nav>
-    {{if .NeedVerify}}<div class="banner warn" role="alert"><strong>Confirm it is you.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need your authenticator code entered less than five minutes ago. <a href="/account/security/verify?return_to=%2Fadmin">Enter it now</a> and then repeat the change.</div>
-    {{else if .NeedEnroll}}<div class="banner warn" role="alert"><strong>Set up two-factor sign-in first.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need an administrator's own authenticator. <a href="/account/security?return_to=%2Fadmin">Set yours up</a> and then repeat the change.</div>
+    {{if .NeedEnroll}}<div class="banner warn" role="alert"><strong>Set up two-factor sign-in first.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need an administrator's own authenticator. <a href="/account/security?return_to=%2Fadmin">Set yours up</a> and then repeat the change.</div>
     {{else if and .Error (or (not .Reopen) .Secret)}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     {{if .Secret}}<div class="notice" role="status">{{.Notice}} <button class="linkish" type="button" commandfor="temp-password" command="show-modal">Show the temporary password</button></div>
     {{/* The one-time password gets a popup of its own (rendered open, so it shows without script; admin.js makes it modal and keeps a stray click outside from closing it). The notice above reopens it. */}}
@@ -45,6 +44,37 @@
       <form method="dialog"><button class="btn" type="submit">I have saved it</button></form>
     </dialog>
     {{else if and .Notice (not .Reopen)}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
+    {{if and .Pending (eq .Reopen "step-up")}}{{with .Pending}}
+    {{/* A gated change refused only because the code is not fresh. Its allowlisted fields ride along; after the code, the confirm popup offers to repeat it. */}}
+    <dialog id="step-up" class="modal" aria-labelledby="step-up-title" open>
+      <div class="modal-head"><h3 id="step-up-title">Confirm it is you</h3><button class="icon-btn close" type="button" commandfor="step-up" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+      {{if $.Error}}<div class="err" role="alert">{{$.Error}}</div>{{end}}
+      <p class="who">{{.Why}} needs your authenticator code from the last five minutes. You confirm the change next.</p>
+      <form method="post" action="/admin" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="step-up"><input type="hidden" name="pending_action" value="{{.Action}}">
+        {{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+        <div class="field"><label for="step-up-code">Authenticator code</label>
+          <input id="step-up-code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000"></div>
+        <button class="btn" type="submit">Verify</button>
+      </form>
+      {{/* method="dialog" closes it with no script and no invoker-command support. */}}
+      <form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>
+    </dialog>{{end}}{{end}}
+    {{if and .Pending (eq .Reopen "confirm-change")}}{{with .Pending}}
+    {{/* The code was accepted; nothing has changed yet. Confirm repeats the request, which passes every check again. */}}
+    <dialog id="confirm-change" class="modal confirm-change" aria-labelledby="confirm-change-title" aria-describedby="confirm-change-question" open>
+      <div class="modal-head"><h3 id="confirm-change-title">Confirm the change</h3><button class="icon-btn close" type="button" commandfor="confirm-change" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+      {{if $.Error}}<div class="err" role="alert">{{$.Error}}</div>{{end}}
+      <div class="notice" role="status">Code accepted. Nothing has changed yet.</div>
+      <p class="question" id="confirm-change-question">{{.Question}}</p>
+      {{if .Detail}}<p class="hint">{{.Detail}}</p>{{end}}
+      <form method="post" action="/admin">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="{{.Action}}">
+        {{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+        <button class="btn" type="submit">Confirm</button>
+      </form>
+      <form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>
+    </dialog>{{end}}{{end}}
 
     {{if eq .Tab "accounts"}}
     <section class="section" aria-labelledby="accounts-heading">
