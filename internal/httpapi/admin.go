@@ -173,6 +173,43 @@ type adminResult struct {
 	// NeedEnroll: the action is sensitive and the administrator has no
 	// authenticator yet; the page points at Security.
 	NeedEnroll bool
+	// Draft is what was typed into Add user, carried through a refusal (a
+	// rejected entry, or the code popup) so the dialog reopens filled in.
+	Draft *addUserDraft
+}
+
+// Dialogs a console response can reopen (adminResult.Reopen).
+const (
+	reopenAddUser = "add-user"
+	// reopenAddUserCode asks for the administrator's authenticator code when
+	// Create account was refused only because it is not fresh.
+	reopenAddUserCode = "add-user-code"
+)
+
+// addUserDraft is the Add user form as submitted. It is echoed back only
+// into this administrator's own no-store page, never logged, and dropped
+// once the account is created. Everything is validated again when Create
+// account is chosen.
+type addUserDraft struct {
+	Email, Team   string
+	Password      string // the typed temporary password, byte for byte
+	Admin         bool
+	Apps          map[string]bool // ticked applications; none ticked stays none
+	FleetAdmin    bool
+	FleetChatRole string
+	FleetOpsRole  string
+}
+
+func addUserDraftFromForm(r *http.Request) *addUserDraft {
+	d := &addUserDraft{
+		Email: r.FormValue("email"), Team: r.FormValue("team"), Password: r.FormValue("password"),
+		Admin: r.FormValue("admin") == "on", Apps: map[string]bool{}, FleetAdmin: r.FormValue("fleet_admin") == "on",
+		FleetChatRole: r.FormValue("fleet_chat_role"), FleetOpsRole: r.FormValue("fleet_ops_role"),
+	}
+	for _, id := range r.Form["apps"] {
+		d.Apps[strings.TrimSpace(id)] = true
+	}
+	return d
 }
 
 // sensitiveActions are the console actions that lock people out, take over
@@ -243,6 +280,9 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		if !s.validCSRF(r) {
 			// Stale console page (left open across a re-login): nothing
 			// runs; the page re-renders with the live token and says so.
+			// An Add user draft is deliberately not carried: only input
+			// that passed the CSRF check is echoed back into a form, so a
+			// forged POST cannot open a pre-filled Add user.
 			result = adminResult{Error: staleFormMessage, Tab: r.FormValue("tab")}
 			break
 		}
@@ -283,17 +323,28 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	// Sensitive actions (see sensitiveActions) need the administrator's own
 	// authenticator code entered within the re-verification window: a
 	// sign-in that used the code counts, a step-up on the verify page
-	// counts, a recovery-code sign-in or a password-only re-verification
-	// does not. An administrator without an authenticator is sent to set
-	// one up first.
-	fresh := actor.MFAEnrolled && recentlyVerified(identity.Session, now, s.reauthWindow()) && hasMethod(identity.Session.AMR, "otp")
+	// counts, Add user's code popup counts, a recovery-code sign-in or a
+	// password-only re-verification does not. An administrator without an
+	// authenticator is sent to set one up first.
+	fresh := actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow())
 	// The same facts, re-checked inside the store transactions that accept
 	// an actor proof.
 	proof := &store.ActorProof{SessionHash: identity.Session.TokenHash, FreshAfter: now.Add(-s.reauthWindow()).Unix(), RequireFactor: true}
+	var draft *addUserDraft
+	if action == "create" || action == "step-up" {
+		draft = addUserDraftFromForm(r)
+	}
 	needVerify := func() adminResult {
 		res.Tab = adminAccountsTab
 		res.NeedVerify = true
 		res.Error = "Confirm it is you before making that change."
+		return res
+	}
+	// askForCode is Add user's answer to a stale proof: the code popup,
+	// keeping what was typed; Create account is then chosen again. The
+	// popup says why; Error is kept for a refused code.
+	askForCode := func() adminResult {
+		res.Tab, res.Reopen, res.Draft, res.Error = adminAccountsTab, reopenAddUserCode, draft, ""
 		return res
 	}
 	// gate returns the page to show instead of performing a sensitive
@@ -311,11 +362,24 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return res, false
 		}
 		if !fresh {
+			if draft != nil {
+				return askForCode(), false
+			}
 			r := needVerify()
 			r.Error = "Confirm it is you before " + what + "."
 			return r, false
 		}
 		return res, true
+	}
+	if action == "step-up" {
+		// The Add user code popup. It is not itself a change, but it is
+		// refused the same way when the server or the administrator has no
+		// authenticator to check.
+		if !s.mfaAvailable() || !actor.MFAEnrolled {
+			r, _ := gate(sensitiveActions["create"])
+			return r
+		}
+		return s.adminStepUp(r, identity, res, draft, now)
 	}
 	if what, sensitive := sensitiveActions[action]; sensitive && action != "revoke-sessions" {
 		// revoke-sessions is gated below, once the target is resolved by
@@ -419,6 +483,10 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	}
 
 	res.Tab = adminAccountsTab
+	if action == "create" {
+		// A rejected entry reopens Add user, filled in, with the reason.
+		res.Reopen, res.Draft = reopenAddUser, draft
+	}
 	email, ok := validAdminEmail(r.FormValue("email"))
 	if !ok {
 		res.Error = "Enter a valid email address."
@@ -427,7 +495,6 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	res.ForEmail = email
 
 	if action == "create" {
-		res.Reopen = "add-user"
 		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
 			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
@@ -461,47 +528,41 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		if err != nil {
 			return res.failed("hash password", err)
 		}
-		account, err := s.store.CreatePasswordAccount(ctx, email, encoded, true, now.Unix())
-		if errors.Is(err, store.ErrAccountExists) {
+		// One transaction: the administrator is re-checked as of now, after
+		// the hashing (they may have been signed out, demoted or passed the
+		// window meanwhile), and the account is created with everything
+		// chosen for it or not at all.
+		at := time.Now()
+		atProof := *proof
+		atProof.FreshAfter = at.Add(-s.reauthWindow()).Unix()
+		account, granted, err := s.store.CreateAccountBy(ctx, store.AccountCreate{
+			Email: email, PasswordHash: encoded, Team: team, Admin: r.FormValue("admin") == "on",
+			Applications: r.Form["apps"], ApplicationSettings: appSettings,
+		}, actor.ID, &atProof, at.Unix())
+		switch {
+		case errors.Is(err, store.ErrActorNotFresh):
+			return askForCode()
+		case errors.Is(err, store.ErrAccountExists):
 			res.Error = "An account with that email already exists."
 			return res
-		}
-		if err != nil {
+		case errors.Is(err, store.ErrApplicationNotFound):
+			res.Error = "One of the chosen applications no longer exists. Choose the applications again."
+			return res
+		case err != nil:
 			return res.failed("create account", err)
 		}
-		res.Reopen = ""
+		res.Reopen, res.Draft = "", nil
 		audit("admin.user_created", account.ID, "")
-		if r.FormValue("admin") == "on" {
-			if err := s.store.SetAccountAdmin(ctx, account.Email, true, now.Unix()); err != nil {
-				logUnlessCancelled("admin initial admin", err)
-				res.Error = "The account was created, but its Admin permission could not be saved. Set it from Access."
-			} else {
-				audit("admin.admin_granted", account.ID, "")
-			}
+		if account.IsAdmin {
+			audit("admin.admin_granted", account.ID, "")
 		}
-		if team != "" {
-			if err := s.store.SetAccountTeam(ctx, account.Email, team, now.Unix()); err != nil {
-				logUnlessCancelled("admin initial team", err)
-				res.Error = "The account was created, but its team could not be saved. Set it from Settings."
-			}
+		for _, id := range granted {
+			audit("admin.access_granted", account.ID, id)
 		}
-		if _, _, err := s.store.SetApplicationAccessWithSettings(ctx, account.ID, r.Form["apps"], appSettings, now.Unix()); err != nil {
-			// The account exists and its password is in hand, so this is
-			// reported on the page rather than as a 500 that would hide
-			// the one-time password of a committed create.
-			logUnlessCancelled("admin initial access", err)
-			res.Error = "The account was created, but its application access could not be saved. Set it from the account's row."
+		if typed {
+			res.Notice = fmt.Sprintf("Created %s with the password you entered; they must change it at first sign-in.", account.Email)
 		} else {
-			for _, id := range r.Form["apps"] {
-				audit("admin.access_granted", account.ID, strings.TrimSpace(id))
-			}
-			if typed {
-				res.Notice = fmt.Sprintf("Created %s with the password you entered; they must change it at first sign-in.", account.Email)
-			} else {
-				res.Notice = fmt.Sprintf("Created %s. Share the temporary password below; they must change it at first sign-in.", account.Email)
-			}
-		}
-		if !typed {
+			res.Notice = fmt.Sprintf("Created %s. Share the temporary password below; they must change it at first sign-in.", account.Email)
 			res.Secret = plain
 		}
 		return res
@@ -770,6 +831,33 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	return res
 }
 
+// adminStepUp checks the code typed into Add user's popup. It needs no
+// password: it proves the factor, which is what console changes ask for,
+// and it never marks the session as password-verified, so it does not
+// unlock the Security page. Accepted, Add user reopens filled in for
+// Create account to be chosen again; refused, the popup reopens with why.
+func (s *Server) adminStepUp(r *http.Request, identity *passwordIdentity, res adminResult, draft *addUserDraft, now time.Time) adminResult {
+	res.Tab, res.Draft = adminAccountsTab, draft
+	refusal, err := s.verifySessionCode(r, identity, r.FormValue("code"), now, false)
+	switch {
+	case errors.Is(err, store.ErrInvalidSession):
+		res.Redirect = "/"
+		return res
+	case err != nil:
+		return res.failed("step-up", err)
+	case refusal != "":
+		res.Reopen, res.Error = reopenAddUserCode, refusal
+		return res
+	}
+	// The page rendered next reflects the proof just recorded (the policy
+	// popup's hint reads it).
+	at := time.Unix(now.Unix(), 0)
+	identity.Session.MFAVerifiedAt, identity.Session.AMR = &at, []string{"pwd", "otp"}
+	res.Reopen = reopenAddUser
+	res.Notice = "Code accepted. Check the details and choose Create account."
+	return res
+}
+
 // adminBatch applies one operation to every selected account: a team tag,
 // sign out everywhere, or requiring (or no longer requiring) two-factor
 // sign-in. Each account is its own store transaction; the notice reports
@@ -936,9 +1024,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 	data := map[string]any{
 		"Brand": s.cfg.BrandName, "Email": actor.Email, "CSRF": csrf,
 		"Tabs": tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
-		"Secret": result.Secret, "SecretFor": result.ForEmail, "Reopen": result.Reopen,
+		"Secret": result.Secret, "SecretFor": result.ForEmail, "Reopen": result.Reopen, "Draft": result.Draft,
 		"NeedVerify": result.NeedVerify, "NeedEnroll": result.NeedEnroll, "MFAAvailable": s.mfaAvailable(),
-		"ActorEnrolled": actor.MFAEnrolled, "ActorFresh": actor.MFAEnrolled && recentlyVerified(identity.Session, now, s.reauthWindow()) && hasMethod(identity.Session.AMR, "otp"),
+		"ActorEnrolled": actor.MFAEnrolled, "ActorFresh": actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
 		"MFAPolicy": policy.Mode.Label(), "MFARevision": policy.Revision,
 	}
 

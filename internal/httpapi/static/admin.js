@@ -162,9 +162,14 @@
       pressedOutside = false;
     });
   });
+  // A reopened dialog is rendered open (non-modal) so it shows without
+  // script; here it becomes modal like any other.
   var reopen = document.body.getAttribute("data-reopen");
   if (reopen) {
     var dialog = document.getElementById(reopen);
-    if (dialog && dialog.showModal && !dialog.open) { try { dialog.showModal(); } catch (e) {} }
+    if (dialog && dialog.showModal) {
+      if (dialog.open) dialog.close();
+      try { dialog.showModal(); } catch (e) { dialog.show(); }
+    }
   }
 })();

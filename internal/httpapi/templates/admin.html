@@ -32,8 +32,8 @@
     </nav>
     {{if .NeedVerify}}<div class="banner warn" role="alert"><strong>Confirm it is you.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need your authenticator code entered less than five minutes ago. <a href="/account/security/verify?return_to=%2Fadmin">Enter it now</a> and then repeat the change.</div>
     {{else if .NeedEnroll}}<div class="banner warn" role="alert"><strong>Set up two-factor sign-in first.</strong> {{.Error}} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need an administrator's own authenticator. <a href="/account/security?return_to=%2Fadmin">Set yours up</a> and then repeat the change.</div>
-    {{else if and .Error (ne .Reopen "add-user")}}<div class="err" role="alert">{{.Error}}</div>{{end}}
-    {{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
+    {{else if and .Error (not .Reopen)}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+    {{if and .Notice (not .Reopen)}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
     {{if .Secret}}<div class="secret" role="status">
       <p class="muted">Temporary password for <strong>{{.SecretFor}}</strong>. It is shown once and not stored: copy it now.</p>
       <code>{{.Secret}}</code>
@@ -228,41 +228,43 @@
       <datalist id="teams">{{range .Teams}}<option value="{{.}}">{{end}}</datalist>
     </section>
 
-    <dialog id="add-user" class="modal" aria-labelledby="add-user-title">
+    {{/* A reopened dialog is rendered open, so it shows without script too; admin.js makes it modal. */}}
+    <dialog id="add-user" class="modal" aria-labelledby="add-user-title"{{if eq .Reopen "add-user"}} open{{end}}>
       <div class="modal-head"><h3 id="add-user-title">Add user</h3><button class="icon-btn close" type="button" commandfor="add-user" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
       {{/* A rejected Add user reopens this dialog (Reopen), and showModal makes the page behind it inert, so the reason has to be in here. */}}
-      {{if and .Error (eq .Reopen "add-user")}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+      {{if eq .Reopen "add-user"}}{{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}{{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}{{end}}
       <p class="who">A temporary password is shown once; they choose their own at first sign-in.</p>
       <form method="post" action="/admin">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="create">
         <div class="field"><label for="new-email">Work email</label>
-          <input id="new-email" name="email" type="email" required autocomplete="off" placeholder="name@company.com"></div>
+          <input id="new-email" name="email" type="email" required autocomplete="off" placeholder="name@company.com"{{with .Draft}} value="{{.Email}}"{{end}}></div>
         <div class="field"><label for="new-team">Team <span class="muted">(optional)</span></label>
-          <input id="new-team" name="team" type="text" list="teams" maxlength="64" placeholder="e.g. Trading"></div>
+          <input id="new-team" name="team" type="text" list="teams" maxlength="64" placeholder="e.g. Trading"{{with .Draft}} value="{{.Team}}"{{end}}></div>
         <div class="field"><label for="new-password">Temporary password</label>
-          <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="Leave blank to generate one"><button class="btn-ghost" type="button" data-generate="new-password">Generate</button></div>
+          <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="Leave blank to generate one"{{with .Draft}} value="{{.Password}}"{{end}}><button class="btn-ghost" type="button" data-generate="new-password">Generate</button></div>
           <p class="hint">At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>
         <div class="seg-group"><span class="seg-label">Auth Admin</span>
-          <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>
+          <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"{{if and .Draft .Draft.Admin}} checked{{end}}> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>
         </div>
         <div class="seg-group"><span class="seg-label">Applications</span>
-          {{if .AppChoices}}<div role="group" aria-label="Applications">{{range .AppChoices}}{{if eq .ID "fleet"}}<div class="app-row">{{end}}<label class="permission-choice application-choice{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if .Granted}} checked{{end}}> {{.Name}}<small>{{if .Granted}}Can sign in to {{.Name}}.{{else}}{{.Name}} is disabled for everyone.{{end}}</small></label>{{if eq .ID "fleet"}}<button class="fleet-edit" type="button" data-fleet-edit commandfor="fleet-perms-new" command="show-modal" aria-label="Fleet permissions for the new user">{{template "icon" "settings"}}<span data-fleet-summary>Chat Contributor · Ops None</span></button></div>{{end}}{{end}}</div>
+          {{if .AppChoices}}<div role="group" aria-label="Applications">{{range .AppChoices}}{{if eq .ID "fleet"}}<div class="app-row">{{end}}<label class="permission-choice application-choice{{if not .Granted}} off{{end}}"{{if not .Granted}} title="Application disabled"{{end}}><input type="checkbox" name="apps" value="{{.ID}}"{{if eq .ID "fleet"}} data-fleet-toggle{{end}}{{if $.Draft}}{{if index $.Draft.Apps .ID}} checked{{end}}{{else if .Granted}} checked{{end}}> {{.Name}}<small>{{if .Granted}}Can sign in to {{.Name}}.{{else}}{{.Name}} is disabled for everyone.{{end}}</small></label>{{if eq .ID "fleet"}}<button class="fleet-edit" type="button" data-fleet-edit commandfor="fleet-perms-new" command="show-modal" aria-label="Fleet permissions for the new user">{{template "icon" "settings"}}<span data-fleet-summary>Chat Contributor · Ops None</span></button></div>{{end}}{{end}}</div>
           {{else}}<p class="muted">No applications are registered yet; register them with <code>auth app create</code> on the server.</p>{{end}}
         </div>
         {{if .HasFleet}}<dialog id="fleet-perms-new" class="modal fleet-perms" data-fleet-permissions aria-labelledby="fleet-perms-new-title">
           <div class="modal-head"><h3 id="fleet-perms-new-title">Fleet permissions</h3><button class="icon-btn close" type="button" commandfor="fleet-perms-new" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
           <p class="who">For the new user.</p>
           <div class="seg-group"><span class="seg-label">Fleet Admin</span>
-            <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
+            <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"{{if and .Draft .Draft.FleetAdmin}} checked{{end}}> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
           </div>
+          {{$chat := "member"}}{{$ops := "none"}}{{with .Draft}}{{if eq .FleetChatRole "viewer"}}{{$chat = "viewer"}}{{end}}{{if or (eq .FleetOpsRole "readonly") (eq .FleetOpsRole "client")}}{{$ops = .FleetOpsRole}}{{end}}{{end}}
           <div class="seg-group"><span class="seg-label">Chat</span>
-            <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="viewer"> Viewer<small>Read-only Chat access: can view but cannot create or change content.</small></label>
-            <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="member" checked> Contributor<small>Can actively use Chat, including creating and updating content.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="viewer"{{if eq $chat "viewer"}} checked{{end}}> Viewer<small>Read-only Chat access: can view but cannot create or change content.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_chat_role" value="member"{{if eq $chat "member"}} checked{{end}}> Contributor<small>Can actively use Chat, including creating and updating content.</small></label>
           </div>
           <div class="seg-group"><span class="seg-label">Ops Center</span>
-            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="none" checked> None<small>No access to the Ops Center.</small></label>
-            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="readonly"> Viewer<small>Can view Ops Center tasks and logs but cannot change them.</small></label>
-            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="client"> Contributor<small>Can view, create, and run Ops Center tasks.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="none"{{if eq $ops "none"}} checked{{end}}> None<small>No access to the Ops Center.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="readonly"{{if eq $ops "readonly"}} checked{{end}}> Viewer<small>Can view Ops Center tasks and logs but cannot change them.</small></label>
+            <label class="permission-choice"><input type="radio" name="fleet_ops_role" value="client"{{if eq $ops "client"}} checked{{end}}> Contributor<small>Can view, create, and run Ops Center tasks.</small></label>
           </div>
           <button class="btn" type="button" commandfor="fleet-perms-new" command="close">Done</button>
           <p class="hint">Saved with the account when you choose Create account.</p>
@@ -270,6 +272,23 @@
         <button class="btn" type="submit">Create account</button>
       </form>
     </dialog>
+
+    {{if eq .Reopen "add-user-code"}}{{with .Draft}}
+    {{/* Create account was refused only because the administrator's code is not fresh. The draft rides along in hidden fields; on success Add user reopens filled in. Closing this keeps the draft in Add user above. */}}
+    <dialog id="add-user-code" class="modal" aria-labelledby="add-user-code-title" open>
+      <div class="modal-head"><h3 id="add-user-code-title">Confirm it is you</h3><button class="icon-btn close" type="button" commandfor="add-user-code" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+      {{if $.Error}}<div class="err" role="alert">{{$.Error}}</div>{{end}}
+      <p class="who">Creating an account needs your authenticator code from the last five minutes. Then check the details and choose Create account again.</p>
+      <form method="post" action="/admin" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="step-up">
+        <input type="hidden" name="email" value="{{.Email}}"><input type="hidden" name="team" value="{{.Team}}"><input type="hidden" name="password" value="{{.Password}}">
+        {{if .Admin}}<input type="hidden" name="admin" value="on">{{end}}{{range $id, $on := .Apps}}{{if $on}}<input type="hidden" name="apps" value="{{$id}}">{{end}}{{end}}
+        {{if .FleetAdmin}}<input type="hidden" name="fleet_admin" value="on">{{end}}<input type="hidden" name="fleet_chat_role" value="{{.FleetChatRole}}"><input type="hidden" name="fleet_ops_role" value="{{.FleetOpsRole}}">
+        <div class="field"><label for="add-user-code-input">Authenticator code</label>
+          <input id="add-user-code-input" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000"></div>
+        <button class="btn" type="submit">Verify</button>
+      </form>
+    </dialog>{{end}}{{end}}
 
     <dialog id="mfa-policy" class="modal" aria-labelledby="mfa-policy-title">
       <div class="modal-head"><h3 id="mfa-policy-title">Two-factor policy</h3><button class="icon-btn close" type="button" commandfor="mfa-policy" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>

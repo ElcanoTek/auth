@@ -912,40 +912,117 @@ func randomID() (string, error) {
 }
 
 func (s *Store) CreatePasswordAccount(ctx context.Context, email, passwordHash string, mustChange bool, now int64) (Account, error) {
-	normalized := normalizeAccountEmail(email)
-	if normalized == "" || passwordHash == "" {
+	if normalizeAccountEmail(email) == "" || passwordHash == "" {
 		return Account{}, errors.New("email and password hash are required")
-	}
-	id, err := randomID()
-	if err != nil {
-		return Account{}, fmt.Errorf("generate account id: %w", err)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Account{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO accounts(id, email, normalized_email, must_change_password, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?)`, id, strings.TrimSpace(email), normalized, boolInt(mustChange), now, now)
+	id, err := createPasswordAccountTx(ctx, tx, email, passwordHash, mustChange, now)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return Account{}, ErrAccountExists
-		}
-		return Account{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO password_credentials(user_id, password_hash, changed_at) VALUES(?, ?, ?)`,
-		id, passwordHash, now); err != nil {
-		return Account{}, err
-	}
-	if err := insertAudit(ctx, tx, "account.created", id, now, `{}`); err != nil {
 		return Account{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Account{}, err
 	}
 	return s.PasswordAccountByID(ctx, id)
+}
+
+// createPasswordAccountTx is CreatePasswordAccount inside a caller's
+// transaction; it returns the new account's ID.
+func createPasswordAccountTx(ctx context.Context, tx *sql.Tx, email, passwordHash string, mustChange bool, now int64) (string, error) {
+	id, err := randomID()
+	if err != nil {
+		return "", fmt.Errorf("generate account id: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO accounts(id, email, normalized_email, must_change_password, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?)`, id, strings.TrimSpace(email), normalizeAccountEmail(email), boolInt(mustChange), now, now)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return "", ErrAccountExists
+		}
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO password_credentials(user_id, password_hash, changed_at) VALUES(?, ?, ?)`,
+		id, passwordHash, now); err != nil {
+		return "", err
+	}
+	if err := insertAudit(ctx, tx, "account.created", id, now, `{}`); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// AccountCreate is what the console's Add user saves.
+type AccountCreate struct {
+	Email               string
+	PasswordHash        string // Argon2id PHC string; the account must change it at first sign-in
+	Team                string // "" for none; validated with NormalizeTeam
+	Admin               bool
+	Applications        []string
+	ApplicationSettings map[string]string
+}
+
+// CreateAccountBy is Add user in ONE transaction: the acting administrator
+// is re-checked (proof), then the account is created with its team,
+// administrator flag and applications. Any refusal (existing account,
+// invalid team, unknown application, stale proof) creates nothing, so an
+// account never exists with only part of what the administrator chose.
+// It returns the account as committed and the applications granted (each
+// once, sorted). Nothing is read after the commit, so an error always
+// means nothing was created.
+func (s *Store) CreateAccountBy(ctx context.Context, c AccountCreate, actorID string, proof *ActorProof, now int64) (Account, []string, error) {
+	if normalizeAccountEmail(c.Email) == "" || c.PasswordHash == "" {
+		return Account{}, nil, errors.New("email and password hash are required")
+	}
+	team, err := NormalizeTeam(c.Team)
+	if err != nil {
+		return Account{}, nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Account{}, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
+		return Account{}, nil, err
+	}
+	id, err := createPasswordAccountTx(ctx, tx, c.Email, c.PasswordHash, true, now)
+	if err != nil {
+		return Account{}, nil, err
+	}
+	if c.Admin {
+		if err := setAccountAdminTx(ctx, tx, Account{ID: id}, true, now); err != nil {
+			return Account{}, nil, err
+		}
+	}
+	if team != "" {
+		if team, err = canonicalTeamSpellingTx(ctx, tx, id, team); err != nil {
+			return Account{}, nil, err
+		}
+		metadata, _ := json.Marshal(map[string]string{"team": team})
+		if err := setAccountTeamTx(ctx, tx, id, team, now, string(metadata), true); err != nil {
+			return Account{}, nil, err
+		}
+	}
+	var granted []string
+	if len(c.Applications) > 0 {
+		if granted, _, _, err = setApplicationAccessTx(ctx, tx, id, c.Applications, c.ApplicationSettings, now, ""); err != nil {
+			return Account{}, nil, err
+		}
+	}
+	account, err := passwordAccountByIDQ(ctx, tx, id)
+	if err != nil {
+		return Account{}, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Account{}, nil, err
+	}
+	return account, granted, nil
 }
 
 func (s *Store) PasswordAccountByEmail(ctx context.Context, email string) (Account, error) {
@@ -959,7 +1036,12 @@ func (s *Store) PasswordAccountByEmail(ctx context.Context, email string) (Accou
 }
 
 func (s *Store) PasswordAccountByID(ctx context.Context, id string) (Account, error) {
-	return scanAccount(s.db.QueryRowContext(ctx, `
+	return passwordAccountByIDQ(ctx, s.db, id)
+}
+
+// passwordAccountByIDQ is PasswordAccountByID on a database or transaction.
+func passwordAccountByIDQ(ctx context.Context, q querier, id string) (Account, error) {
+	return scanAccount(q.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
 		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
 		       a.mfa_required, a.security_version,

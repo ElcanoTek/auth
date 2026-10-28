@@ -187,6 +187,7 @@ func TestUnenrolledAdministratorIsSentToEnrollBeforeSensitiveChanges(t *testing.
 		{"action": {"create"}, "email": {"eve@example.com"}},
 		{"action": {"batch"}, "op": {"signout"}, "emails": {"bob@example.com"}},
 		{"action": {"disable-app"}, "app": {"fleet"}},
+		{"action": {"step-up"}, "code": {"123456"}, "email": {"eve@example.com"}},
 	} {
 		resp, page := alice.post(form)
 		if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Set up two-factor sign-in first.") || !strings.Contains(page, `href="/account/security?return_to=%2Fadmin"`) || !strings.Contains(page, "Set up two-factor sign-in on your own account before") {
@@ -516,5 +517,204 @@ func TestSelfSignOutExemptionIsByIdentityNotCaseFolding(t *testing.T) {
 	// Signing yourself out still needs no factor.
 	if resp, _ := attacker.post(url.Values{"action": {"revoke-sessions"}, "email": {admin}}); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?notice=signed_out" {
 		t.Fatalf("own sign-out: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// dialogForm returns one console dialog's markup up to the end of its form.
+func dialogForm(t *testing.T, page, id string) string {
+	t.Helper()
+	start := strings.Index(page, `<dialog id="`+id+`"`)
+	if start < 0 {
+		t.Fatalf("no %s dialog:\n%s", id, page)
+	}
+	end := strings.Index(page[start:], "</form>")
+	if end < 0 {
+		t.Fatalf("%s dialog has no form:\n%s", id, page[start:])
+	}
+	return page[start : start+end]
+}
+
+func withValues(base url.Values, extra url.Values) url.Values {
+	out := url.Values{}
+	for k, v := range base {
+		out[k] = append([]string(nil), v...)
+	}
+	for k, v := range extra {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
+// Create account with a stale code opens a popup for the code instead of
+// losing the form; the code (and only a current authenticator code) brings
+// Add user back filled in, and nothing is created until it is submitted.
+func TestAddUserAsksForTheCodeInAPopupAndKeepsWhatWasTyped(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice, secret := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
+	ctx := context.Background()
+	draft := url.Values{
+		"email": {"carol@example.com"}, "team": {`Ops & "Trading"`}, "password": {"Quartz-Harbor-Lantern-4471"},
+		"apps": {"fleet"}, "fleet_chat_role": {"viewer"}, "fleet_ops_role": {"readonly"},
+	}
+	notCreated := func(when string) {
+		t.Helper()
+		if _, err := st.PasswordAccountByEmail(ctx, "carol@example.com"); err == nil {
+			t.Fatalf("account created %s", when)
+		}
+	}
+	carried := []string{
+		`name="action" value="step-up"`, `name="email" value="carol@example.com"`,
+		`name="team" value="Ops &amp; &#34;Trading&#34;"`, `name="password" value="Quartz-Harbor-Lantern-4471"`,
+		`name="apps" value="fleet"`, `name="fleet_chat_role" value="viewer"`, `name="fleet_ops_role" value="readonly"`,
+		`name="code"`,
+	}
+	expectPopup := func(page, message string) {
+		t.Helper()
+		popup := dialogForm(t, page, "add-user-code")
+		if !strings.Contains(page, `data-reopen="add-user-code"`) || !strings.Contains(popup, `aria-labelledby="add-user-code-title" open>`) || !strings.Contains(popup, message) {
+			t.Fatalf("popup not reopened with %q:\n%s", message, page)
+		}
+		for _, want := range carried {
+			if !strings.Contains(popup, want) {
+				t.Fatalf("popup does not carry %s:\n%s", want, popup)
+			}
+		}
+		if strings.Contains(popup, `name="admin"`) || strings.Contains(page, `href="/account/security/verify?return_to=%2Fadmin"`) {
+			t.Fatalf("popup carries an unticked admin box, or the page fell back to the banner:\n%s", page)
+		}
+	}
+
+	// The sign-in (and its code) ages past a short window for real, so what
+	// follows proves the popup itself makes the session fresh. Times are
+	// stored in whole seconds.
+	cfg.MFAReauthWindow = 2 * time.Second
+	time.Sleep(2100 * time.Millisecond)
+	resp, page := alice.post("/admin", withValues(draft, url.Values{"action": {"create"}}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stale create: %d", resp.StatusCode)
+	}
+	expectPopup(page, "Creating an account needs your authenticator code from the last five minutes.")
+	if strings.Contains(dialogForm(t, page, "add-user-code"), `class="err"`) {
+		t.Fatalf("the popup opens with an error before any code was tried:\n%s", page)
+	}
+	notCreated("without a fresh code")
+
+	// A wrong code is refused with the draft kept. A stale form is refused
+	// without echoing the draft: only input that passed CSRF is put back.
+	next := codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))
+	_, page = alice.post("/admin", withValues(draft, url.Values{"action": {"step-up"}, "code": {codeFor(t, secret, time.Now().Add(time.Hour))}}))
+	expectPopup(page, "That code did not work.")
+	if _, page = alice.post("/admin", withValues(draft, url.Values{"action": {"step-up"}, "code": {next}, "csrf_token": {"wrong"}})); strings.Contains(page, "Code accepted") || strings.Contains(page, "carol@example.com") {
+		t.Fatalf("stale step-up accepted, or its draft echoed:\n%s", page)
+	}
+	notCreated("by a refused code")
+
+	// The current code: Add user reopens filled in, still nothing created.
+	_, page = alice.post("/admin", withValues(draft, url.Values{"action": {"step-up"}, "code": {next}}))
+	form := dialogForm(t, page, "add-user")
+	if !strings.Contains(page, `data-reopen="add-user"`) || !strings.Contains(form, `aria-labelledby="add-user-title" open>`) || !strings.Contains(form, "Code accepted. Check the details and choose Create account.") {
+		t.Fatalf("Add user not reopened after the code:\n%s", page)
+	}
+	for _, want := range []string{
+		`id="new-email" name="email" type="email" required autocomplete="off" placeholder="name@company.com" value="carol@example.com"`,
+		`value="Ops &amp; &#34;Trading&#34;"`, `value="Quartz-Harbor-Lantern-4471"`,
+		`name="apps" value="fleet" data-fleet-toggle checked`, `name="apps" value="explorer">`,
+		`name="fleet_chat_role" value="viewer" checked`, `name="fleet_ops_role" value="readonly" checked`,
+		`name="admin" value="on">`,
+	} {
+		if !strings.Contains(form, want) {
+			t.Fatalf("Add user is missing %s:\n%s", want, form)
+		}
+	}
+	if strings.Contains(page, `id="add-user-code"`) || !strings.Contains(page, "Changes take effect immediately.") {
+		t.Fatalf("the popup stayed open, or the page still asks for a fresh code:\n%s", page)
+	}
+	notCreated("by the code alone")
+
+	// Create account again, inside the window the code opened: created as
+	// typed.
+	_, page = alice.post("/admin", withValues(draft, url.Values{"action": {"create"}}))
+	if !strings.Contains(page, "Created carol@example.com with the password you entered") {
+		t.Fatalf("create after the code:\n%s", page)
+	}
+	if strings.Contains(page, "Quartz-Harbor-Lantern-4471") || strings.Contains(page, `data-reopen=`) {
+		t.Fatalf("the draft outlived the create:\n%s", page)
+	}
+	carol, err := st.PasswordAccountByEmail(ctx, "carol@example.com")
+	if err != nil || carol.Team != `Ops & "Trading"` || carol.IsAdmin {
+		t.Fatalf("created account: %+v %v", carol, err)
+	}
+	if ok, _ := st.HasApplicationAccess(ctx, carol.ID, "fleet"); !ok {
+		t.Fatal("fleet access not granted")
+	}
+	if ok, _ := st.HasApplicationAccess(ctx, carol.ID, "explorer"); ok {
+		t.Fatal("explorer granted though it was not ticked")
+	}
+	settings, _ := st.AllApplicationAccessSettings(ctx)
+	if got := decodeFleetSettings(settings[carol.ID]["fleet"]); got.ChatRole != "viewer" || got.OpsRole != "readonly" {
+		t.Fatalf("fleet settings: %+v", got)
+	}
+
+	// The same code cannot be used twice (the replay guard refuses it).
+	_, page = alice.post("/admin", withValues(draft, url.Values{"action": {"step-up"}, "code": {next}}))
+	expectPopup(page, "That code did not work.")
+
+	// The code alone is not a password re-verification: the Security page
+	// still sends the administrator to enter their password.
+	if resp, _ := alice.post("/account/security", url.Values{"action": {"regenerate"}}); resp.StatusCode != http.StatusSeeOther || !strings.HasPrefix(resp.Header.Get("Location"), "/account/security/verify?") {
+		t.Fatalf("Security action after the code-only step-up: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// A recovery-code sign-in is fresh but carries no authenticator code, so
+// Create account asks for one in the popup too; and an entry the server
+// rejects reopens Add user filled in, an empty application choice included.
+func TestAddUserKeepsTheDraftAfterARecoverySignInOrARejectedEntry(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	_, seeded := enrollViaStore(t, ts, st, cfg.MFAKeyring, "alice@example.com")
+	rc := newBrowser(t, ts)
+	rc.login("alice@example.com", plain)
+	if resp, _ := rc.post("/login/verify", url.Values{"recovery_code": {seeded[0]}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("recovery sign-in: %d", resp.StatusCode)
+	}
+	_, page := rc.post("/admin", url.Values{"action": {"create"}, "email": {"dan@example.com"}})
+	if popup := dialogForm(t, page, "add-user-code"); !strings.Contains(popup, `name="email" value="dan@example.com"`) {
+		t.Fatalf("recovery-code session was not asked for the code:\n%s", page)
+	}
+	// The recovery code is not accepted in the popup either.
+	if _, page = rc.post("/admin", url.Values{"action": {"step-up"}, "email": {"dan@example.com"}, "recovery_code": {seeded[1]}}); !strings.Contains(page, "That code did not work.") {
+		t.Fatalf("recovery code accepted as the step-up:\n%s", page)
+	}
+
+	// A second administrator with a fresh code, for the rejected entries.
+	bob := loginAdminWithFactor(t, ts, st, cfg, "bob@example.com", plain)
+	if err := st.SetAccountAdmin(context.Background(), "bob@example.com", true, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		form url.Values
+		want string
+	}{
+		{url.Values{"action": {"create"}, "email": {"eve@example.com"}, "password": {"short"}, "team": {"Ops"}}, "Temporary password:"},
+		{url.Values{"action": {"create"}, "email": {"not-an-email"}, "team": {"Ops"}}, "Enter a valid email address."},
+		// An application that is not registered (removed meanwhile, or a
+		// forged form) refuses the whole create: no account without it.
+		{url.Values{"action": {"create"}, "email": {"eve@example.com"}, "team": {"Ops"}, "apps": {"retired"}}, "One of the chosen applications no longer exists."},
+	} {
+		_, page := bob.post(tc.form)
+		form := dialogForm(t, page, "add-user")
+		if !strings.Contains(form, `aria-labelledby="add-user-title" open>`) || !strings.Contains(form, tc.want) || !strings.Contains(form, `value="`+tc.form.Get("email")+`"`) || !strings.Contains(form, `value="Ops"`) {
+			t.Fatalf("%v did not reopen Add user filled in:\n%s", tc.form, page)
+		}
+		// Nothing was ticked, so nothing comes back ticked.
+		if strings.Contains(form, `data-fleet-toggle checked`) || strings.Contains(form, `name="apps" value="explorer" checked`) {
+			t.Fatalf("an unticked application came back ticked:\n%s", form)
+		}
+		if i := strings.Index(page, `<main`); strings.Contains(page[i:strings.Index(page, `<dialog id="add-user"`)], tc.want) {
+			t.Fatalf("the reason is behind the dialog instead of in it:\n%s", page)
+		}
+	}
+	if _, err := st.PasswordAccountByEmail(context.Background(), "eve@example.com"); err == nil {
+		t.Fatal("a refused create left an account behind")
 	}
 }

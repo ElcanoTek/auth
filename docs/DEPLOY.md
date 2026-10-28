@@ -511,7 +511,9 @@ password. What people see:
   accounts at once. Every sensitive change in the console (see the admin
   console section) needs the acting administrator's own authenticator code
   entered less than five minutes ago; otherwise the page offers **Enter it
-  now** (password, plus their code) and the change is repeated. An
+  now** (password, plus their code) and the change is repeated. **Create
+  account** asks for the code in a popup instead and then reopens Add user
+  with everything that was typed. An
   administrator without an authenticator is sent to set one up first.
   Recommended rollout: leave the policy
   Optional, have every administrator enroll from Security, then switch to
@@ -594,13 +596,21 @@ two-factor policy or a per-account requirement, resetting someone's
 authenticator, and disabling or enabling an application all require that the acting
 administrator has an authenticator and entered its code less than five
 minutes ago (a sign-in with the code counts; the **Enter it now** step-up
-counts; a recovery-code sign-in does not). A stolen console session is
+counts; a recovery-code sign-in does not). When **Create account** is
+refused for that reason, a popup asks for the current code alone and then
+reopens Add user filled in, to be submitted again; nothing is created until
+then. That code-only check counts for console changes but is not a password
+re-verification, so it does not unlock the Security page (replacing or
+removing an authenticator, new recovery codes), which still asks for the
+password. A stolen console session is
 therefore not enough to lock people out, mint an account or widen what one
 can reach. Team tags (alone or in a batch) and signing yourself out are the
 only console writes that are not gated. On a server without `AUTH_MFA_KEY`
 the sensitive actions are only available from the `auth` CLI on the box. An
 application enable/disable repeats the live-session, administrator and fresh
-authenticator checks inside the same transaction as the toggle.
+authenticator checks inside the same transaction as the toggle, and so does
+**Create account**, which creates the account together with its team,
+administrator status and applications, or nothing at all.
 
 An administrator who has no authenticator yet is pointed at one from the
 console itself: their own row's **Settings** opens with **Your authenticator**
