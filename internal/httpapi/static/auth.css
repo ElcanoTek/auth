@@ -346,6 +346,13 @@ dialog.modal.fleet-perms .btn { margin-top: var(--space-4); }
   color: var(--color-text-primary); user-select: all; -webkit-user-select: all; word-break: break-all;
 }
 .secret .muted { margin: 0; font-size: var(--font-size-caption); }
+/* The one-time password popup: the password and its Copy button share a row. */
+.temp-password .secret { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.temp-password .secret .btn-ghost { flex: 0 0 auto; }
+.temp-password .secret .btn-ghost[hidden] { display: none; }
+.notice button.linkish { color: inherit; background: none; border: 0; padding: 0; font: inherit; font-weight: var(--font-weight-bold); cursor: pointer; text-decoration: underline; }
+.temp-password .banner { margin: var(--space-4) 0 0; }
+.temp-password .hint { margin-bottom: var(--space-4); }
 .qr { display: block; width: 220px; max-width: 100%; height: auto; aspect-ratio: 1 / 1; margin: 0 auto var(--space-4); border-radius: var(--radius-md); background: var(--color-white); padding: var(--space-2); }
 .codes { display: grid; grid-template-columns: 1fr; gap: var(--space-2); margin: 0 0 var(--space-5); padding: 0; list-style: none; }
 .codes li { font-family: var(--font-code); font-size: 0.9rem; letter-spacing: 0.03em; overflow-wrap: anywhere; color: var(--color-text-primary); padding: var(--space-2) var(--space-3); background: var(--color-surface-1); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); user-select: all; -webkit-user-select: all; }

@@ -216,7 +216,36 @@ func TestAdminConsoleIsAbsentInMagicMode(t *testing.T) {
 	}
 }
 
-var secretRE = regexp.MustCompile(`<div class="secret"[^>]*>(?s:.*?)<code>([^<]+)</code>`)
+var secretRE = regexp.MustCompile(`<dialog id="temp-password"[^>]*>(?s:.*?)<code id="temp-password-value">([^<]+)</code>`)
+
+// expectTempPasswordPopup checks that a one-time password is shown in its
+// own popup and not as a banner: rendered open (it shows without script),
+// reopened modally by admin.js, exempt from click-outside dismissal, shown
+// exactly once, and reachable again from the notice behind it.
+func expectTempPasswordPopup(t *testing.T, body, title, email string) {
+	t.Helper()
+	for _, want := range []string{
+		`<body data-reopen="temp-password">`,
+		`<dialog id="temp-password" class="modal temp-password" aria-labelledby="temp-password-title" aria-describedby="temp-password-for temp-password-warn" open data-keep-open>`,
+		`<h3 id="temp-password-title">` + title + `</h3>`,
+		`Temporary password for <strong>` + email + `</strong>`,
+		`<div class="banner warn" id="temp-password-warn"><strong>Save it now.</strong> It is shown only this once`,
+		`<p class="who" id="temp-password-for">Temporary password for`,
+		`data-copy="temp-password-value" hidden>Copy</button>`,
+		`<form method="dialog"><button class="btn" type="submit">I have saved it</button></form>`,
+		`commandfor="temp-password" command="show-modal">Show the temporary password</button>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("temporary password popup lacks %s:\n%s", want, body)
+		}
+	}
+	if n := strings.Count(body, `id="temp-password-value"`); n != 1 {
+		t.Fatalf("temporary password shown %d times", n)
+	}
+	if strings.Contains(body, `<div class="secret" role="status">`) {
+		t.Fatalf("temporary password still shown as a banner:\n%s", body)
+	}
+}
 
 // shownSecret is the one-time password as the administrator would read it.
 func shownSecret(t *testing.T, body string) string {
@@ -235,6 +264,7 @@ func TestAdminCreatesAccountWithAccessAndOneTimePassword(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Created carol@example.com") {
 		t.Fatalf("create = %d\n%s", resp.StatusCode, body)
 	}
+	expectTempPasswordPopup(t, body, "Account created", "carol@example.com")
 	temp := shownSecret(t, body)
 	if len(temp) != 20 {
 		t.Fatalf("temporary password %q has length %d", temp, len(temp))
@@ -297,6 +327,7 @@ func TestAdminResetRevokeDisableEnableBob(t *testing.T) {
 	if !strings.Contains(body, "Reset the password for bob@example.com") {
 		t.Fatalf("reset:\n%s", body)
 	}
+	expectTempPasswordPopup(t, body, "Password reset", "bob@example.com")
 	m := []string{"", shownSecret(t, body)}
 	old, oldSession, _ := passwordLogin(t, ts, cfg, "bob@example.com", plain)
 	_ = old.Body.Close()
@@ -647,7 +678,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	}
 	// A typed password that passes: created with team, must-change, no secret panel.
 	_, body = alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "password": {"Quartz-Harbor-Lantern-4471"}, "team": {" Trading "}, "apps": {"fleet"}})
-	if !strings.Contains(body, "Created dan@example.com with the password you entered") || strings.Contains(body, `class="secret" role`) || strings.Contains(body, `<body data-reopen`) {
+	if !strings.Contains(body, "Created dan@example.com with the password you entered") || strings.Contains(body, `id="temp-password"`) || strings.Contains(body, `<body data-reopen`) {
 		t.Fatalf("typed create:\n%s", body)
 	}
 	dan, err := st.PasswordAccountByEmail(context.Background(), "dan@example.com")
@@ -696,7 +727,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	}
 	// Blank password still generates one and shows it once.
 	_, body = alice.post(url.Values{"action": {"create"}, "email": {"eve@example.com"}})
-	if shownSecret(t, body) == "" || !strings.Contains(body, "Share the temporary password below") {
+	if shownSecret(t, body) == "" || !strings.Contains(body, "Share the temporary password with them") {
 		t.Fatalf("generated create:\n%s", body)
 	}
 	// Settings → team save and clear.

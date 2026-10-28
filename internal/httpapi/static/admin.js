@@ -149,7 +149,9 @@
   // these replaced did.
   // Both ends of the gesture must be outside: a press inside the panel (or
   // a text-selection drag) that is released over the backdrop stays open.
-  document.querySelectorAll("dialog.modal").forEach(function (dialog) {
+  // A dialog marked data-keep-open (the one-time password) is exempt: a
+  // stray click must not hide a password that is never shown again.
+  document.querySelectorAll("dialog.modal:not([data-keep-open])").forEach(function (dialog) {
     function outside(event) {
       if (event.target !== dialog) return false;
       var r = dialog.getBoundingClientRect();
@@ -160,6 +162,18 @@
     dialog.addEventListener("click", function (event) {
       if (pressedOutside && outside(event)) dialog.close();
       pressedOutside = false;
+    });
+  });
+  // Copy buttons (the one-time password): shown only where the clipboard
+  // can be written, and they say whether it worked.
+  document.querySelectorAll("[data-copy]").forEach(function (button) {
+    var source = document.getElementById(button.getAttribute("data-copy"));
+    if (!source || !navigator.clipboard || !window.isSecureContext) return;
+    button.hidden = false;
+    button.addEventListener("click", function () {
+      navigator.clipboard.writeText(source.textContent).then(
+        function () { button.textContent = "Copied"; },
+        function () { button.textContent = "Copy failed: select it instead"; });
     });
   });
   // A reopened dialog is rendered open (non-modal) so it shows without

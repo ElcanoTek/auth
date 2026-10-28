@@ -633,12 +633,13 @@ Tabs:
   application (deselecting one signs them out of it now) and, in its own
   Admin section, an **Auth Admin** pill (the administrator flag; your own and the
   last enabled administrator's are locked), **Settings** opens a popup with the team tag and the account
-  actions: Reset password (generates a new temporary password, shown once,
-  signs them out everywhere), Sign out everywhere, Disable / Enable. Destructive actions
+  actions: Reset password (generates a new temporary password, shown once in
+  a popup with a Copy button that a click outside does not close, and signs
+  them out everywhere), Sign out everywhere, Disable / Enable. Destructive actions
   ask for confirmation inside the popup. **Add user** (top right of the
   table) opens a popup: email, an optional team tag (existing tags are
   suggested), a temporary password you type or fill with **Generate** (blank
-  means a strong one is generated and shown once; a typed one must meet the
+  means a strong one is generated and shown once, in the same popup; a typed one must meet the
   same 12-character policy), the applications to grant as pills, and an
   Auth Admin pill. Selecting Auth Admin initially selects every application,
   but each application may then be unchecked. When Fleet is selected, its

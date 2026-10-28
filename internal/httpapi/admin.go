@@ -159,14 +159,16 @@ type adminAppView struct {
 // the page should show again (the Add user form after a rejected entry) so
 // the administrator's input is not lost behind a closed dialog.
 type adminResult struct {
-	Notice   string
-	Error    string
-	Secret   string // temporary password, shown once
-	ForEmail string
-	Tab      string
-	Status   int
-	Reopen   string
-	Redirect string // send the browser here instead of rendering (own sign-out)
+	Notice string
+	Error  string
+	Secret string // temporary password, shown once in its own popup
+	// SecretTitle heads that popup ("Password reset", "Account created").
+	SecretTitle string
+	ForEmail    string
+	Tab         string
+	Status      int
+	Reopen      string
+	Redirect    string // send the browser here instead of rendering (own sign-out)
 	// NeedVerify: the action is sensitive and the administrator's sign-in is
 	// older than the re-verification window; the page offers the step-up.
 	NeedVerify bool
@@ -184,6 +186,9 @@ const (
 	// reopenAddUserCode asks for the administrator's authenticator code when
 	// Create account was refused only because it is not fresh.
 	reopenAddUserCode = "add-user-code"
+	// reopenTempPassword shows a one-time temporary password in a popup, so
+	// it cannot scroll past unnoticed the way a banner can.
+	reopenTempPassword = "temp-password"
 )
 
 // addUserDraft is the Add user form as submitted. It is echoed back only
@@ -562,8 +567,8 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		if typed {
 			res.Notice = fmt.Sprintf("Created %s with the password you entered; they must change it at first sign-in.", account.Email)
 		} else {
-			res.Notice = fmt.Sprintf("Created %s. Share the temporary password below; they must change it at first sign-in.", account.Email)
-			res.Secret = plain
+			res.Notice = fmt.Sprintf("Created %s. Share the temporary password with them; they must change it at first sign-in.", account.Email)
+			res.Secret, res.SecretTitle, res.Reopen = plain, "Account created", reopenTempPassword
 		}
 		return res
 	}
@@ -595,8 +600,8 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return res.failed("reset password", err)
 		}
 		audit("admin.password_reset", target.ID, "")
-		res.Notice = fmt.Sprintf("Reset the password for %s and signed them out everywhere. Share the temporary password below.", target.Email)
-		res.Secret = plain
+		res.Notice = fmt.Sprintf("Reset the password for %s and signed them out everywhere. Share the temporary password with them.", target.Email)
+		res.Secret, res.SecretTitle, res.Reopen = plain, "Password reset", reopenTempPassword
 	case "revoke-sessions":
 		// Allowed on one's own row too: it is "sign out everywhere", which
 		// ends this session as well, so the browser goes to the sign-in page.
@@ -1024,7 +1029,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 	data := map[string]any{
 		"Brand": s.cfg.BrandName, "Email": actor.Email, "CSRF": csrf,
 		"Tabs": tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
-		"Secret": result.Secret, "SecretFor": result.ForEmail, "Reopen": result.Reopen, "Draft": result.Draft,
+		"Secret": result.Secret, "SecretTitle": result.SecretTitle, "SecretFor": result.ForEmail, "Reopen": result.Reopen, "Draft": result.Draft,
 		"NeedVerify": result.NeedVerify, "NeedEnroll": result.NeedEnroll, "MFAAvailable": s.mfaAvailable(),
 		"ActorEnrolled": actor.MFAEnrolled, "ActorFresh": actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
 		"MFAPolicy": policy.Mode.Label(), "MFARevision": policy.Revision,
