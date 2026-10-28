@@ -350,6 +350,12 @@ dialog.modal.fleet-perms .btn { margin-top: var(--space-4); }
 .temp-password .secret { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .temp-password .secret .btn-ghost { flex: 0 0 auto; }
 .temp-password .secret .btn-ghost[hidden] { display: none; }
+/* The confirm popup after a step-up: the change as a question, then
+   Confirm and a full-width Cancel. */
+.confirm-change .question { margin: var(--space-4) 0 0; font-size: var(--font-size-body); font-weight: var(--font-weight-bold); color: var(--color-text-primary); overflow-wrap: anywhere; }
+.confirm-change .hint { overflow-wrap: anywhere; }
+.confirm-change form[method="post"] .btn { margin-top: var(--space-5); }
+.modal .btn-ghost.cancel { width: 100%; justify-content: center; min-height: 2.5rem; margin-top: var(--space-2); }
 .notice button.linkish { color: inherit; background: none; border: 0; padding: 0; font: inherit; font-weight: var(--font-weight-bold); cursor: pointer; text-decoration: underline; }
 .temp-password .banner { margin: var(--space-4) 0 0; }
 .temp-password .hint { margin-bottom: var(--space-4); }

@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -307,15 +309,26 @@ func TestConsoleTwoFactorChangesNeedAFreshFactorProof(t *testing.T) {
 		t.Fatalf("alice factor login: %d", resp.StatusCode)
 	}
 	cfg.MFAReauthWindow = time.Nanosecond
-	for _, form := range []url.Values{
-		{"action": {"set-policy"}, "mode": {"admins"}, "revision": {"0"}},
-		{"action": {"set-mfa-required"}, "email": {"bob@example.com"}, "required": {"on"}},
-		{"action": {"disable"}, "email": {"bob@example.com"}},
-		{"action": {"disable-app"}, "app": {"fleet"}},
-		{"action": {"batch"}, "op": {"require-mfa"}, "emails": {"bob@example.com"}},
+	for _, tc := range []struct {
+		form    url.Values
+		carried []string
+	}{
+		{url.Values{"action": {"set-policy"}, "mode": {"admins"}, "revision": {"0"}}, []string{`name="mode" value="admins"`, `name="revision" value="0"`}},
+		{url.Values{"action": {"set-mfa-required"}, "email": {"bob@example.com"}, "required": {"on"}}, []string{`name="email" value="bob@example.com"`, `name="required" value="on"`}},
+		{url.Values{"action": {"disable"}, "email": {"bob@example.com"}}, []string{`name="email" value="bob@example.com"`}},
+		{url.Values{"action": {"disable-app"}, "app": {"fleet"}}, []string{`name="app" value="fleet"`}},
+		{url.Values{"action": {"batch"}, "op": {"require-mfa"}, "emails": {"bob@example.com"}}, []string{`name="op" value="require-mfa"`, `name="emails" value="bob@example.com"`}},
 	} {
-		if _, page := alice.post("/admin", form); !strings.Contains(page, "Confirm it is you.") || !strings.Contains(page, `href="/account/security/verify?return_to=%2Fadmin"`) {
-			t.Fatalf("stale sign-in %v:\n%s", form, page)
+		_, page := alice.post("/admin", tc.form)
+		popup := dialogForm(t, page, "step-up")
+		want := append([]string{`name="action" value="step-up"`, `name="pending_action" value="` + tc.form.Get("action") + `"`, `name="code"`}, tc.carried...)
+		for _, w := range want {
+			if !strings.Contains(popup, w) {
+				t.Fatalf("stale %v: code popup lacks %s:\n%s", tc.form, w, page)
+			}
+		}
+		if !strings.Contains(page, `data-reopen="step-up"`) || strings.Contains(page, `href="/account/security/verify?return_to=%2Fadmin"`) {
+			t.Fatalf("stale %v: popup not reopened, or the banner is back:\n%s", tc.form, page)
 		}
 	}
 	if p, _ := st.MFAPolicy(context.Background()); p.Mode != mfa.ModeOptional {
@@ -341,7 +354,7 @@ func TestConsoleTwoFactorChangesNeedAFreshFactorProof(t *testing.T) {
 	rc := newBrowser(t, ts)
 	rc.login("alice@example.com", plain)
 	rc.post("/login/verify", url.Values{"recovery_code": {seeded[0]}})
-	if resp, page := rc.post("/admin", url.Values{"action": {"reset-mfa"}, "email": {"bob@example.com"}, "reason": {"x"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Confirm it is you.") {
+	if resp, page := rc.post("/admin", url.Values{"action": {"reset-mfa"}, "email": {"bob@example.com"}, "reason": {"x"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, `<dialog id="step-up"`) {
 		t.Fatalf("recovery-code session used as fresh TOTP proof: %d\n%s", resp.StatusCode, page)
 	}
 }
@@ -716,5 +729,203 @@ func TestAddUserKeepsTheDraftAfterARecoverySignInOrARejectedEntry(t *testing.T) 
 	}
 	if _, err := st.PasswordAccountByEmail(context.Background(), "eve@example.com"); err == nil {
 		t.Fatal("a refused create left an account behind")
+	}
+}
+
+var hiddenInputRE = regexp.MustCompile(`<input type="hidden" name="([^"]+)" value="([^"]*)">`)
+
+// renderedForm is what a dialog's first form submits: its hidden fields
+// exactly as the page rendered them.
+func renderedForm(t *testing.T, page, id string) url.Values {
+	t.Helper()
+	v := url.Values{}
+	for _, m := range hiddenInputRE.FindAllStringSubmatch(dialogForm(t, page, id), -1) {
+		v.Add(html.UnescapeString(m[1]), html.UnescapeString(m[2]))
+	}
+	return v
+}
+
+// Every gated change other than Add user: a stale code opens the code
+// popup carrying the request, a good code opens a confirm popup that says
+// what will change (and changes nothing), and Confirm makes the change.
+func TestGatedChangeAsksForTheCodeThenConfirms(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice, secret := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
+	ctx := context.Background()
+	policyIs := func(want mfa.Mode, when string) {
+		t.Helper()
+		if p, _ := st.MFAPolicy(ctx); p.Mode != want {
+			t.Fatalf("policy %s %s, want %s", p.Mode, when, want)
+		}
+	}
+	// The sign-in ages past a short window for real, so the confirm below
+	// passes only because the popup's code made the session fresh.
+	cfg.MFAReauthWindow = 2 * time.Second
+	time.Sleep(2100 * time.Millisecond)
+	change := url.Values{"mode": {"admins"}, "revision": {"0"}}
+	_, page := alice.post("/admin", withValues(change, url.Values{"action": {"set-policy"}}))
+	if !strings.Contains(dialogForm(t, page, "step-up"), "Changing the two-factor policy needs your authenticator code") {
+		t.Fatalf("code popup does not say why:\n%s", page)
+	}
+	policyIs(mfa.ModeOptional, "after a stale save")
+
+	if !strings.Contains(page, `<form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>`) {
+		t.Fatalf("code popup has no Cancel that works without script:\n%s", page)
+	}
+	stepUp := renderedForm(t, page, "step-up")
+	_, page = alice.post("/admin", withValues(stepUp, url.Values{"code": {codeFor(t, secret, time.Now().Add(time.Hour))}}))
+	if popup := dialogForm(t, page, "step-up"); !strings.Contains(popup, "That code did not work.") || !strings.Contains(popup, `name="mode" value="admins"`) {
+		t.Fatalf("wrong code did not reopen the popup with the request:\n%s", page)
+	}
+
+	_, page = alice.post("/admin", withValues(stepUp, url.Values{"code": {codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))}}))
+	confirm := dialogForm(t, page, "confirm-change")
+	for _, want := range []string{
+		`aria-labelledby="confirm-change-title" aria-describedby="confirm-change-question" open>`,
+		"Code accepted. Nothing has changed yet.",
+		"Change the two-factor policy from Optional to Required for administrators?",
+		`name="action" value="set-policy"`, `name="mode" value="admins"`, `name="revision" value="0"`,
+		`<button class="btn" type="submit">Confirm</button>`,
+	} {
+		if !strings.Contains(confirm, want) {
+			t.Fatalf("confirm popup lacks %s:\n%s", want, confirm)
+		}
+	}
+	if !strings.Contains(page, `<form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>`) || strings.Contains(confirm, `name="pending_action"`) || strings.Contains(confirm, `name="code"`) {
+		t.Fatalf("confirm popup has no Cancel, or carries step-up fields:\n%s", page)
+	}
+	policyIs(mfa.ModeOptional, "after the code alone")
+	confirmForm := renderedForm(t, page, "confirm-change")
+
+	// Confirm is an ordinary request: a stale form is refused, and once the
+	// code's window has passed it asks for the code again.
+	if _, page = alice.post("/admin", withValues(confirmForm, url.Values{"csrf_token": {"wrong"}})); !strings.Contains(page, staleFormMessage) {
+		t.Fatalf("confirm with a stale form:\n%s", page)
+	}
+	cfg.MFAReauthWindow = time.Nanosecond
+	if _, page = alice.post("/admin", confirmForm); !strings.Contains(dialogForm(t, page, "step-up"), `name="pending_action" value="set-policy"`) {
+		t.Fatalf("confirm after the window did not ask for the code again:\n%s", page)
+	}
+	policyIs(mfa.ModeOptional, "after refused confirms")
+
+	// Inside the window the code opened, the rendered Confirm makes the change.
+	cfg.MFAReauthWindow = 2 * time.Second
+	_, page = alice.post("/admin", confirmForm)
+	if !strings.Contains(page, "Two-factor policy is now required for administrators.") {
+		t.Fatalf("confirm:\n%s", page)
+	}
+	policyIs(mfa.ModeAdmins, "after Confirm")
+	// The same form again carries the old revision and is refused.
+	if _, page = alice.post("/admin", confirmForm); !strings.Contains(page, "changed by someone else meanwhile") {
+		t.Fatalf("replayed confirm with a stale revision:\n%s", page)
+	}
+}
+
+// The confirm popup spells out an Access save (removals and Fleet roles
+// included) and a batch, and Confirm applies exactly the carried request.
+func TestConfirmPopupDescribesAccessAndBatchChanges(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice, secret := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
+	ctx := context.Background()
+	bob, _ := st.PasswordAccountByEmail(ctx, "bob@example.com")
+	cfg.MFAReauthWindow = time.Nanosecond
+	access := url.Values{"email": {"bob@example.com"}, "apps": {"explorer"}}
+	_, page := alice.post("/admin", withValues(access, url.Values{"action": {"set-access"}}))
+	_, page = alice.post("/admin", withValues(renderedForm(t, page, "step-up"), url.Values{"code": {codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))}}))
+	confirm := dialogForm(t, page, "confirm-change")
+	if !strings.Contains(confirm, "Save access for bob@example.com?") || !strings.Contains(confirm, "Applications: Explorer. Removed, which signs them out of it now: Fleet. Auth Admin: no.") {
+		t.Fatalf("access confirm:\n%s", confirm)
+	}
+	if ok, _ := st.HasApplicationAccess(ctx, bob.ID, "fleet"); !ok {
+		t.Fatal("access changed before Confirm")
+	}
+	cfg.MFAReauthWindow = 0
+	alice.post("/admin", renderedForm(t, page, "confirm-change"))
+	if ok, _ := st.HasApplicationAccess(ctx, bob.ID, "fleet"); ok {
+		t.Fatal("Confirm did not apply the carried access")
+	}
+	if ok, _ := st.HasApplicationAccess(ctx, bob.ID, "explorer"); !ok {
+		t.Fatal("Confirm did not grant explorer")
+	}
+
+	// A Fleet grant is described with its roles.
+	p := &pendingChange{Action: "set-access", Fields: []pendingField{{"email", "bob@example.com"}, {"apps", "fleet"}, {"fleet_chat_role", "viewer"}, {"fleet_ops_role", "client"}, {"admin", "on"}}}
+	req := httptest.NewRequest(http.MethodPost, "/admin", nil)
+	srv := &Server{store: st, cfg: cfg}
+	srv.describeChange(req, p)
+	if p.Detail != "Applications: Fleet (Chat Viewer \u00b7 Ops Contributor). Removed, which signs them out of it now: Explorer. Auth Admin: yes." {
+		t.Fatalf("fleet access detail = %q", p.Detail)
+	}
+	batch := &pendingChange{Action: "batch", Fields: []pendingField{{"op", "signout"}, {"emails", "a@example.com"}, {"emails", "b@example.com"}}}
+	srv.describeChange(req, batch)
+	if batch.Question != "Sign 2 accounts out of every app and device?" || batch.Detail != "a@example.com, b@example.com." {
+		t.Fatalf("batch confirm = %q %q", batch.Question, batch.Detail)
+	}
+	// No applications ticked is a real choice, and says so.
+	none := &pendingChange{Action: "set-access", Fields: []pendingField{{"email", "bob@example.com"}}}
+	srv.describeChange(req, none)
+	if !strings.HasPrefix(none.Detail, "Applications: none. Removed, which signs them out of it now: Explorer.") {
+		t.Fatalf("no-applications detail = %q", none.Detail)
+	}
+	// Under "Required for administrators": promoting an account without an
+	// authenticator signs it out, and removing an administrator's own
+	// requirement leaves the policy's in place.
+	if _, _, err := st.SetMFAPolicy(ctx, mfa.ModeAdmins, "", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	promote := &pendingChange{Action: "set-access", Fields: []pendingField{{"email", "bob@example.com"}, {"admin", "on"}}}
+	srv.describeChange(req, promote)
+	if !strings.HasSuffix(promote.Detail, "Auth Admin: yes. The policy requires two-factor sign-in of administrators and they have no authenticator, so they are signed out now and set one up at their next sign-in.") {
+		t.Fatalf("promotion detail = %q", promote.Detail)
+	}
+	unrequire := &pendingChange{Action: "set-mfa-required", Fields: []pendingField{{"email", "alice@example.com"}, {"required", "off"}}}
+	srv.describeChange(req, unrequire)
+	if unrequire.Detail != "Only this account's own requirement is removed: the deployment policy still requires two-factor sign-in of them." {
+		t.Fatalf("policy-bound unrequire detail = %q", unrequire.Detail)
+	}
+}
+
+// Only gated actions, with their allowlisted body fields, ride through the
+// popups; anything else is refused, and nothing runs.
+func TestStepUpCarriesOnlyGatedRequests(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice, _ := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
+	cfg.MFAReauthWindow = time.Nanosecond
+	for _, tc := range []struct {
+		path string
+		form url.Values
+	}{
+		{"/admin", url.Values{"action": {"step-up"}, "pending_action": {"set-team"}, "code": {"123456"}}},
+		{"/admin", url.Values{"action": {"step-up"}, "pending_action": {"create"}, "code": {"123456"}}},
+		{"/admin", url.Values{"action": {"step-up"}, "pending_action": {"set-policy", "disable"}, "code": {"123456"}}},
+		{"/admin", url.Values{"action": {"step-up"}, "pending_action": {"batch"}, "op": {"team"}, "code": {"123456"}}},
+		{"/admin", url.Values{"action": {"step-up"}, "pending_action": {"no-such-action"}, "code": {"123456"}}},
+		// A field the popups would carry, supplied in the URL instead.
+		{"/admin?email=bob@example.com", url.Values{"action": {"disable"}}},
+	} {
+		if resp, _ := alice.post(tc.path, tc.form); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s %v = %d, want 400", tc.path, tc.form, resp.StatusCode)
+		}
+	}
+	// Fields a gated action does not read are dropped on the way through.
+	_, page := alice.post("/admin", url.Values{"action": {"disable"}, "email": {"bob@example.com"}, "redirect_to": {"https://evil.example"}, "tab": {"fleet"}})
+	if popup := dialogForm(t, page, "step-up"); strings.Contains(popup, "evil.example") || strings.Contains(popup, `name="tab"`) {
+		t.Fatalf("unlisted fields carried:\n%s", popup)
+	}
+	if b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); b.DisabledAt != nil {
+		t.Fatal("bob disabled by a refused request")
+	}
+}
+
+// Every gated action except Add user (its draft has its own flow) can be
+// carried through the popups.
+func TestEveryGatedActionCanBeCarried(t *testing.T) {
+	for action := range sensitiveActions {
+		if action == "create" {
+			continue
+		}
+		if _, ok := pendingFields[action]; !ok {
+			t.Errorf("gated action %q has no pendingFields entry", action)
+		}
 	}
 }
