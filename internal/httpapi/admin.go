@@ -596,7 +596,10 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	fresh := actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow())
 	// The same facts, re-checked inside the store transactions that accept
 	// an actor proof.
-	proof := &store.ActorProof{SessionHash: identity.Session.TokenHash, FreshAfter: now.Add(-s.reauthWindow()).Unix(), RequireFactor: true}
+	// Window makes the store judge freshness when each write's transaction
+	// runs (after password hashing, a lock wait, earlier accounts of a
+	// batch), not only as of now.
+	proof := &store.ActorProof{SessionHash: identity.Session.TokenHash, FreshAfter: now.Add(-s.reauthWindow()).Unix(), RequireFactor: true, Window: s.reauthWindow()}
 	var draft *addUserDraft
 	if action == "create" || action == "step-up" {
 		draft = addUserDraftFromForm(r)
@@ -813,17 +816,14 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		if err != nil {
 			return res.failed("hash password", err)
 		}
-		// One transaction: the administrator is re-checked as of now, after
-		// the hashing (they may have been signed out, demoted or passed the
-		// window meanwhile), and the account is created with everything
-		// chosen for it or not at all.
-		at := time.Now()
-		atProof := *proof
-		atProof.FreshAfter = at.Add(-s.reauthWindow()).Unix()
+		// One transaction: the administrator is re-checked when it runs,
+		// after the hashing (they may have been signed out, demoted or
+		// passed the window meanwhile), and the account is created with
+		// everything chosen for it or not at all.
 		account, granted, err := s.store.CreateAccountBy(ctx, store.AccountCreate{
 			Email: email, PasswordHash: encoded, Team: team, Admin: r.FormValue("admin") == "on",
 			Applications: r.Form["apps"], ApplicationSettings: appSettings,
-		}, actor.ID, &atProof, at.Unix())
+		}, actor.ID, proof, now.Unix())
 		switch {
 		case errors.Is(err, store.ErrActorNotFresh):
 			return askForCode()
@@ -873,8 +873,13 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			var encoded string
 			encoded, err = s.hashPassword(ctx, plain)
 			if err == nil {
-				err = s.store.SetPassword(ctx, target.Email, encoded, true, now.Unix())
+				// The administrator is re-checked in the same transaction,
+				// when it runs (after the hashing).
+				err = s.store.SetPasswordBy(ctx, target.Email, encoded, true, actor.ID, proof, now.Unix())
 			}
+		}
+		if errors.Is(err, store.ErrActorNotFresh) {
+			return needVerify()
 		}
 		if err != nil {
 			return res.failed("reset password", err)
@@ -886,12 +891,17 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		// Allowed on one's own row too: it is "sign out everywhere", which
 		// ends this session as well, so the browser goes to the sign-in page.
 		// Anyone else's sessions are a sensitive change.
+		var revokeProof *store.ActorProof
 		if !self {
 			if r, ok := gate(sensitiveActions[action]); !ok {
 				return r
 			}
+			revokeProof = proof
 		}
-		n, err := s.store.RevokeAllAuthSessions(ctx, target.ID, now.Unix(), "admin_revoked")
+		n, err := s.store.RevokeAllAuthSessionsBy(ctx, target.ID, actor.ID, revokeProof, now.Unix(), "admin_revoked")
+		if errors.Is(err, store.ErrActorNotFresh) {
+			return needVerify()
+		}
 		if err != nil {
 			return res.failed("revoke sessions", err)
 		}
@@ -907,7 +917,10 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Error = "You cannot disable your own account."
 			return res
 		}
-		err := s.store.SetAccountDisabled(ctx, target.Email, disable, now.Unix())
+		err := s.store.SetAccountDisabledBy(ctx, target.Email, disable, actor.ID, proof, now.Unix())
+		if errors.Is(err, store.ErrActorNotFresh) {
+			return needVerify()
+		}
 		if errors.Is(err, store.ErrLastAdmin) {
 			res.Error = "That is the last enabled administrator. Make someone else an admin first."
 			return res
@@ -928,7 +941,10 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Error = "You cannot remove your own administrator access."
 			return res
 		}
-		err := s.store.SetAccountAdmin(ctx, target.Email, grant, now.Unix())
+		err := s.store.SetAccountAdminBy(ctx, target.Email, grant, actor.ID, proof, now.Unix())
+		if errors.Is(err, store.ErrActorNotFresh) {
+			return needVerify()
+		}
 		if errors.Is(err, store.ErrLastAdmin) {
 			res.Error = "That is the last enabled administrator. Make someone else an admin first."
 			return res
@@ -1059,12 +1075,12 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return res
 		}
 		save := store.AccessSave{Applications: apps, ApplicationSettings: appSettings}
-		var saveProof *store.ActorProof
 		if adminChange {
 			save.Admin = &wantAdmin
-			saveProof = proof
 		}
-		outcome, err := s.store.SaveAccountAccess(ctx, target.Email, save, actor.ID, saveProof, now.Unix())
+		// Every Access save is gated, so every one is re-checked in its
+		// transaction, applications alone included.
+		outcome, err := s.store.SaveAccountAccess(ctx, target.Email, save, actor.ID, proof, now.Unix())
 		switch {
 		case errors.Is(err, store.ErrApplicationNotFound):
 			res.Error = "One of those applications is not registered."
@@ -1198,6 +1214,13 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 		res.Error = fmt.Sprintf("Stopped at %s: something went wrong. Already done before that: %s. Skipped: %s. Review the table before repeating.", email, orNone(done), orNone(skipped))
 		return res
 	}
+	// expired: the store refused the administrator's proof part-way. Not
+	// offered for repeating: part of the selection is already done, and
+	// repeating all of it could undo what someone changed since.
+	expired := func() adminResult {
+		res.Error = fmt.Sprintf("Your authenticator code expired partway through. Already done: %s. Select the accounts that remain and repeat the change.", orNone(done))
+		return res
+	}
 	for _, raw := range emails {
 		email, ok := validAdminEmail(raw)
 		if !ok {
@@ -1223,7 +1246,10 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 				skip(target.Email, "you; use your own row to sign yourself out")
 				continue
 			}
-			if _, err := s.store.RevokeAllAuthSessions(ctx, target.ID, now.Unix(), "admin_revoked"); err != nil {
+			if _, err := s.store.RevokeAllAuthSessionsBy(ctx, target.ID, actor.ID, proof, now.Unix(), "admin_revoked"); err != nil {
+				if errors.Is(err, store.ErrActorNotFresh) {
+					return expired()
+				}
 				return stopped(target.Email, "revoke", err)
 			}
 			audit("admin.sessions_revoked", target.ID, "")
@@ -1244,11 +1270,7 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 			}
 			if _, err := s.store.SetAccountMFARequiredBy(ctx, target.Email, want, actor.ID, proof, now.Unix()); err != nil {
 				if errors.Is(err, store.ErrActorNotFresh) {
-					// Not offered for repeating: part of the selection is
-					// already done, and repeating all of it could undo what
-					// someone changed since.
-					res.Error = fmt.Sprintf("Your authenticator code expired partway through. Already done: %s. Select the accounts that remain and repeat the change.", orNone(done))
-					return res
+					return expired()
 				}
 				return stopped(target.Email, "mfa required", err)
 			}

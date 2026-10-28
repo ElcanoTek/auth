@@ -193,11 +193,26 @@ type ActorProof struct {
 	SessionHash   string
 	FreshAfter    int64
 	RequireFactor bool // the fresh proof must include an authenticator code
+	// Window, when set, also judges freshness at the moment the check runs
+	// (the transaction already holds the write lock): the cutoff becomes the
+	// later of FreshAfter and the clock minus Window, and session expiry is
+	// judged by the clock too. A lock wait or a long batch then cannot
+	// stretch the window the request arrived with.
+	Window time.Duration
 }
 
 func requireActorTx(ctx context.Context, tx *sql.Tx, actorID string, proof *ActorProof, now int64) error {
 	if proof == nil {
 		return nil
+	}
+	freshAfter := proof.FreshAfter
+	if proof.Window > 0 {
+		if at := time.Now().Unix(); at > now {
+			now = at
+		}
+		if cutoff := now - int64(proof.Window/time.Second); cutoff > freshAfter {
+			freshAfter = cutoff
+		}
 	}
 	var isAdmin, enrolled int
 	var disabled, revoked, reauthAt, mfaAt sql.NullInt64
@@ -227,12 +242,12 @@ func requireActorTx(ctx context.Context, tx *sql.Tx, actorID string, proof *Acto
 	// disable, which downgrades the evidence, is seen here. Without it:
 	// signed in, or re-verified, at or after FreshAfter.
 	if proof.RequireFactor {
-		if !hasMethodIn(amr, "otp") || enrolled == 0 || !mfaAt.Valid || mfaAt.Int64 < proof.FreshAfter {
+		if !hasMethodIn(amr, "otp") || enrolled == 0 || !mfaAt.Valid || mfaAt.Int64 < freshAfter {
 			return ErrActorNotFresh
 		}
 		return nil
 	}
-	if created < proof.FreshAfter && (!reauthAt.Valid || reauthAt.Int64 < proof.FreshAfter) {
+	if created < freshAfter && (!reauthAt.Valid || reauthAt.Int64 < freshAfter) {
 		return ErrActorNotFresh
 	}
 	return nil

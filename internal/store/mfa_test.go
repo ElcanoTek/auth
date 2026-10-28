@@ -1206,6 +1206,110 @@ func TestCreateAccountByIsAtomicAndChecksTheActor(t *testing.T) {
 	}
 }
 
+// Every console write re-checks the acting administrator in its own
+// transaction: a stale code or an ended session changes nothing, a fresh
+// one goes through, and the CLI (no proof) is unaffected.
+func TestConsoleWritesRecheckTheActor(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateApplication(ctx, "fleet", "Fleet", "https://fleet.example/cb", "", "hash", now); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, now)
+	enroll(t, s, alice, "", now)
+	evidenceSession(t, s, alice, "alice-s", "pwd otp", now, now)
+	session(t, s, bob, "bob-s", now)
+	fresh := &ActorProof{SessionHash: "alice-s", FreshAfter: now - 60, RequireFactor: true}
+	stale := &ActorProof{SessionHash: "alice-s", FreshAfter: now + 30, RequireFactor: true}
+	writes := map[string]func(*ActorProof) error{
+		"reset password": func(p *ActorProof) error {
+			return s.SetPasswordBy(ctx, bob.Email, "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3", true, alice.ID, p, now+1)
+		},
+		"disable": func(p *ActorProof) error { return s.SetAccountDisabledBy(ctx, bob.Email, true, alice.ID, p, now+1) },
+		"grant admin": func(p *ActorProof) error {
+			return s.SetAccountAdminBy(ctx, bob.Email, true, alice.ID, p, now+1)
+		},
+		"sign out": func(p *ActorProof) error {
+			_, err := s.RevokeAllAuthSessionsBy(ctx, bob.ID, alice.ID, p, now+1, "admin_revoked")
+			return err
+		},
+		"applications only": func(p *ActorProof) error {
+			_, err := s.SaveAccountAccess(ctx, bob.Email, AccessSave{Applications: []string{"fleet"}}, alice.ID, p, now+1)
+			return err
+		},
+	}
+	unchanged := func(when string) {
+		t.Helper()
+		b, _ := s.PasswordAccountByEmail(ctx, bob.Email)
+		access, _ := s.ApplicationAccess(ctx, bob.ID)
+		if b.PasswordHash != bob.PasswordHash || b.DisabledAt != nil || b.IsAdmin || len(access) != 0 || liveSessions(t, s, bob.ID, now+1) != 1 {
+			t.Fatalf("bob changed %s: %+v access=%v", when, b, access)
+		}
+	}
+	for name, write := range writes {
+		if err := write(stale); !errors.Is(err, ErrActorNotFresh) {
+			t.Fatalf("%s with a stale code: %v", name, err)
+		}
+	}
+	unchanged("by stale proofs")
+	if _, err := s.RevokeAuthSession(ctx, "alice-s", now, "test"); err != nil {
+		t.Fatal(err)
+	}
+	for name, write := range writes {
+		if err := write(fresh); !errors.Is(err, ErrActorNotFresh) {
+			t.Fatalf("%s from an ended session: %v", name, err)
+		}
+	}
+	unchanged("from an ended session")
+	evidenceSession(t, s, alice, "alice-2", "pwd otp", now, now)
+	fresh.SessionHash = "alice-2"
+	for _, name := range []string{"sign out", "applications only", "grant admin", "reset password", "disable"} {
+		if err := writes[name](fresh); err != nil {
+			t.Fatalf("%s with a fresh code: %v", name, err)
+		}
+	}
+	b, _ := s.PasswordAccountByEmail(ctx, bob.Email)
+	if b.PasswordHash == bob.PasswordHash || b.DisabledAt == nil || !b.IsAdmin {
+		t.Fatalf("fresh writes did not land: %+v", b)
+	}
+}
+
+// With a Window the proof is judged when the transaction runs: a request
+// that arrived inside the window but reaches its write after it (a lock
+// wait, a long batch) is refused, though its own cutoff would pass.
+func TestActorProofIsJudgedWhenTheTransactionRuns(t *testing.T) {
+	s, alice, _ := mfaFixture(t)
+	ctx := context.Background()
+	wall := time.Now().Unix()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, wall); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, wall)
+	enroll(t, s, alice, "", wall-1000)
+	evidenceSession(t, s, alice, "alice-s", "pwd otp", wall-400, wall-400)
+	// As captured when the request arrived 200 seconds ago: the code was
+	// then 200 seconds old, inside a five-minute window.
+	arrived := wall - 200
+	asOfArrival := &ActorProof{SessionHash: "alice-s", FreshAfter: arrived - 300, RequireFactor: true}
+	if err := s.SetAccountDisabledBy(ctx, bob.Email, true, alice.ID, asOfArrival, arrived); err != nil {
+		t.Fatalf("without a window the arrival-time cutoff decides: %v", err)
+	}
+	judgedNow := &ActorProof{SessionHash: "alice-s", FreshAfter: arrived - 300, RequireFactor: true, Window: 5 * time.Minute}
+	if err := s.SetAccountDisabledBy(ctx, bob.Email, false, alice.ID, judgedNow, arrived); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("a code 400 seconds old passed a five-minute window: %v", err)
+	}
+	if b, _ := s.PasswordAccountByEmail(ctx, bob.Email); b.DisabledAt == nil {
+		t.Fatal("the refused write changed bob")
+	}
+	judgedNow.Window = 10 * time.Minute
+	if err := s.SetAccountDisabledBy(ctx, bob.Email, false, alice.ID, judgedNow, arrived); err != nil {
+		t.Fatalf("a code inside the window refused: %v", err)
+	}
+}
+
 // The Access popup's save is all or nothing: an unknown application, or a
 // refused demotion, leaves the flags and grants exactly as they were.
 func TestSaveAccountAccessIsAtomic(t *testing.T) {
