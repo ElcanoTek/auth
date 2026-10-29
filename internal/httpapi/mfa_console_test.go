@@ -1033,6 +1033,10 @@ func TestTeamRenameFromTheConsole(t *testing.T) {
 	if !strings.Contains(page, "Renamed team Trading to Research (2 accounts). Fleet is updated in the background.") {
 		t.Fatalf("notice:\n%s", page)
 	}
+	// alice was on the team: Your account on this same page has the new name.
+	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag" title="Team">Research</span>`) {
+		t.Fatalf("Your account after renaming the administrator's own team:\n%s", mine)
+	}
 	if a, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); a.Team != "Research" {
 		t.Fatalf("bob's team = %q", a.Team)
 	}
@@ -1150,5 +1154,19 @@ func TestAppsPageHasYourAccount(t *testing.T) {
 	makeAdmin(t, st, "bob@example.com")
 	if _, body = bob.get("/account"); !strings.Contains(accountPopup(t, body), `<a class="btn-ghost" href="/change-password?return_to=/account">Change</a>`) {
 		t.Fatalf("an administrator's Your account lacks the password change:\n%s", body)
+	}
+}
+
+// A page that follows a change to the administrator's own team shows the new
+// team in Your account (TestTeamRenameFromTheConsole covers a rename).
+func TestYourAccountShowsATeamChangedOnThisRequest(t *testing.T) {
+	ts, _, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	resp, page := alice.post(url.Values{"action": {"set-team"}, "email": {"alice@example.com"}, "team": {"Trading"}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set-team: %d\n%s", resp.StatusCode, page)
+	}
+	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag" title="Team">Trading</span>`) {
+		t.Fatalf("Your account after setting the team:\n%s", mine)
 	}
 }
