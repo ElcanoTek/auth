@@ -380,7 +380,9 @@ registers a Fleet that has no teams yet.
    `set` rows take Fleet's team; `clear` rows are Auth accounts with no Fleet
    account, whose Auth team is removed; `skipped` rows change nothing. Review
    every `clear` and every `skipped`. `--apply` writes the teams in one
-   transaction without pushing anything and switches team sync on.
+   transaction without pushing anything and switches team sync on; an
+   `invalid` row (a team Auth cannot take) makes it apply nothing, so fix that
+   team in Fleet and export again.
 4. From then on, changing someone's team in Auth changes it in Fleet (and
    un-shares their team content there). `auth app show fleet` prints
    `team sync: on`. To stop: `auth app team-sync fleet off`; teams stay where

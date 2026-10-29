@@ -932,6 +932,10 @@ func appImportTeamsCmd(dataDir string, args []string) {
 		defer func() { _ = st.Close() }()
 		plan, err = st.PreviewTeamImport(ctx, id, entries)
 	}
+	if errors.Is(err, store.ErrTeamImportInvalid) {
+		_ = printTeamImport(os.Stdout, plan, false)
+		fatalf("app import-teams: the accounts marked invalid have a team Auth cannot take; fix them in the application and export again (nothing was applied, team sync is unchanged)")
+	}
 	if err != nil {
 		fatalf("app import-teams: %v", err)
 	}

@@ -395,6 +395,19 @@ func TestCLITeamSyncImportTeams(t *testing.T) {
 	if out, code := c.run(export, "app", "import-teams", "explorer", "-", "--apply"); code == 0 || !strings.Contains(out, "fleet application only") {
 		t.Fatalf("explorer import exited %d:\n%s", code, out)
 	}
+	// An export with a team Auth cannot take applies nothing and leaves sync
+	// off, listing the account as invalid.
+	bad := `{"email":"move@example.com","enabled":true,"chat_role":"member","ops_role":"none","team":"a\u0001b"}` + "\n"
+	if out, code := c.run(bad, "app", "import-teams", "fleet", "-", "--apply"); code == 0 || !strings.Contains(out, "invalid") ||
+		!strings.Contains(out, "nothing was applied") {
+		t.Fatalf("invalid export exited %d:\n%s", code, out)
+	}
+	if teams() != before {
+		t.Fatal("an invalid export wrote teams")
+	}
+	if on, _ := st.ApplicationTeamSync(ctx, "fleet"); on {
+		t.Fatal("an invalid export switched team sync on")
+	}
 	// Apply.
 	out = c.must(export, "app", "import-teams", "fleet", "-", "--apply")
 	if !strings.Contains(out, "Applied. Team sync is on") {

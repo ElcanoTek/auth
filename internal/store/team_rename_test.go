@@ -586,6 +586,36 @@ func TestInFlightPushKeepsItsLease(t *testing.T) {
 	}
 }
 
+// An import whose export has a team Auth cannot take applies nothing: sync
+// must not start with an account whose team differs from Fleet's.
+func TestTeamImportWithAnInvalidTeamAppliesNothing(t *testing.T) {
+	f := newTeamFixture(t)
+	ann := f.granted(t, "ann@example.com", "A")
+	ben := f.granted(t, "ben@example.com", "A")
+	plan, err := f.s.ImportTeams(f.ctx, "fleet", []TeamImportEntry{
+		{Email: "ann@example.com", Team: "B", Enabled: true, ChatRole: "member", OpsRole: "none"},
+		{Email: "ben@example.com", Team: "a\x01b", Enabled: true, ChatRole: "member", OpsRole: "none"},
+	}, 2000)
+	if !errors.Is(err, ErrTeamImportInvalid) {
+		t.Fatalf("import = %v", err)
+	}
+	invalid := 0
+	for _, a := range plan {
+		if a.Action == TeamImportInvalid {
+			invalid++
+		}
+	}
+	if invalid != 1 {
+		t.Fatalf("plan = %+v", plan)
+	}
+	if f.accountTeam(t, ann.ID) != "A" || f.accountTeam(t, ben.ID) != "A" {
+		t.Fatal("a refused import changed a team")
+	}
+	if on, _ := f.s.ApplicationTeamSync(f.ctx, "fleet"); on {
+		t.Fatal("a refused import switched team sync on")
+	}
+}
+
 // A new endpoint's replay takes each person's team from Auth's current state,
 // not from the stored push: here a push the import stripped (it carried the
 // renamed team) is delivered teamless, yet a rebuilt Fleet gets the imported

@@ -118,6 +118,10 @@ const (
 	TeamImportInvalid = "invalid"
 )
 
+// ErrTeamImportInvalid: the export names a team Auth cannot take for a granted
+// account, so ImportTeams applied nothing (the returned plan says which).
+var ErrTeamImportInvalid = errors.New("the export has invalid teams; nothing was applied")
+
 // TeamImportAction is what an import does (or, previewed, would do) for one
 // account.
 type TeamImportAction struct {
@@ -163,6 +167,13 @@ func (s *Store) ImportTeams(ctx context.Context, clientID string, entries []Team
 	plan, err := planTeamImport(ctx, tx, clientID, entries)
 	if err != nil {
 		return nil, err
+	}
+	// All or nothing: sync must not start with a granted account whose team
+	// Auth could not take, or its next push would move them there.
+	for _, a := range plan {
+		if a.Action == TeamImportInvalid {
+			return plan, ErrTeamImportInvalid
+		}
 	}
 	for _, a := range plan {
 		if a.Action == TeamImportSet || a.Action == TeamImportClear {
