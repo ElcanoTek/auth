@@ -1035,7 +1035,7 @@ func TestTeamRenameFromTheConsole(t *testing.T) {
 		t.Fatalf("notice:\n%s", page)
 	}
 	// alice was on the team: Your account on this same page has the new name.
-	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag" title="Team">Research</span>`) {
+	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag">Research</span>`) {
 		t.Fatalf("Your account after renaming the administrator's own team:\n%s", mine)
 	}
 	if a, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); a.Team != "Research" {
@@ -1102,7 +1102,7 @@ func TestYourAccountIsOnEveryTabWithTheTeam(t *testing.T) {
 		if strings.Contains(body, "Signed in as") {
 			t.Fatalf("%s: the console still says who is signed in outside Your account", path)
 		}
-		for _, want := range []string{`<span class="chip off" title="Team">No team</span>`, "<strong>Reset password</strong>", "<strong>Sign out everywhere</strong>", `<form class="pane" method="post" action="/logout">`} {
+		for _, want := range []string{"<strong>Team</strong></div>\n      <span class=\"chip off\">none</span>", "<strong>Reset password</strong>", "<strong>Sign out everywhere</strong>", `<form class="pane" method="post" action="/logout">`} {
 			if !strings.Contains(mine, want) {
 				t.Fatalf("%s: Your account lacks %q:\n%s", path, want, mine)
 			}
@@ -1112,7 +1112,7 @@ func TestYourAccountIsOnEveryTabWithTheTeam(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, body := alice.get("/admin?tab=fleet")
-	if mine := accountPopup(t, body); !strings.Contains(mine, `<span class="tag" title="Team">Trading</span>`) || strings.Contains(mine, "No team") {
+	if mine := accountPopup(t, body); !strings.Contains(mine, "<strong>Team</strong></div>\n      <span class=\"tag\">Trading</span>") || strings.Contains(mine, `class="chip off">none<`) {
 		t.Fatalf("Your account does not show the team as a chip:\n%s", mine)
 	}
 }
@@ -1140,7 +1140,7 @@ func TestAppsPageHasYourAccount(t *testing.T) {
 	}
 	mine := accountPopup(t, body)
 	for _, want := range []string{
-		`<p class="who">bob@example.com <span class="tag" title="Team">Trading</span></p>`,
+		`<p class="who">bob@example.com</p>`, `<span class="tag">Trading</span>`,
 		`href="/account/security?return_to=%2Faccount"`,
 		`<form class="pane" method="post" action="/logout">`,
 	} {
@@ -1167,7 +1167,7 @@ func TestYourAccountShowsATeamChangedOnThisRequest(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("set-team: %d\n%s", resp.StatusCode, page)
 	}
-	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag" title="Team">Trading</span>`) {
+	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag">Trading</span>`) {
 		t.Fatalf("Your account after setting the team:\n%s", mine)
 	}
 }
@@ -1206,5 +1206,29 @@ func TestYourAccountHoldsTheThemeChoice(t *testing.T) {
 	_ = resp.Body.Close()
 	if !strings.Contains(string(login), "data-flag-theme-toggle") {
 		t.Error("the sign-in page lost its theme toggle")
+	}
+}
+
+// The person icon sits in the bottom-left corner of every page with Your
+// account, and the console has no separate Sign out: Your account's Sign
+// out everywhere is the way out.
+func TestYourAccountSitsBottomLeft(t *testing.T) {
+	ts, _, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	icon := `<div class="corner-bottom">
+    <button class="icon-btn" type="button" commandfor="me" command="show-modal" aria-label="Your account"`
+	for _, path := range []string{"/admin", "/account"} {
+		_, body := alice.get(path)
+		if !strings.Contains(body, icon) {
+			t.Errorf("%s: the person icon is not in the bottom-left corner", path)
+		}
+		if strings.Contains(body, `<div class="corner-actions">
+    <button class="icon-btn" type="button" commandfor="me"`) {
+			t.Errorf("%s: the person icon is still at the top right", path)
+		}
+		outside := strings.Replace(body, accountPopup(t, body), "", 1)
+		if strings.Contains(outside, `action="/logout"`) && path == "/admin" {
+			t.Errorf("%s: the console still has a sign-out form outside Your account", path)
+		}
 	}
 }
