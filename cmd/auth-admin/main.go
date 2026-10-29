@@ -96,7 +96,7 @@ USERS
   auth-admin user enable <email>          re-enable account
   auth-admin user show <email>            show account state
   auth-admin user admin <email> on|off    grant or remove administrator status
-  auth-admin user team <email> <team|->   set the team tag (- clears it)
+  auth-admin user team <email> <team|->   set the team (- removes it)
   auth-admin user access <email> <app-id> on|off  grant or revoke application access
   auth-admin user revoke-sessions <email> revoke every central session
   auth-admin user list                    show password accounts + legacy login audit
@@ -413,13 +413,21 @@ func userCmd(dataDir string, args []string) {
 		if team == "-" {
 			team = ""
 		}
-		if err := st.SetAccountTeam(ctx, email, team, time.Now().Unix()); err != nil {
+		before, after, err := st.ChangeAccountTeam(ctx, email, team, time.Now().Unix())
+		if err != nil {
 			fatalf("team: %v", err)
 		}
-		if team == "" {
-			fmt.Printf("✓ %s has no team tag\n", email)
-		} else {
-			fmt.Printf("✓ %s tagged %q\n", email, team)
+		switch {
+		case before == after && after == "":
+			fmt.Printf("✓ %s has no team\n", email)
+		case before == after:
+			fmt.Printf("✓ %s is already on team %q\n", email, after)
+		case before == "":
+			fmt.Printf("✓ %s added to team %q\n", email, after)
+		case after == "":
+			fmt.Printf("✓ %s removed from team %q\n", email, before)
+		default:
+			fmt.Printf("✓ %s moved from team %q to team %q\n", email, before, after)
 		}
 	case "access":
 		if len(args) != 4 || (args[3] != "on" && args[3] != "off") {
