@@ -510,11 +510,14 @@ func (s *Store) MarkTeamRenameFailed(ctx context.Context, d TeamRenameDelivery, 
 }
 
 // retargetTeamRenamesTx points an application's undelivered renames at its
-// new back-channel endpoint ("" leaves them waiting until one is set), due now
-// and unleased: a request already in flight to the old endpoint can no longer
-// be marked delivered (the Mark methods match the endpoint).
+// new back-channel endpoint ("" leaves them waiting until one is set), due
+// now. A request already in flight to the old endpoint can no longer be
+// marked delivered (the Mark methods match the endpoint), but it may still be
+// applied there, so its lease is kept: the rename goes to the new endpoint once
+// that attempt has ended, and a team import (ErrTeamRenameInFlight) waits for
+// it too.
 func retargetTeamRenamesTx(ctx context.Context, tx *sql.Tx, applicationID, endpoint string, now int64) error {
-	_, err := tx.ExecContext(ctx, `UPDATE team_renames SET endpoint = ?, lease_until = NULL, next_attempt_at = ?
+	_, err := tx.ExecContext(ctx, `UPDATE team_renames SET endpoint = ?, next_attempt_at = ?
 		WHERE application_id = ? AND delivered_at IS NULL AND dropped_at IS NULL`, endpoint, now, applicationID)
 	return err
 }

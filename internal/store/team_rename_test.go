@@ -232,8 +232,9 @@ func TestTeamRenameVersionsFollowTheClock(t *testing.T) {
 	}
 }
 
-// A changed endpoint takes queued renames with it, and an answer from the old
-// one cannot complete them; a cleared endpoint leaves them waiting.
+// A changed endpoint takes queued renames with it, after any attempt still in
+// flight to the old one has run out; an answer from the old one cannot
+// complete them; a cleared endpoint leaves them waiting.
 func TestTeamRenamesFollowTheEndpoint(t *testing.T) {
 	f := newTeamFixture(t)
 	f.teamSyncOn(t)
@@ -254,7 +255,18 @@ func TestTeamRenamesFollowTheEndpoint(t *testing.T) {
 	if pending, _ := f.s.PendingTeamRenames(f.ctx, "fleet"); len(pending) != 1 {
 		t.Fatal("an answer from the old endpoint completed the rename")
 	}
-	moved, _ := f.s.ClaimDueTeamRenames(f.ctx, 2112, time.Minute)
+	// The attempt to the old endpoint may still be applied there, so its
+	// lease stands: no second attempt, and an import that would drop the
+	// rename waits, until it has run out.
+	if early, _ := f.s.ClaimDueTeamRenames(f.ctx, 2112, time.Minute); len(early) != 0 {
+		t.Fatalf("resent while the old attempt was in flight: %+v", early)
+	}
+	if _, err := f.s.ImportTeams(f.ctx, "fleet", []TeamImportEntry{
+		{Email: "ann@example.com", Team: "A", Enabled: true, ChatRole: "member", OpsRole: "none"},
+	}, 2113); !errors.Is(err, ErrTeamRenameInFlight) {
+		t.Fatalf("import while the old attempt was in flight = %v", err)
+	}
+	moved, _ := f.s.ClaimDueTeamRenames(f.ctx, 2161, time.Minute)
 	if len(moved) != 1 || moved[0].Endpoint != "https://fleet2.example.com/bc" {
 		t.Fatalf("not retargeted: %+v", moved)
 	}
