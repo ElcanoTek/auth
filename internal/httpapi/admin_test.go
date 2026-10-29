@@ -768,12 +768,27 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	}
 	// Settings → team save and clear.
 	_, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {"Ops"}})
-	if !strings.Contains(body, "bob@example.com is tagged Ops.") {
+	if !strings.Contains(body, "bob@example.com was added to team Ops.") {
 		t.Fatalf("set-team:\n%s", body)
 	}
 	_, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {""}})
-	if !strings.Contains(body, "Removed bob@example.com&#39;s team tag.") {
+	if !strings.Contains(body, "bob@example.com was removed from team Ops.") {
 		t.Fatalf("clear team:\n%s", body)
+	}
+	if _, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {""}}); !strings.Contains(body, "bob@example.com has no team.") {
+		t.Fatalf("clear an empty team:\n%s", body)
+	}
+	// What happened, in the stored spelling: a re-save or a case-only edit is
+	// no change, and a move names both teams.
+	for _, st := range []struct{ team, want string }{
+		{"Ops", "bob@example.com was added to team Ops."},
+		{"Ops", "bob@example.com is already on team Ops."},
+		{"ops", "bob@example.com is already on team Ops."},
+		{"Desk", "bob@example.com was moved from team Ops to team Desk."},
+	} {
+		if _, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {st.team}}); !strings.Contains(body, st.want) {
+			t.Fatalf("set-team %q: want %q in\n%s", st.team, st.want, body)
+		}
 	}
 	events, _ := st.RecentAuditEvents(context.Background(), func() string { b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); return b.ID }(), 6)
 	var types []string

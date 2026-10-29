@@ -154,7 +154,7 @@
               <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="set-team"><input type="hidden" name="email" value="{{$row.Email}}">
               <div class="field"><label for="team-{{$i}}">Team</label>
                 <div class="with-btn"><input id="team-{{$i}}" name="team" type="text" list="teams" maxlength="64" value="{{$row.Team}}" placeholder="e.g. Trading"><button class="btn-ghost" type="submit">Save</button></div>
-                <p class="hint">A tag for grouping accounts. Leave blank to remove it.</p>
+                <p class="hint">The team this account is on. Leave blank for no team.</p>
               </div>
             </form>
             {{if not $row.Self}}
