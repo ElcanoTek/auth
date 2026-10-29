@@ -166,22 +166,22 @@ dialog.modal {
   background: var(--color-surface-1); color: var(--color-text-secondary); box-shadow: var(--shadow-lg);
 }
 dialog.modal::backdrop { background: var(--color-overlay-strong); }
-/* Your account opens from its icon, like a menu: its top right sits just
-   under the icon (the corner controls are 2.5rem icon buttons at
-   --space-5 from the corner), it grows out of that corner, and the page
-   behind is not dimmed. Still a modal dialog: focus, Escape and a click
-   outside behave as in every other dialog. */
+/* Your account opens from its icon, like a menu: its bottom left sits just
+   above the icon (a 2.5rem icon button in the bottom-left corner, at
+   --space-5), it grows out of that corner, and the page behind is not
+   dimmed. Still a modal dialog: focus, Escape and a click outside behave
+   as in every other dialog. */
 dialog.modal.account-menu {
-  inset: calc(var(--space-5) + 2.5rem + var(--space-2)) var(--space-5) auto auto; margin: 0;
+  inset: auto auto calc(var(--space-5) + 2.5rem + var(--space-2)) var(--space-5); margin: 0;
   width: min(24rem, calc(100vw - 2 * var(--space-5)));
   max-height: calc(100vh - 2.5rem - var(--space-2) - 2 * var(--space-5));
-  padding: var(--space-5); transform-origin: top right;
+  padding: var(--space-5); transform-origin: bottom left;
 }
 dialog.modal.account-menu::backdrop { background: transparent; }
 @media (prefers-reduced-motion: no-preference) {
   dialog.modal.account-menu[open] { animation: account-menu-in var(--transition-fast); }
 }
-@keyframes account-menu-in { from { opacity: 0; transform: translateY(calc(-1 * var(--space-2))) scale(0.97); } }
+@keyframes account-menu-in { from { opacity: 0; transform: translateY(var(--space-2)) scale(0.97); } }
 .account-menu .who { margin-bottom: var(--space-3); }
 /* Flag's segmented control (COMPONENTS.md "Segmented Control"): a pill
    track, the pressed option on the primary fill. */
@@ -511,13 +511,13 @@ table.list tr.manage:last-child td { border-bottom: 0; }
      end the page instead: body is a flex row for centring the card, so they
      wrap onto their own full-width line below it. */
   body { flex-wrap: wrap; }
-  .corner-bottom { position: static; flex: 0 0 100%; order: 1; margin-top: var(--space-4); justify-content: center; }
+  .corner-bottom { position: static; flex: 0 0 100%; order: 1; margin-top: var(--space-4); justify-content: flex-start; }
   /* Same for the top controls: a right-aligned row above the card that
      scrolls away with the page, instead of floating over long content. */
   .corner-actions { position: static; flex: 0 0 100%; order: -1; justify-content: flex-end; margin-bottom: var(--space-4); }
-  /* There the corner controls sit in the page's padding (--space-6), so the
-     menu does too. */
-  dialog.modal.account-menu { inset: calc(var(--space-6) + 2.5rem + var(--space-2)) var(--space-6) auto auto; width: calc(100vw - 2 * var(--space-6)); }
+  /* There the icon ends the page instead of floating, so the menu rises
+     from the bottom of the screen, inside the page's padding (--space-6). */
+  dialog.modal.account-menu { inset: auto var(--space-6) var(--space-6) var(--space-6); width: auto; max-height: calc(100vh - 2 * var(--space-6)); }
   body > .theme-toggle { position: static; order: -1; margin: 0 0 var(--space-4) auto; }
   body > .theme-toggle + * { flex-basis: 100%; }
 }

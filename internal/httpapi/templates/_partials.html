@@ -22,10 +22,10 @@
   {{template "icon" "moon"}}
 </button>{{end}}
 
-{{/* Your account: the person icon at the top right of the signed-in pages
+{{/* Your account: the person icon at the bottom left of the signed-in pages
      (the apps page, the admin console, an application's no-access page) and
      the popup it opens, the one place the signed-in email is shown. The
-     handler fills it with Server.withAccountMenu. It opens under its icon,
+     handler fills it with Server.withAccountMenu. It opens above its icon,
      like a menu, and holds the theme choice (Light, Dark or Auto, driven by
      theme-choice.js; hidden without script, which could not apply it), so
      these pages carry no separate theme toggle. Only an administrator changes their own password
@@ -37,7 +37,11 @@
 
 {{define "account-menu"}}<dialog id="me" class="modal account-menu" aria-labelledby="me-title" closedby="any">
     <div class="modal-head"><h3 id="me-title">Your account</h3><button class="icon-btn close" type="button" commandfor="me" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
-    <p class="who">{{.Email}} {{if .ActorTeam}}<span class="tag" title="Team">{{.ActorTeam}}</span>{{else}}<span class="chip off" title="Team">No team</span>{{end}}</p>
+    <p class="who">{{.Email}}</p>
+    <div class="setting">
+      <div><strong>Team</strong></div>
+      {{if .ActorTeam}}<span class="tag">{{.ActorTeam}}</span>{{else}}<span class="chip off">none</span>{{end}}
+    </div>
     <div class="setting" data-theme-choice hidden>
       <div><strong>Theme</strong><p class="muted">Auto follows your device.</p></div>
       <div class="seg" role="group" aria-label="Theme">

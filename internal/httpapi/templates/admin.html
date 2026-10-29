@@ -11,14 +11,10 @@
 <body{{if .Reopen}} data-reopen="{{.Reopen}}"{{end}}>
   <div class="corner-actions">
     <a class="icon-btn close" href="/account" aria-label="Back to your apps" title="Back to your apps">{{template "icon" "close"}}</a>
-    {{template "account-button"}}
   </div>
+  {{/* Signing out is in Your account (Sign out everywhere). */}}
   <div class="corner-bottom">
-    <form method="post" action="/logout">
-      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-      <input type="hidden" name="redirect_to" value="/?notice=signed_out">
-      <button class="btn-ghost" type="submit">Sign out</button>
-    </form>
+    {{template "account-button"}}
   </div>
   {{template "account-menu" .}}
   <main class="card admin">
