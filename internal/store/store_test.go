@@ -1018,3 +1018,84 @@ func TestSweepDeletesOldAuditEventsOnlyWhenRetentionSet(t *testing.T) {
 		t.Fatalf("wrong row survived: %+v", events)
 	}
 }
+
+// A forced password change after an administrator's reset is told from one
+// left over from creation by the reset marker (schema v14), even when the
+// reset lands in the same second as the creation.
+func TestListPasswordAccountsTellsAResetFromAnInvite(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	if _, err := s.CreatePasswordAccount(ctx, "new@example.com", "hash", true, 1000); err != nil {
+		t.Fatal(err)
+	}
+	pending := func() (bool, bool, int64) {
+		t.Helper()
+		all, err := s.ListPasswordAccounts(ctx)
+		if err != nil || len(all) != 1 {
+			t.Fatalf("list = (%+v, %v)", all, err)
+		}
+		var at int64
+		if all[0].PasswordResetAt != nil {
+			at = all[0].PasswordResetAt.Unix()
+		}
+		return all[0].MustChangePassword, all[0].PasswordResetPending(), at
+	}
+	if must, reset, _ := pending(); !must || reset {
+		t.Fatalf("new account: must=%v reset=%v, want invited", must, reset)
+	}
+	if err := s.SetPassword(ctx, "new@example.com", "hash2", true, 1000); err != nil { // the same second
+		t.Fatal(err)
+	}
+	if must, reset, at := pending(); !must || !reset || at != 1000 {
+		t.Fatalf("after a reset: must=%v reset=%v at=%d, want reset pending at 1000", must, reset, at)
+	}
+	if err := s.SetPassword(ctx, "new@example.com", "hash3", false, 3000); err != nil {
+		t.Fatal(err)
+	}
+	if must, reset, at := pending(); must || reset || at != 0 {
+		t.Fatalf("after their own password: must=%v reset=%v at=%d, want neither", must, reset, at)
+	}
+}
+
+// Schema v14 backfills a reset already pending (a temporary password newer
+// than the account) and leaves an invited account alone.
+func TestPasswordResetMigrationBackfillsPendingResets(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, e := range []string{"invited@example.com", "reset@example.com"} {
+		if _, err := s.CreatePasswordAccount(ctx, e, "hash", true, 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// As a v13 database: no marker column, a reset only visible as a newer
+	// password.
+	for _, q := range []string{
+		`UPDATE password_credentials SET changed_at = 2000 WHERE user_id = (SELECT id FROM accounts WHERE normalized_email = 'reset@example.com')`,
+		`ALTER TABLE accounts DROP COLUMN password_reset_at`,
+		`DELETE FROM schema_migrations WHERE version = 14`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	_ = s.Close()
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	all, err := s.ListPasswordAccounts(ctx)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("list = (%+v, %v)", all, err)
+	}
+	for _, a := range all {
+		wantReset := a.NormalizedEmail == "reset@example.com"
+		if a.PasswordResetPending() != wantReset || (wantReset && a.PasswordResetAt.Unix() != 2000) {
+			t.Errorf("%s: reset pending = %v (at %v), want %v", a.NormalizedEmail, a.PasswordResetPending(), a.PasswordResetAt, wantReset)
+		}
+	}
+}

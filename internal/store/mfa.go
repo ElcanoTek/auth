@@ -1682,7 +1682,7 @@ func (s *Store) ReplacePasswordUnderTransaction(ctx context.Context, transaction
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrCredentialChanged
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET must_change_password = 0, updated_at = ? WHERE id = ?`, now, userID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET must_change_password = 0, password_reset_at = NULL, updated_at = ? WHERE id = ?`, now, userID); err != nil {
 		return err
 	}
 	if _, err := revokeSessionsTx(ctx, tx, userID, now, "password_replaced"); err != nil {

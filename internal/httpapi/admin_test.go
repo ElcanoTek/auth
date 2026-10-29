@@ -1017,3 +1017,43 @@ func TestFleetPermissionDefaultsAndUnifiedAdminReachTheProvisioningOutbox(t *tes
 		t.Fatalf("Fleet Admin state = %+v, ok=%v err=%v", state, ok, err)
 	}
 }
+
+// The console tells a new account still on its temporary password (Invited)
+// from one an administrator reset (Reset pending), says since when on hover,
+// and filters on each.
+func TestConsoleTellsInvitedFromResetPending(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	if _, err := st.CreatePasswordAccount(ctx, "carol@example.com", mustHash(t, plain), true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetPassword(ctx, "bob@example.com", mustHash(t, plain), true, now+60); err != nil {
+		t.Fatal(err)
+	}
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	_, body := alice.get("/admin")
+	row := func(email string) string {
+		start := strings.Index(body, `data-account-search-value="`+email)
+		if start < 0 {
+			t.Fatalf("no row for %s", email)
+		}
+		r := body[start:]
+		return r[:strings.Index(r, "</tr>")]
+	}
+	carol, bob := row("carol@example.com"), row("bob@example.com")
+	if !strings.Contains(carol, `>Invited</span>`) || !strings.Contains(carol, "they have not signed in and chosen a password yet.") || !strings.Contains(carol, `data-account-filter-values="invited`) {
+		t.Errorf("new account's row:\n%s", carol)
+	}
+	if !strings.Contains(bob, `>Reset pending</span>`) || !strings.Contains(bob, "Password reset ") || !strings.Contains(bob, "they have not set a new one yet.") || !strings.Contains(bob, `data-account-filter-values="reset-pending`) {
+		t.Errorf("reset account's row:\n%s", bob)
+	}
+	if strings.Contains(body, "Must change password") {
+		t.Error("the console still says Must change password")
+	}
+	for _, want := range []string{`<option value="invited">Invited</option>`, `<option value="reset-pending">Reset pending</option>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("filter lacks %s", want)
+		}
+	}
+}
