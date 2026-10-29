@@ -260,7 +260,7 @@ dialog.modal.fleet-perms .btn { margin-top: var(--space-4); }
 }
 .account-tools input[type=search]:hover, .account-tools select:hover { border-color: var(--color-primary); }
 .account-tools input[type=search] { flex: 1 1 12rem; min-width: 8rem; }
-.account-tools select { flex: 0 1 auto; max-width: 12rem; }
+.account-tools .select-wrap { flex: 0 1 auto; width: 13rem; }
 .account-tools input:focus-visible, .account-tools select:focus-visible { border-color: var(--color-primary); box-shadow: var(--focus-ring); }
 .search-empty { padding: var(--space-5) !important; color: var(--color-text-muted) !important; text-align: center !important; }
 /* The page's primary action, as an icon button: brand primary fill (a bundle
@@ -301,6 +301,36 @@ dialog.modal.fleet-perms .btn { margin-top: var(--space-4); }
 .batch select:hover, .batch input[type=text]:hover { border-color: var(--color-primary); }
 .batch input[type=text] { flex: 1; min-width: 12rem; }
 .batch select:focus-visible, .batch input:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: var(--focus-ring); }
+/* Dropdowns: Flag's .select-wrap. Its chevron replaces the browser's arrow,
+   which sat against the right border, and keeps the text's inline padding
+   from the edge. Where the browser can style a select (appearance:
+   base-select) the open list is Flag's menu: the popover surface, with the
+   chosen option on --color-selected-bg; elsewhere it stays the native list,
+   which follows the theme through color-scheme. */
+.select-wrap { position: relative; display: inline-flex; min-width: 0; }
+.select-wrap select { width: 100%; min-width: 0; appearance: none; -webkit-appearance: none; padding-right: calc(var(--space-3) + 1rem + var(--space-2)); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.select-wrap > .icon { position: absolute; top: 50%; right: var(--space-3); width: 1rem; height: 1rem; transform: translateY(-50%); color: var(--color-text-muted); pointer-events: none; transition: color var(--transition-fast); }
+.select-wrap:hover > .icon { color: var(--color-text-primary); }
+/* Fixed widths (here and .account-tools .select-wrap) that fit the longest
+   option: a styleable select sizes to the chosen one, so picking would
+   otherwise move the row. */
+.batch .select-wrap { width: 14rem; }
+@supports (appearance: base-select) {
+  .select-wrap select, .select-wrap select::picker(select) { appearance: base-select; }
+  .select-wrap select { display: flex; align-items: center; }
+  .select-wrap select::picker-icon { display: none; }
+  .select-wrap select:open { border-color: var(--color-primary); }
+  .select-wrap select::picker(select) {
+    margin-block: var(--space-1); padding: var(--space-1);
+    color: var(--color-text-primary); background: var(--color-surface-2);
+    border: 1px solid var(--color-selected-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-popover);
+  }
+  .select-wrap option { gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-sm); cursor: pointer; }
+  .select-wrap option:hover { background: var(--color-overlay-soft); }
+  .select-wrap option:focus-visible { outline: none; background: var(--color-selected-bg); box-shadow: inset 0 0 0 1px var(--color-row-active-border); }
+  .select-wrap option:checked { background: var(--color-selected-bg); }
+  .select-wrap option::checkmark { color: var(--color-accent); }
+}
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .seg-group .hint { margin-top: var(--space-2); }
 /* One chip recipe for every badge (.tag, .badge, .chip) — Fleet's StatusChip
@@ -447,7 +477,7 @@ table.list tr.manage:last-child td { border-bottom: 0; }
   table.list td.who { min-width: 13rem; }
   .account-title, .account-tools { width: 100%; }
   .account-tools { flex-wrap: wrap; }
-  .account-tools input[type=search], .account-tools select { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+  .account-tools input[type=search], .account-tools .select-wrap { flex: 1 1 100%; min-width: 0; max-width: 100%; }
   /* iOS Safari zooms the page into any field under 16px; keep the compact
      toolbar fields at body size on phones. */
   .account-tools input[type=search], .account-tools select, .batch select, .batch input[type=text] { font-size: var(--font-size-body); }

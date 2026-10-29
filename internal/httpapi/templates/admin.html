@@ -85,7 +85,7 @@
             <label class="sr-only" for="account-search">Search accounts</label>
             <input id="account-search" type="search" placeholder="Search accounts" autocomplete="off" data-account-search>
             <label class="sr-only" for="account-filter">Filter accounts</label>
-            <select id="account-filter" data-account-filter>
+            <span class="select-wrap"><select id="account-filter" data-account-filter>
               <option value="">All accounts</option>
               <option value="active">Active</option>
               <option value="disabled">Disabled</option>
@@ -93,7 +93,7 @@
               <option value="must-change">Must change password</option>
               <option value="mfa-enabled">2FA enabled</option>
               <option value="mfa-missing">2FA not enrolled</option>
-            </select>
+            </select>{{template "icon" "chevron-down"}}</span>
           </div>{{end}}
         </div>
         <div class="row-actions head-actions">
@@ -111,7 +111,7 @@
           <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
           <td><div class="chips"><span class="badge {{$row.StatusClass}}">{{$row.Status}}</span><span class="badge {{$row.MFAClass}}" title="Two-factor sign-in">2FA: {{$row.MFAStatus}}</span></div></td>
           <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
-          <td><div class="chips">{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}</div></td>
+          <td><div class="chips">{{if $row.AllApps}}<span class="chip" title="{{range $j, $app := $row.Apps}}{{if $j}}, {{end}}{{$app.Name}}{{end}}">All</span>{{else}}{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}{{end}}</div></td>
           <td><div class="row-actions">
             <button class="btn-ghost" type="button" commandfor="access-{{$i}}" command="show-modal" aria-label="Access: {{$row.Email}}">Access</button>
             <button class="btn-ghost" type="button" commandfor="settings-{{$i}}" command="show-modal" aria-label="Settings: {{$row.Email}}">Settings</button>
@@ -250,12 +250,12 @@
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="batch">
         <span class="batch-count" data-batch-count aria-live="polite">0 selected</span>
         <label class="sr-only" for="batch-op">What to do with the selected accounts</label>
-        <select id="batch-op" name="op">
+        <span class="select-wrap"><select id="batch-op" name="op">
           <option value="team">Set team</option>
           <option value="signout">Sign out everywhere</option>
           <option value="require-mfa">Require two-factor</option>
           <option value="unrequire-mfa">Stop requiring two-factor</option>
-        </select>
+        </select>{{template "icon" "chevron-down"}}</span>
         <input name="team" type="text" list="teams" maxlength="64" placeholder="Team (for Set team; blank removes it)" aria-label="Team for the selected accounts">
         <button class="btn-ghost" type="submit">Apply to selected</button>
       </form>

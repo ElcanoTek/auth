@@ -204,6 +204,36 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 	}
 }
 
+// An account granted every registered application shows one "All" chip that
+// names them on hover, not a chip per application; search still finds it by
+// any application's name.
+func TestAccountWithEveryApplicationShowsOneAllChip(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	grantAccess(t, st, "bob@example.com", "explorer") // bob already has fleet
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	resp, body := alice.get("/admin")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin GET = %d\n%s", resp.StatusCode, body)
+	}
+	start := strings.Index(body, `data-account-search-value="bob@example.com`)
+	if start < 0 {
+		t.Fatal("no row for bob")
+	}
+	row := body[start:]
+	row = row[:strings.Index(row, "</tr>")]
+	if !strings.Contains(row, `<span class="chip" title="Explorer, Fleet">All</span>`) {
+		t.Errorf("bob's row lacks the All chip:\n%s", row)
+	}
+	for _, gone := range []string{`<span class="chip">Fleet</span>`, `<span class="chip">Explorer</span>`} {
+		if strings.Contains(row, gone) {
+			t.Errorf("bob's row still has %s", gone)
+		}
+	}
+	if search := row[:strings.Index(row, `">`)]; !strings.Contains(search, "Fleet") || !strings.Contains(search, "Explorer") {
+		t.Errorf("bob's search value lost an application: %s", search)
+	}
+}
+
 func TestAdminConsoleIsAbsentInMagicMode(t *testing.T) {
 	ts, _, _, _ := newTestServer(t)
 	resp, err := noFollowClient().Get(ts.URL + "/admin")

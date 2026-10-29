@@ -50,6 +50,7 @@ type adminAccountRow struct {
 	Sessions      int
 	Apps          []adminAppChoice
 	GrantedApps   int
+	AllApps       bool // granted every registered application, two or more: one "All" chip
 	Self          bool
 	CanDisable    bool // not self and not the last enabled admin
 	CanDemote     bool
@@ -1538,6 +1539,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 					row.GrantedApps++
 				}
 			}
+			row.AllApps = len(row.Apps) > 1 && row.GrantedApps == len(row.Apps)
 			rows = append(rows, row)
 		}
 		choices := make([]adminAppChoice, 0, len(apps))
