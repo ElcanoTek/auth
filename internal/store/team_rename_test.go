@@ -294,6 +294,92 @@ func TestTeamSyncOffDropsQueuedRenames(t *testing.T) {
 	}
 }
 
+// A rename dropped by turning team sync off must not reach Fleet later as a
+// move: a delivered push, which the rename rewrote to the new name, loses the
+// team too (and stays delivered), so a new endpoint's replay carries none.
+func TestTeamSyncOffStripsTheTeamFromDeliveredPushes(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	ann := f.granted(t, "ann@example.com", "A")
+	f.deliverAll(t, 1500)
+	if _, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.SetApplicationTeamSync(f.ctx, "fleet", false, 2100); err != nil {
+		t.Fatal(err)
+	}
+	if items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2200, 100, time.Minute); hasClient(items, "fleet") {
+		t.Fatal("a delivered push was resent when team sync went off")
+	}
+	if err := f.s.SetApplicationBackchannelLogoutURI(f.ctx, "fleet", "https://rebuilt.example.com/api/auth/backchannel-logout", 2300); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2400, 100, time.Minute)
+	replayed := false
+	for _, d := range items {
+		if d.ClientID != "fleet" || d.Subject != ann.ID {
+			continue
+		}
+		replayed = true
+		if s := pushedSettings(t, d); s["chat_role"] != "member" {
+			t.Fatalf("replay lost the roles: %s", d.Settings)
+		} else if _, has := s["team"]; has || s["team_rename"] != "" {
+			t.Fatalf("replay with team sync off carries a team: %s", d.Settings)
+		}
+	}
+	if !replayed {
+		t.Fatal("the new endpoint got no replay")
+	}
+}
+
+// Switching team sync back on gives delivered pushes the current team without
+// sending them, so a later rename rewrites them and a new endpoint's replay
+// still carries the person's team.
+func TestTeamSyncOnRefreshesDeliveredPushes(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	ann := f.granted(t, "ann@example.com", "A")
+	f.deliverAll(t, 1500)
+	if err := f.s.SetApplicationTeamSync(f.ctx, "fleet", false, 1600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.SetApplicationTeamSync(f.ctx, "fleet", true, 1700); err != nil {
+		t.Fatal(err)
+	}
+	if items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 1800, 100, time.Minute); hasClient(items, "fleet") {
+		t.Fatal("switching team sync on sent a push")
+	}
+	if d, _, _ := f.s.AccessProvisioningState(f.ctx, ann.ID, "fleet"); pushedSettings(t, d)["team"] != "A" || pushedSettings(t, d)["team_rename"] != "0" {
+		t.Fatalf("delivered push after sync on: %s", d.Settings)
+	}
+	if _, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil {
+		t.Fatal(err)
+	}
+	renames, _ := f.s.ClaimDueTeamRenames(f.ctx, 2100, time.Minute)
+	if len(renames) != 1 {
+		t.Fatalf("renames = %+v", renames)
+	}
+	if err := f.s.MarkTeamRenameDelivered(f.ctx, renames[0], 2100); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.SetApplicationBackchannelLogoutURI(f.ctx, "fleet", "https://rebuilt.example.com/api/auth/backchannel-logout", 2200); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2300, 100, time.Minute)
+	replayed := false
+	for _, d := range items {
+		if d.ClientID == "fleet" && d.Subject == ann.ID {
+			replayed = true
+			if s := pushedSettings(t, d); s["team"] != "B" || s["team_rename"] != "2000" {
+				t.Fatalf("replay after an off/on cycle and a rename: %s", d.Settings)
+			}
+		}
+	}
+	if !replayed {
+		t.Fatal("the new endpoint got no replay")
+	}
+}
+
 // Merges take the existing team's spelling; a case-only rename renames;
 // unknown, unchanged and invalid renames change nothing; with team sync off
 // only Auth's labels change.

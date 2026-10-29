@@ -86,7 +86,12 @@ func setTeamSyncTx(ctx context.Context, tx *sql.Tx, id string, on bool, now int6
 	}
 	event := "application.team_sync_off"
 	if on {
+		// Delivered pushes written while sync was off carry no team; give
+		// them the current one for a replay, sending nothing (team_rename.go).
 		event = "application.team_sync_on"
+		if err := refreshTeamPushesTx(ctx, tx, id, now); err != nil {
+			return err
+		}
 	} else if err := dropTeamRenamesTx(ctx, tx, id, now); err != nil {
 		// With sync off nothing about teams is sent, so a queued rename would
 		// only hold the application's other pushes (team_rename.go).

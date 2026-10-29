@@ -183,7 +183,9 @@ application's pushes; `auth app show fleet` prints it with its last error. A
 rename made while the application has no back-channel endpoint waits, with its
 pushes, until one is set; a changed endpoint takes waiting renames with it.
 Turning team sync off drops renames not yet delivered and takes the team out
-of pushes not yet delivered (no team is sent with sync off).
+of every push, including the delivered ones a new endpoint would replay (no
+team is sent with sync off). Turning it on gives those delivered pushes each
+person's current team for such a replay, and sends nothing by itself.
 
 With team sync off, teams are not sent. For a Fleet with no teams yet,
 switch it on by hand: `auth app team-sync fleet on` pushes nothing on its

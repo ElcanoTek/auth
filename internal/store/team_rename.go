@@ -36,8 +36,9 @@ import (
 // had before the rename. Versions follow the clock (versionAfter), so they keep
 // rising past what the application has seen even if its registration and
 // history are ever recreated. Turning team sync off drops undelivered renames
-// (dropped_at): with sync off nothing about teams is sent, and a held rename
-// must not block the application's other pushes.
+// (dropped_at) and takes the team out of every push, delivered ones included:
+// with sync off nothing about teams is sent, and a held rename must not block
+// the application's other pushes.
 const teamRenameSchema = `
 CREATE TABLE IF NOT EXISTS team_renames (
   application_id  TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
@@ -304,61 +305,70 @@ func versionAfter(last, now int64) int64 {
 }
 
 // rewriteTeamPushesTx gives every per-person push for clientID that still
-// carries team from the new name and this rename's version, as a new version
-// with a new event id. An undelivered one is then sent after the rename, and a
-// copy of the old one already in flight cannot be marked delivered in its
-// place. A delivered one keeps its delivered mark (Fleet has the rename and
-// needs nothing now), but the snapshot a new or rotated endpoint replays
-// (SetApplicationBackchannelLogoutURI) carries the new name.
+// carries team from the new name and this rename's version (rewritePushesTx).
 func rewriteTeamPushesTx(ctx context.Context, tx *sql.Tx, clientID, from, to string, version, now int64) error {
+	return rewritePushesTx(ctx, tx, clientID, now, func(_ string, _ bool, values map[string]string) bool {
+		if team, ok := values["team"]; !ok || team != from {
+			return false
+		}
+		values["team"] = to
+		values["team_rename"] = strconv.FormatInt(version, 10)
+		return true
+	})
+}
+
+// rewritePushesTx applies edit to the settings of every per-person push for
+// clientID (with the person's account id and whether it was delivered); edit
+// reports whether it changed them. A changed push becomes a new
+// version with a new event id. An undelivered one is due again, and a copy of
+// the old one already in flight cannot be marked delivered in its place. A
+// delivered one keeps its delivered mark (the application needs nothing now),
+// but SetApplicationBackchannelLogoutURI replays every person's latest push to
+// a new or rotated endpoint, so that replay must be current too: a rebuilt
+// application there has no rename history to judge it by.
+func rewritePushesTx(ctx context.Context, tx *sql.Tx, clientID string, now int64, edit func(userID string, delivered bool, values map[string]string) bool) error {
 	rows, err := tx.QueryContext(ctx, `SELECT user_id, settings_json, delivered_at IS NOT NULL FROM access_provisioning
 		WHERE client_id = ? AND settings_json <> ''`, clientID)
 	if err != nil {
 		return err
 	}
-	type queued struct {
+	type push struct {
 		userID, settings string
 		delivered        bool
 	}
-	var rewrite []queued
+	var rewrite []push
 	for rows.Next() {
-		var q queued
+		var p push
 		var raw string
-		if err := rows.Scan(&q.userID, &raw, &q.delivered); err != nil {
+		if err := rows.Scan(&p.userID, &raw, &p.delivered); err != nil {
 			_ = rows.Close()
 			return err
 		}
 		var values map[string]string
-		if json.Unmarshal([]byte(raw), &values) != nil {
+		if json.Unmarshal([]byte(raw), &values) != nil || !edit(p.userID, p.delivered, values) {
 			continue
 		}
-		team, ok := values["team"]
-		if !ok || team != from {
-			continue
-		}
-		values["team"] = to
-		values["team_rename"] = strconv.FormatInt(version, 10)
 		out, err := json.Marshal(values)
 		if err != nil {
 			_ = rows.Close()
 			return err
 		}
-		q.settings = string(out)
-		rewrite = append(rewrite, q)
+		p.settings = string(out)
+		rewrite = append(rewrite, p)
 	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	for _, q := range rewrite {
+	for _, p := range rewrite {
 		eventID, err := randomID()
 		if err != nil {
 			return err
 		}
-		if q.delivered {
+		if p.delivered {
 			if _, err := tx.ExecContext(ctx, `UPDATE access_provisioning SET settings_json = ?, version = version + 1,
 				event_id = ?, issued_at = ?
 				WHERE user_id = ? AND client_id = ? AND delivered_at IS NOT NULL`,
-				q.settings, eventID, now, q.userID, clientID); err != nil {
+				p.settings, eventID, now, p.userID, clientID); err != nil {
 				return err
 			}
 			continue
@@ -366,7 +376,7 @@ func rewriteTeamPushesTx(ctx context.Context, tx *sql.Tx, clientID, from, to str
 		if _, err := tx.ExecContext(ctx, `UPDATE access_provisioning SET settings_json = ?, version = version + 1,
 			event_id = ?, issued_at = ?, attempts = 0, next_attempt_at = ?, lease_until = NULL, last_error = NULL
 			WHERE user_id = ? AND client_id = ? AND delivered_at IS NULL`,
-			q.settings, eventID, now, now, q.userID, clientID); err != nil {
+			p.settings, eventID, now, now, p.userID, clientID); err != nil {
 			return err
 		}
 	}
@@ -469,61 +479,64 @@ func retargetTeamRenamesTx(ctx context.Context, tx *sql.Tx, applicationID, endpo
 }
 
 // dropTeamRenamesTx drops an application's undelivered renames and takes the
-// team out of its undelivered pushes: team sync was switched off, so no team
-// is sent any more, a queued rename must not hold the pushes, and a queued
-// push carrying a renamed team would read there as a move.
+// team out of its pushes: team sync was switched off, so no team is sent any
+// more, a queued rename must not hold the pushes, and a push carrying a
+// renamed team would read there as a move. Delivered pushes lose it too (and
+// stay delivered), since a new or rotated endpoint replays them
+// (rewritePushesTx).
 func dropTeamRenamesTx(ctx context.Context, tx *sql.Tx, applicationID string, now int64) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE team_renames SET dropped_at = ?, lease_until = NULL
 		WHERE application_id = ? AND delivered_at IS NULL AND dropped_at IS NULL`, now, applicationID); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT user_id, settings_json FROM access_provisioning
-		WHERE client_id = ? AND delivered_at IS NULL AND settings_json <> ''`, applicationID)
+	return rewritePushesTx(ctx, tx, applicationID, now, func(_ string, _ bool, values map[string]string) bool {
+		_, hasTeam := values["team"]
+		_, hasRename := values["team_rename"]
+		delete(values, "team")
+		delete(values, "team_rename")
+		return hasTeam || hasRename
+	})
+}
+
+// refreshTeamPushesTx gives every DELIVERED push for applicationID that
+// carries roles the person's current team and the newest rename version, as
+// withSyncedTeamTx would write it now: team sync was switched on, and a push
+// written while it was off has no team, so a new endpoint's replay would leave
+// a rebuilt application without it. They stay delivered (rewritePushesTx).
+// Queued pushes are left as written: switching sync on sends no team by
+// itself, and each person's team goes with their next push.
+func refreshTeamPushesTx(ctx context.Context, tx *sql.Tx, applicationID string, now int64) error {
+	generation, err := lastTeamRenameVersionTx(ctx, tx, applicationID)
 	if err != nil {
 		return err
 	}
-	type queued struct{ userID, settings string }
-	var strip []queued
+	rows, err := tx.QueryContext(ctx, `SELECT p.user_id, a.team FROM access_provisioning p
+		JOIN accounts a ON a.id = p.user_id WHERE p.client_id = ?`, applicationID)
+	if err != nil {
+		return err
+	}
+	teams := map[string]string{}
 	for rows.Next() {
-		var userID, raw string
-		if err := rows.Scan(&userID, &raw); err != nil {
+		var userID, team string
+		if err := rows.Scan(&userID, &team); err != nil {
 			_ = rows.Close()
 			return err
 		}
-		var values map[string]string
-		if json.Unmarshal([]byte(raw), &values) != nil {
-			continue
-		}
-		_, hasTeam := values["team"]
-		_, hasRename := values["team_rename"]
-		if !hasTeam && !hasRename {
-			continue
-		}
-		delete(values, "team")
-		delete(values, "team_rename")
-		out, err := json.Marshal(values)
-		if err != nil {
-			_ = rows.Close()
-			return err
-		}
-		strip = append(strip, queued{userID, string(out)})
+		teams[userID] = team
 	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	for _, q := range strip {
-		eventID, err := randomID()
-		if err != nil {
-			return err
+	rename := strconv.FormatInt(generation, 10)
+	return rewritePushesTx(ctx, tx, applicationID, now, func(userID string, delivered bool, values map[string]string) bool {
+		team, known := teams[userID]
+		if current, has := values["team"]; !delivered || !known || (has && current == team && values["team_rename"] == rename) {
+			return false
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE access_provisioning SET settings_json = ?, version = version + 1,
-			event_id = ?, issued_at = ?, attempts = 0, next_attempt_at = ?, lease_until = NULL, last_error = NULL
-			WHERE user_id = ? AND client_id = ? AND delivered_at IS NULL`,
-			q.settings, eventID, now, now, q.userID, applicationID); err != nil {
-			return err
-		}
-	}
-	return nil
+		values["team"] = team
+		values["team_rename"] = rename
+		return true
+	})
 }
 
 // lastTeamRenameVersionTx is the newest rename version queued for an
