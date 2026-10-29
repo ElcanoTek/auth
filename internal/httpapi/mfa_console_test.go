@@ -1047,7 +1047,18 @@ func TestTeamRenameFromTheConsole(t *testing.T) {
 	if err := st.SetApplicationBackchannelLogoutURI(ctx, "fleet", "", now); err != nil {
 		t.Fatal(err)
 	}
+	// With the code still fresh there is no code popup, but the rename is
+	// still confirmed first, bound to what the popup said.
 	_, page = alice.post("/admin", url.Values{"action": {"rename-team"}, "from": {"Research"}, "to": {"Markets"}})
+	confirm = dialogForm(t, page, "confirm-change")
+	if !strings.Contains(confirm, "Rename team Research (1 account) to Markets?") || !strings.Contains(confirm, `name="expect_to" value="Markets"`) ||
+		strings.Contains(confirm, "Code accepted") || !strings.Contains(confirm, "Nothing has changed yet.") {
+		t.Fatalf("fresh-code confirm:\n%s", confirm)
+	}
+	if a, _ := st.PasswordAccountByEmail(ctx, "alice@example.com"); a.Team != "Research" {
+		t.Fatal("renamed before Confirm")
+	}
+	_, page = alice.post("/admin", renderedForm(t, page, "confirm-change"))
 	if !strings.Contains(page, "Renamed team Research to Markets (1 account). Fleet has no back-channel endpoint, so it gets the rename, and its other access updates, once one is set.") ||
 		strings.Contains(page, "Fleet is updated in the background") {
 		t.Fatalf("notice without an endpoint:\n%s", page)

@@ -197,8 +197,8 @@ pushes each person's current team for such a replay; it sends nothing else by
 itself. So a rename made while sync was off still reaches the application as a
 rename, not as one move per person. A team import drops waiting renames and
 takes the team out of queued pushes, since it makes the application's teams
-Auth's; it refuses to run while a rename is being delivered, which cannot be
-recalled. A new or rotated back-channel endpoint replays every person's push
+Auth's; it refuses to run while a rename or an access push is being
+delivered, which cannot be recalled. A new or rotated back-channel endpoint replays every person's push
 with their team as Auth has it then (none with sync off), since a rebuilt
 application there knows nothing of earlier renames or imports.
 

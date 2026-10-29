@@ -61,11 +61,11 @@
       <form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>
     </dialog>{{end}}{{end}}
     {{if and .Pending (eq .Reopen "confirm-change")}}{{with .Pending}}
-    {{/* The code was accepted; nothing has changed yet. Confirm repeats the request, which passes every check again. */}}
+    {{/* Nothing has changed yet (after the code popup, or for a team rename). Confirm repeats the request, which passes every check again. */}}
     <dialog id="confirm-change" class="modal confirm-change" aria-labelledby="confirm-change-title" aria-describedby="confirm-change-question" open>
       <div class="modal-head"><h3 id="confirm-change-title">Confirm the change</h3><button class="icon-btn close" type="button" commandfor="confirm-change" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
       {{if $.Error}}<div class="err" role="alert">{{$.Error}}</div>{{end}}
-      <div class="notice" role="status">Code accepted. Nothing has changed yet.</div>
+      <div class="notice" role="status">{{if .CodeAccepted}}Code accepted. {{end}}Nothing has changed yet.</div>
       <p class="question" id="confirm-change-question">{{.Question}}</p>
       {{if .Detail}}<p class="hint">{{.Detail}}</p>{{end}}
       <form method="post" action="/admin">

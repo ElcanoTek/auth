@@ -231,6 +231,9 @@ type pendingChange struct {
 	Why      string         // "Changing the two-factor policy": what needs the code
 	Question string         // the confirm popup's summary of the change
 	Detail   string         // what else it does, when that matters
+	// CodeAccepted: the popup follows the code popup (a team rename is
+	// confirmed even without one).
+	CodeAccepted bool
 }
 
 type pendingField struct{ Name, Value string }
@@ -557,6 +560,28 @@ func (s *Server) adminRenameTeam(r *http.Request, res adminResult, actorID strin
 	return res
 }
 
+// confirmTeamRename is the confirm popup for a rename not confirmed yet, or
+// nil when the rename would be refused anyway (adminRenameTeam then says why).
+// refused is set for a request whose fields cannot be carried through the
+// popup (newPendingChange).
+func (s *Server) confirmTeamRename(r *http.Request) (p *pendingChange, refused bool) {
+	from := strings.TrimSpace(r.PostFormValue("from"))
+	to, err := store.NormalizeTeam(r.PostFormValue("to"))
+	if from == "" || to == "" || err != nil {
+		return nil, false
+	}
+	preview, err := s.store.PreviewTeamRename(r.Context(), from, to)
+	if err != nil || preview.Members == 0 || preview.To == from {
+		return nil, false
+	}
+	p, ok := newPendingChange(r, "rename-team")
+	if !ok {
+		return nil, true
+	}
+	s.describeChange(r, p)
+	return p, false
+}
+
 // describeTeamRename words the confirm popup for a team rename from the live
 // teams, resolved exactly as the rename will be (store.PreviewTeamRename): how
 // many accounts move, whether it merges into an existing team, and what Fleet
@@ -808,6 +833,18 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	}
 
 	if action == "rename-team" {
+		// A rename is always confirmed first, even with a fresh code: the
+		// popup says how many accounts move and whether it merges, and its
+		// Confirm is bound to that outcome (expect_to).
+		if _, confirmed := r.PostForm["expect_to"]; !confirmed {
+			if p, refused := s.confirmTeamRename(r); refused {
+				res.Status = http.StatusBadRequest
+				return res
+			} else if p != nil {
+				res.Tab, res.Pending, res.Reopen = adminAccountsTab, p, reopenConfirmChange
+				return res
+			}
+		}
 		return s.adminRenameTeam(r, res, actor.ID, proof, now, needVerify, audit)
 	}
 
@@ -1251,6 +1288,7 @@ func (s *Server) adminStepUp(r *http.Request, identity *passwordIdentity, res ad
 		// Nothing changes yet: the confirm popup says what will, and its
 		// Confirm repeats the request through every check again.
 		s.describeChange(r, pending)
+		pending.CodeAccepted = true
 		res.Reopen = reopenConfirmChange
 		return res
 	}

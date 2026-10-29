@@ -186,11 +186,16 @@ func (s *Store) ImportTeams(ctx context.Context, clientID string, entries []Team
 		return nil, err
 	}
 	// The application's teams are Auth's now: a rename queued before the
-	// import no longer applies. One already on its way cannot be recalled,
-	// so the import waits for it (its lease ends with the attempt).
+	// import no longer applies, and a queued push loses its team. A rename or
+	// push already on its way cannot be recalled (it could still move people
+	// to a team from before the import), so the import waits for it: its
+	// lease ends with the attempt.
 	var inFlight int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_renames WHERE application_id = ?
-		AND delivered_at IS NULL AND dropped_at IS NULL AND lease_until > ?`, clientID, now).Scan(&inFlight); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM team_renames WHERE application_id = ?
+		   AND delivered_at IS NULL AND dropped_at IS NULL AND lease_until > ?)
+		+ (SELECT COUNT(*) FROM access_provisioning WHERE client_id = ?
+		   AND delivered_at IS NULL AND lease_until > ?)`, clientID, now, clientID, now).Scan(&inFlight); err != nil {
 		return nil, err
 	}
 	if inFlight > 0 {

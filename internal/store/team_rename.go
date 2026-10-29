@@ -92,9 +92,10 @@ var (
 	// ErrTeamRenameChanged: the teams changed since the rename was previewed,
 	// so it would now resolve differently (RenameTeamAsPreviewed).
 	ErrTeamRenameChanged = errors.New("the teams changed since the rename was previewed")
-	// ErrTeamRenameInFlight: a rename is being delivered to the application
-	// right now, so a team import, which would drop it, must wait.
-	ErrTeamRenameInFlight = errors.New("a team rename is being delivered to Fleet; run the import again in a minute")
+	// ErrTeamRenameInFlight: a rename or an access push is being delivered to
+	// the application right now and cannot be recalled, so a team import,
+	// which would drop or rewrite it, must wait.
+	ErrTeamRenameInFlight = errors.New("a team change is being delivered to Fleet; run the import again in a minute")
 )
 
 // TeamRenameExpectation is how a rename resolved when it was previewed: the
