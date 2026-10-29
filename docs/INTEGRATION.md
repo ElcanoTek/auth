@@ -165,7 +165,10 @@ ordering:
   rename;
 - a per-person push still queued with the old name is rewritten to the new
   one (a new version and event id) in the rename's transaction, so the
-  application never sees the old name after it.
+  application never sees the old name after it. A delivered one is rewritten
+  too but not resent: a new or rotated back-channel endpoint replays every
+  person's latest push, and a rebuilt application there has no rename history
+  to ignore an old name by.
 
 Ordering on Auth's side assumes one deliverer sending at a time (it does). A
 push can still reach the application late if the application was slow to

@@ -79,10 +79,10 @@ func TestRenameTeamQueuesOneRenameAndHoldsPushesBehindIt(t *testing.T) {
 	if pushedSettings(t, after)["team"] != "Research" || after.Version != before.Version+1 || after.EventID == before.EventID {
 		t.Fatalf("queued push not rewritten: %+v -> %+v", before, after)
 	}
-	// ben's delivered push is left alone: Fleet already has it, and the
-	// rename moves ben there.
-	if d, _, _ := f.s.AccessProvisioningState(f.ctx, ben.ID, "fleet"); pushedSettings(t, d)["team"] != "Trading" {
-		t.Fatalf("a delivered push was rewritten: %s", d.Settings)
+	// ben's delivered push is rewritten too (TestTeamRenameKeepsDeliveredSnapshotsCurrent)
+	// but stays delivered: the rename moves ben in Fleet.
+	if d, _, _ := f.s.AccessProvisioningState(f.ctx, ben.ID, "fleet"); pushedSettings(t, d)["team"] != "Research" || pushedSettings(t, d)["team_rename"] != "2000" {
+		t.Fatalf("ben's delivered push: %s", d.Settings)
 	}
 
 	// Held: no Fleet push is handed out while the rename is undelivered;
@@ -120,9 +120,53 @@ func TestRenameTeamQueuesOneRenameAndHoldsPushesBehindIt(t *testing.T) {
 		if d.ClientID == "fleet" && d.Subject == ann.ID && pushedSettings(t, d)["team"] != "Research" {
 			t.Fatalf("ann's push after the rename: %s", d.Settings)
 		}
+		if d.ClientID == "fleet" && d.Subject == ben.ID {
+			t.Fatal("ben's delivered push was sent again")
+		}
 	}
 	if pending, _ := f.s.PendingTeamRenames(f.ctx, "fleet"); len(pending) != 0 {
 		t.Fatalf("still pending: %+v", pending)
+	}
+}
+
+// A new or rotated endpoint replays every person's latest push, so a push
+// delivered before a rename must carry the new name too: a rebuilt Fleet at
+// that endpoint has no rename history to ignore the old name by, and would
+// move the person back. The rewrite keeps it delivered until then.
+func TestTeamRenameKeepsDeliveredSnapshotsCurrent(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	ann := f.granted(t, "ann@example.com", "Trading")
+	f.deliverAll(t, 1500)
+	before, _, _ := f.s.AccessProvisioningState(f.ctx, ann.ID, "fleet")
+	if _, err := f.s.RenameTeam(f.ctx, "Trading", "Research", "", nil, 2000); err != nil {
+		t.Fatal(err)
+	}
+	renames, _ := f.s.ClaimDueTeamRenames(f.ctx, 2100, time.Minute)
+	if len(renames) != 1 {
+		t.Fatalf("renames = %+v", renames)
+	}
+	if err := f.s.MarkTeamRenameDelivered(f.ctx, renames[0], 2100); err != nil {
+		t.Fatal(err)
+	}
+	if items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2200, 100, time.Minute); hasClient(items, "fleet") {
+		t.Fatal("a delivered push was sent again after the rename")
+	}
+	if err := f.s.SetApplicationBackchannelLogoutURI(f.ctx, "fleet", "https://rebuilt.example.com/api/auth/backchannel-logout", 2300); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2400, 100, time.Minute)
+	var replay *AccessProvisioningDelivery
+	for i := range items {
+		if items[i].ClientID == "fleet" && items[i].Subject == ann.ID {
+			replay = &items[i]
+		}
+	}
+	if replay == nil {
+		t.Fatal("the new endpoint got no replay")
+	}
+	if s := pushedSettings(t, *replay); s["team"] != "Research" || s["team_rename"] != "2000" || replay.Version != before.Version+1 || replay.EventID == before.EventID {
+		t.Fatalf("replay = %+v (before %+v)", *replay, before)
 	}
 }
 

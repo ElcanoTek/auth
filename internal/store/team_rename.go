@@ -25,7 +25,10 @@ import (
 //     undelivered (ClaimDueAccessProvisioning), so Fleet never sees the new
 //     name before the rename;
 //   - a per-person push still queued with the old name is rewritten to the new
-//     one in the rename's transaction, so Fleet never sees the old name after.
+//     one in the rename's transaction, so Fleet never sees the old name after;
+//     a delivered one is rewritten too but stays delivered, since a new or
+//     rotated endpoint replays every person's latest push (a rebuilt Fleet
+//     there has no rename history to ignore an old name by).
 //
 // All of this assumes ONE deliverer sending at a time (provisioning.Deliverer
 // serializes RunOnce, and Auth runs one process): a push claimed before a
@@ -241,7 +244,7 @@ func teamCountsQ(ctx context.Context, q rowQuerier) ([]TeamCount, error) {
 }
 
 // queueTeamRenamesTx queues the rename for every application with team sync
-// on, and rewrites that application's per-person pushes still queued with the
+// on, and rewrites that application's per-person pushes still carrying the
 // old name. An application without a back-channel endpoint gets the rename
 // too: it waits (with the pushes) until one is set. sent reports whether any
 // was queued, awaiting whether one of those has no endpoint.
@@ -281,7 +284,7 @@ func queueTeamRenamesTx(ctx context.Context, tx *sql.Tx, from, to string, now in
 			VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, t.id, version, from, to, eventID, now, t.endpoint, now); err != nil {
 			return false, false, err
 		}
-		if err := rewriteQueuedTeamTx(ctx, tx, t.id, from, to, version, now); err != nil {
+		if err := rewriteTeamPushesTx(ctx, tx, t.id, from, to, version, now); err != nil {
 			return false, false, err
 		}
 		sent = true
@@ -300,22 +303,28 @@ func versionAfter(last, now int64) int64 {
 	return last + 1
 }
 
-// rewriteQueuedTeamTx gives every undelivered per-person push for clientID
-// that still carries team from the new name, as a new version with a new
-// event id: a copy of the old one already in flight then cannot be marked
-// delivered in its place, and the rewritten one follows the rename.
-func rewriteQueuedTeamTx(ctx context.Context, tx *sql.Tx, clientID, from, to string, version, now int64) error {
-	rows, err := tx.QueryContext(ctx, `SELECT user_id, settings_json FROM access_provisioning
-		WHERE client_id = ? AND delivered_at IS NULL AND settings_json <> ''`, clientID)
+// rewriteTeamPushesTx gives every per-person push for clientID that still
+// carries team from the new name and this rename's version, as a new version
+// with a new event id. An undelivered one is then sent after the rename, and a
+// copy of the old one already in flight cannot be marked delivered in its
+// place. A delivered one keeps its delivered mark (Fleet has the rename and
+// needs nothing now), but the snapshot a new or rotated endpoint replays
+// (SetApplicationBackchannelLogoutURI) carries the new name.
+func rewriteTeamPushesTx(ctx context.Context, tx *sql.Tx, clientID, from, to string, version, now int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT user_id, settings_json, delivered_at IS NOT NULL FROM access_provisioning
+		WHERE client_id = ? AND settings_json <> ''`, clientID)
 	if err != nil {
 		return err
 	}
-	type queued struct{ userID, settings string }
+	type queued struct {
+		userID, settings string
+		delivered        bool
+	}
 	var rewrite []queued
 	for rows.Next() {
 		var q queued
 		var raw string
-		if err := rows.Scan(&q.userID, &raw); err != nil {
+		if err := rows.Scan(&q.userID, &raw, &q.delivered); err != nil {
 			_ = rows.Close()
 			return err
 		}
@@ -344,6 +353,15 @@ func rewriteQueuedTeamTx(ctx context.Context, tx *sql.Tx, clientID, from, to str
 		eventID, err := randomID()
 		if err != nil {
 			return err
+		}
+		if q.delivered {
+			if _, err := tx.ExecContext(ctx, `UPDATE access_provisioning SET settings_json = ?, version = version + 1,
+				event_id = ?, issued_at = ?
+				WHERE user_id = ? AND client_id = ? AND delivered_at IS NOT NULL`,
+				q.settings, eventID, now, q.userID, clientID); err != nil {
+				return err
+			}
+			continue
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE access_provisioning SET settings_json = ?, version = version + 1,
 			event_id = ?, issued_at = ?, attempts = 0, next_attempt_at = ?, lease_until = NULL, last_error = NULL
