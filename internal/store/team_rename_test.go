@@ -429,6 +429,44 @@ func TestTeamImportStripsQueuedPushesOfARenamedTeam(t *testing.T) {
 	t.Fatal("the queued push was not released")
 }
 
+// A move to another team still queued when the rest of the old team is
+// renamed goes after the rename, so it carries the rename's version: Fleet
+// would otherwise ignore its team as older than the rename it just applied,
+// leaving the person on the renamed team.
+func TestQueuedMoveToAnotherTeamOutranksTheRename(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	ann := f.granted(t, "ann@example.com", "A")
+	f.granted(t, "ben@example.com", "A")
+	f.deliverAll(t, 1500)
+	if err := f.s.SetAccountTeam(f.ctx, "ann@example.com", "X", 1600); err != nil {
+		t.Fatal(err)
+	}
+	if d, _, _ := f.s.AccessProvisioningState(f.ctx, ann.ID, "fleet"); pushedSettings(t, d)["team"] != "X" || pushedSettings(t, d)["team_rename"] != "0" {
+		t.Fatalf("fixture: ann's queued move = %s", d.Settings)
+	}
+	if _, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil {
+		t.Fatal(err)
+	}
+	renames, _ := f.s.ClaimDueTeamRenames(f.ctx, 2100, time.Minute)
+	if len(renames) != 1 {
+		t.Fatalf("renames = %+v", renames)
+	}
+	if err := f.s.MarkTeamRenameDelivered(f.ctx, renames[0], 2100); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2200, 100, time.Minute)
+	for _, d := range items {
+		if d.ClientID == "fleet" && d.Subject == ann.ID {
+			if s := pushedSettings(t, d); s["team"] != "X" || s["team_rename"] != "2000" {
+				t.Fatalf("ann's move after the rename = %s", d.Settings)
+			}
+			return
+		}
+	}
+	t.Fatal("ann's move was not sent after the rename")
+}
+
 // A revoke is never held behind a rename: a rename that keeps failing must not
 // keep anyone's access open. Grants still wait.
 func TestRevokesAreNotHeldBehindARename(t *testing.T) {

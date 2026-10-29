@@ -345,14 +345,25 @@ func versionAfter(last, now int64) int64 {
 }
 
 // rewriteTeamPushesTx gives every per-person push for clientID that still
-// carries team from the new name and this rename's version (rewritePushesTx).
+// carries team from the new name and this rename's version, and every other
+// QUEUED push carrying a team this rename's version too (rewritePushesTx): it
+// goes after the rename, so a team it names (a move to another team made just
+// before the rename) is newer than the rename and must not be ignored as
+// older than it. A delivered push naming another team is left alone: Fleet
+// has it, and a replay sets current teams anyway (replayTeamsTx).
 func rewriteTeamPushesTx(ctx context.Context, tx *sql.Tx, clientID, from, to string, version, now int64) error {
-	return rewritePushesTx(ctx, tx, clientID, now, func(_ string, _ bool, values map[string]string) bool {
-		if team, ok := values["team"]; !ok || team != from {
+	generation := strconv.FormatInt(version, 10)
+	return rewritePushesTx(ctx, tx, clientID, now, func(_ string, delivered bool, values map[string]string) bool {
+		team, ok := values["team"]
+		switch {
+		case !ok:
+			return false
+		case team == from:
+			values["team"] = to
+		case delivered || values["team_rename"] == generation:
 			return false
 		}
-		values["team"] = to
-		values["team_rename"] = strconv.FormatInt(version, 10)
+		values["team_rename"] = generation
 		return true
 	})
 }

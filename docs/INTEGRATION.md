@@ -170,7 +170,9 @@ ordering:
   a rename that keeps failing must not keep anyone's access open);
 - a per-person push still queued with the old name is rewritten to the new
   one (a new version and event id) in the rename's transaction, so the
-  application never sees the old name after it. A delivered one is rewritten
+  application never sees the old name after it; any other queued push naming
+  a team gets the rename's version, since it goes after the rename and its
+  team (a move made just before) is the newer one. A delivered one is rewritten
   too but not resent: a new or rotated back-channel endpoint replays every
   person's latest push, and a rebuilt application there has no rename history
   to ignore an old name by.
