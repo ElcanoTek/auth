@@ -768,12 +768,15 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	}
 	// Settings → team save and clear.
 	_, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {"Ops"}})
-	if !strings.Contains(body, "bob@example.com is tagged Ops.") {
+	if !strings.Contains(body, "bob@example.com was added to team Ops.") {
 		t.Fatalf("set-team:\n%s", body)
 	}
 	_, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {""}})
-	if !strings.Contains(body, "Removed bob@example.com&#39;s team tag.") {
+	if !strings.Contains(body, "bob@example.com was removed from team Ops.") {
 		t.Fatalf("clear team:\n%s", body)
+	}
+	if _, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {""}}); !strings.Contains(body, "bob@example.com has no team.") {
+		t.Fatalf("clear an empty team:\n%s", body)
 	}
 	events, _ := st.RecentAuditEvents(context.Background(), func() string { b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); return b.ID }(), 6)
 	var types []string

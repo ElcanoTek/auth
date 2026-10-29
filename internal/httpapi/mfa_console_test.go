@@ -231,12 +231,12 @@ func TestUnenrolledAdministratorIsSentToEnrollBeforeSensitiveChanges(t *testing.
 	if app, _ := st.ApplicationByID(context.Background(), "fleet"); app.DisabledAt != nil {
 		t.Fatal("application disabled by a refused action")
 	}
-	// The one console write that stays open to them is the team tag, alone
+	// The one console write that stays open to them is the team, alone
 	// or in a batch, plus signing themself out.
-	if _, page := alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {"Ops"}}); !strings.Contains(page, "bob@example.com is tagged Ops.") {
+	if _, page := alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {"Ops"}}); !strings.Contains(page, "bob@example.com was added to team Ops.") {
 		t.Fatalf("team by unenrolled admin:\n%s", page)
 	}
-	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {"Trading"}, "emails": {"bob@example.com"}}); !strings.Contains(page, "Tagged Trading: bob@example.com (1).") {
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {"Trading"}, "emails": {"bob@example.com"}}); !strings.Contains(page, "Added to team Trading: bob@example.com (1).") {
 		t.Fatalf("batch team by unenrolled admin:\n%s", page)
 	}
 }
@@ -454,13 +454,16 @@ func TestBatchActionsOnSelectedAccounts(t *testing.T) {
 	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}}); !strings.Contains(page, "Select at least one account first") {
 		t.Fatalf("batch without a selection:\n%s", page)
 	}
-	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {"Trading"}, "emails": {"bob@example.com", "carol@example.com", "ghost@example.com"}}); !strings.Contains(page, "Tagged Trading: bob@example.com, carol@example.com (2). Skipped: ghost@example.com (no such account).") {
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {"Trading"}, "emails": {"bob@example.com", "carol@example.com", "ghost@example.com"}}); !strings.Contains(page, "Added to team Trading: bob@example.com, carol@example.com (2). Skipped: ghost@example.com (no such account).") {
 		t.Fatalf("batch team:\n%s", page)
 	}
 	for _, e := range []string{"bob@example.com", "carol@example.com"} {
 		if a, _ := st.PasswordAccountByEmail(ctx, e); a.Team != "Trading" {
 			t.Fatalf("%s team = %q", e, a.Team)
 		}
+	}
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {""}, "emails": {"bob@example.com", "carol@example.com"}}); !strings.Contains(page, "Removed from their team: bob@example.com, carol@example.com (2).") {
+		t.Fatalf("batch team removal:\n%s", page)
 	}
 	// Sign out: bob and carol lose their sessions; alice is skipped.
 	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"signout"}, "emails": {"bob@example.com", "carol@example.com", "alice@example.com"}}); !strings.Contains(page, "Signed out everywhere: bob@example.com, carol@example.com (2). Skipped: Alice@Example.com (you; use your own row to sign yourself out).") {

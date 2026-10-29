@@ -1133,10 +1133,13 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return res.failed("set team", err)
 		}
 		audit("admin.team_set", target.ID, "")
-		if team == "" {
-			res.Notice = fmt.Sprintf("Removed %s's team tag.", target.Email)
-		} else {
-			res.Notice = fmt.Sprintf("%s is tagged %s.", target.Email, team)
+		switch {
+		case team != "":
+			res.Notice = fmt.Sprintf("%s was added to team %s.", target.Email, team)
+		case target.Team != "":
+			res.Notice = fmt.Sprintf("%s was removed from team %s.", target.Email, target.Team)
+		default:
+			res.Notice = fmt.Sprintf("%s has no team.", target.Email)
 		}
 	case "set-mfa-required":
 		// Settings: require (or stop requiring) two-factor sign-in of one
@@ -1415,9 +1418,9 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 	switch op {
 	case "team":
 		if team == "" {
-			what = "Removed the team tag from"
+			what = "Removed from their team:"
 		} else {
-			what = "Tagged " + team + ":"
+			what = "Added to team " + team + ":"
 		}
 	case "signout":
 		what = "Signed out everywhere:"

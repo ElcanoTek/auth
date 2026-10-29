@@ -96,7 +96,7 @@ USERS
   auth-admin user enable <email>          re-enable account
   auth-admin user show <email>            show account state
   auth-admin user admin <email> on|off    grant or remove administrator status
-  auth-admin user team <email> <team|->   set the team tag (- clears it)
+  auth-admin user team <email> <team|->   set the team (- removes it)
   auth-admin user access <email> <app-id> on|off  grant or revoke application access
   auth-admin user revoke-sessions <email> revoke every central session
   auth-admin user list                    show password accounts + legacy login audit
@@ -417,9 +417,9 @@ func userCmd(dataDir string, args []string) {
 			fatalf("team: %v", err)
 		}
 		if team == "" {
-			fmt.Printf("✓ %s has no team tag\n", email)
+			fmt.Printf("✓ %s has no team\n", email)
 		} else {
-			fmt.Printf("✓ %s tagged %q\n", email, team)
+			fmt.Printf("✓ %s added to team %q\n", email, team)
 		}
 	case "access":
 		if len(args) != 4 || (args[3] != "on" && args[3] != "off") {
