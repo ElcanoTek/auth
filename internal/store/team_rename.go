@@ -372,8 +372,9 @@ func rewriteTeamPushesTx(ctx context.Context, tx *sql.Tx, clientID, from, to str
 // rewritePushesTx applies edit to the settings of every per-person push for
 // clientID (with the person's account id and whether it was delivered); edit
 // reports whether it changed them. A changed push becomes a new
-// version with a new event id. An undelivered one is due again, and a copy of
-// the old one already in flight cannot be marked delivered in its place. A
+// version with a new event id. An undelivered one is due again (once any
+// attempt still in flight has run out its lease), and a copy of the old one
+// already in flight cannot be marked delivered in its place. A
 // delivered one keeps its delivered mark (the application needs nothing now),
 // but SetApplicationBackchannelLogoutURI replays every person's latest push to
 // a new or rotated endpoint, so that replay must be current too: a rebuilt
@@ -426,7 +427,7 @@ func rewritePushesTx(ctx context.Context, tx *sql.Tx, clientID string, now int64
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE access_provisioning SET settings_json = ?, version = version + 1,
-			event_id = ?, issued_at = ?, attempts = 0, next_attempt_at = ?, lease_until = NULL, last_error = NULL
+			event_id = ?, issued_at = ?, attempts = 0, next_attempt_at = ?, last_error = NULL
 			WHERE user_id = ? AND client_id = ? AND delivered_at IS NULL`,
 			p.settings, eventID, now, now, p.userID, clientID); err != nil {
 			return err

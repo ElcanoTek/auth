@@ -548,6 +548,44 @@ func TestTeamImportWaitsForAPushInFlight(t *testing.T) {
 	}
 }
 
+// A push's lease is the only sign that an attempt is still in flight, so
+// neither a new endpoint nor a newer version of the push clears it: nothing
+// is sent again, and an import waits, until it has run out.
+func TestInFlightPushKeepsItsLease(t *testing.T) {
+	for name, change := range map[string]func(t *testing.T, f *teamFixture, ann Account){
+		"endpoint changed": func(t *testing.T, f *teamFixture, _ Account) {
+			if err := f.s.SetApplicationBackchannelLogoutURI(f.ctx, "fleet", "https://fleet2.example.com/bc", 1505); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"newer version": func(t *testing.T, f *teamFixture, ann Account) {
+			if _, _, err := f.s.SetApplicationAccessWithSettings(f.ctx, ann.ID, []string{"fleet"}, map[string]string{"fleet": `{"chat_role":"viewer","ops_role":"none"}`}, 1505); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newTeamFixture(t)
+			f.teamSyncOn(t)
+			ann := f.granted(t, "ann@example.com", "A")
+			if items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 1500, 100, time.Minute); !hasClient(items, "fleet") {
+				t.Fatal("fixture: no push claimed")
+			}
+			change(t, f, ann)
+			if items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 1510, 100, time.Minute); hasClient(items, "fleet") {
+				t.Fatal("sent again while the first attempt was in flight")
+			}
+			entries := []TeamImportEntry{{Email: "ann@example.com", Team: "Z", Enabled: true, ChatRole: "member", OpsRole: "none"}}
+			if _, err := f.s.ImportTeams(f.ctx, "fleet", entries, 1520); !errors.Is(err, ErrTeamRenameInFlight) {
+				t.Fatalf("import while the first attempt was in flight = %v", err)
+			}
+			if items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 1561, 100, time.Minute); !hasClient(items, "fleet") {
+				t.Fatal("not sent once the lease ran out")
+			}
+		})
+	}
+}
+
 // A new endpoint's replay takes each person's team from Auth's current state,
 // not from the stored push: here a push the import stripped (it carried the
 // renamed team) is delivered teamless, yet a rebuilt Fleet gets the imported

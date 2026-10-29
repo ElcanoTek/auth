@@ -2185,10 +2185,12 @@ func (s *Store) SetApplicationBackchannelLogoutURI(ctx context.Context, id, endp
 	}
 	// Provisioning rows are desired state, not disposable events. Keep them
 	// when an endpoint is cleared and replay the latest version immediately
-	// when a receiver is configured or rotated.
+	// when a receiver is configured or rotated. A push in flight to the old
+	// endpoint keeps its lease: it may still land there, so the replay waits
+	// for it to run out, and so does a team import (ErrTeamRenameInFlight).
 	_, err = tx.ExecContext(ctx, `UPDATE access_provisioning
 		SET endpoint = ?, delivered_at = CASE WHEN ? = '' THEN delivered_at ELSE NULL END,
-		    lease_until = NULL, next_attempt_at = ?, last_error = NULL
+		    next_attempt_at = ?, last_error = NULL
 		WHERE client_id = ?`, endpoint, endpoint, now, id)
 	if err != nil {
 		return err

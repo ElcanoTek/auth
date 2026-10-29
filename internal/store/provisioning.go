@@ -48,7 +48,7 @@ func setAccessProvisioningTx(ctx context.Context, tx *sql.Tx, userID, clientID s
 		ON CONFLICT(user_id, client_id) DO UPDATE SET
 		  email = excluded.email, allowed = excluded.allowed, version = access_provisioning.version + 1,
 		  event_id = excluded.event_id, issued_at = excluded.issued_at, endpoint = excluded.endpoint,
-		  attempts = 0, next_attempt_at = excluded.next_attempt_at, lease_until = NULL,
+		  attempts = 0, next_attempt_at = excluded.next_attempt_at, lease_until = access_provisioning.lease_until,
 		  delivered_at = NULL, last_error = NULL, settings_json = excluded.settings_json`,
 		userID, clientID, email, boolInt(allowed), eventID, now, endpoint, now, settings)
 	return err
