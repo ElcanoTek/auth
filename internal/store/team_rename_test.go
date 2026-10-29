@@ -266,9 +266,11 @@ func TestTeamRenamesFollowTheEndpoint(t *testing.T) {
 	}
 }
 
-// Turning team sync off drops undelivered renames, so they no longer hold the
-// application's other pushes.
-func TestTeamSyncOffDropsQueuedRenames(t *testing.T) {
+// Turning team sync off pauses a queued rename: it is not sent and holds no
+// push (they carry no team with sync off). Turning sync back on resumes it
+// ahead of the pushes: Auth's labels already carry the new name, and a push
+// sent first would move the person there on its own.
+func TestTeamSyncOffPausesQueuedRenames(t *testing.T) {
 	f := newTeamFixture(t)
 	f.teamSyncOn(t)
 	ann := f.granted(t, "ann@example.com", "A")
@@ -283,14 +285,228 @@ func TestTeamSyncOffDropsQueuedRenames(t *testing.T) {
 	if err := f.s.SetApplicationTeamSync(f.ctx, "fleet", false, 2200); err != nil {
 		t.Fatal(err)
 	}
+	if pending, _ := f.s.PendingTeamRenames(f.ctx, "fleet"); len(pending) != 1 {
+		t.Fatalf("the rename was not kept with sync off: %+v", pending)
+	}
+	if none, _ := f.s.ClaimDueTeamRenames(f.ctx, 2300, time.Minute); len(none) != 0 {
+		t.Fatalf("a rename was sent with sync off: %+v", none)
+	}
+	items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2300, 100, time.Minute)
+	if !hasClient(items, "fleet") {
+		t.Fatal("pushes still held after team sync went off")
+	}
+	for _, d := range items {
+		if d.ClientID == "fleet" {
+			if err := f.s.MarkAccessProvisioningDelivered(f.ctx, d.Subject, d.ClientID, d.EventID, d.Endpoint, 2300); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	if err := f.s.SetApplicationTeamSync(f.ctx, "fleet", true, 2400); err != nil {
+		t.Fatal(err)
+	}
+	// A role change after sync is back on: its push carries team B.
+	if _, _, err := f.s.SetApplicationAccessWithSettings(f.ctx, ann.ID, []string{"fleet"}, map[string]string{"fleet": fleetMember}, 2400); err != nil {
+		t.Fatal(err)
+	}
+	if items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2500, 100, time.Minute); hasClient(items, "fleet") {
+		t.Fatal("a push went out before the resumed rename")
+	}
+	renames, _ := f.s.ClaimDueTeamRenames(f.ctx, 2500, time.Minute)
+	if len(renames) != 1 || renames[0].From != "A" || renames[0].To != "B" {
+		t.Fatalf("resumed renames = %+v", renames)
+	}
+	if err := f.s.MarkTeamRenameDelivered(f.ctx, renames[0], 2500); err != nil {
+		t.Fatal(err)
+	}
+	items, _ = f.s.ClaimDueAccessProvisioning(f.ctx, 2600, 100, time.Minute)
+	if !hasClient(items, "fleet") {
+		t.Fatal("pushes still held after the resumed rename was delivered")
+	}
+	for _, d := range items {
+		if d.ClientID == "fleet" && pushedSettings(t, d)["team"] != "B" {
+			t.Fatalf("push after the resumed rename: %s", d.Settings)
+		}
+	}
+}
+
+// A rename made while team sync is off is recorded too, so on resume Fleet
+// gets every rename in order and then pushes carrying the latest name, never
+// a push that moves people to a name Fleet was not told about.
+func TestTeamRenamesMadeWhileSyncIsOffGoInOrder(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	ann := f.granted(t, "ann@example.com", "A")
+	f.deliverAll(t, 1500)
+	if _, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.SetApplicationTeamSync(f.ctx, "fleet", false, 2100); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.s.RenameTeam(f.ctx, "B", "C", "", nil, 2200)
+	if err != nil || !res.Paused || res.Sent {
+		t.Fatalf("rename with sync off = %+v %v", res, err)
+	}
+	if err := f.s.SetApplicationTeamSync(f.ctx, "fleet", true, 2300); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.s.SetApplicationAccessWithSettings(f.ctx, ann.ID, []string{"fleet"}, map[string]string{"fleet": `{"chat_role":"viewer","ops_role":"none"}`}, 2300); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range [][2]string{{"A", "B"}, {"B", "C"}} {
+		if items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2400+int64(i), 100, time.Minute); hasClient(items, "fleet") {
+			t.Fatalf("a push went out before rename %d", i)
+		}
+		renames, _ := f.s.ClaimDueTeamRenames(f.ctx, 2400+int64(i), time.Minute)
+		if len(renames) != 1 || renames[0].From != want[0] || renames[0].To != want[1] {
+			t.Fatalf("rename %d = %+v", i, renames)
+		}
+		if err := f.s.MarkTeamRenameDelivered(f.ctx, renames[0], 2400+int64(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2500, 100, time.Minute)
+	for _, d := range items {
+		if d.ClientID == "fleet" && d.Subject == ann.ID {
+			if s := pushedSettings(t, d); s["team"] != "C" || s["team_rename"] != "2200" {
+				t.Fatalf("push after the renames: %s", d.Settings)
+			}
+			return
+		}
+	}
+	t.Fatal("no push after the renames")
+}
+
+// An import while a rename is queued keeps the import's teams: the rename is
+// dropped, and a queued push still carrying the renamed team loses it, so it
+// cannot move the person off the team the import kept.
+func TestTeamImportStripsQueuedPushesOfARenamedTeam(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	ann := f.granted(t, "ann@example.com", "A")
+	f.deliverAll(t, 1500)
+	if _, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil {
+		t.Fatal(err)
+	}
+	f.queuePush(t, ann.ID)
+	if d, _, _ := f.s.AccessProvisioningState(f.ctx, ann.ID, "fleet"); pushedSettings(t, d)["team"] != "B" {
+		t.Fatalf("fixture: queued push = %s", d.Settings)
+	}
+	if _, err := f.s.ImportTeams(f.ctx, "fleet", []TeamImportEntry{
+		{Email: "ann@example.com", Team: "A", Enabled: true, ChatRole: "viewer", OpsRole: "none"},
+	}, 2100); err != nil {
+		t.Fatal(err)
+	}
+	if f.accountTeam(t, ann.ID) != "A" {
+		t.Fatal("the import did not keep Fleet's team")
+	}
+	items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2200, 100, time.Minute)
+	for _, d := range items {
+		if d.ClientID == "fleet" && d.Subject == ann.ID {
+			if s := pushedSettings(t, d); s["team"] != "" || s["chat_role"] != "viewer" {
+				t.Fatalf("queued push after the import: %s", d.Settings)
+			}
+			if _, has := pushedSettings(t, d)["team"]; has {
+				t.Fatalf("queued push still names a team: %s", d.Settings)
+			}
+			return
+		}
+	}
+	t.Fatal("the queued push was not released")
+}
+
+// A rename already on its way to Fleet cannot be recalled, so an import that
+// would drop it waits until the attempt ends.
+func TestTeamImportWaitsForARenameInFlight(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	f.granted(t, "ann@example.com", "A")
+	f.deliverAll(t, 1500)
+	if _, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil {
+		t.Fatal(err)
+	}
+	renames, _ := f.s.ClaimDueTeamRenames(f.ctx, 2100, time.Minute)
+	if len(renames) != 1 {
+		t.Fatalf("renames = %+v", renames)
+	}
+	entries := []TeamImportEntry{{Email: "ann@example.com", Team: "A", Enabled: true, ChatRole: "member", OpsRole: "none"}}
+	if _, err := f.s.ImportTeams(f.ctx, "fleet", entries, 2110); !errors.Is(err, ErrTeamRenameInFlight) {
+		t.Fatalf("import during a delivery = %v", err)
+	}
+	if err := f.s.MarkTeamRenameFailed(f.ctx, renames[0], 2120, time.Second, "delivery returned HTTP 503"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.ImportTeams(f.ctx, "fleet", entries, 2130); err != nil {
+		t.Fatalf("import after the attempt = %v", err)
+	}
+}
+
+// A new endpoint's replay takes each person's team from Auth's current state,
+// not from the stored push: here a push the import stripped (it carried the
+// renamed team) is delivered teamless, yet a rebuilt Fleet gets the imported
+// team.
+func TestEndpointReplayCarriesTheCurrentTeams(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	ann := f.granted(t, "ann@example.com", "A")
+	f.deliverAll(t, 1500)
+	if _, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil {
+		t.Fatal(err)
+	}
+	f.queuePush(t, ann.ID)
+	if _, err := f.s.ImportTeams(f.ctx, "fleet", []TeamImportEntry{
+		{Email: "ann@example.com", Team: "A", Enabled: true, ChatRole: "viewer", OpsRole: "none"},
+	}, 2100); err != nil {
+		t.Fatal(err)
+	}
+	f.deliverAll(t, 2200)
+	if d, _, _ := f.s.AccessProvisioningState(f.ctx, ann.ID, "fleet"); pushedSettings(t, d)["team"] != "" {
+		t.Fatalf("fixture: delivered push = %s", d.Settings)
+	}
+	if err := f.s.SetApplicationBackchannelLogoutURI(f.ctx, "fleet", "https://rebuilt.example.com/api/auth/backchannel-logout", 2300); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2400, 100, time.Minute)
+	for _, d := range items {
+		if d.ClientID == "fleet" && d.Subject == ann.ID {
+			if s := pushedSettings(t, d); s["team"] != "A" || s["team_rename"] != "2000" || s["chat_role"] != "viewer" {
+				t.Fatalf("replay = %s", d.Settings)
+			}
+			return
+		}
+	}
+	t.Fatal("the new endpoint got no replay")
+}
+
+// A team import makes the application's teams Auth's, so a rename queued
+// before it is dropped rather than sent.
+func TestTeamImportDropsQueuedRenames(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	f.granted(t, "ann@example.com", "A")
+	f.deliverAll(t, 1500)
+	if _, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.SetApplicationTeamSync(f.ctx, "fleet", false, 2100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.ImportTeams(f.ctx, "fleet", []TeamImportEntry{
+		{Email: "ann@example.com", Team: "A", Enabled: true, ChatRole: "member", OpsRole: "none"},
+	}, 2200); err != nil {
+		t.Fatal(err)
+	}
 	if pending, _ := f.s.PendingTeamRenames(f.ctx, "fleet"); len(pending) != 0 {
-		t.Fatalf("still pending with sync off: %+v", pending)
+		t.Fatalf("a rename survived the import: %+v", pending)
 	}
 	if none, _ := f.s.ClaimDueTeamRenames(f.ctx, 2300, time.Minute); len(none) != 0 {
 		t.Fatalf("a dropped rename was handed out: %+v", none)
 	}
-	if items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2300, 100, time.Minute); !hasClient(items, "fleet") {
-		t.Fatal("pushes still held after team sync went off")
+	if items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2300, 100, time.Minute); hasClient(items, "fleet") {
+		// Nothing is queued: the import pushes nothing.
+		t.Fatalf("the import pushed: %+v", items)
 	}
 }
 
@@ -380,15 +596,43 @@ func TestTeamSyncOnRefreshesDeliveredPushes(t *testing.T) {
 	}
 }
 
+// A rename bound to its preview changes nothing when another team has taken
+// the name since (it would merge), and goes ahead when it still resolves as
+// shown.
+func TestRenameTeamAsPreviewedRefusesAChangedOutcome(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	ann := f.granted(t, "ann@example.com", "Trading")
+	p, err := f.s.PreviewTeamRename(f.ctx, "Trading", "Research")
+	if err != nil || p.Merged || p.To != "Research" {
+		t.Fatalf("preview = %+v %v", p, err)
+	}
+	f.granted(t, "ben@example.com", "research")
+	shown := &TeamRenameExpectation{To: p.To, Merged: p.Merged}
+	if _, err := f.s.RenameTeamAsPreviewed(f.ctx, "Trading", "Research", shown, "", nil, 2000); !errors.Is(err, ErrTeamRenameChanged) {
+		t.Fatalf("changed outcome = %v", err)
+	}
+	if f.accountTeam(t, ann.ID) != "Trading" {
+		t.Fatal("a refused rename relabelled the team")
+	}
+	if pending, _ := f.s.PendingTeamRenames(f.ctx, "fleet"); len(pending) != 0 {
+		t.Fatalf("a refused rename was queued: %+v", pending)
+	}
+	res, err := f.s.RenameTeamAsPreviewed(f.ctx, "Trading", "Research", &TeamRenameExpectation{To: "research", Merged: true}, "", nil, 2000)
+	if err != nil || !res.Merged || f.accountTeam(t, ann.ID) != "research" {
+		t.Fatalf("rename as previewed = %+v %v", res, err)
+	}
+}
+
 // Merges take the existing team's spelling; a case-only rename renames;
 // unknown, unchanged and invalid renames change nothing; with team sync off
-// only Auth's labels change.
+// the renames are recorded but wait (Paused), and nothing is sent.
 func TestRenameTeamSpellingMergeAndRefusals(t *testing.T) {
 	f := newTeamFixture(t)
 	ann := f.granted(t, "ann@example.com", "Trading")
 	ben := f.granted(t, "ben@example.com", "Research")
 	res, err := f.s.RenameTeam(f.ctx, "Trading", "RESEARCH", "", nil, 2000)
-	if err != nil || !res.Merged || res.To != "Research" || res.Sent {
+	if err != nil || !res.Merged || res.To != "Research" || res.Sent || !res.Paused {
 		t.Fatalf("merge = %+v %v", res, err)
 	}
 	if f.accountTeam(t, ann.ID) != "Research" || f.accountTeam(t, ben.ID) != "Research" {
@@ -410,10 +654,11 @@ func TestRenameTeamSpellingMergeAndRefusals(t *testing.T) {
 			t.Errorf("%s: %v, want %v", name, err, c.want)
 		}
 	}
-	var n int
-	_ = f.s.db.QueryRow(`SELECT COUNT(*) FROM team_renames`).Scan(&n)
-	if n != 0 {
-		t.Fatalf("team sync off queued %d renames", n)
+	if pending, _ := f.s.PendingTeamRenames(f.ctx, "fleet"); len(pending) != 2 {
+		t.Fatalf("renames recorded with team sync off = %+v", pending)
+	}
+	if none, _ := f.s.ClaimDueTeamRenames(f.ctx, 2100, time.Minute); len(none) != 0 {
+		t.Fatalf("a rename was sent with team sync off: %+v", none)
 	}
 	var meta string
 	_ = f.s.db.QueryRow(`SELECT metadata FROM audit_events WHERE event_type = 'team.renamed' ORDER BY id DESC LIMIT 1`).Scan(&meta)

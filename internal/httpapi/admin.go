@@ -344,7 +344,14 @@ func (s *Server) describeChange(r *http.Request, p *pendingChange) {
 			p.Detail = "Everyone granted it can sign in to it again."
 		}
 	case "rename-team":
-		p.Question, p.Detail = s.describeTeamRename(r, v.Get("from"), v.Get("to"))
+		var preview *store.TeamRenamePreview
+		p.Question, p.Detail, preview = s.describeTeamRename(r, v.Get("from"), v.Get("to"))
+		if preview != nil {
+			// Confirm carries the outcome shown here, so a rename that would
+			// now resolve differently (a merge nobody was warned about) is
+			// refused rather than applied (adminRenameTeam).
+			p.Fields = append(p.Fields, pendingField{"expect_to", preview.To}, pendingField{"expect_merge", strconv.FormatBool(preview.Merged)})
+		}
 	case "batch":
 		emails := v["emails"]
 		list := strings.Join(emails, ", ")
@@ -510,7 +517,12 @@ func (s *Server) adminRenameTeam(r *http.Request, res adminResult, actorID strin
 	needVerify func() adminResult, audit func(event, targetID, appID string)) adminResult {
 	res.Tab = adminAccountsTab
 	from := strings.TrimSpace(r.FormValue("from"))
-	result, err := s.store.RenameTeam(r.Context(), from, r.FormValue("to"), actorID, proof, now.Unix())
+	// A confirmed rename carries the outcome its popup showed (describeChange).
+	var expect *store.TeamRenameExpectation
+	if _, ok := r.PostForm["expect_to"]; ok {
+		expect = &store.TeamRenameExpectation{To: r.PostFormValue("expect_to"), Merged: r.PostFormValue("expect_merge") == "true"}
+	}
+	result, err := s.store.RenameTeamAsPreviewed(r.Context(), from, r.FormValue("to"), expect, actorID, proof, now.Unix())
 	switch {
 	case errors.Is(err, store.ErrActorNotFresh):
 		return needVerify()
@@ -523,6 +535,9 @@ func (s *Server) adminRenameTeam(r *http.Request, res adminResult, actorID strin
 	case errors.Is(err, store.ErrTeamRenameNoChange):
 		res.Error = fmt.Sprintf("%s is already the team's name.", result.To)
 		return res
+	case errors.Is(err, store.ErrTeamRenameChanged):
+		res.Error = "The teams changed after this rename was shown, so nothing was renamed. Check the Teams list and rename again."
+		return res
 	case err != nil:
 		return res.failed("rename team", err)
 	}
@@ -532,6 +547,8 @@ func (s *Server) adminRenameTeam(r *http.Request, res adminResult, actorID strin
 		res.Notice = fmt.Sprintf("Merged team %s into %s (%s moved).", result.From, result.To, plural(int(result.Accounts), "account"))
 	}
 	switch {
+	case result.Paused:
+		res.Notice += " Fleet's team sync is off, so Fleet gets the rename when it is switched back on."
 	case result.AwaitingEndpoint:
 		res.Notice += " Fleet has no back-channel endpoint, so it gets the rename, and its other access updates, once one is set."
 	case result.Sent:
@@ -544,12 +561,12 @@ func (s *Server) adminRenameTeam(r *http.Request, res adminResult, actorID strin
 // teams, resolved exactly as the rename will be (store.PreviewTeamRename): how
 // many accounts move, whether it merges into an existing team, and what Fleet
 // keeps.
-func (s *Server) describeTeamRename(r *http.Request, from, to string) (question, detail string) {
+func (s *Server) describeTeamRename(r *http.Request, from, to string) (question, detail string, preview *store.TeamRenamePreview) {
 	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
 	question = fmt.Sprintf("Rename team %s to %s?", from, to)
 	p, err := s.store.PreviewTeamRename(r.Context(), from, to)
 	if err != nil {
-		return question, ""
+		return question, "", nil
 	}
 	synced, _ := s.store.ApplicationTeamSync(r.Context(), store.FleetApplicationID)
 	if p.Merged {
@@ -558,13 +575,13 @@ func (s *Server) describeTeamRename(r *http.Request, from, to string) (question,
 		if synced {
 			detail += " In Fleet, each side then sees what the other shared with its team."
 		}
-		return question, detail
+		return question, detail, &p
 	}
 	question = fmt.Sprintf("Rename team %s (%s) to %s?", from, plural(p.Members, "account"), p.To)
 	if synced {
 		detail = fmt.Sprintf("Fleet gets the rename too: everything shared with %s there stays shared with %s.", from, p.To)
 	}
-	return question, detail
+	return question, detail, &p
 }
 
 // failed logs an unexpected error and marks the result as a 500.

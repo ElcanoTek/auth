@@ -482,4 +482,14 @@ func TestCLITeamListAndRename(t *testing.T) {
 		!strings.Contains(out, "auth app set-backchannel") || strings.Contains(out, "Fleet gets the rename next") {
 		t.Fatalf("team rename without an endpoint:\n%s", out)
 	}
+	// With team sync off the rename waits for it, and `app show` says pushes
+	// are not held.
+	c.must("", "app", "team-sync", "fleet", "off")
+	if out := c.must("", "team", "rename", "Markets", "Desk"); !strings.Contains(out, "Fleet's team sync is off: the rename waits") {
+		t.Fatalf("team rename with sync off:\n%s", out)
+	}
+	if show := c.must("", "app", "show", "fleet"); !strings.Contains(show, `team rename pending: "Markets" -> "Desk"`) ||
+		!strings.Contains(show, "team sync is off: renames wait for it") || strings.Contains(show, "pushes to this application wait") {
+		t.Fatalf("app show with sync off:\n%s", show)
+	}
 }

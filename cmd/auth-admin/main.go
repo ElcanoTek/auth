@@ -698,6 +698,8 @@ func teamCmd(dataDir string, args []string) {
 		}
 		fmt.Printf("✓ %s team %q into %q (%d accounts)\n", verb, res.From, res.To, res.Accounts)
 		switch {
+		case res.Paused:
+			fmt.Println("  Fleet's team sync is off: the rename waits and goes to Fleet when `auth app team-sync fleet on` switches it back on.")
 		case res.AwaitingEndpoint:
 			fmt.Println("  Fleet has no back-channel endpoint: it gets the rename, and its other access updates wait, until `auth app set-backchannel` sets one.")
 		case res.Sent:
@@ -793,12 +795,16 @@ func applicationCmd(dataDir string, args []string) {
 			}
 			fmt.Println(line)
 		}
-		if len(renames) > 0 {
-			fmt.Println("  (pushes to this application wait until the rename is delivered)")
-		}
-		if on, err := st.ApplicationTeamSync(ctx, app.ID); err != nil {
+		on, err := st.ApplicationTeamSync(ctx, app.ID)
+		if err != nil {
 			fatalf("app show team sync: %v", err)
-		} else if on {
+		}
+		if len(renames) > 0 && on {
+			fmt.Println("  (pushes to this application wait until the rename is delivered)")
+		} else if len(renames) > 0 {
+			fmt.Println("  (team sync is off: renames wait for it, and pushes go without a team)")
+		}
+		if on {
 			fmt.Println("team sync: on (teams are sent to this application)")
 		} else if app.ID == store.FleetApplicationID {
 			fmt.Println("team sync: off")

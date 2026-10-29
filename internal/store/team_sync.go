@@ -92,9 +92,9 @@ func setTeamSyncTx(ctx context.Context, tx *sql.Tx, id string, on bool, now int6
 		if err := refreshTeamPushesTx(ctx, tx, id, now); err != nil {
 			return err
 		}
-	} else if err := dropTeamRenamesTx(ctx, tx, id, now); err != nil {
-		// With sync off nothing about teams is sent, so a queued rename would
-		// only hold the application's other pushes (team_rename.go).
+	} else if err := stripTeamPushesTx(ctx, tx, id, now); err != nil {
+		// With sync off nothing about teams is sent; a queued rename waits
+		// for sync to come back on (team_rename.go).
 		return err
 	}
 	return insertApplicationAuditMeta(ctx, tx, event, id, "", now, metadata)
@@ -183,6 +183,20 @@ func (s *Store) ImportTeams(ctx context.Context, clientID string, entries []Team
 	}
 	meta, err := json.Marshal(map[string]string{"source": "import", "actor": "cli"})
 	if err != nil {
+		return nil, err
+	}
+	// The application's teams are Auth's now: a rename queued before the
+	// import no longer applies. One already on its way cannot be recalled,
+	// so the import waits for it (its lease ends with the attempt).
+	var inFlight int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_renames WHERE application_id = ?
+		AND delivered_at IS NULL AND dropped_at IS NULL AND lease_until > ?`, clientID, now).Scan(&inFlight); err != nil {
+		return nil, err
+	}
+	if inFlight > 0 {
+		return nil, ErrTeamRenameInFlight
+	}
+	if err := dropTeamRenamesTx(ctx, tx, clientID, now); err != nil {
 		return nil, err
 	}
 	if err := setTeamSyncTx(ctx, tx, clientID, true, now, string(meta)); err != nil {

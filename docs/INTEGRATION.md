@@ -182,10 +182,18 @@ time, and above the last one). A rename that cannot be delivered holds that
 application's pushes; `auth app show fleet` prints it with its last error. A
 rename made while the application has no back-channel endpoint waits, with its
 pushes, until one is set; a changed endpoint takes waiting renames with it.
-Turning team sync off drops renames not yet delivered and takes the team out
-of every push, including the delivered ones a new endpoint would replay (no
-team is sent with sync off). Turning it on gives those delivered pushes each
-person's current team for such a replay, and sends nothing by itself.
+Turning team sync off takes the team out of every push, including the
+delivered ones a new endpoint would replay (no team is sent with sync off).
+Renames are still recorded while it is off, and wait. Turning it back on sends
+the waiting renames in order, ahead of the pushes, and gives those delivered
+pushes each person's current team for such a replay; it sends nothing else by
+itself. So a rename made while sync was off still reaches the application as a
+rename, not as one move per person. A team import drops waiting renames and
+takes the team out of queued pushes, since it makes the application's teams
+Auth's; it refuses to run while a rename is being delivered, which cannot be
+recalled. A new or rotated back-channel endpoint replays every person's push
+with their team as Auth has it then (none with sync off), since a rebuilt
+application there knows nothing of earlier renames or imports.
 
 With team sync off, teams are not sent. For a Fleet with no teams yet,
 switch it on by hand: `auth app team-sync fleet on` pushes nothing on its

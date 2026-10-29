@@ -384,7 +384,8 @@ registers a Fleet that has no teams yet.
 4. From then on, changing someone's team in Auth changes it in Fleet (and
    un-shares their team content there). `auth app show fleet` prints
    `team sync: on`. To stop: `auth app team-sync fleet off`; teams stay where
-   they are and are no longer sent.
+   they are and are no longer sent. Renames made while it is off wait, and go
+   to Fleet in order when it is switched back on.
 5. Renaming a team (console: Teams; CLI: `auth team rename <from> <to>`)
    renames it in Fleet too, keeping what is shared with it, as one message
    ([INTEGRATION.md](INTEGRATION.md#team-sync)). Fleet must be on a build

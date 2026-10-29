@@ -934,6 +934,39 @@ func TestEveryGatedActionCanBeCarried(t *testing.T) {
 // A rename goes through the code and confirm popups like any gated change, the
 // confirm popup says what moves (and when it merges), and Confirm renames the
 // team on every account, queueing one rename for Fleet when team sync is on.
+// The confirm popup's outcome is bound to Confirm: when another team takes
+// the new name in between, Confirm would merge without the merge warning, so
+// it renames nothing and says why.
+func TestTeamRenameConfirmIsBoundToItsPreview(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice, secret := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	if err := st.SetAccountTeam(ctx, "bob@example.com", "Trading", now); err != nil {
+		t.Fatal(err)
+	}
+	cfg.MFAReauthWindow = time.Nanosecond
+	_, page := alice.post("/admin", url.Values{"action": {"rename-team"}, "from": {"Trading"}, "to": {"Research"}})
+	_, page = alice.post("/admin", withValues(renderedForm(t, page, "step-up"), url.Values{"code": {codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))}}))
+	confirm := dialogForm(t, page, "confirm-change")
+	if !strings.Contains(confirm, "Rename team Trading (1 account) to Research?") || !strings.Contains(confirm, `name="expect_to" value="Research"`) ||
+		!strings.Contains(confirm, `name="expect_merge" value="false"`) {
+		t.Fatalf("confirm:\n%s", confirm)
+	}
+	// Another administrator puts alice on "research" before Confirm.
+	if err := st.SetAccountTeam(ctx, "alice@example.com", "research", now); err != nil {
+		t.Fatal(err)
+	}
+	cfg.MFAReauthWindow = 0
+	_, page = alice.post("/admin", renderedForm(t, page, "confirm-change"))
+	if !strings.Contains(page, "The teams changed after this rename was shown, so nothing was renamed.") {
+		t.Fatalf("changed outcome:\n%s", page)
+	}
+	if a, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); a.Team != "Trading" {
+		t.Fatalf("bob's team = %q", a.Team)
+	}
+}
+
 func TestTeamRenameFromTheConsole(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	alice, secret := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)

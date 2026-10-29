@@ -2193,6 +2193,13 @@ func (s *Store) SetApplicationBackchannelLogoutURI(ctx context.Context, id, endp
 	if err != nil {
 		return err
 	}
+	// The replay may reach a rebuilt application, so its teams are Auth's
+	// teams now, whatever the stored push last said (team_rename.go).
+	if endpoint != "" {
+		if err := replayTeamsTx(ctx, tx, id, now); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
