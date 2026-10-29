@@ -70,10 +70,12 @@ func (s *Store) ClaimDueAccessProvisioning(ctx context.Context, now int64, limit
 		  -- Held while a team rename for the application is undelivered and
 		  -- team sync is on, so the application never sees a renamed team
 		  -- before the rename (team_rename.go). With sync off the pushes
-		  -- carry no team and the rename waits.
-		  AND NOT EXISTS (SELECT 1 FROM team_renames r WHERE r.application_id = access_provisioning.client_id
+		  -- carry no team and the rename waits. A revoke is never held: it
+		  -- changes no team, and a rename that keeps failing must not keep
+		  -- anyone's access open.
+		  AND (allowed = 0 OR NOT EXISTS (SELECT 1 FROM team_renames r WHERE r.application_id = access_provisioning.client_id
 		                    AND r.delivered_at IS NULL AND r.dropped_at IS NULL
-		                    AND EXISTS (SELECT 1 FROM applications a WHERE a.id = r.application_id AND a.team_sync = 1))
+		                    AND EXISTS (SELECT 1 FROM applications a WHERE a.id = r.application_id AND a.team_sync = 1)))
 		ORDER BY next_attempt_at, user_id, client_id LIMIT ?`, now, now, limit)
 	if err != nil {
 		return nil, err

@@ -72,6 +72,13 @@ func (d *Deliverer) RunOnce(ctx context.Context, now time.Time) error {
 				return fmt.Errorf("decode access settings: %w", err)
 			}
 		}
+		if !item.Allowed {
+			// A revoke changes no team, so it carries none: it is then
+			// accepted by an application that does not take teams or team
+			// renames yet, and is never held behind a rename (store).
+			delete(settings, "team")
+			delete(settings, "team_rename")
+		}
 		claims := token.AccessClaims{Issuer: d.issuer, Subject: item.Subject, Audience: item.ClientID, Email: item.Email,
 			IssuedAt: now.Unix(), ExpiresAt: now.Add(TokenLifetime).Unix(), JWTID: item.EventID,
 			Events: map[string]token.AccessEvent{token.ApplicationAccessEvent: {Action: action, Version: item.Version, Settings: settings}}}

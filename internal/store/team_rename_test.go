@@ -417,6 +417,36 @@ func TestTeamImportStripsQueuedPushesOfARenamedTeam(t *testing.T) {
 	t.Fatal("the queued push was not released")
 }
 
+// A revoke is never held behind a rename: a rename that keeps failing must not
+// keep anyone's access open. Grants still wait.
+func TestRevokesAreNotHeldBehindARename(t *testing.T) {
+	f := newTeamFixture(t)
+	f.teamSyncOn(t)
+	ann := f.granted(t, "ann@example.com", "A")
+	ben := f.granted(t, "ben@example.com", "A")
+	f.deliverAll(t, 1500)
+	if _, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.s.SetApplicationAccess(f.ctx, ann.ID, nil, 2100); err != nil {
+		t.Fatal(err)
+	}
+	f.queuePush(t, ben.ID)
+	items, _ := f.s.ClaimDueAccessProvisioning(f.ctx, 2200, 100, time.Minute)
+	var revoked bool
+	for _, d := range items {
+		switch {
+		case d.ClientID == "fleet" && d.Subject == ann.ID && !d.Allowed:
+			revoked = true
+		case d.ClientID == "fleet" && d.Subject == ben.ID:
+			t.Fatal("a grant went out before the rename")
+		}
+	}
+	if !revoked {
+		t.Fatalf("the revoke was held behind the rename: %+v", items)
+	}
+}
+
 // A rename already on its way to Fleet cannot be recalled, so an import that
 // would drop it waits until the attempt ends.
 func TestTeamImportWaitsForARenameInFlight(t *testing.T) {

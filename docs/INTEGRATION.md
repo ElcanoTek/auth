@@ -160,9 +160,10 @@ ordering:
 
 - renames for an application go out in version order, one at a time, each
   retried until the application answers 2xx;
-- no per-person push for that application goes out while one of its renames
+- no per-person grant for that application goes out while one of its renames
   is undelivered, so the application never sees the new name before the
-  rename;
+  rename (a revoke is never held, and carries no team: it changes none, and
+  a rename that keeps failing must not keep anyone's access open);
 - a per-person push still queued with the old name is rewritten to the new
   one (a new version and event id) in the rename's transaction, so the
   application never sees the old name after it. A delivered one is rewritten

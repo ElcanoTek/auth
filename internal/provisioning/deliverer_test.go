@@ -82,6 +82,39 @@ func TestDelivererPostsSignedAccessDesiredState(t *testing.T) {
 	}
 }
 
+// A revoke carries no team: it changes none, and so it is accepted by an
+// application that does not take teams or team renames yet.
+func TestDelivererSendsRevokesWithoutATeam(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	q := &memoryQueue{item: store.AccessProvisioningDelivery{
+		EventID: "event-1", Subject: "account-1", Email: "alice@example.com", ClientID: "fleet",
+		Endpoint: "https://fleet.example.com/api/auth/backchannel-logout", Allowed: false, Version: 8,
+		Settings: `{"chat_role":"member","ops_role":"none","team":"Research","team_rename":"2000"}`,
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		claims, _, err := token.VerifyAccess(pub, r.Form.Get("access_token"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		event := claims.Events[token.ApplicationAccessEvent]
+		_, team := event.Settings["team"]
+		_, rename := event.Settings["team_rename"]
+		if event.Action != "revoke" || team || rename || event.Settings["chat_role"] != "member" {
+			t.Fatalf("event = %+v", event)
+		}
+		return &http.Response{StatusCode: 204, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+	})}
+	if err := New(q, priv, "https://auth.example.com", client).RunOnce(context.Background(), time.Unix(1000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if !q.delivered || q.failed {
+		t.Fatalf("delivered=%v failed=%v", q.delivered, q.failed)
+	}
+}
+
 // A team rename goes out as a team+jwt in team_token, naming no account, and
 // before any per-person push in the same pass. A refusal is recorded for a
 // retry, never marked delivered.
