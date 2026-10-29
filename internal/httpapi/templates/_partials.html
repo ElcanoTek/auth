@@ -21,3 +21,36 @@
   {{template "icon" "sun"}}
   {{template "icon" "moon"}}
 </button>{{end}}
+
+{{/* Your account: the person icon at the top right of the signed-in pages
+     (the apps page, the admin console, an application's no-access page) and
+     the popup it opens, the one place the signed-in email is shown. The
+     handler fills it with Server.withAccountMenu. Only an administrator changes their own password
+     (handleChangePassword), so only they are offered it.
+     Signing out ends every session of the account, in every application
+     (handlePasswordLogout). closedby lets a click outside close it where no
+     page script does. */}}
+{{define "account-button"}}<button class="icon-btn" type="button" commandfor="me" command="show-modal" aria-label="Your account" title="Your account">{{template "icon" "persona"}}</button>{{end}}
+
+{{define "account-menu"}}<dialog id="me" class="modal" aria-labelledby="me-title" closedby="any">
+    <div class="modal-head"><h3 id="me-title">Your account</h3><button class="icon-btn close" type="button" commandfor="me" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+    <p class="who">{{.Email}} {{if .ActorTeam}}<span class="tag" title="Team">{{.ActorTeam}}</span>{{else}}<span class="chip off" title="Team">No team</span>{{end}}</p>
+    <div class="setting">
+      <div><strong>Your authenticator</strong><p class="muted">{{if not .MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.{{else if not .ActorAdmin}}{{if .ActorEnrolled}}Set up. Signing in asks for a code from it.{{else}}Not set up. With one, signing in also asks for a code from your phone.{{end}}{{else if .ActorEnrolled}}Set up. Sensitive changes here need a code from it entered less than five minutes ago.{{else}}Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one, so set it up before you need it.{{end}}</p></div>
+      {{if .MFAAvailable}}<a class="{{if .ActorEnrolled}}btn-ghost{{else}}btn inline{{end}}" href="{{.SecurityURL}}" aria-label="{{if .ActorEnrolled}}Manage your authenticator{{else}}Set up your authenticator{{end}}">{{if .ActorEnrolled}}Manage{{else}}Set up{{end}}</a>{{end}}
+    </div>
+    {{if .ActorAdmin}}<div class="setting">
+      <div><strong>Reset password</strong><p class="muted">Your own password: change it with your current one. Every other device and app is signed out; this browser stays signed in.</p></div>
+      <a class="btn-ghost" href="{{.PasswordURL}}">Change</a>
+    </div>{{end}}
+    <div class="setting">
+      <div><strong>Sign out everywhere</strong><p class="muted">Ends every one of your sessions, in every application, on every device, this one included.</p></div>
+      <details class="confirm danger"><summary aria-label="Sign out everywhere: {{.Email}}">Sign out</summary>
+        <form class="pane" method="post" action="/logout">
+          <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="redirect_to" value="/?notice=signed_out">
+          <p class="muted">You will be signed out here too and return to the sign-in page.</p>
+          <button class="btn" type="submit">Confirm sign out</button>
+        </form>
+      </details>
+    </div>
+  </dialog>{{end}}

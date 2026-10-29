@@ -1444,6 +1444,14 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *passwordIdentity, csrf string, result adminResult) {
 	actor := identity.Account
 	ctx := r.Context()
+	// The page can follow a write to the administrator's own account (their
+	// team, a rename of their team), so Your account reads it afresh; the
+	// identity was loaded before the write.
+	if fresh, err := s.store.PasswordAccountByID(ctx, actor.ID); err == nil {
+		actor = fresh
+	} else {
+		logUnlessCancelled("admin reload actor", err)
+	}
 	now := time.Now()
 	policy := s.mfaPolicy(r)
 	apps, err := s.store.ListApplications(ctx)
@@ -1465,14 +1473,14 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		tabs[i].Active = tabs[i].ID == tab
 	}
 
-	data := map[string]any{
-		"Brand": s.cfg.BrandName, "Email": actor.Email, "CSRF": csrf,
-		"Tabs": tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
+	data := s.withAccountMenu(map[string]any{
+		"Brand": s.cfg.BrandName,
+		"Tabs":  tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
 		"Secret": result.Secret, "SecretTitle": result.SecretTitle, "SecretFor": result.ForEmail, "Reopen": result.Reopen, "Draft": result.Draft,
-		"Pending": result.Pending, "NeedEnroll": result.NeedEnroll, "MFAAvailable": s.mfaAvailable(),
-		"ActorEnrolled": actor.MFAEnrolled, "ActorFresh": actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
-		"MFAPolicy": policy.Mode.Label(), "MFARevision": policy.Revision,
-	}
+		"Pending": result.Pending, "NeedEnroll": result.NeedEnroll,
+		"ActorFresh": actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
+		"MFAPolicy":  policy.Mode.Label(), "MFARevision": policy.Revision,
+	}, actor, csrf, "/admin")
 
 	if tab == adminAccountsTab {
 		accounts, err := s.store.ListPasswordAccounts(ctx)

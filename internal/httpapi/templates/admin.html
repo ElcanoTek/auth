@@ -10,6 +10,7 @@
 </head>
 <body{{if .Reopen}} data-reopen="{{.Reopen}}"{{end}}>
   <div class="corner-actions">
+    {{template "account-button"}}
     {{template "theme-toggle"}}
     <a class="icon-btn close" href="/account" aria-label="Back to your apps" title="Back to your apps">{{template "icon" "close"}}</a>
   </div>
@@ -20,12 +21,12 @@
       <button class="btn-ghost" type="submit">Sign out</button>
     </form>
   </div>
+  {{template "account-menu" .}}
   <main class="card admin">
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
     <div class="topline">
       <h1>Admin Portal</h1>
-      <p class="muted">Signed in as <strong>{{.Email}}</strong></p>
     </div>
     <nav class="tabs" aria-label="Admin sections">
       {{range .Tabs}}<a class="tab{{if .Active}} active{{end}}" href="{{.URL}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}
@@ -161,12 +162,6 @@
                 <p class="hint">A tag for grouping accounts. Leave blank to remove it.</p>
               </div>
             </form>
-            {{if $row.Self}}
-            <div class="setting">
-              <div><strong>Your authenticator</strong><p class="muted">{{if not $.MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.{{else if $row.MFAEnrolled}}Set up. Sensitive changes here need a code from it entered less than five minutes ago.{{end}}{{if and $.MFAAvailable (not $row.MFAEnrolled)}}Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one, so set it up before you need it.{{end}}</p></div>
-              {{if $.MFAAvailable}}<a class="{{if $row.MFAEnrolled}}btn-ghost{{else}}btn inline{{end}}" href="/account/security?return_to=%2Fadmin" aria-label="{{if $row.MFAEnrolled}}Manage your authenticator{{else}}Set up your authenticator{{end}}">{{if $row.MFAEnrolled}}Manage{{else}}Set up{{end}}</a>{{end}}
-            </div>
-            {{end}}
             {{if not $row.Self}}
             <div class="setting">
               <div><strong>Reset password</strong><p class="muted">Signs them out of every app and device; shows a new temporary password they must change.</p></div>
@@ -227,18 +222,8 @@
             </div>
             {{else}}
             <div class="setting">
-              <div><strong>Reset password</strong><p class="muted">Your own password: change it with your current one. Every other device and app is signed out; this browser stays signed in.</p></div>
-              <a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>
-            </div>
-            <div class="setting">
-              <div><strong>Sign out everywhere</strong><p class="muted">Ends every one of your sessions, in every application, on every device, this one included.</p></div>
-              <details class="confirm danger"><summary aria-label="Sign out everywhere: {{$row.Email}}">Sign out</summary>
-                <form class="pane" method="post" action="/admin">
-                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="revoke-sessions"><input type="hidden" name="email" value="{{$row.Email}}">
-                  <p class="muted">You will be signed out here too and return to the sign-in page.</p>
-                  <button class="btn" type="submit">Confirm sign out</button>
-                </form>
-              </details>
+              <div><strong>Your sign-in</strong><p class="muted">Your authenticator, password and sessions are under Your account, the person icon at the top right.</p></div>
+              <button class="btn-ghost" type="button" commandfor="me" command="show-modal">Open</button>
             </div>
             {{end}}
           </dialog></td>

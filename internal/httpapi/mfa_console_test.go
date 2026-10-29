@@ -77,10 +77,22 @@ func settingsPopover(t *testing.T, body, email string) string {
 	return ""
 }
 
+// accountPopup returns the Your account popup (the person icon at the top
+// right): the signed-in administrator's own sign-in settings.
+func accountPopup(t *testing.T, body string) string {
+	t.Helper()
+	start := strings.Index(body, `<dialog id="me" `)
+	if start < 0 {
+		t.Fatalf("no Your account popup in:\n%s", body)
+	}
+	chunk := body[start:]
+	return chunk[:strings.Index(chunk, "</dialog>")]
+}
+
 // The console gives the signed-in administrator their own way in: the button
-// is in their own Settings (and in the policy popup, which cannot be saved
-// without an authenticator), and following it unlocks the sensitive changes
-// that were refused a moment earlier.
+// is in Your account (and in the policy popup, which cannot be saved without
+// an authenticator), and following it unlocks the sensitive changes that were
+// refused a moment earlier.
 func TestAdministratorSetsUpTheirOwnAuthenticatorFromTheConsole(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	alice := newBrowser(t, ts)
@@ -88,14 +100,14 @@ func TestAdministratorSetsUpTheirOwnAuthenticatorFromTheConsole(t *testing.T) {
 		t.Fatalf("sign-in: %q", resp.Header.Get("Location"))
 	}
 	_, body := alice.get("/admin")
-	mine := settingsPopover(t, body, "alice@example.com")
+	mine := accountPopup(t, body)
 	for _, want := range []string{
 		`<strong>Your authenticator</strong>`,
 		`Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one`,
 		`<a class="btn inline" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up</a>`,
 	} {
 		if !strings.Contains(mine, want) {
-			t.Fatalf("the administrator's own Settings lacks %q:\n%s", want, mine)
+			t.Fatalf("Your account lacks %q:\n%s", want, mine)
 		}
 	}
 	// The policy popup says why it would refuse the save, and offers the same
@@ -108,9 +120,14 @@ func TestAdministratorSetsUpTheirOwnAuthenticatorFromTheConsole(t *testing.T) {
 			t.Fatalf("policy popup lacks %q:\n%s", want, body)
 		}
 	}
-	// It is the acting administrator's own row alone: bob's Settings keeps
-	// the controls an administrator uses on someone else, and offers nothing
-	// about an authenticator of theirs.
+	// It is the acting administrator's alone: their own row's Settings points
+	// to Your account instead of repeating it, and bob's Settings keeps the
+	// controls an administrator uses on someone else, offering nothing about
+	// an authenticator of theirs.
+	own := settingsPopover(t, body, "alice@example.com")
+	if strings.Contains(own, "/account/security") || strings.Contains(own, "/change-password") || !strings.Contains(own, `commandfor="me" command="show-modal"`) {
+		t.Fatalf("own row's Settings should point to Your account, not repeat it:\n%s", own)
+	}
 	theirs := settingsPopover(t, body, "bob@example.com")
 	if strings.Contains(theirs, "Your authenticator") || strings.Contains(theirs, "/account/security") {
 		t.Fatalf("another account's Settings offers the enrollment:\n%s", theirs)
@@ -141,10 +158,10 @@ func TestAdministratorSetsUpTheirOwnAuthenticatorFromTheConsole(t *testing.T) {
 	// Back in the console: the block reads as set up, the invitations are
 	// gone, and the refused change now goes through.
 	_, body = alice.get("/admin")
-	mine = settingsPopover(t, body, "alice@example.com")
+	mine = accountPopup(t, body)
 	if !strings.Contains(mine, "Set up. Sensitive changes here need a code from it entered less than five minutes ago.") ||
 		!strings.Contains(mine, `<a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Manage your authenticator">Manage</a>`) {
-		t.Fatalf("own Settings after enrollment:\n%s", mine)
+		t.Fatalf("Your account after enrollment:\n%s", mine)
 	}
 	for _, gone := range []string{`aria-label="Set up your authenticator"`, "which you have not set up yet"} {
 		if strings.Contains(body, gone) {
@@ -163,7 +180,7 @@ func TestAdministratorSetsUpTheirOwnAuthenticatorFromTheConsole(t *testing.T) {
 	cfg.MFAKeyring = nil
 	_, body = alice.get("/admin")
 	cfg.MFAKeyring = ring
-	if !strings.Contains(settingsPopover(t, body, "alice@example.com"), "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.") {
+	if !strings.Contains(accountPopup(t, body), "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.") {
 		t.Fatalf("keyless console:\n%s", body)
 	}
 	if strings.Contains(body, "/account/security?return_to=%2Fadmin") {
@@ -1016,6 +1033,10 @@ func TestTeamRenameFromTheConsole(t *testing.T) {
 	if !strings.Contains(page, "Renamed team Trading to Research (2 accounts). Fleet is updated in the background.") {
 		t.Fatalf("notice:\n%s", page)
 	}
+	// alice was on the team: Your account on this same page has the new name.
+	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag" title="Team">Research</span>`) {
+		t.Fatalf("Your account after renaming the administrator's own team:\n%s", mine)
+	}
 	if a, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); a.Team != "Research" {
 		t.Fatalf("bob's team = %q", a.Team)
 	}
@@ -1062,5 +1083,90 @@ func TestTeamRenameFromTheConsole(t *testing.T) {
 	if !strings.Contains(page, "Renamed team Research to Markets (1 account). Fleet has no back-channel endpoint, so it gets the rename, and its other access updates, once one is set.") ||
 		strings.Contains(page, "Fleet is updated in the background") {
 		t.Fatalf("notice without an endpoint:\n%s", page)
+	}
+}
+
+// Your account opens from the person icon at the top right on every tab, and
+// shows the administrator's team as a chip ("No team" without one).
+func TestYourAccountIsOnEveryTabWithTheTeam(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	ctx := context.Background()
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	for _, path := range []string{"/admin", "/admin?tab=fleet"} {
+		_, body := alice.get(path)
+		if !strings.Contains(body, `<button class="icon-btn" type="button" commandfor="me" command="show-modal" aria-label="Your account" title="Your account">`) {
+			t.Fatalf("%s: no person icon for Your account:\n%s", path, body)
+		}
+		mine := accountPopup(t, body)
+		if strings.Contains(body, "Signed in as") {
+			t.Fatalf("%s: the console still says who is signed in outside Your account", path)
+		}
+		for _, want := range []string{`<span class="chip off" title="Team">No team</span>`, "<strong>Reset password</strong>", "<strong>Sign out everywhere</strong>", `<form class="pane" method="post" action="/logout">`} {
+			if !strings.Contains(mine, want) {
+				t.Fatalf("%s: Your account lacks %q:\n%s", path, want, mine)
+			}
+		}
+	}
+	if err := st.SetAccountTeam(ctx, "alice@example.com", "Trading", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	_, body := alice.get("/admin?tab=fleet")
+	if mine := accountPopup(t, body); !strings.Contains(mine, `<span class="tag" title="Team">Trading</span>`) || strings.Contains(mine, "No team") {
+		t.Fatalf("Your account does not show the team as a chip:\n%s", mine)
+	}
+}
+
+// The apps page has the same Your account popup (its links come back to the
+// apps page), and shows the email only there.
+func TestAppsPageHasYourAccount(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	if err := st.SetAccountTeam(context.Background(), "bob@example.com", "Trading", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	bob := newBrowser(t, ts)
+	if resp, _ := bob.login("bob@example.com", plain); !bob.has(cfg.PasswordCookieName) {
+		t.Fatalf("sign-in: %q", resp.Header.Get("Location"))
+	}
+	resp, body := bob.get("/account")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("apps page: %d\n%s", resp.StatusCode, body)
+	}
+	if strings.Contains(body, "signed in as") {
+		t.Fatalf("the apps page still says who is signed in outside Your account:\n%s", body)
+	}
+	if !strings.Contains(body, `aria-label="Your account" title="Your account">`) {
+		t.Fatalf("apps page lacks the person icon:\n%s", body)
+	}
+	mine := accountPopup(t, body)
+	for _, want := range []string{
+		`<p class="who">bob@example.com <span class="tag" title="Team">Trading</span></p>`,
+		`href="/account/security?return_to=%2Faccount"`,
+		`<form class="pane" method="post" action="/logout">`,
+	} {
+		if !strings.Contains(mine, want) {
+			t.Fatalf("Your account on the apps page lacks %q:\n%s", want, mine)
+		}
+	}
+	// Only an administrator changes their own password; bob is offered none.
+	if strings.Contains(mine, "/change-password") {
+		t.Fatalf("a non-administrator is offered a password change:\n%s", mine)
+	}
+	makeAdmin(t, st, "bob@example.com")
+	if _, body = bob.get("/account"); !strings.Contains(accountPopup(t, body), `<a class="btn-ghost" href="/change-password?return_to=/account">Change</a>`) {
+		t.Fatalf("an administrator's Your account lacks the password change:\n%s", body)
+	}
+}
+
+// A page that follows a change to the administrator's own team shows the new
+// team in Your account (TestTeamRenameFromTheConsole covers a rename).
+func TestYourAccountShowsATeamChangedOnThisRequest(t *testing.T) {
+	ts, _, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	resp, page := alice.post(url.Values{"action": {"set-team"}, "email": {"alice@example.com"}, "team": {"Trading"}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set-team: %d\n%s", resp.StatusCode, page)
+	}
+	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag" title="Team">Trading</span>`) {
+		t.Fatalf("Your account after setting the team:\n%s", mine)
 	}
 }

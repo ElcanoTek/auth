@@ -4,20 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{.Wordmark}} — Signed in</title>
+<title>{{.Wordmark}} — Your apps</title>
 {{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
 {{template "assets" .}}
 </head>
 <body>
-  {{template "theme-toggle"}}
+  <div class="corner-actions">
+    {{template "account-button"}}
+    {{template "theme-toggle"}}
+  </div>
+  {{template "account-menu" .}}
   <main class="card wide">
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
-    <h1>Signed in</h1>
-    <p class="muted">You are signed in as <strong>{{.Email}}</strong>.</p>
+    <h1 id="apps-heading">Your apps</h1>
     {{if .UsedRecovery}}<div class="banner warn" role="status"><strong>Recovery code used.</strong> You signed in with a recovery code. <a href="/account/security">Set up a new authenticator</a> if you lost the old one.</div>{{end}}
     <section class="apps" aria-labelledby="apps-heading">
-      <h2 id="apps-heading">Your apps</h2>
       <div class="tiles">
         {{range .Links}}{{if .Available}}<a class="tile" href="{{.URL}}" rel="noreferrer">
           <p class="tile-kicker">{{.Kicker}}</p>
