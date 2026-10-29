@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"html"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1168,5 +1169,42 @@ func TestYourAccountShowsATeamChangedOnThisRequest(t *testing.T) {
 	}
 	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag" title="Team">Trading</span>`) {
 		t.Fatalf("Your account after setting the team:\n%s", mine)
+	}
+}
+
+// Your account carries the theme choice (Light, Dark, Auto), so the pages
+// with it have no separate theme toggle. The row is hidden until
+// theme-choice.js shows it: without script nothing could apply the choice.
+func TestYourAccountHoldsTheThemeChoice(t *testing.T) {
+	ts, _, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	_, admin := alice.get("/admin")
+	_, apps := alice.get("/account")
+	for name, body := range map[string]string{"console": admin, "apps page": apps} {
+		if strings.Contains(body, "data-flag-theme-toggle") {
+			t.Errorf("%s still has a separate theme toggle", name)
+		}
+		mine := accountPopup(t, body)
+		for _, want := range []string{
+			`class="modal account-menu"`, `<div class="setting" data-theme-choice hidden>`, `<div class="seg" role="group" aria-label="Theme">`,
+			`data-theme-option="light"`, `data-theme-option="dark"`, `data-theme-option="system" aria-pressed="false">Auto</button>`,
+		} {
+			if !strings.Contains(mine, want) {
+				t.Errorf("%s: Your account lacks %q", name, want)
+			}
+		}
+		if !strings.Contains(body, `/theme-choice.js" defer></script>`) {
+			t.Errorf("%s does not load theme-choice.js", name)
+		}
+	}
+	// Pages without Your account keep the toggle.
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(login), "data-flag-theme-toggle") {
+		t.Error("the sign-in page lost its theme toggle")
 	}
 }

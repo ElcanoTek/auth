@@ -91,10 +91,12 @@ golangci-lint at the pin, govulncheck and ShellCheck v0.11.0.
 
 `stack.conf` declares Tier A with a Go backend. The pages are Go
 `html/template` files in `internal/httpapi/templates/` (one per page;
-`_partials.html` holds the shared `<head>` assets and the theme toggle). Their
+`_partials.html` holds the shared `<head>` assets, the theme toggle of the
+signed-out pages and the Your account menu of the signed-in ones). Their
 CSS and JavaScript are files in `internal/httpapi/static/`: `auth.css` (all
 page styles), `admin.js` (the admin console's only script; the console works
-without it) and `admin-noscript.css`. Both trees are embedded
+without it), `theme-choice.js` (the Light, Dark and Auto choice in Your
+account; without it the row stays hidden) and `admin-noscript.css`. Both trees are embedded
 (`internal/httpapi/assets.go`); nothing is read from disk at runtime.
 
 - Static files are served at `/assets/<hash>/<path>`, where `<hash>` covers the

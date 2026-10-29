@@ -166,6 +166,37 @@ dialog.modal {
   background: var(--color-surface-1); color: var(--color-text-secondary); box-shadow: var(--shadow-lg);
 }
 dialog.modal::backdrop { background: var(--color-overlay-strong); }
+/* Your account opens from its icon, like a menu: its top right sits just
+   under the icon (the corner controls are 2.5rem icon buttons at
+   --space-5 from the corner), it grows out of that corner, and the page
+   behind is not dimmed. Still a modal dialog: focus, Escape and a click
+   outside behave as in every other dialog. */
+dialog.modal.account-menu {
+  inset: calc(var(--space-5) + 2.5rem + var(--space-2)) var(--space-5) auto auto; margin: 0;
+  width: min(24rem, calc(100vw - 2 * var(--space-5)));
+  max-height: calc(100vh - 2.5rem - var(--space-2) - 2 * var(--space-5));
+  padding: var(--space-5); transform-origin: top right;
+}
+dialog.modal.account-menu::backdrop { background: transparent; }
+@media (prefers-reduced-motion: no-preference) {
+  dialog.modal.account-menu[open] { animation: account-menu-in var(--transition-fast); }
+}
+@keyframes account-menu-in { from { opacity: 0; transform: translateY(calc(-1 * var(--space-2))) scale(0.97); } }
+.account-menu .who { margin-bottom: var(--space-3); }
+/* Flag's segmented control (COMPONENTS.md "Segmented Control"): a pill
+   track, the pressed option on the primary fill. */
+.seg { display: inline-flex; flex-shrink: 0; border: 1px solid var(--color-border); border-radius: var(--radius-pill); }
+.seg-option {
+  padding: var(--space-1) var(--space-3); border: 0; background: transparent; color: var(--color-text-muted);
+  font: inherit; font-size: var(--font-size-overline); font-weight: var(--font-weight-medium); white-space: nowrap; cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.seg > .seg-option:first-child { border-start-start-radius: var(--radius-pill); border-end-start-radius: var(--radius-pill); }
+.seg > .seg-option:last-child { border-start-end-radius: var(--radius-pill); border-end-end-radius: var(--radius-pill); }
+.seg-option:not([aria-pressed="true"]):hover { color: var(--color-text-primary); }
+.seg-option[aria-pressed="true"] { background: var(--color-primary-fill); color: var(--color-on-primary-fill); }
+.seg-option:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; position: relative; z-index: 1; }
+.seg-option:active { transform: scale(0.98); }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-2); }
 .modal-head h3 { margin: 0; font-family: var(--font-heading); font-size: var(--font-size-subtitle); color: var(--color-text-primary); }
 .modal-head .icon-btn { width: 2rem; height: 2rem; font-size: 1.1rem; background: transparent; border-color: transparent; }
@@ -484,6 +515,9 @@ table.list tr.manage:last-child td { border-bottom: 0; }
   /* Same for the top controls: a right-aligned row above the card that
      scrolls away with the page, instead of floating over long content. */
   .corner-actions { position: static; flex: 0 0 100%; order: -1; justify-content: flex-end; margin-bottom: var(--space-4); }
+  /* There the corner controls sit in the page's padding (--space-6), so the
+     menu does too. */
+  dialog.modal.account-menu { inset: calc(var(--space-6) + 2.5rem + var(--space-2)) var(--space-6) auto auto; width: calc(100vw - 2 * var(--space-6)); }
   body > .theme-toggle { position: static; order: -1; margin: 0 0 var(--space-4) auto; }
   body > .theme-toggle + * { flex-basis: 100%; }
 }
