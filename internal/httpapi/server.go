@@ -1037,9 +1037,14 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !hasAccess {
-		if err := s.renderStatus(w, http.StatusForbidden, "no-access.html", map[string]any{
-			"Brand": s.cfg.BrandName, "Email": identity.Account.Email, "AppName": app.Name,
-		}); err != nil {
+		csrf, err := s.ensureCSRFCookie(w, r)
+		if err != nil {
+			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			return
+		}
+		if err := s.renderStatus(w, http.StatusForbidden, "no-access.html", s.withAccountMenu(map[string]any{
+			"Brand": s.cfg.BrandName, "AppName": app.Name,
+		}, identity.Account, csrf, "/account")); err != nil {
 			log.Printf("render no-access: %v", err)
 		}
 		return
@@ -1370,13 +1375,26 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		log.Printf("account: application access: %v", err)
 		granted = nil
 	}
-	if err := s.render(w, "account.html", map[string]any{
-		"Brand": s.cfg.BrandName, "Email": identity.Account.Email, "CSRF": csrf,
+	if err := s.render(w, "account.html", s.withAccountMenu(map[string]any{
+		"Brand":        s.cfg.BrandName,
 		"Links":        quickLinksFor(apps, accessSet(granted), identity.Account.IsAdmin),
 		"UsedRecovery": hasMethod(identity.Session.AMR, "mfa"),
-	}); err != nil {
+	}, identity.Account, csrf, "/account")); err != nil {
 		log.Printf("render account: %v", err)
 	}
+}
+
+// withAccountMenu adds what the Your account popup ("account-menu" in
+// _partials.html) reads to a signed-in page's data: the account's email,
+// team, administrator and authenticator state, and links that come back to
+// back.
+func (s *Server) withAccountMenu(data map[string]any, a store.Account, csrf, back string) map[string]any {
+	data["Email"], data["CSRF"] = a.Email, csrf
+	data["ActorTeam"], data["ActorAdmin"], data["ActorEnrolled"] = a.Team, a.IsAdmin, a.MFAEnrolled
+	data["MFAAvailable"] = s.mfaAvailable()
+	data["SecurityURL"] = "/account/security?return_to=" + url.QueryEscape(back)
+	data["PasswordURL"] = "/change-password?return_to=" + back
+	return data
 }
 
 // verifyPassword and hashPassword bound concurrent Argon2 work to

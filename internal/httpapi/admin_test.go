@@ -587,6 +587,12 @@ func TestAuthorizeRefusesAccountsWithoutAccess(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "No access to Explorer") || !strings.Contains(string(body), `href="/account"`) {
 		t.Fatalf("interactive = %d\n%s", resp.StatusCode, body)
 	}
+	// Which account was refused is in Your account (where signing out lets
+	// them switch), not in the page text.
+	if strings.Contains(string(body), "signed in as") || !strings.Contains(accountPopup(t, string(body)), "bob@example.com") ||
+		!strings.Contains(string(body), `<form class="pane" method="post" action="/logout">`) {
+		t.Fatalf("no-access page should name the account only in Your account:\n%s", body)
+	}
 	// The 403 is a real page: HTML content type and the nonce policy that
 	// lets its own stylesheets and theme script load.
 	nonce := regexp.MustCompile(`<link rel="stylesheet" nonce="([^"]+)"`).FindStringSubmatch(string(body))
@@ -864,7 +870,7 @@ func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
 	}
 }
 
-// An administrator may sign themself out everywhere from their own row; it
+// An administrator may sign themself out everywhere from Your account; it
 // ends the current session too, so the response is the signed-out page, and
 // the created date has moved from the table into the Settings header.
 func TestAdminOwnRowSignsOutEverywhereAndShowsCreated(t *testing.T) {
@@ -875,7 +881,7 @@ func TestAdminOwnRowSignsOutEverywhereAndShowsCreated(t *testing.T) {
 		t.Fatalf("created date not in Settings header / still a column:\n%s", body)
 	}
 	if !strings.Contains(body, `aria-label="Sign out everywhere: Alice@Example.com"`) {
-		t.Fatalf("own row lacks Sign out everywhere:\n%s", body)
+		t.Fatalf("Your account lacks Sign out everywhere:\n%s", body)
 	}
 	resp := postPasswordForm(t, ts.URL+"/admin", url.Values{"csrf_token": {alice.csrf.Value}, "action": {"revoke-sessions"}, "email": {"alice@example.com"}}, alice.session, alice.csrf)
 	_ = resp.Body.Close()

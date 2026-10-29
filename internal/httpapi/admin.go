@@ -1465,14 +1465,14 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		tabs[i].Active = tabs[i].ID == tab
 	}
 
-	data := map[string]any{
-		"Brand": s.cfg.BrandName, "Email": actor.Email, "CSRF": csrf,
-		"Tabs": tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
+	data := s.withAccountMenu(map[string]any{
+		"Brand": s.cfg.BrandName,
+		"Tabs":  tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
 		"Secret": result.Secret, "SecretTitle": result.SecretTitle, "SecretFor": result.ForEmail, "Reopen": result.Reopen, "Draft": result.Draft,
-		"Pending": result.Pending, "NeedEnroll": result.NeedEnroll, "MFAAvailable": s.mfaAvailable(),
-		"ActorEnrolled": actor.MFAEnrolled, "ActorFresh": actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
-		"MFAPolicy": policy.Mode.Label(), "MFARevision": policy.Revision,
-	}
+		"Pending": result.Pending, "NeedEnroll": result.NeedEnroll,
+		"ActorFresh": actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
+		"MFAPolicy":  policy.Mode.Label(), "MFARevision": policy.Revision,
+	}, actor, csrf, "/admin")
 
 	if tab == adminAccountsTab {
 		accounts, err := s.store.ListPasswordAccounts(ctx)
