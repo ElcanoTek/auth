@@ -155,7 +155,11 @@ an EdDSA-signed JWT with `typ: team+jwt`, posted as the single form field
 event, `urn:elcanotek:event:team-rename`, with exactly `from`, `to` and a
 `version` that rises by one per rename for that application. A name that
 matches another team ignoring case takes that team's spelling and merges the
-two (the console says so before it happens). Auth keeps sharing intact by
+two (the console says so before it happens). Auth sees only its own labels, so
+it cannot know whether the application still files something under the new
+name from an earlier team; Fleet treats a name it still has projects under as
+a live team and joins it (a name nothing carries is retired first), and the
+console's confirm says so. Auth keeps sharing intact by
 ordering:
 
 - renames for an application go out in version order, one at a time, each

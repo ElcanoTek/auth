@@ -1004,7 +1004,8 @@ func TestTeamRenameFromTheConsole(t *testing.T) {
 	}
 	_, page = alice.post("/admin", withValues(renderedForm(t, page, "step-up"), url.Values{"code": {codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))}}))
 	confirm := dialogForm(t, page, "confirm-change")
-	if !strings.Contains(confirm, "Rename team Trading (2 accounts) to Research?") || !strings.Contains(confirm, "everything shared with Trading there stays shared with Research") {
+	if !strings.Contains(confirm, "Rename team Trading (2 accounts) to Research?") || !strings.Contains(confirm, "everything shared with Trading there stays shared with Research") ||
+		!strings.Contains(confirm, "If Fleet still has projects under Research from an earlier team, this team gets those too.") {
 		t.Fatalf("confirm:\n%s", confirm)
 	}
 	if a, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); a.Team != "Trading" {

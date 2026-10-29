@@ -579,7 +579,11 @@ func (s *Server) describeTeamRename(r *http.Request, from, to string) (question,
 	}
 	question = fmt.Sprintf("Rename team %s (%s) to %s?", from, plural(p.Members, "account"), p.To)
 	if synced {
-		detail = fmt.Sprintf("Fleet gets the rename too: everything shared with %s there stays shared with %s.", from, p.To)
+		// Auth sees only its own labels (membership flows one way), so it
+		// cannot know whether Fleet still files projects under the new name
+		// from an earlier team. Fleet treats such a name as a live team and
+		// joins it (a name nothing carries is retired first), so say so.
+		detail = fmt.Sprintf("Fleet gets the rename too: everything shared with %s there stays shared with %s. If Fleet still has projects under %s from an earlier team, this team gets those too.", from, p.To, p.To)
 	}
 	return question, detail, &p
 }
