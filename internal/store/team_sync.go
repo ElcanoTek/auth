@@ -11,13 +11,13 @@ import (
 	"time"
 )
 
-// Team sync (schema v10). Fleet's teams are canonical: an operator imports
-// them once (ImportTeams, `auth app import-teams`), which also switches the
-// application's team_sync flag on. From then on a team change on either side
-// follows to the other: Auth adds the account's team to its pushes and queues
-// a push when an Auth-side team change touches a granted account, and a
-// report carrying a team updates the account's team. With the flag off the
-// team is neither sent nor mirrored.
+// Team sync (schema v10). Auth's teams are the source and flow one way: with
+// the application's team_sync flag on, Auth adds the account's team to its
+// pushes and queues a push when an Auth-side team change touches a granted
+// account. A Fleet that already had teams is brought in once with
+// ImportTeams (`auth app import-teams`), which also switches the flag on;
+// that is a migration, not ongoing sync. With the flag off the team is not
+// sent.
 
 // ErrTeamSyncUnsupported is returned for an application other than Fleet:
 // no other application has a team vocabulary.
@@ -86,7 +86,16 @@ func setTeamSyncTx(ctx context.Context, tx *sql.Tx, id string, on bool, now int6
 	}
 	event := "application.team_sync_off"
 	if on {
+		// Delivered pushes written while sync was off carry no team; give
+		// them the current one for a replay, sending nothing (team_rename.go).
 		event = "application.team_sync_on"
+		if err := refreshTeamPushesTx(ctx, tx, id, now); err != nil {
+			return err
+		}
+	} else if err := stripTeamPushesTx(ctx, tx, id, now); err != nil {
+		// With sync off nothing about teams is sent; a queued rename waits
+		// for sync to come back on (team_rename.go).
+		return err
 	}
 	return insertApplicationAuditMeta(ctx, tx, event, id, "", now, metadata)
 }
@@ -108,6 +117,10 @@ const (
 	TeamImportSkipped = "skipped"
 	TeamImportInvalid = "invalid"
 )
+
+// ErrTeamImportInvalid: the export names a team Auth cannot take for a granted
+// account, so ImportTeams applied nothing (the returned plan says which).
+var ErrTeamImportInvalid = errors.New("the export has invalid teams; nothing was applied")
 
 // TeamImportAction is what an import does (or, previewed, would do) for one
 // account.
@@ -155,6 +168,13 @@ func (s *Store) ImportTeams(ctx context.Context, clientID string, entries []Team
 	if err != nil {
 		return nil, err
 	}
+	// All or nothing: sync must not start with a granted account whose team
+	// Auth could not take, or its next push would move them there.
+	for _, a := range plan {
+		if a.Action == TeamImportInvalid {
+			return plan, ErrTeamImportInvalid
+		}
+	}
 	for _, a := range plan {
 		if a.Action == TeamImportSet || a.Action == TeamImportClear {
 			meta, err := json.Marshal(map[string]string{"team": a.To, "source": "import", "actor": "cli", "application_id": clientID})
@@ -174,6 +194,25 @@ func (s *Store) ImportTeams(ctx context.Context, clientID string, entries []Team
 	}
 	meta, err := json.Marshal(map[string]string{"source": "import", "actor": "cli"})
 	if err != nil {
+		return nil, err
+	}
+	// The application's teams are Auth's now: a rename queued before the
+	// import no longer applies, and a queued push loses its team. A rename or
+	// push already on its way cannot be recalled (it could still move people
+	// to a team from before the import), so the import waits for it: its
+	// lease ends with the attempt.
+	var inFlight int
+	if err := tx.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM team_renames WHERE application_id = ?
+		   AND delivered_at IS NULL AND dropped_at IS NULL AND lease_until > ?)
+		+ (SELECT COUNT(*) FROM access_provisioning WHERE client_id = ?
+		   AND delivered_at IS NULL AND lease_until > ?)`, clientID, now, clientID, now).Scan(&inFlight); err != nil {
+		return nil, err
+	}
+	if inFlight > 0 {
+		return nil, ErrTeamRenameInFlight
+	}
+	if err := dropTeamRenamesTx(ctx, tx, clientID, now); err != nil {
 		return nil, err
 	}
 	if err := setTeamSyncTx(ctx, tx, clientID, true, now, string(meta)); err != nil {

@@ -57,10 +57,6 @@ type adminAccountRow struct {
 	FleetAdmin    bool
 	FleetChatRole string
 	FleetOpsRole  string
-	// Set when the latest change to the Fleet permissions came from a
-	// report Fleet sent (store.AppReportHints).
-	FleetChangedBy string
-	FleetChangedAt string
 	// Second factor: the console shows the status the issue names and lets
 	// an administrator require it per account or reset a lost one.
 	MFAStatus      string // Enabled | Enrollment required | Not enrolled
@@ -213,6 +209,7 @@ var pendingFields = map[string][]string{
 	"set-access":       {"email", "apps", "admin", "fleet_admin", "fleet_chat_role", "fleet_ops_role"},
 	"disable-app":      {"app"},
 	"enable-app":       {"app"},
+	"rename-team":      {"from", "to"},
 	"batch":            {"op", "emails"},
 }
 
@@ -234,6 +231,9 @@ type pendingChange struct {
 	Why      string         // "Changing the two-factor policy": what needs the code
 	Question string         // the confirm popup's summary of the change
 	Detail   string         // what else it does, when that matters
+	// CodeAccepted: the popup follows the code popup (a team rename is
+	// confirmed even without one).
+	CodeAccepted bool
 }
 
 type pendingField struct{ Name, Value string }
@@ -345,6 +345,15 @@ func (s *Server) describeChange(r *http.Request, p *pendingChange) {
 		} else {
 			p.Question = fmt.Sprintf("Enable %s?", name)
 			p.Detail = "Everyone granted it can sign in to it again."
+		}
+	case "rename-team":
+		var preview *store.TeamRenamePreview
+		p.Question, p.Detail, preview = s.describeTeamRename(r, v.Get("from"), v.Get("to"))
+		if preview != nil {
+			// Confirm carries the outcome shown here, so a rename that would
+			// now resolve differently (a merge nobody was warned about) is
+			// refused rather than applied (adminRenameTeam).
+			p.Fields = append(p.Fields, pendingField{"expect_to", preview.To}, pendingField{"expect_merge", strconv.FormatBool(preview.Merged)})
 		}
 	case "batch":
 		emails := v["emails"]
@@ -500,6 +509,108 @@ var sensitiveActions = map[string]string{
 	"set-mfa-required": "changing a two-factor requirement",
 	"disable-app":      "disabling an application",
 	"enable-app":       "enabling an application",
+	"rename-team":      "renaming a team",
+}
+
+// adminRenameTeam renames a team on every account (store.RenameTeam). Where
+// team sync sends teams to Fleet the rename goes there as one message, so
+// what is shared with the team stays shared; the store re-checks the actor
+// proof in its transaction.
+func (s *Server) adminRenameTeam(r *http.Request, res adminResult, actorID string, proof *store.ActorProof, now time.Time,
+	needVerify func() adminResult, audit func(event, targetID, appID string)) adminResult {
+	res.Tab = adminAccountsTab
+	from := strings.TrimSpace(r.FormValue("from"))
+	// A confirmed rename carries the outcome its popup showed (describeChange).
+	var expect *store.TeamRenameExpectation
+	if _, ok := r.PostForm["expect_to"]; ok {
+		expect = &store.TeamRenameExpectation{To: r.PostFormValue("expect_to"), Merged: r.PostFormValue("expect_merge") == "true"}
+	}
+	result, err := s.store.RenameTeamAsPreviewed(r.Context(), from, r.FormValue("to"), expect, actorID, proof, now.Unix())
+	switch {
+	case errors.Is(err, store.ErrActorNotFresh):
+		return needVerify()
+	case errors.Is(err, store.ErrInvalidTeam):
+		res.Error = "A team name must be 1 to 64 bytes (64 plain letters) with no control characters."
+		return res
+	case errors.Is(err, store.ErrTeamNotFound):
+		res.Error = fmt.Sprintf("No account is on team %s any more.", from)
+		return res
+	case errors.Is(err, store.ErrTeamRenameNoChange):
+		res.Error = fmt.Sprintf("%s is already the team's name.", result.To)
+		return res
+	case errors.Is(err, store.ErrTeamRenameChanged):
+		res.Error = "The teams changed after this rename was shown, so nothing was renamed. Check the Teams list and rename again."
+		return res
+	case err != nil:
+		return res.failed("rename team", err)
+	}
+	audit("admin.team_renamed", "", "")
+	res.Notice = fmt.Sprintf("Renamed team %s to %s (%s).", result.From, result.To, plural(int(result.Accounts), "account"))
+	if result.Merged {
+		res.Notice = fmt.Sprintf("Merged team %s into %s (%s moved).", result.From, result.To, plural(int(result.Accounts), "account"))
+	}
+	switch {
+	case result.Paused:
+		res.Notice += " Fleet's team sync is off, so Fleet gets the rename when it is switched back on."
+	case result.AwaitingEndpoint:
+		res.Notice += " Fleet has no back-channel endpoint, so it gets the rename, and its other access updates, once one is set."
+	case result.Sent:
+		res.Notice += " Fleet is updated in the background."
+	}
+	return res
+}
+
+// confirmTeamRename is the confirm popup for a rename not confirmed yet, or
+// nil when the rename would be refused anyway (adminRenameTeam then says why).
+// refused is set for a request whose fields cannot be carried through the
+// popup (newPendingChange).
+func (s *Server) confirmTeamRename(r *http.Request) (p *pendingChange, refused bool) {
+	from := strings.TrimSpace(r.PostFormValue("from"))
+	to, err := store.NormalizeTeam(r.PostFormValue("to"))
+	if from == "" || to == "" || err != nil {
+		return nil, false
+	}
+	preview, err := s.store.PreviewTeamRename(r.Context(), from, to)
+	if err != nil || preview.Members == 0 || preview.To == from {
+		return nil, false
+	}
+	p, ok := newPendingChange(r, "rename-team")
+	if !ok {
+		return nil, true
+	}
+	s.describeChange(r, p)
+	return p, false
+}
+
+// describeTeamRename words the confirm popup for a team rename from the live
+// teams, resolved exactly as the rename will be (store.PreviewTeamRename): how
+// many accounts move, whether it merges into an existing team, and what Fleet
+// keeps.
+func (s *Server) describeTeamRename(r *http.Request, from, to string) (question, detail string, preview *store.TeamRenamePreview) {
+	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+	question = fmt.Sprintf("Rename team %s to %s?", from, to)
+	p, err := s.store.PreviewTeamRename(r.Context(), from, to)
+	if err != nil {
+		return question, "", nil
+	}
+	synced, _ := s.store.ApplicationTeamSync(r.Context(), store.FleetApplicationID)
+	if p.Merged {
+		question = fmt.Sprintf("Merge team %s (%s) into %s?", from, plural(p.Members, "account"), p.To)
+		detail = fmt.Sprintf("%s already has %s: the two become one team.", p.To, plural(p.MergeMembers, "account"))
+		if synced {
+			detail += " In Fleet, each side then sees what the other shared with its team."
+		}
+		return question, detail, &p
+	}
+	question = fmt.Sprintf("Rename team %s (%s) to %s?", from, plural(p.Members, "account"), p.To)
+	if synced {
+		// Auth sees only its own labels (membership flows one way), so it
+		// cannot know whether Fleet still files projects under the new name
+		// from an earlier team. Fleet treats such a name as a live team and
+		// joins it (a name nothing carries is retired first), so say so.
+		detail = fmt.Sprintf("Fleet gets the rename too: everything shared with %s there stays shared with %s. If Fleet still has projects under %s from an earlier team, this team gets those too.", from, p.To, p.To)
+	}
+	return question, detail, &p
 }
 
 // failed logs an unexpected error and marks the result as a 500.
@@ -719,6 +830,22 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Notice = fmt.Sprintf("%s is enabled.", app.Name)
 		}
 		return res
+	}
+
+	if action == "rename-team" {
+		// A rename is always confirmed first, even with a fresh code: the
+		// popup says how many accounts move and whether it merges, and its
+		// Confirm is bound to that outcome (expect_to).
+		if _, confirmed := r.PostForm["expect_to"]; !confirmed {
+			if p, refused := s.confirmTeamRename(r); refused {
+				res.Status = http.StatusBadRequest
+				return res
+			} else if p != nil {
+				res.Tab, res.Pending, res.Reopen = adminAccountsTab, p, reopenConfirmChange
+				return res
+			}
+		}
+		return s.adminRenameTeam(r, res, actor.ID, proof, now, needVerify, audit)
 	}
 
 	if action == "set-policy" {
@@ -1161,6 +1288,7 @@ func (s *Server) adminStepUp(r *http.Request, identity *passwordIdentity, res ad
 		// Nothing changes yet: the confirm popup says what will, and its
 		// Confirm repeats the request through every check again.
 		s.describeChange(r, pending)
+		pending.CodeAccepted = true
 		res.Reopen = reopenConfirmChange
 		return res
 	}
@@ -1361,10 +1489,6 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 			logUnlessCancelled("admin list access settings", err)
 			data["Error"] = joinMessages(result.Error, "Application permissions could not be loaded.")
 		}
-		reportHints, err := s.store.AppReportHints(ctx, store.FleetApplicationID)
-		if err != nil {
-			logUnlessCancelled("admin list app report hints", err)
-		}
 		enabledAdmins := 0
 		for _, a := range accounts {
 			if a.IsAdmin && a.DisabledAt == nil {
@@ -1408,9 +1532,6 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 			row.FleetGranted = granted["fleet"]
 			row.FleetAdmin = fleetSettings.ChatRole == "admin" && fleetSettings.OpsRole == "admin"
 			row.FleetChatRole, row.FleetOpsRole = fleetSettings.ChatRole, fleetSettings.OpsRole
-			if hint, ok := reportHints[a.ID]; ok {
-				row.FleetChangedBy, row.FleetChangedAt = hint.Actor, hint.At.UTC().Format("2006-01-02 15:04 UTC")
-			}
 			for _, app := range apps {
 				row.Apps = append(row.Apps, adminAppChoice{ID: app.ID, Name: app.Name, Granted: granted[app.ID]})
 				if granted[app.ID] {
@@ -1438,6 +1559,12 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		data["Accounts"] = rows
 		data["AppChoices"] = choices
 		data["Teams"] = teams
+		if counts, err := s.store.TeamCounts(ctx); err != nil {
+			logUnlessCancelled("admin team counts", err)
+		} else {
+			data["TeamCounts"] = counts
+		}
+		data["TeamSync"], _ = s.store.ApplicationTeamSync(ctx, store.FleetApplicationID)
 		// The policy popup shows, for each choice, how many enabled accounts
 		// would have to enroll (and be signed out now) if it were chosen.
 		var options []adminMFAOption

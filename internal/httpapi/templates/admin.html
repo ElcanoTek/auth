@@ -61,11 +61,11 @@
       <form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>
     </dialog>{{end}}{{end}}
     {{if and .Pending (eq .Reopen "confirm-change")}}{{with .Pending}}
-    {{/* The code was accepted; nothing has changed yet. Confirm repeats the request, which passes every check again. */}}
+    {{/* Nothing has changed yet (after the code popup, or for a team rename). Confirm repeats the request, which passes every check again. */}}
     <dialog id="confirm-change" class="modal confirm-change" aria-labelledby="confirm-change-title" aria-describedby="confirm-change-question" open>
       <div class="modal-head"><h3 id="confirm-change-title">Confirm the change</h3><button class="icon-btn close" type="button" commandfor="confirm-change" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
       {{if $.Error}}<div class="err" role="alert">{{$.Error}}</div>{{end}}
-      <div class="notice" role="status">Code accepted. Nothing has changed yet.</div>
+      <div class="notice" role="status">{{if .CodeAccepted}}Code accepted. {{end}}Nothing has changed yet.</div>
       <p class="question" id="confirm-change-question">{{.Question}}</p>
       {{if .Detail}}<p class="hint">{{.Detail}}</p>{{end}}
       <form method="post" action="/admin">
@@ -97,6 +97,7 @@
           </div>{{end}}
         </div>
         <div class="row-actions head-actions">
+          <button class="btn-ghost" type="button" commandfor="teams-dialog" command="show-modal" title="Teams" aria-label="Teams">Teams</button>
           <button class="btn-ghost" type="button" commandfor="mfa-policy" command="show-modal" title="Two-factor policy" aria-label="Two-factor policy">2FA</button>
           <button class="btn-add" type="button" commandfor="add-user" command="show-modal" title="Add user" aria-label="Add user">+</button>
         </div>
@@ -132,7 +133,6 @@
               <dialog id="fleet-perms-{{$i}}" class="modal fleet-perms" data-fleet-permissions aria-labelledby="fleet-perms-{{$i}}-title">
                 <div class="modal-head"><h3 id="fleet-perms-{{$i}}-title">Fleet permissions</h3><button class="icon-btn close" type="button" commandfor="fleet-perms-{{$i}}" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
                 <p class="who">{{$row.Email}}</p>
-                {{if $row.FleetChangedAt}}<p class="hint" data-fleet-changed>Changed in Fleet{{if $row.FleetChangedBy}} by {{$row.FleetChangedBy}}{{end}} <span class="dot">&middot;</span> {{$row.FleetChangedAt}}</p>{{end}}
                 <div class="seg-group"><span class="seg-label">Fleet Admin</span>
                   <label class="permission-choice"><input type="checkbox" name="fleet_admin" value="on"{{if $row.FleetAdmin}} checked{{end}}> Fleet Admin<small>Full permissions in both Chat and the Ops Center.</small></label>
                 </div>
@@ -325,6 +325,26 @@
         <button class="btn" type="submit">Verify</button>
       </form>
     </dialog>{{end}}{{end}}
+
+    {{/* Not id="teams": that is the team-name datalist the inputs suggest from. */}}
+    <dialog id="teams-dialog" class="modal team-list" aria-labelledby="teams-title">
+      <div class="modal-head"><h3 id="teams-title">Teams</h3><button class="icon-btn close" type="button" commandfor="teams-dialog" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+      <p class="who">A team groups accounts; set someone's team under their Settings. Renaming a team renames it on every account on it{{if .TeamSync}}, and in Fleet, where everything shared with the team stays shared with it{{end}}.</p>
+      {{if .TeamCounts}}{{range $i, $t := .TeamCounts}}
+      <div class="setting">
+        <div><strong>{{$t.Team}}</strong><p class="muted">{{$t.Accounts}} account{{if ne $t.Accounts 1}}s{{end}}</p></div>
+        <details class="confirm"><summary aria-label="Rename team {{$t.Team}}">Rename</summary>
+          <form class="pane" method="post" action="/admin">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="rename-team"><input type="hidden" name="from" value="{{$t.Team}}">
+            <label for="rename-team-{{$i}}">New name</label>
+            <input id="rename-team-{{$i}}" name="to" type="text" list="teams" required maxlength="64" value="{{$t.Team}}" autocomplete="off">
+            <p class="muted">The name of another team joins the two.</p>
+            <button class="btn" type="submit">Rename team</button>
+          </form>
+        </details>
+      </div>{{end}}
+      {{else}}<p class="empty">No teams yet. Set a team on an account under its Settings.</p>{{end}}
+    </dialog>
 
     <dialog id="mfa-policy" class="modal" aria-labelledby="mfa-policy-title">
       <div class="modal-head"><h3 id="mfa-policy-title">Two-factor policy</h3><button class="icon-btn close" type="button" commandfor="mfa-policy" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>

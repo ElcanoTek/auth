@@ -326,8 +326,6 @@ auth app show explorer-northwind
 auth app rotate-secret explorer-northwind
 auth app clear-backchannel explorer-northwind
 auth app disable explorer-northwind
-auth app set-events-secret fleet      # optional: accept Fleet's account reports
-auth app compare fleet - < export.jsonl
 ```
 
 The authorization request must use the exact registered callback and S256
@@ -359,69 +357,43 @@ application, ending whatever session the first exchange produced. Do not put the
 back-channel route behind application login; its Ed25519 signature, exact
 issuer/audience, and replay-safe `jti` are the authentication boundary.
 
-### Account reports from Fleet (optional)
+### Fleet team sync
 
-Fleet can report role changes and removals made in its own admin page, so the
-console shows what Fleet actually has. Auth mirrors them only for accounts
-that already have Fleet access; adding people stays in Auth. Protocol and
-rules: [INTEGRATION.md](INTEGRATION.md#receiving-application-account-reports).
+Sends each account's Auth team to Fleet; nothing comes back (membership flows
+one way, [INTEGRATION.md](INTEGRATION.md#team-sync)). A Fleet that signs in
+through Auth changes no team itself, so team sync is part of that setup;
+production-support's `register-auth-apps.sh` switches it on when it
+registers a Fleet that has no teams yet.
 
-1. Make sure `AUTH_MFA_KEY` is set (`auth mfa keygen` if not): the events
-   secret is sealed with it, and from now on the server will not start
-   without it.
-2. Create the secret and note the two lines it prints once:
-   ```bash
-   auth app set-events-secret fleet
-   # FLEET_ACCOUNT_EVENTS_URL=https://<auth-host>/apps/fleet/events
-   # FLEET_ACCOUNT_EVENTS_SECRET=<64 hex characters>
-   ```
-3. On the Fleet host, preview what Fleet's current state would change before
-   enabling anything:
-   ```bash
-   fleet account-events export > fleet-accounts.jsonl
-   ```
-   Copy the file to the Auth host and run
-   `auth app compare fleet - < fleet-accounts.jsonl` (read-only). Resolve any
-   row you do not want mirrored first.
-4. Put both lines in Fleet's `/etc/fleet/fleet.env` and restart Fleet
-   (`fleet.service`). From then on each change in Fleet's admin page or CLI
-   reaches Auth within seconds; `fleet account-events resync` sends every
-   account's current state once.
-5. `auth app show fleet` confirms reports are accepted; each applied report
-   is in `auth audit list` with `app:fleet` as the actor. To stop, run
-   `auth app clear-events-secret fleet` (Fleet's deliveries then fail and
-   retry until Fleet is unconfigured too).
-
-### Fleet team sync (optional)
-
-Keeps each account's Auth team and Fleet team the same, both ways, with
-Fleet's teams as the starting point. Rules:
-[INTEGRATION.md](INTEGRATION.md#team-sync). Order matters, because a Fleet
-build without team support refuses a push that carries a team:
-
-1. Update **Fleet first**, to a build whose account events carry `team` and
-   whose provisioning receiver accepts it.
-2. Set up account reports from Fleet (the section above), so Fleet's team
-   changes reach Auth.
-3. Export Fleet's accounts and preview the import on the Auth host:
+1. Update **Fleet first**, to a build whose provisioning receiver accepts a
+   team (a build without team support refuses a push that carries one).
+2. A Fleet with **no teams**: `auth app team-sync fleet on`. Nothing is
+   pushed now; each person's next grant or change carries Auth's team.
+3. A Fleet that **already has teams**: grant its people Fleet in Auth first
+   (the import skips anyone without a grant), then import its teams once,
+   right after a complete export:
    ```bash
    fleet account-events export > fleet-accounts.jsonl        # on the Fleet host
    auth app import-teams fleet - < fleet-accounts.jsonl       # dry run
+   auth app import-teams fleet - --apply < fleet-accounts.jsonl
    ```
    `set` rows take Fleet's team; `clear` rows are Auth accounts with no Fleet
    account, whose Auth team is removed; `skipped` rows change nothing. Review
-   every `clear`.
-4. Apply it, right after the export:
-   ```bash
-   auth app import-teams fleet - --apply < fleet-accounts.jsonl
-   ```
-   This writes the teams in one transaction without pushing anything and
-   switches team sync on. `auth app show fleet` then prints `team sync: on`.
-   Changing someone's team in Auth now changes it in Fleet (and un-shares
-   their team content there, as a Fleet admin move would); changing it in
-   Fleet changes it here.
-5. To stop: `auth app team-sync fleet off`. Teams stay where they are; they
-   are just no longer sent or mirrored.
+   every `clear` and every `skipped`. `--apply` writes the teams in one
+   transaction without pushing anything and switches team sync on; an
+   `invalid` row (a team Auth cannot take) makes it apply nothing, so fix that
+   team in Fleet and export again.
+4. From then on, changing someone's team in Auth changes it in Fleet (and
+   un-shares their team content there). `auth app show fleet` prints
+   `team sync: on`. To stop: `auth app team-sync fleet off`; teams stay where
+   they are and are no longer sent. Renames made while it is off wait, and go
+   to Fleet in order when it is switched back on.
+5. Renaming a team (console: Teams; CLI: `auth team rename <from> <to>`)
+   renames it in Fleet too, keeping what is shared with it, as one message
+   ([INTEGRATION.md](INTEGRATION.md#team-sync)). Fleet must be on a build
+   that accepts it (it answers a `team_token` with 400 otherwise, and every
+   push to Fleet then waits behind the rename): update Fleet before Auth.
+   `auth app show fleet` lists a rename still waiting, with its last error.
 
 ### Silent sign-in check (`prompt=none`)
 
@@ -568,9 +540,6 @@ Server configuration:
   key, give it a new id, move the old pair to `AUTH_MFA_PREVIOUS_KEYS` as
   `id:key`, restart, and keep it there until every factor has been re-sealed
   (each successful verification re-seals under the active key). Then drop it.
-  An application events secret (below) is sealed with the same key and is
-  re-sealed by the first report that arrives after the restart; running
-  `auth app set-events-secret` again is the other way to move it.
 - `AUTH_MFA_ISSUER` is the label authenticator apps show for the account
   (default the brand name); it may not contain `:`. Changing it affects only
   new enrollments.

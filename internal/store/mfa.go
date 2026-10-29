@@ -1558,14 +1558,6 @@ func (s *Store) MFAKeyRequiredReason(ctx context.Context) (string, error) {
 	if required > 0 {
 		return fmt.Sprintf("%d account(s) are required to use a second factor", required), nil
 	}
-	// An application events secret is sealed with the same key; without it
-	// every signed account report would be refused.
-	if has, err := s.HasApplicationEventsSecrets(ctx); err != nil || has {
-		if err != nil {
-			return "", err
-		}
-		return "an application has an events secret", nil
-	}
 	return "", nil
 }
 

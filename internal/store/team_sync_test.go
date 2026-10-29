@@ -1,19 +1,55 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 )
 
-func (f *reportFixture) teamReport(occurredAt int64, chat, ops, team string) AppReport {
-	r := f.report(occurredAt, chat, ops)
-	r.Team, r.HasTeam = team, true
-	return r
+const fleetMember = `{"chat_role":"member","ops_role":"none"}`
+
+// teamFixture is one account granted Fleet (Contributor / no Ops) and
+// Explorer at t=1000, with both back-channel endpoints registered.
+type teamFixture struct {
+	s       *Store
+	ctx     context.Context
+	account Account
 }
 
-func (f *reportFixture) team(t *testing.T) (string, int64) {
+func newTeamFixture(t *testing.T) *teamFixture {
+	t.Helper()
+	s := openTestStore(t)
+	ctx := context.Background()
+	for _, id := range []string{"fleet", "explorer"} {
+		if _, err := s.CreateApplication(ctx, id, id, "https://"+id+".example.com/cb", "", "hash", 900); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetApplicationBackchannelLogoutURI(ctx, id, "https://"+id+".example.com/bc", 900); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := s.CreatePasswordAccount(ctx, "Person@Example.com", "hash", false, 900)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SetApplicationAccessWithSettings(ctx, a.ID, []string{"fleet", "explorer"}, map[string]string{"fleet": fleetMember}, 1000); err != nil {
+		t.Fatal(err)
+	}
+	return &teamFixture{s: s, ctx: ctx, account: a}
+}
+
+func (f *teamFixture) provisioning(t *testing.T) AccessProvisioningDelivery {
+	t.Helper()
+	d, ok, err := f.s.AccessProvisioningState(f.ctx, f.account.ID, "fleet")
+	if err != nil || !ok {
+		t.Fatalf("provisioning state: %v %v", ok, err)
+	}
+	return d
+}
+
+func (f *teamFixture) team(t *testing.T) (string, int64) {
 	t.Helper()
 	var team string
 	var at int64
@@ -23,7 +59,7 @@ func (f *reportFixture) team(t *testing.T) (string, int64) {
 	return team, at
 }
 
-func (f *reportFixture) teamSyncOn(t *testing.T) {
+func (f *teamFixture) teamSyncOn(t *testing.T) {
 	t.Helper()
 	if err := f.s.SetApplicationTeamSync(f.ctx, "fleet", true, 1100); err != nil {
 		t.Fatal(err)
@@ -39,16 +75,9 @@ func pushedSettings(t *testing.T, d AccessProvisioningDelivery) map[string]strin
 	return m
 }
 
-func TestTeamSyncOffNeitherSendsNorMirrors(t *testing.T) {
-	f := newReportFixture(t)
+func TestTeamSyncOffSendsNoTeam(t *testing.T) {
+	f := newTeamFixture(t)
 	before := f.provisioning(t)
-	d := f.apply(t, f.teamReport(2000, "member", "none", "Trading"), 2005)
-	if d.Action != AppReportNoOp || d.TeamChange {
-		t.Fatalf("decision with sync off = %+v", d)
-	}
-	if team, _ := f.team(t); team != "" {
-		t.Fatalf("team mirrored with sync off: %q", team)
-	}
 	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "Desk", 2100); err != nil {
 		t.Fatal(err)
 	}
@@ -61,74 +90,8 @@ func TestTeamSyncOffNeitherSendsNorMirrors(t *testing.T) {
 	}
 }
 
-func TestTeamSyncOnMirrorsAReportedTeamAndPushesItBack(t *testing.T) {
-	f := newReportFixture(t)
-	f.teamSyncOn(t)
-	before := f.provisioning(t)
-	d := f.apply(t, f.teamReport(2000, "member", "none", "  Trading  "), 2005)
-	if d.Action != AppReportChange || !d.TeamChange || d.RolesChange || d.FromTeam != "" || d.ToTeam != "Trading" {
-		t.Fatalf("decision = %+v", d)
-	}
-	if team, at := f.team(t); team != "Trading" || at != 2005 {
-		t.Fatalf("team = %q at %d", team, at)
-	}
-	after := f.provisioning(t)
-	settings := pushedSettings(t, after)
-	if after.Version != before.Version+1 || settings["team"] != "Trading" || settings["chat_role"] != "member" || settings["ops_role"] != "none" {
-		t.Fatalf("push back = %+v (%v)", after, settings)
-	}
-	e := f.latestAudit(t)
-	var meta map[string]any
-	_ = json.Unmarshal([]byte(e.Metadata), &meta)
-	if e.EventType != "account.team_set" || meta["team"] != "Trading" || meta["source"] != "fleet" || meta["actor"] != "admin@example.com" {
-		t.Fatalf("audit = %+v", e)
-	}
-	if hints, _ := f.s.AppReportHints(f.ctx, "fleet"); hints[f.account.ID].Actor != "admin@example.com" {
-		t.Fatalf("hint missing for a team change: %+v", hints)
-	}
-	// Fleet's echo of that push (or a repeat) matches what Auth holds: no-op,
-	// no second push.
-	if d := f.apply(t, f.teamReport(2010, "member", "none", "Trading"), 2012); d.Action != AppReportNoOp {
-		t.Fatalf("echo = %+v", d)
-	}
-	if again := f.provisioning(t); again.Version != after.Version {
-		t.Fatalf("the echo pushed again: %d -> %d", after.Version, again.Version)
-	}
-	// Roles and team together: one push carrying both.
-	d = f.apply(t, f.teamReport(2020, "viewer", "client", ""), 2025)
-	if !d.RolesChange || !d.TeamChange || d.ToTeam != "" {
-		t.Fatalf("both = %+v", d)
-	}
-	both := f.provisioning(t)
-	if s := pushedSettings(t, both); both.Version != after.Version+1 || s["team"] != "" || s["chat_role"] != "viewer" || s["ops_role"] != "client" {
-		t.Fatalf("combined push = %+v", both)
-	}
-	// A later Auth team change hides the hint.
-	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "Desk", 2100); err != nil {
-		t.Fatal(err)
-	}
-	if hints, _ := f.s.AppReportHints(f.ctx, "fleet"); len(hints) != 0 {
-		t.Fatalf("hint survived an Auth team change: %+v", hints)
-	}
-}
-
-func TestTeamSyncAReportWithoutATeamLeavesItAlone(t *testing.T) {
-	f := newReportFixture(t)
-	f.teamSyncOn(t)
-	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "Desk", 1500); err != nil {
-		t.Fatal(err)
-	}
-	d := f.apply(t, f.report(2000, "viewer", "none"), 2005)
-	if !d.RolesChange || d.TeamChange {
-		t.Fatalf("decision = %+v", d)
-	}
-	if team, _ := f.team(t); team != "Desk" {
-		t.Fatalf("team = %q", team)
-	}
-}
-
 func TestTeamSyncAuthTeamChangePushesToFleetOnly(t *testing.T) {
-	f := newReportFixture(t)
+	f := newTeamFixture(t)
 	f.teamSyncOn(t)
 	before := f.provisioning(t)
 	explorerBefore, _, _ := f.s.AccessProvisioningState(f.ctx, f.account.ID, "explorer")
@@ -166,7 +129,7 @@ func TestTeamSyncAuthTeamChangePushesToFleetOnly(t *testing.T) {
 }
 
 func TestTeamSyncPushWithoutSettingsCarriesNoTeam(t *testing.T) {
-	f := newReportFixture(t)
+	f := newTeamFixture(t)
 	f.teamSyncOn(t)
 	// A grant with no Fleet permissions recorded: Fleet keeps what it has,
 	// so the team must not ride alone (Fleet refuses {team} without roles).
@@ -186,90 +149,8 @@ func TestTeamSyncPushWithoutSettingsCarriesNoTeam(t *testing.T) {
 	}
 }
 
-func TestTeamSyncStaleGuardCoversTheTeam(t *testing.T) {
-	f := newReportFixture(t)
-	f.teamSyncOn(t)
-	f.apply(t, f.teamReport(2000, "member", "none", "Trading"), 2005)
-	// An Auth team change after that report beats an older Fleet report.
-	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "Desk", 2100); err != nil {
-		t.Fatal(err)
-	}
-	if d := f.apply(t, f.teamReport(2050, "member", "none", "Sales"), 2110); d.Action != AppReportIgnored || d.Reason != AppReportReasonStale {
-		t.Fatalf("older report after an Auth team change = %+v", d)
-	}
-	if team, _ := f.team(t); team != "Desk" {
-		t.Fatalf("stale report moved the team: %q", team)
-	}
-	// A newer one wins.
-	if d := f.apply(t, f.teamReport(2200, "member", "none", "Sales"), 2205); !d.TeamChange {
-		t.Fatalf("newer report = %+v", d)
-	}
-}
-
-func TestTeamSyncInvalidTeamIsSkippedAndTheRolesApplied(t *testing.T) {
-	f := newReportFixture(t)
-	f.teamSyncOn(t)
-	for _, bad := range []string{"bad\x00team", strings.Repeat("x", 65)} {
-		d := f.apply(t, f.teamReport(2000+int64(len(bad)), "viewer", "client", bad), 2100+int64(len(bad)))
-		if !d.TeamSkipped || d.TeamChange {
-			t.Fatalf("invalid team %q = %+v", bad, d)
-		}
-		if team, _ := f.team(t); team != "" {
-			t.Fatalf("invalid team written: %q", team)
-		}
-		if e := f.latestAudit(t); e.EventType != "access.app_report_team_skipped" || !strings.Contains(e.Metadata, AppReportReasonInvalidTeam) {
-			t.Fatalf("audit = %+v", e)
-		}
-	}
-	if got := f.fleetSettings(t); got != `{"chat_role":"viewer","ops_role":"client"}` {
-		t.Fatalf("roles not applied beside an invalid team: %s", got)
-	}
-}
-
-func TestTeamSyncUnrepresentableRolesStillMirrorTheTeam(t *testing.T) {
-	f := newReportFixture(t)
-	f.teamSyncOn(t)
-	d := f.apply(t, f.teamReport(2000, "admin", "none", "Trading"), 2005)
-	if d.Action != AppReportChange || !d.TeamChange || !d.RolesSkipped || d.RolesChange {
-		t.Fatalf("decision = %+v", d)
-	}
-	if team, _ := f.team(t); team != "Trading" {
-		t.Fatalf("team = %q", team)
-	}
-	if got := f.fleetSettings(t); got != fleetMember {
-		t.Fatalf("unrepresentable roles written: %s", got)
-	}
-	events, _ := f.s.RecentAuditEvents(f.ctx, f.account.ID, 5)
-	found := false
-	for _, e := range events {
-		found = found || e.EventType == "access.app_report_roles_skipped"
-	}
-	if !found {
-		t.Fatalf("roles skip not audited: %+v", events)
-	}
-	// Without a team change it is still ignored outright.
-	if d := f.apply(t, f.teamReport(2010, "admin", "none", "Trading"), 2015); d.Action != AppReportIgnored || d.Reason != AppReportReasonUnrepresentable {
-		t.Fatalf("unrepresentable, same team = %+v", d)
-	}
-}
-
-func TestAppReportResidualOpsShapeRevokes(t *testing.T) {
-	f := newReportFixture(t)
-	r := f.report(2000, "", "client")
-	r.Enabled = false
-	if d := f.apply(t, r, 2005); d.Action != AppReportRevoke {
-		t.Fatalf("residual Ops shape = %+v", d)
-	}
-	if ok, _ := f.s.HasApplicationAccess(f.ctx, f.account.ID, "fleet"); ok {
-		t.Fatal("grant kept")
-	}
-	if p := f.provisioning(t); p.Allowed {
-		t.Fatalf("revoke not pushed: %+v", p)
-	}
-}
-
 func TestSetApplicationTeamSyncIsFleetOnlyAndAudited(t *testing.T) {
-	f := newReportFixture(t)
+	f := newTeamFixture(t)
 	if err := f.s.SetApplicationTeamSync(f.ctx, "explorer", true, 1100); !errors.Is(err, ErrTeamSyncUnsupported) {
 		t.Fatalf("explorer = %v", err)
 	}
@@ -294,7 +175,7 @@ func TestSetApplicationTeamSyncIsFleetOnlyAndAudited(t *testing.T) {
 }
 
 func TestImportTeamsPlansAppliesAndSwitchesSyncOn(t *testing.T) {
-	f := newReportFixture(t)
+	f := newTeamFixture(t)
 	s, ctx := f.s, f.ctx
 	if err := s.SetAccountTeam(ctx, "person@example.com", "Old", 1100); err != nil {
 		t.Fatal(err)
@@ -432,7 +313,7 @@ func TestTeamSyncMigratesAndOlderDatabasesReadOff(t *testing.T) {
 // team into two. A case-only edit of the account's own team is no change at
 // all, so nothing is pushed; a genuinely new team keeps the admin's spelling.
 func TestSetAccountTeamUsesTheExistingSpelling(t *testing.T) {
-	f := newReportFixture(t)
+	f := newTeamFixture(t)
 	f.teamSyncOn(t)
 	for _, email := range []string{"a@example.com", "b@example.com"} {
 		if _, err := f.s.CreatePasswordAccount(f.ctx, email, "hash", false, 900); err != nil {
@@ -477,7 +358,7 @@ func TestSetAccountTeamUsesTheExistingSpelling(t *testing.T) {
 // case variants the most used wins, and folding follows Unicode (as Fleet's
 // does), not just ASCII.
 func TestSetAccountTeamOwnSpellingAndVariantChoice(t *testing.T) {
-	f := newReportFixture(t)
+	f := newTeamFixture(t)
 	f.teamSyncOn(t)
 	if err := f.s.SetAccountTeam(f.ctx, "person@example.com", "Growth", 1000); err != nil {
 		t.Fatal(err)
@@ -516,4 +397,22 @@ func TestSetAccountTeamOwnSpellingAndVariantChoice(t *testing.T) {
 	if team, _ := f.team(t); team != "Équipe" {
 		t.Fatalf("team = %q, want the most used variant Équipe", team)
 	}
+}
+
+func (s *Store) mustSettings(t *testing.T, userID, appID string) string {
+	t.Helper()
+	all, err := s.AllApplicationAccessSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return all[userID][appID]
+}
+
+func (f *teamFixture) latestAudit(t *testing.T) AuditEvent {
+	t.Helper()
+	events, err := f.s.RecentAuditEvents(f.ctx, f.account.ID, 1)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("audit: %v %v", events, err)
+	}
+	return events[0]
 }

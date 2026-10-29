@@ -106,132 +106,108 @@ should too.
      object whose keys and values are application-defined and strictly
      validated by that application.
 
-### Receiving application account reports
+### One way: Auth to the application
 
-An application that keeps its own user administration can tell Auth what
-changed there, so a role edited inside the application shows up in Auth's
-console instead of being overwritten by the next console save. This is
-optional and one-sided: the application publishes generic signed account
-events to a URL it is configured with and knows nothing about Auth; Auth is
-the side that listens. Fleet is the only application whose permission
-vocabulary Auth understands today (`chat_role` and `ops_role`); reports from
-any other application are accepted and change nothing.
-
-**Setup, on the Auth host:**
-
-```bash
-auth app set-events-secret fleet
-```
-
-This prints `FLEET_ACCOUNT_EVENTS_URL` (`https://<auth-host>/apps/fleet/events`)
-and `FLEET_ACCOUNT_EVENTS_SECRET` once. Put both in the application's
-environment. Auth keeps the secret sealed with `AUTH_MFA_KEY` (the command
-refuses without it, and the server refuses to start without the key once any
-application has an events secret). Running the command again replaces the
-secret; `auth app clear-events-secret fleet` stops accepting reports.
-
-**The request.** `POST /apps/<client-id>/events` with a JSON body, signed the
-way Fleet signs its outbound webhooks: `X-Fleet-Timestamp: <unix seconds>`
-and `X-Fleet-Signature: v1=<hex HMAC-SHA256>` computed with the secret string
-(as printed) over `<timestamp>.<raw body>`. Auth refuses a timestamp more than
-five minutes from its own clock, bodies over 16 KiB (413) and any signature
-mismatch (401); a malformed report is 400. The body:
-
-```json
-{"id": "evt_...", "type": "user.access_changed", "occurred_at": 1790000000,
- "sequence": 42, "source": "admin_ui", "actor": "admin@example.com",
- "user": {"email": "person@example.com", "enabled": true,
-          "chat_role": "member", "ops_role": "none"}}
-```
-
-`type` is `user.access_changed` or `user.deleted` (then `enabled` is false and
-both roles are empty). A `user.access_changed` with `enabled: false`, an empty
-`chat_role` and a real `ops_role` is Fleet's "Chat account gone, Ops access
-remains" shape; Auth treats it as a removal. `user.team` is optional: a sender
-that reports no team leaves Auth's team alone (see "Team sync" below).
-`source` is `admin_ui`, `cli`, `system`, `resync` or `identity_provider`.
-Unknown fields are ignored.
-
-**What Auth does.** Every authenticated, well-formed report gets a 204, also
-the ones Auth deliberately ignores, so the sender stops retrying them. A
-repeated `id` is a no-op. Then, in one transaction:
-
-- `source: identity_provider` is the application applying Auth's own push;
-  it is ignored, which is what ends the echo.
-- An email with no Auth account, or an account without access to the
-  application, is ignored (`access.app_report_ignored`). Reports never create
-  accounts or grants: adding people stays an Auth decision.
-- A report older than the last applied one, or older than an Auth-side change
-  made after it (a console save or a re-grant), is ignored as stale. Auth
-  compares the application's `occurred_at` with its own clock for that second
-  test, so the two hosts' clocks must roughly agree. `occurred_at` is in whole
-  seconds; for two reports in the same second, `sequence` decides: one whose
-  `sequence` is not above the last applied report's is stale. Send a
-  `sequence` that increases with commit order (a sender without one keeps the
-  older rule: the later arrival wins).
-- `user.deleted`, or `enabled: false`, removes the grant through the normal
-  revoke path: back-channel logout, a provisioning revoke and dropped
-  authorization codes. The stored roles are kept for a later re-grant.
-- A role pair Auth can store (Fleet Admin on both planes, or Chat
-  Viewer/Contributor with Ops None/Viewer/Contributor) is saved like a
-  console edit and audited as `access.settings_changed` with the report's
-  source and actor; anything else (for example Ops admin without Chat admin)
-  is ignored as unrepresentable. A change is pushed back to the application
-  through the provisioning event above; the application already has that
-  state, changes nothing and emits nothing. Unchanged roles are a no-op.
-
-A change made this way skips the console's authenticator check: Auth records
-what the application already enforces. The console marks it with "Changed in
-Fleet by <actor>" in the account's Access popup, and `auth audit list` names
-`app:fleet` as the actor.
-
-**Before switching it on**, preview what the application's current state
-would change. With Fleet:
-
-```bash
-fleet account-events export > fleet-accounts.jsonl        # on the Fleet host
-auth app compare fleet - < fleet-accounts.jsonl           # on the Auth host
-```
-
-`compare` opens the database read-only and prints, per email, `change`,
-`revoke`, `no-op`, `ignored-not-granted` or `unrepresentable`, plus a TEAM
-column comparing Auth's team with the exported one. Once you are happy with
-it, `fleet account-events resync` sends the same state for real.
+Membership flows one way. Auth is the source of truth for who may use an
+application and with which application settings (Fleet's roles and team),
+and pushes that desired state with the provisioning events above. It does not
+accept account changes back from an application: an application cannot
+change identity data in Auth. Fleet, when it signs in through Auth, changes
+no account, role or team itself (Fleet ADR-0095), so there is nothing to
+report. An earlier version accepted signed account reports from Fleet at
+`/apps/<client-id>/events` and mirrored them; that endpoint is gone (a 404),
+and so are `auth app set-events-secret`, `clear-events-secret` and `compare`.
 
 #### Team sync
 
-Fleet's teams are canonical. Team sync keeps an account's Auth team and its
-Fleet team the same, in both directions, once it is switched on for the
-`fleet` application (`auth app show fleet` prints `team sync: on|off`):
+Auth's teams are the source. Once team sync is on for the `fleet`
+application (`auth app show fleet` prints `team sync: on|off`), each
+account's Auth team is sent to Fleet; nothing comes back.
 
-- **Auth to Fleet.** A push to Fleet carries a third settings key, `team`
-  (`""` = no team), next to `chat_role` and `ops_role`. It rides only on
-  pushes that carry the roles: an account granted Fleet before Fleet
-  permissions existed has none, and Fleet keeps its own team for it. Any
-  Auth-side team change (the account's row, a batch team change, `auth user
-  team`) on an account granted Fleet queues a push. Fleet applies the team the
-  way its own admin page does, which also un-shares the person's team content
-  when the team really changes.
-- **Fleet to Auth.** A report carrying `user.team` updates the account's
-  team (audited as `account.team_set` with source `fleet` and the Fleet
-  actor), and Auth pushes back as for roles; the echo changes nothing. An
-  invalid team (over 64 bytes, or with control characters) is skipped and
-  audited (`access.app_report_team_skipped`) while the roles still apply. A
-  role pair Auth cannot store no longer hides a team change: the team is
-  mirrored and the roles are skipped (`access.app_report_roles_skipped`).
-- **Stale guard.** With team sync on, an Auth-side team change counts as an
-  Auth-side change: an older Fleet report cannot undo it.
+- A push to Fleet carries a third settings key, `team` (`""` = no team), next
+  to `chat_role` and `ops_role`, and a fourth, `team_rename`: the version of
+  the newest team rename queued for Fleet when the push was written (`"0"`
+  before any), so Fleet can ignore a team that reaches it after a rename it
+  has already applied. It rides only on pushes that carry the
+  roles: an account granted Fleet before Fleet permissions existed has none,
+  and Fleet keeps its own team for it. Any Auth-side team change (the
+  account's row, a batch team change, `auth user team`) on an account granted
+  Fleet queues a push. Fleet applies the team the way its own admin page did,
+  which also un-shares the person's team content when the team really
+  changes.
 - A team is at most 64 bytes with no control characters, the same rule as a
   Fleet team label, everywhere in Auth.
 - **One spelling per team.** A team typed in the console or with
   `auth user team` that matches an existing team ignoring case is saved with
   the spelling already in use, and a case-only edit of an account's own team
   is no change. Fleet keeps a team's spelling when told one that differs only
-  in case, so without this Auth could show a spelling Fleet never adopts.
-  Reports and the team import keep Fleet's exact value.
+  in case, so without this Auth could show a spelling Fleet never adopts. The
+  team import keeps Fleet's exact value.
 
-With team sync off, teams are neither sent nor mirrored. Switch it on with
-an import, not by hand, so the first push cannot overwrite Fleet's teams:
+**Renaming a team** (the console's Teams dialog, or `auth team rename
+<from> <to>`) relabels every account on it and, with team sync on, sends the
+rename as ONE application-wide message rather than a push per member: Fleet
+would read each member's new team as a move, unshare what they shared with
+the old team and leave its shared projects under the old name. The message is
+an EdDSA-signed JWT with `typ: team+jwt`, posted as the single form field
+`team_token` to the back-channel endpoint. It names no account (no `sub`, no
+`email`) and carries `iss`, `aud` (the client id), `iat`, `exp`, `jti` and one
+event, `urn:elcanotek:event:team-rename`, with exactly `from`, `to` and a
+`version` that rises by one per rename for that application. A name that
+matches another team ignoring case takes that team's spelling and merges the
+two (the console says so before it happens). Auth sees only its own labels, so
+it cannot know whether the application still files something under the new
+name from an earlier team; Fleet treats a name it still has projects under as
+a live team and joins it (a name nothing carries is retired first), and the
+console's confirm says so. Auth keeps sharing intact by
+ordering:
+
+- renames for an application go out in version order, one at a time, each
+  retried until the application answers 2xx;
+- no per-person grant for that application goes out while one of its renames
+  is undelivered, so the application never sees the new name before the
+  rename (a revoke is never held, and carries no team: it changes none, and
+  a rename that keeps failing must not keep anyone's access open);
+- a per-person push still queued with the old name is rewritten to the new
+  one (a new version and event id) in the rename's transaction, so the
+  application never sees the old name after it; any other queued push naming
+  a team gets the rename's version, since it goes after the rename and its
+  team (a move made just before) is the newer one. A delivered one is rewritten
+  too but not resent: a new or rotated back-channel endpoint replays every
+  person's latest push, and a rebuilt application there has no rename history
+  to ignore an old name by.
+
+Ordering on Auth's side assumes one deliverer sending at a time (it does). A
+push can still reach the application late if the application was slow to
+answer and kept working after Auth gave up on it, so the application also
+ignores the team in a push whose `team_rename` is older than the last rename
+it applied (Fleet does). The receiving application applies each rename version
+once (a redelivery after a lost acknowledgement is a no-op), treats a rename of
+a team it does not have as done, and answers 204, 400 for a malformed one, or
+a 5xx to be retried. Versions follow the clock (at least the current Unix
+time, and above the last one). A rename that cannot be delivered holds that
+application's pushes; `auth app show fleet` prints it with its last error. A
+rename made while the application has no back-channel endpoint waits, with its
+pushes, until one is set; a changed endpoint takes waiting renames with it.
+Turning team sync off takes the team out of every push, including the
+delivered ones a new endpoint would replay (no team is sent with sync off).
+Renames are still recorded while it is off, and wait. Turning it back on sends
+the waiting renames in order, ahead of the pushes, and gives those delivered
+pushes each person's current team for such a replay; it sends nothing else by
+itself. So a rename made while sync was off still reaches the application as a
+rename, not as one move per person. A team import drops waiting renames and
+takes the team out of queued pushes, since it makes the application's teams
+Auth's; it refuses to run while a rename or an access push is being
+delivered, which cannot be recalled. A new or rotated back-channel endpoint replays every person's push
+with their team as Auth has it then (none with sync off), since a rebuilt
+application there knows nothing of earlier renames or imports.
+
+With team sync off, teams are not sent. For a Fleet with no teams yet,
+switch it on by hand: `auth app team-sync fleet on` pushes nothing on its
+own, and each person's next grant or change carries Auth's team. A Fleet that
+already has teams needs a **one-time import** first, after its people are
+granted Fleet in Auth (the import skips anyone without a grant), so the first
+push cannot take people out of their Fleet teams:
 
 ```bash
 fleet account-events export > fleet-accounts.jsonl         # on the Fleet host
@@ -240,15 +216,15 @@ auth app import-teams fleet - --apply < fleet-accounts.jsonl
 ```
 
 For each Auth account the plan says `set` (granted Fleet and in the export:
-takes Fleet's team), `clear` (absent from the export: there is no Fleet team
-to mirror, so the Auth team is removed), `no-op`, `skipped` (in the export but
-not granted Fleet, or no Auth account; nothing changes) or `invalid`. It also
+takes Fleet's team), `clear` (absent from the export: there is no Fleet team,
+so the Auth team is removed), `no-op`, `skipped` (in the export but not
+granted Fleet, or no Auth account; nothing changes) or `invalid`. It also
 records Fleet's roles for a granted account Auth holds none for, so its later
 team changes can ride a push. `--apply` makes those changes in one
 transaction without pushing anything (Fleet already has these teams), audits
-each with source `import`, and switches team sync on. Run the export and the
-import back to back. `auth app team-sync fleet on|off` switches it by hand;
-turning it on pushes nothing on its own.
+each with source `import`, and switches team sync on. Check that the export
+is complete before applying it, and run the two back to back. This is a
+migration, not ongoing sync: from then on Auth is the source.
 
 ### Application session conventions
 
@@ -446,9 +422,8 @@ Auth is a normal top-level navigation (not a `fetch`) and it sends
   `auth user access`; `/authorize` refuses otherwise, with Auth's own "No
   access" page interactively and `error=access_denied` for `prompt=none`).
   Auth may transport application-specific settings chosen in its admin UI
-  (currently Fleet Chat/Ops roles), and can mirror the same settings back from
-  the application's signed account reports, but the receiving application
-  validates, stores, and enforces them. Auth's own administrator flag is separate and
+  (currently Fleet Chat/Ops roles and team), one way, but the receiving
+  application validates, stores, and enforces them. Auth's own administrator flag is separate and
   gates only its console at `/admin`.
 - **Step-up beyond TOTP.** Magic links are themselves an inbox-possession
   factor. Password mode has authenticator-app (TOTP) two-factor sign-in,
