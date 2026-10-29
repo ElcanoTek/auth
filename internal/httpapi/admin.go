@@ -1545,7 +1545,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 				row.Status, row.StatusClass = "Disabled", "off"
 			case a.PasswordResetPending():
 				row.Status, row.StatusClass = "Reset pending", "warn"
-				row.StatusTitle = "Password reset " + a.PasswordSetAt.UTC().Format("2006-01-02 15:04") + " UTC; they have not set a new one yet."
+				row.StatusTitle = "Password reset " + a.PasswordResetAt.UTC().Format("2006-01-02 15:04") + " UTC; they have not set a new one yet."
 			case a.MustChangePassword:
 				// A new account still on the temporary password it was created with.
 				row.Status, row.StatusClass = "Invited", "warn"

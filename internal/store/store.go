@@ -475,7 +475,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateSessionState(ctx); err != nil {
 		return err
 	}
-	return s.migrateTeamRenames(ctx)
+	if err := s.migrateTeamRenames(ctx); err != nil {
+		return err
+	}
+	return s.migratePasswordReset(ctx)
 }
 
 // migrateAccessProvisioning is schema v8. It snapshots every existing grant
@@ -899,18 +902,18 @@ type Account struct {
 	SecurityVersion    int64  // bumped by every factor-affecting change
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
-	// PasswordSetAt is when the current password was set
-	// (password_credentials.changed_at). Only ListPasswordAccounts reads
-	// it; elsewhere it is zero.
-	PasswordSetAt time.Time
+	// PasswordResetAt is when an administrator's reset set the temporary
+	// password this account must still change (accounts.password_reset_at,
+	// password_reset.go); nil when no reset is pending. Only
+	// ListPasswordAccounts reads it; elsewhere it is nil.
+	PasswordResetAt *time.Time
 }
 
 // PasswordResetPending reports whether the change an account must make
-// follows an administrator's reset rather than its creation: the temporary
-// password it must replace is newer than the account (creation sets both at
-// once). Meaningful only on an account from ListPasswordAccounts.
+// follows an administrator's reset rather than its creation. Meaningful only
+// on an account from ListPasswordAccounts.
 func (a Account) PasswordResetPending() bool {
-	return a.MustChangePassword && a.PasswordSetAt.After(a.CreatedAt)
+	return a.MustChangePassword && a.PasswordResetAt != nil
 }
 
 func normalizeAccountEmail(email string) string {
@@ -1189,8 +1192,14 @@ func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passw
 		}
 		return ErrAccountNotFound
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET must_change_password = ?, updated_at = ? WHERE id = ?`,
-		boolInt(mustChange), now, userID); err != nil {
+	// A must-change replacement is an administrator's reset; the person's own
+	// password clears the marker (password_reset.go).
+	var resetAt any
+	if mustChange {
+		resetAt = now
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET must_change_password = ?, password_reset_at = ?, updated_at = ? WHERE id = ?`,
+		boolInt(mustChange), resetAt, now, userID); err != nil {
 		return err
 	}
 	if rotate != nil {
@@ -1282,7 +1291,7 @@ func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
 		       a.mfa_required, a.security_version,
 		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL),
-		       p.changed_at
+		       a.password_reset_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		ORDER BY a.normalized_email`)
 	if err != nil {
@@ -1291,12 +1300,15 @@ func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 	defer func() { _ = rows.Close() }()
 	var out []Account
 	for rows.Next() {
-		var passwordSet int64
-		a, err := scanAccount(scanWithExtra{rows, []any{&passwordSet}})
+		var resetAt sql.NullInt64
+		a, err := scanAccount(scanWithExtra{rows, []any{&resetAt}})
 		if err != nil {
 			return nil, err
 		}
-		a.PasswordSetAt = time.Unix(passwordSet, 0)
+		if resetAt.Valid {
+			t := time.Unix(resetAt.Int64, 0)
+			a.PasswordResetAt = &t
+		}
 		// Listing is an administrative metadata operation. Do not retain
 		// credential material in the returned slice when no caller needs it.
 		a.PasswordHash = ""
