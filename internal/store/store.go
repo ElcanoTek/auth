@@ -1374,27 +1374,44 @@ func NormalizeTeam(raw string) (string, error) {
 
 // SetAccountTeam sets or clears an account's team tag and audits it.
 func (s *Store) SetAccountTeam(ctx context.Context, email, team string, now int64) error {
-	team, err := NormalizeTeam(team)
+	_, _, err := s.ChangeAccountTeam(ctx, email, team, now)
+	return err
+}
+
+// ChangeAccountTeam is SetAccountTeam that also reports the account's team
+// before and the team as stored after, which is an existing team's spelling
+// when team matches it ignoring case. before == after is no change, so a
+// caller can say what happened rather than what was asked.
+func (s *Store) ChangeAccountTeam(ctx context.Context, email, team string, now int64) (before, after string, err error) {
+	team, err = NormalizeTeam(team)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	a, err := s.PasswordAccountByEmail(ctx, email)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Read under the write transaction, so before is the team this write
+	// replaced (the account read above may be older).
+	if err := tx.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ?`, a.ID).Scan(&before); err != nil {
+		return "", "", err
+	}
 	if team, err = canonicalTeamSpellingTx(ctx, tx, a.ID, team); err != nil {
-		return err
+		return "", "", err
 	}
 	metadata, _ := json.Marshal(map[string]string{"team": team})
 	if err := setAccountTeamTx(ctx, tx, a.ID, team, now, string(metadata), true); err != nil {
-		return err
+		return "", "", err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return "", "", err
+	}
+	return before, team, nil
 }
 
 // canonicalTeamSpellingTx returns the spelling an existing team already uses

@@ -462,6 +462,17 @@ func TestBatchActionsOnSelectedAccounts(t *testing.T) {
 			t.Fatalf("%s team = %q", e, a.Team)
 		}
 	}
+	// An account already on the team is skipped as such, and a case-only
+	// variant takes the stored spelling.
+	if err := st.SetAccountTeam(ctx, "carol@example.com", "Desk", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {"trading"}, "emails": {"bob@example.com", "carol@example.com"}}); !strings.Contains(page, "Added to team Trading: carol@example.com (1). Skipped: bob@example.com (already on team Trading).") {
+		t.Fatalf("batch team with an account already on it:\n%s", page)
+	}
+	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {"Trading"}, "emails": {"bob@example.com"}}); !strings.Contains(page, "Nothing changed. Skipped: bob@example.com (already on team Trading).") {
+		t.Fatalf("batch team with nothing to change:\n%s", page)
+	}
 	if _, page := alice.post(url.Values{"action": {"batch"}, "op": {"team"}, "team": {""}, "emails": {"bob@example.com", "carol@example.com"}}); !strings.Contains(page, "Removed from their team: bob@example.com, carol@example.com (2).") {
 		t.Fatalf("batch team removal:\n%s", page)
 	}

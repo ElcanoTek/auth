@@ -778,6 +778,18 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	if _, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {""}}); !strings.Contains(body, "bob@example.com has no team.") {
 		t.Fatalf("clear an empty team:\n%s", body)
 	}
+	// What happened, in the stored spelling: a re-save or a case-only edit is
+	// no change, and a move names both teams.
+	for _, st := range []struct{ team, want string }{
+		{"Ops", "bob@example.com was added to team Ops."},
+		{"Ops", "bob@example.com is already on team Ops."},
+		{"ops", "bob@example.com is already on team Ops."},
+		{"Desk", "bob@example.com was moved from team Ops to team Desk."},
+	} {
+		if _, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {st.team}}); !strings.Contains(body, st.want) {
+			t.Fatalf("set-team %q: want %q in\n%s", st.team, st.want, body)
+		}
+	}
 	events, _ := st.RecentAuditEvents(context.Background(), func() string { b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); return b.ID }(), 6)
 	var types []string
 	for _, e := range events {

@@ -1129,18 +1129,12 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
 			return res
 		}
-		if err := s.store.SetAccountTeam(ctx, target.Email, team, now.Unix()); err != nil {
+		before, after, err := s.store.ChangeAccountTeam(ctx, target.Email, team, now.Unix())
+		if err != nil {
 			return res.failed("set team", err)
 		}
 		audit("admin.team_set", target.ID, "")
-		switch {
-		case team != "":
-			res.Notice = fmt.Sprintf("%s was added to team %s.", target.Email, team)
-		case target.Team != "":
-			res.Notice = fmt.Sprintf("%s was removed from team %s.", target.Email, target.Team)
-		default:
-			res.Notice = fmt.Sprintf("%s has no team.", target.Email)
-		}
+		res.Notice = teamChangeNotice(target.Email, before, after)
 	case "set-mfa-required":
 		// Settings: require (or stop requiring) two-factor sign-in of one
 		// account. The store re-checks the actor proof in its transaction.
@@ -1368,11 +1362,21 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 		}
 		switch op {
 		case "team":
-			if err := s.store.SetAccountTeam(ctx, target.Email, team, now.Unix()); err != nil {
+			before, after, err := s.store.ChangeAccountTeam(ctx, target.Email, team, now.Unix())
+			if err != nil {
 				return stopped(target.Email, "team", err)
 			}
 			audit("admin.team_set", target.ID, "")
-			done = append(done, target.Email)
+			switch {
+			case before == after && after == "":
+				skip(target.Email, "no team")
+			case before == after:
+				skip(target.Email, "already on team "+after)
+			default:
+				// The stored spelling: a case-only match takes the existing team's.
+				team = after
+				done = append(done, target.Email)
+			}
 		case "signout":
 			if target.ID == actor.ID {
 				skip(target.Email, "you; use your own row to sign yourself out")
@@ -1439,6 +1443,23 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 		}
 	}
 	return res
+}
+
+// teamChangeNotice says what a team change did to email: added, moved,
+// removed, or nothing (before and after are the stored teams).
+func teamChangeNotice(email, before, after string) string {
+	switch {
+	case before == after && after == "":
+		return fmt.Sprintf("%s has no team.", email)
+	case before == after:
+		return fmt.Sprintf("%s is already on team %s.", email, after)
+	case before == "":
+		return fmt.Sprintf("%s was added to team %s.", email, after)
+	case after == "":
+		return fmt.Sprintf("%s was removed from team %s.", email, before)
+	default:
+		return fmt.Sprintf("%s was moved from team %s to team %s.", email, before, after)
+	}
 }
 
 // renderAdmin builds the whole page for the chosen tab. Read failures fall

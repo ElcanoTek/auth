@@ -413,13 +413,21 @@ func userCmd(dataDir string, args []string) {
 		if team == "-" {
 			team = ""
 		}
-		if err := st.SetAccountTeam(ctx, email, team, time.Now().Unix()); err != nil {
+		before, after, err := st.ChangeAccountTeam(ctx, email, team, time.Now().Unix())
+		if err != nil {
 			fatalf("team: %v", err)
 		}
-		if team == "" {
+		switch {
+		case before == after && after == "":
 			fmt.Printf("✓ %s has no team\n", email)
-		} else {
-			fmt.Printf("✓ %s added to team %q\n", email, team)
+		case before == after:
+			fmt.Printf("✓ %s is already on team %q\n", email, after)
+		case before == "":
+			fmt.Printf("✓ %s added to team %q\n", email, after)
+		case after == "":
+			fmt.Printf("✓ %s removed from team %q\n", email, before)
+		default:
+			fmt.Printf("✓ %s moved from team %q to team %q\n", email, before, after)
 		}
 	case "access":
 		if len(args) != 4 || (args[3] != "on" && args[3] != "off") {

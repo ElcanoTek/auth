@@ -416,3 +416,23 @@ func (f *teamFixture) latestAudit(t *testing.T) AuditEvent {
 	}
 	return events[0]
 }
+
+// ChangeAccountTeam reports the team before and as stored, so a caller can
+// tell a real change from a re-save or a case-only edit of the same team.
+func TestChangeAccountTeamReportsWhatChanged(t *testing.T) {
+	f := newTeamFixture(t)
+	steps := []struct{ in, before, after string }{
+		{"Ops", "", "Ops"},    // added
+		{"Ops", "Ops", "Ops"}, // the same team again: no change
+		{"ops", "Ops", "Ops"}, // case only: the existing spelling, no change
+		{"Desk", "Ops", "Desk"},
+		{"", "Desk", ""},
+		{"", "", ""},
+	}
+	for i, st := range steps {
+		before, after, err := f.s.ChangeAccountTeam(f.ctx, "person@example.com", st.in, int64(2000+i))
+		if err != nil || before != st.before || after != st.after {
+			t.Fatalf("step %d (%q) = (%q, %q, %v), want (%q, %q)", i, st.in, before, after, err, st.before, st.after)
+		}
+	}
+}
