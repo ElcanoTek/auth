@@ -899,6 +899,18 @@ type Account struct {
 	SecurityVersion    int64  // bumped by every factor-affecting change
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	// PasswordSetAt is when the current password was set
+	// (password_credentials.changed_at). Only ListPasswordAccounts reads
+	// it; elsewhere it is zero.
+	PasswordSetAt time.Time
+}
+
+// PasswordResetPending reports whether the change an account must make
+// follows an administrator's reset rather than its creation: the temporary
+// password it must replace is newer than the account (creation sets both at
+// once). Meaningful only on an account from ListPasswordAccounts.
+func (a Account) PasswordResetPending() bool {
+	return a.MustChangePassword && a.PasswordSetAt.After(a.CreatedAt)
 }
 
 func normalizeAccountEmail(email string) string {
@@ -1053,6 +1065,14 @@ func passwordAccountByIDQ(ctx context.Context, q querier, id string) (Account, e
 }
 
 type rowScanner interface{ Scan(...any) error }
+
+// scanWithExtra scans the columns a query selects after scanAccount's.
+type scanWithExtra struct {
+	row   rowScanner
+	extra []any
+}
+
+func (s scanWithExtra) Scan(dest ...any) error { return s.row.Scan(append(dest, s.extra...)...) }
 
 func scanAccount(row rowScanner) (Account, error) {
 	var a Account
@@ -1261,7 +1281,8 @@ func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
 		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
 		       a.mfa_required, a.security_version,
-		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
+		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL),
+		       p.changed_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		ORDER BY a.normalized_email`)
 	if err != nil {
@@ -1270,10 +1291,12 @@ func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 	defer func() { _ = rows.Close() }()
 	var out []Account
 	for rows.Next() {
-		a, err := scanAccount(rows)
+		var passwordSet int64
+		a, err := scanAccount(scanWithExtra{rows, []any{&passwordSet}})
 		if err != nil {
 			return nil, err
 		}
+		a.PasswordSetAt = time.Unix(passwordSet, 0)
 		// Listing is an administrative metadata operation. Do not retain
 		// credential material in the returned slice when no caller needs it.
 		a.PasswordHash = ""
