@@ -10,9 +10,8 @@
 </head>
 <body{{if .Reopen}} data-reopen="{{.Reopen}}"{{end}}>
   <div class="corner-actions">
-    {{template "account-button"}}
-    {{template "theme-toggle"}}
     <a class="icon-btn close" href="/account" aria-label="Back to your apps" title="Back to your apps">{{template "icon" "close"}}</a>
+    {{template "account-button"}}
   </div>
   <div class="corner-bottom">
     <form method="post" action="/logout">

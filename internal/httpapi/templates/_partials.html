@@ -25,16 +25,27 @@
 {{/* Your account: the person icon at the top right of the signed-in pages
      (the apps page, the admin console, an application's no-access page) and
      the popup it opens, the one place the signed-in email is shown. The
-     handler fills it with Server.withAccountMenu. Only an administrator changes their own password
+     handler fills it with Server.withAccountMenu. It opens under its icon,
+     like a menu, and holds the theme choice (Light, Dark or Auto, driven by
+     theme-choice.js; hidden without script, which could not apply it), so
+     these pages carry no separate theme toggle. Only an administrator changes their own password
      (handleChangePassword), so only they are offered it.
      Signing out ends every session of the account, in every application
      (handlePasswordLogout). closedby lets a click outside close it where no
      page script does. */}}
 {{define "account-button"}}<button class="icon-btn" type="button" commandfor="me" command="show-modal" aria-label="Your account" title="Your account">{{template "icon" "persona"}}</button>{{end}}
 
-{{define "account-menu"}}<dialog id="me" class="modal" aria-labelledby="me-title" closedby="any">
+{{define "account-menu"}}<dialog id="me" class="modal account-menu" aria-labelledby="me-title" closedby="any">
     <div class="modal-head"><h3 id="me-title">Your account</h3><button class="icon-btn close" type="button" commandfor="me" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
     <p class="who">{{.Email}} {{if .ActorTeam}}<span class="tag" title="Team">{{.ActorTeam}}</span>{{else}}<span class="chip off" title="Team">No team</span>{{end}}</p>
+    <div class="setting" data-theme-choice hidden>
+      <div><strong>Theme</strong><p class="muted">Auto follows your device.</p></div>
+      <div class="seg" role="group" aria-label="Theme">
+        <button class="seg-option" type="button" data-theme-option="light" aria-pressed="false">Light</button>
+        <button class="seg-option" type="button" data-theme-option="dark" aria-pressed="false">Dark</button>
+        <button class="seg-option" type="button" data-theme-option="system" aria-pressed="false">Auto</button>
+      </div>
+    </div>
     <div class="setting">
       <div><strong>Your authenticator</strong><p class="muted">{{if not .MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.{{else if not .ActorAdmin}}{{if .ActorEnrolled}}Set up. Signing in asks for a code from it.{{else}}Not set up. With one, signing in also asks for a code from your phone.{{end}}{{else if .ActorEnrolled}}Set up. Sensitive changes here need a code from it entered less than five minutes ago.{{else}}Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one, so set it up before you need it.{{end}}</p></div>
       {{if .MFAAvailable}}<a class="{{if .ActorEnrolled}}btn-ghost{{else}}btn inline{{end}}" href="{{.SecurityURL}}" aria-label="{{if .ActorEnrolled}}Manage your authenticator{{else}}Set up your authenticator{{end}}">{{if .ActorEnrolled}}Manage{{else}}Set up{{end}}</a>{{end}}
@@ -53,4 +64,5 @@
         </form>
       </details>
     </div>
-  </dialog>{{end}}
+  </dialog>
+  <script nonce="{{.Nonce}}" src="{{asset "theme-choice.js"}}" defer></script>{{end}}
