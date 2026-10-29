@@ -162,9 +162,11 @@ type TeamRenameResult struct {
 	Accounts int64
 	// Merged: To was already another team's name, so the two became one.
 	Merged bool
-	// Sent: the rename was queued for Fleet (team sync on and a back-channel
-	// endpoint registered).
+	// Sent: the rename was queued for Fleet (team sync on).
 	Sent bool
+	// AwaitingEndpoint: it was queued for an application with no back-channel
+	// endpoint, so it (and that application's pushes) waits until one is set.
+	AwaitingEndpoint bool
 }
 
 // RenameTeam renames team from to to on every account, audits it, and queues
@@ -209,7 +211,7 @@ func (s *Store) RenameTeam(ctx context.Context, from, to, actorID string, proof 
 		return res, err
 	}
 	res.Accounts, _ = updated.RowsAffected()
-	if res.Sent, err = queueTeamRenamesTx(ctx, tx, res.From, res.To, now); err != nil {
+	if res.Sent, res.AwaitingEndpoint, err = queueTeamRenamesTx(ctx, tx, res.From, res.To, now); err != nil {
 		return res, err
 	}
 	// A team, not an account: no user_id. The console records who did it
@@ -242,14 +244,14 @@ func teamCountsQ(ctx context.Context, q rowQuerier) ([]TeamCount, error) {
 // on, and rewrites that application's per-person pushes still queued with the
 // old name. An application without a back-channel endpoint gets the rename
 // too: it waits (with the pushes) until one is set. sent reports whether any
-// was queued.
-func queueTeamRenamesTx(ctx context.Context, tx *sql.Tx, from, to string, now int64) (sent bool, err error) {
+// was queued, awaiting whether one of those has no endpoint.
+func queueTeamRenamesTx(ctx context.Context, tx *sql.Tx, from, to string, now int64) (sent, awaiting bool, err error) {
 	if !hasColumnQ(ctx, tx, "applications", "team_sync") {
-		return false, nil
+		return false, false, nil
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(backchannel_logout_uri, '') FROM applications WHERE team_sync = 1`)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	type target struct{ id, endpoint string }
 	var targets []target
@@ -257,34 +259,35 @@ func queueTeamRenamesTx(ctx context.Context, tx *sql.Tx, from, to string, now in
 		var t target
 		if err := rows.Scan(&t.id, &t.endpoint); err != nil {
 			_ = rows.Close()
-			return false, err
+			return false, false, err
 		}
 		targets = append(targets, t)
 	}
 	if err := rows.Close(); err != nil {
-		return false, err
+		return false, false, err
 	}
 	for _, t := range targets {
 		var last int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM team_renames WHERE application_id = ?`, t.id).Scan(&last); err != nil {
-			return false, err
+			return false, false, err
 		}
 		version := versionAfter(last, now)
 		eventID, err := randomID()
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO team_renames(application_id, version, from_team, to_team, event_id, created_at, endpoint, next_attempt_at)
 			VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, t.id, version, from, to, eventID, now, t.endpoint, now); err != nil {
-			return false, err
+			return false, false, err
 		}
 		if err := rewriteQueuedTeamTx(ctx, tx, t.id, from, to, version, now); err != nil {
-			return false, err
+			return false, false, err
 		}
 		sent = true
+		awaiting = awaiting || t.endpoint == ""
 	}
-	return sent, nil
+	return sent, awaiting, nil
 }
 
 // versionAfter is the next rename version: above the last one and at least

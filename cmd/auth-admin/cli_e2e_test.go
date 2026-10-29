@@ -475,4 +475,11 @@ func TestCLITeamListAndRename(t *testing.T) {
 	if out, code := c.run("", "team", "rename", "Nobody", "X"); code == 0 || !strings.Contains(out, `no account is on team "Nobody"`) {
 		t.Fatalf("unknown team: %d\n%s", code, out)
 	}
+	// Without a back-channel endpoint the rename waits, and says how to end
+	// the wait.
+	c.must("", "app", "clear-backchannel", "fleet")
+	if out := c.must("", "team", "rename", "Research", "Markets"); !strings.Contains(out, "Fleet has no back-channel endpoint") ||
+		!strings.Contains(out, "auth app set-backchannel") || strings.Contains(out, "Fleet gets the rename next") {
+		t.Fatalf("team rename without an endpoint:\n%s", out)
+	}
 }

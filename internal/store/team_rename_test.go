@@ -69,7 +69,7 @@ func TestRenameTeamQueuesOneRenameAndHoldsPushesBehindIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Accounts != 2 || res.Merged || !res.Sent || res.To != "Research" {
+	if res.Accounts != 2 || res.Merged || !res.Sent || res.AwaitingEndpoint || res.To != "Research" {
 		t.Fatalf("result = %+v", res)
 	}
 	if f.accountTeam(t, ann.ID) != "Research" || f.accountTeam(t, ben.ID) != "Research" {
@@ -399,7 +399,7 @@ func TestTeamRenameWaitsForAnEndpoint(t *testing.T) {
 	if err := f.s.SetApplicationBackchannelLogoutURI(f.ctx, "fleet", "", 1900); err != nil {
 		t.Fatal(err)
 	}
-	if res, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil || !res.Sent {
+	if res, err := f.s.RenameTeam(f.ctx, "A", "B", "", nil, 2000); err != nil || !res.Sent || !res.AwaitingEndpoint {
 		t.Fatalf("rename without an endpoint = %+v %v", res, err)
 	}
 	if none, _ := f.s.ClaimDueTeamRenames(f.ctx, 2100, time.Minute); len(none) != 0 {

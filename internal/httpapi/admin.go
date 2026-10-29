@@ -531,7 +531,10 @@ func (s *Server) adminRenameTeam(r *http.Request, res adminResult, actorID strin
 	if result.Merged {
 		res.Notice = fmt.Sprintf("Merged team %s into %s (%s moved).", result.From, result.To, plural(int(result.Accounts), "account"))
 	}
-	if result.Sent {
+	switch {
+	case result.AwaitingEndpoint:
+		res.Notice += " Fleet has no back-channel endpoint, so it gets the rename, and its other access updates, once one is set."
+	case result.Sent:
 		res.Notice += " Fleet is updated in the background."
 	}
 	return res

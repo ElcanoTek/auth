@@ -697,7 +697,10 @@ func teamCmd(dataDir string, args []string) {
 			verb = "merged"
 		}
 		fmt.Printf("✓ %s team %q into %q (%d accounts)\n", verb, res.From, res.To, res.Accounts)
-		if res.Sent {
+		switch {
+		case res.AwaitingEndpoint:
+			fmt.Println("  Fleet has no back-channel endpoint: it gets the rename, and its other access updates wait, until `auth app set-backchannel` sets one.")
+		case res.Sent:
 			fmt.Println("  Fleet gets the rename next, and keeps what is shared with the team; `auth app show fleet` shows it until it is delivered.")
 		}
 	default:

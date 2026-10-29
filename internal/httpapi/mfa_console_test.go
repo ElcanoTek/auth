@@ -1007,4 +1007,15 @@ func TestTeamRenameFromTheConsole(t *testing.T) {
 	if _, page := alice.post("/admin", url.Values{"action": {"rename-team"}, "from": {"Nobody"}, "to": {"X"}}); !strings.Contains(page, "No account is on team Nobody any more.") {
 		t.Error("unknown team not refused plainly")
 	}
+
+	// With no back-channel endpoint the rename waits, and the notice says so
+	// rather than that Fleet is being updated.
+	if err := st.SetApplicationBackchannelLogoutURI(ctx, "fleet", "", now); err != nil {
+		t.Fatal(err)
+	}
+	_, page = alice.post("/admin", url.Values{"action": {"rename-team"}, "from": {"Research"}, "to": {"Markets"}})
+	if !strings.Contains(page, "Renamed team Research to Markets (1 account). Fleet has no back-channel endpoint, so it gets the rename, and its other access updates, once one is set.") ||
+		strings.Contains(page, "Fleet is updated in the background") {
+		t.Fatalf("notice without an endpoint:\n%s", page)
+	}
 }
