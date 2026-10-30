@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -637,5 +638,108 @@ func TestCLIDeleteListShowAndRestore(t *testing.T) {
 	}
 	if out, code := c.run("", "user", "del", "bob@example.com"); code == 0 || !strings.Contains(out, "no such user") {
 		t.Fatalf("legacy del again: %d\n%s", code, out)
+	}
+}
+
+// invite and reset-password queue emailed links (the server sends them);
+// without an email driver they refuse and point at the temporary-password
+// commands.
+func TestCLIInviteAndResetPasswordQueueEmailedLinks(t *testing.T) {
+	c := newCLI(t)
+	const pw = "a long enough passphrase 123\na long enough passphrase 123\n"
+	if out, code := c.run("", "user", "invite", "new@example.com"); code == 0 || !strings.Contains(out, "emailed links need AUTH_EMAIL_DRIVER") {
+		t.Fatalf("invite without email: %d\n%s", code, out)
+	}
+	c.env = append(c.env, "AUTH_EMAIL_DRIVER=ses")
+	// Configured, but the running server is not sending links yet (not
+	// restarted): refused, nothing created.
+	if out, code := c.run("", "user", "invite", "new@example.com"); code == 0 || !strings.Contains(out, "not sending emailed links") {
+		t.Fatalf("invite with no mailer running: %d\n%s", code, out)
+	}
+	if err := c.store().RecordMailerRun(context.Background(), time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	out := c.must("", "user", "invite", "New@Example.com")
+	if !strings.Contains(out, "created New@Example.com") || !strings.Contains(out, "queued an invite email") || !strings.Contains(out, "works for 7 days once sent") {
+		t.Fatalf("invite:\n%s", out)
+	}
+	st := c.store()
+	ctx := context.Background()
+	invited, err := st.PasswordAccountByEmail(ctx, "new@example.com")
+	if err != nil || !invited.MustChangePassword {
+		t.Fatalf("invited = %+v (%v)", invited, err)
+	}
+	if show := c.must("", "user", "show", "new@example.com"); !strings.Contains(show, "emailed link: invite email queued") {
+		t.Fatalf("show:\n%s", show)
+	}
+	// Again within a minute: refused; an account with its own password:
+	// pointed at reset-password.
+	if out, code := c.run("", "user", "invite", "new@example.com"); code == 0 || !strings.Contains(out, "under a minute ago") {
+		t.Fatalf("second invite: %d\n%s", code, out)
+	}
+	c.must(pw, "user", "create", "bob@example.com")
+	if err := st.ReplacePasswordIfCurrent(ctx, mustAccount(t, st, "bob@example.com").ID, mustAccount(t, st, "bob@example.com").PasswordHash, "$argon2id$bob-own", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := c.run("", "user", "invite", "bob@example.com"); code == 0 || !strings.Contains(out, "auth user reset-password bob@example.com") {
+		t.Fatalf("invite an active account: %d\n%s", code, out)
+	}
+	out = c.must("", "user", "reset-password", "bob@example.com")
+	if !strings.Contains(out, "the old password no longer works") || !strings.Contains(out, "works for 24 hours once sent") {
+		t.Fatalf("reset-password:\n%s", out)
+	}
+	bob := mustAccount(t, st, "bob@example.com")
+	if bob.PasswordHash == "$argon2id$bob-own" || !bob.MustChangePassword {
+		t.Fatalf("bob after reset = %+v", bob)
+	}
+	if l, ok, _ := st.PasswordLinkFor(ctx, bob.ID); !ok || l.Purpose != store.LinkReset {
+		t.Fatalf("reset link = %+v ok=%v", l, ok)
+	}
+	if out, code := c.run("", "user", "reset-password", "nobody@example.com"); code == 0 || !strings.Contains(out, "no such account") {
+		t.Fatalf("reset an unknown account: %d\n%s", code, out)
+	}
+	c.must("", "user", "disable", "bob@example.com")
+	if out, code := c.run("", "user", "reset-password", "bob@example.com"); code == 0 || !strings.Contains(out, "is disabled") {
+		t.Fatalf("reset a disabled account: %d\n%s", code, out)
+	}
+}
+
+func mustAccount(t *testing.T, st *store.Store, email string) store.Account {
+	t.Helper()
+	a, err := st.PasswordAccountByEmail(context.Background(), email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// The auth wrapper hands auth-admin only the variables on its allowlist
+// (deploy/auth-cli); every AUTH_* setting auth-admin reads must be on it, or
+// the command works in tests and fails on a box.
+func TestTheWrapperPassesEverySettingTheCLIReads(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := os.ReadFile("../../deploy/auth-cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow := regexp.MustCompile(`(?m)^\s*(AUTH_[A-Z_|]+)\) ;;`).FindSubmatch(wrapper)
+	if allow == nil {
+		t.Fatal("no allowlist found in deploy/auth-cli")
+	}
+	allowed := map[string]bool{}
+	for _, v := range strings.Split(string(allow[1]), "|") {
+		allowed[v] = true
+	}
+	read := regexp.MustCompile(`(?:Getenv|envOrDefault|envTrue)\("(AUTH_[A-Z_]+)"`).FindAllSubmatch(src, -1)
+	if len(read) < 5 {
+		t.Fatalf("found only %d settings read; the pattern is stale", len(read))
+	}
+	for _, m := range read {
+		if name := string(m[1]); !allowed[name] {
+			t.Errorf("auth-admin reads %s, which the wrapper does not pass", name)
+		}
 	}
 }

@@ -893,7 +893,7 @@ func (s *Server) notify(to, subject, body string) {
 		defer cancel()
 		html := "<!doctype html><html><body style=\"font:16px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#1a1a1a;padding:24px\"><p>" + template.HTMLEscapeString(text) + "</p></body></html>"
 		if err := s.sender.Send(ctx, to, subject, text, html); err != nil {
-			log.Printf("send security notice failed (tenant=%s): %v", emailTenant(to), err)
+			log.Printf("send security notice failed (tenant=%s): %s", emailTenant(to), redactedError(err))
 		}
 	}(to, subject, body)
 }

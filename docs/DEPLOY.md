@@ -366,6 +366,105 @@ restores the account. The application's own data, such as
 Fleet's user and its chats, is not touched: delete that in the application
 (`fleet chat user del`, `fleet sched user del`).
 
+### Emailed invites and password resets
+
+With an email driver configured (`ses` for client deployments, or `sendgrid`
+or `smtp`), people choose their own password through a one-time link instead
+of being handed a temporary one:
+
+- **Add user** emails an invite by default. The account gets a random
+  password nobody sees, so nobody can sign in to it until its owner chooses one
+  through the link. "Set a temporary password" is still there for when email
+  is not an option.
+- **Reset password** emails a reset link. The current password stops working
+  at once and every session is signed out, as before; the person chooses the
+  next one. "Show a temporary password instead" is the fallback.
+- **Settings** shows each link's state (sending, emailed and until when,
+  expired, or why it failed) and **Send a new link** for an account still
+  waiting to choose its password. A new link replaces the old one, which stops
+  working; one per minute at most. The table flags "Email failed" and "Link
+  expired".
+- From the server: `auth user invite <email>` creates the account and queues
+  the invite (for an invited account, it sends a new link), and
+  `auth user reset-password <email>` resets and queues the link. `auth user
+  show` reports the link. Both refuse unless the running server is sending
+  links (it records that every minute): after setting the email driver,
+  `sudo auth restart` first, or a reset would leave the account with no
+  password and no link.
+
+How a link behaves:
+
+- It is `https://<auth host>/set-password#<token>`, with 256 random bits in
+  the token. The token is after the `#`, which a browser never sends to a
+  server, so it is in no server or proxy log and no Referer; the page's script
+  moves it into a form post and takes it out of the address bar. The page needs
+  JavaScript. The browser's own history may still record the full link, and
+  mail gateways that rewrite links (Microsoft Safe Links, Mimecast, Proofpoint)
+  carry it inside their own URL: that is why it works once and expires.
+- Opening the link only shows the form. Mail scanners that open links
+  therefore cannot use it up; only saving a password does.
+- It works once: invites for 7 days, resets for 24 hours, from when the email
+  is sent. It stops working when the password is set any other way, when the
+  account is disabled or deleted, or when a newer link is sent.
+- Saving a password through it signs the account out everywhere and sends the
+  browser to sign in with the new password, where two-factor sign-in applies as
+  usual. A link never signs anyone in by itself.
+- The database keeps only the token's SHA-256. The token is created when the
+  email is sent, so it exists only in the email; a failed send retries with a
+  new one (5 attempts over about 1.5 hours; a refusal SES will repeat fails at
+  once) and the console shows the error, with any email address in it
+  removed. A send under way when Auth stops finishes and is recorded, so a
+  restart does not send a second link.
+- A link that no server sent within its lifetime (email switched off, or a
+  server not restarted) is never sent late: it shows as failed in Settings,
+  and Send a new link starts over.
+- Triggers in the database withdraw a link whenever the password changes, the
+  password is removed, or the account is disabled or deleted, whichever
+  release made the change. After rolling back to a release from before
+  schema v16, leave the `password_links` table in place: dropping it without
+  its three `password_links_*` triggers makes every password change, disable
+  and delete fail until Auth with links starts again and recreates it.
+- Opening links is rate limited per source address
+  (`AUTH_PASSWORD_RATE_PER_IP`).
+
+Configuration (`.env.local`, then `sudo auth restart`):
+
+```bash
+AUTH_EMAIL_DRIVER="ses"
+AUTH_EMAIL_FROM="Acme sign-in <signin@acme.example>"
+AUTH_SES_REGION="us-east-2"
+AUTH_SES_ACCESS_KEY_ID="AKIA..."
+AUTH_SES_SECRET_ACCESS_KEY="..."
+# optional: an SES configuration set for bounce and complaint events
+# AUTH_SES_CONFIGURATION_SET="auth"
+```
+
+The key belongs to an IAM user for this one purpose, allowed to send only from
+that From address on the client's verified SES domain:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "ses:SendEmail",
+    "Resource": "arn:aws:ses:us-east-2:<account>:identity/acme.example",
+    "Condition": {"StringEquals": {"ses:FromAddress": "signin@acme.example"}}
+  }]
+}
+```
+
+A leaked key can then send sign-in mail as that one address and nothing else.
+With `AUTH_SES_CONFIGURATION_SET`, add the set
+(`arn:aws:ses:<region>:<account>:configuration-set/<name>`) to `Resource`:
+SES checks it too, and without it every send is refused.
+production-support's tenant email tooling creates the user and installs the
+key without it passing through a terminal or chat. Links carry `ses:no-track`, and the SendGrid driver
+turns click and open tracking off on every message, so neither provider
+rewrites a link through its tracker; an SMTP relay may still rewrite links,
+which is one more reason to use `ses`. `auth-server -check-config` and `auth doctor` check the settings'
+shape; the first send (or a resend to yourself) proves the key.
+
 The authorization request must use the exact registered callback and S256
 PKCE. Codes contain 256 random bits, live for 60 seconds, are single-use, and
 remain bound to the central browser session that authorized them. Discovery is

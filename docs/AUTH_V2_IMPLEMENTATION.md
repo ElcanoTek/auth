@@ -82,6 +82,7 @@ credential. The upgrade requires no schema migration or operator setting.
 The password/session foundation adds:
 
 - `accounts`: immutable ID, normalized email, disabled and must-change state, when an administrator's reset left a temporary password still to change (`password_reset_at`, schema v14), and when the account was deleted (`deleted_at`, schema v15; kept 30 days, restored by a create with the same email, then removed by the sweep).
+- `password_links` (schema v16): an account's one emailed invite or reset link, which is also its send queue: purpose, who asked, the SHA-256 of the token (minted when the email is sent, so the token exists only in the email), expiry, the password it was minted against, delivery attempts, the provider's message ID and the last error.
 - `password_credentials`: one versioned PHC hash per password account.
 - `auth_sessions`: hashed token, activity/expiry, revocation reason.
 - `login_attempts`: hashed email/IP rate keys and attempt timestamps.

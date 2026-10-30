@@ -66,6 +66,12 @@ type adminAccountRow struct {
 	MFAEnrolled    bool
 	MFARequired    bool // the per-user flag
 	MFAPolicyBound bool // the deployment policy already requires it (pill locked)
+	// Emailed password link (password_links.go), when the deployment sends
+	// them: Link describes it in Settings, LinkChip flags trouble in the
+	// table, CanSendLink offers a new one.
+	Link        string
+	LinkChip    string // "Email failed" | "Link expired" | ""
+	CanSendLink bool
 }
 
 type fleetAccessSettings struct {
@@ -203,7 +209,7 @@ var pendingFields = map[string][]string{
 	"set-mfa-required": {"email", "required"},
 	"disable":          {"email"},
 	"enable":           {"email"},
-	"reset-password":   {"email"},
+	"reset-password":   {"email", "delivery"},
 	"revoke-sessions":  {"email"},
 	"grant-admin":      {"email"},
 	"revoke-admin":     {"email"},
@@ -323,6 +329,9 @@ func (s *Server) describeChange(r *http.Request, p *pendingChange) {
 	case "reset-password":
 		p.Question = fmt.Sprintf("Reset the password for %s?", email)
 		p.Detail = "They are signed out everywhere, and you get a new temporary password to give them."
+		if s.emailsResetLink(v.Get("delivery")) {
+			p.Detail = fmt.Sprintf("Their current password stops working, they are signed out everywhere, and they are emailed a link to choose a new one (it works for %s).", linkLifetime(store.LinkReset))
+		}
 	case "revoke-sessions":
 		p.Question = fmt.Sprintf("Sign %s out of every app and device?", email)
 	case "grant-admin":
@@ -470,6 +479,7 @@ func plural(n int, noun string) string {
 // account is chosen.
 type addUserDraft struct {
 	Email, Team   string
+	Delivery      string // "email" (an invite link) or "password" (a temporary password)
 	Password      string // the typed temporary password, byte for byte
 	Admin         bool
 	Apps          map[string]bool // ticked applications; none ticked stays none
@@ -480,7 +490,7 @@ type addUserDraft struct {
 
 func addUserDraftFromForm(r *http.Request) *addUserDraft {
 	d := &addUserDraft{
-		Email: r.FormValue("email"), Team: r.FormValue("team"), Password: r.FormValue("password"),
+		Email: r.FormValue("email"), Team: r.FormValue("team"), Delivery: r.FormValue("delivery"), Password: r.FormValue("password"),
 		Admin: r.FormValue("admin") == "on", Apps: map[string]bool{}, FleetAdmin: r.FormValue("fleet_admin") == "on",
 		FleetChatRole: r.FormValue("fleet_chat_role"), FleetOpsRole: r.FormValue("fleet_ops_role"),
 	}
@@ -929,6 +939,11 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		// byte-for-byte (spaces included), exactly as the change-password form
 		// treats a password, so what the administrator shares is what works.
 		plain, typed := r.FormValue("password"), false
+		invite := s.cfg.PasswordLinksEnabled() && r.FormValue("delivery") != "password"
+		if invite && plain != "" {
+			res.Error = "Clear the temporary password, or choose Set a temporary password to use the one you typed."
+			return res
+		}
 		if plain != "" {
 			typed = true
 			if err := passwordauth.Validate(plain, s.passwordContext(email)...); err != nil {
@@ -951,7 +966,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		// everything chosen for it or not at all.
 		account, granted, err := s.store.CreateAccountBy(ctx, store.AccountCreate{
 			Email: email, PasswordHash: encoded, Team: team, Admin: r.FormValue("admin") == "on",
-			Applications: r.Form["apps"], ApplicationSettings: appSettings,
+			Applications: r.Form["apps"], ApplicationSettings: appSettings, Invite: invite,
 		}, actor.ID, proof, now.Unix())
 		switch {
 		case errors.Is(err, store.ErrActorNotFresh):
@@ -979,9 +994,15 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			// and team; its old authenticator and access did not.
 			created, with = "Restored "+account.Email+" (deleted earlier) with its history and team", ", and"
 		}
-		if typed {
+		switch {
+		case invite:
+			// The generated password was never shown and is not kept:
+			// nobody can sign in until they choose one through the link.
+			audit("admin.password_link_queued", account.ID, "")
+			res.Notice = fmt.Sprintf("%s. An invite email is on its way to them; its link works for %s.", created, linkLifetime(store.LinkInvite))
+		case typed:
 			res.Notice = fmt.Sprintf("%s%s the password you entered; they must change it at first sign-in.", created, with)
-		} else {
+		default:
 			res.Notice = fmt.Sprintf("%s. Share the temporary password with them; they must change it at first sign-in.", created)
 			res.Secret, res.SecretTitle, res.Reopen = plain, "Account created", reopenTempPassword
 		}
@@ -1003,6 +1024,35 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Error = "Use Change password for your own account."
 			return res
 		}
+		if s.emailsResetLink(r.FormValue("delivery")) {
+			if target.DisabledAt != nil {
+				res.Error = fmt.Sprintf("%s is disabled. Enable the account first; a disabled account's link would not work.", target.Email)
+				return res
+			}
+			// A random password nobody sees replaces the current one, so
+			// it stops working now; the person chooses the next one
+			// through the emailed link.
+			plain, err := passwordauth.Generate(s.passwordContext(target.Email)...)
+			if err == nil {
+				var encoded string
+				encoded, err = s.hashPassword(ctx, plain)
+				if err == nil {
+					_, err = s.store.ResetPasswordWithLinkBy(ctx, target.Email, encoded, actor.ID, proof, now.Unix())
+				}
+			}
+			switch {
+			case errors.Is(err, store.ErrActorNotFresh):
+				return needVerify()
+			case errors.Is(err, store.ErrAccountDisabled):
+				res.Error = fmt.Sprintf("%s is disabled. Enable the account first; a disabled account's link would not work.", target.Email)
+				return res
+			case err != nil:
+				return res.failed("reset password", err)
+			}
+			audit("admin.password_reset", target.ID, "")
+			res.Notice = fmt.Sprintf("Reset the password for %s and signed them out everywhere. A link to choose a new one is on its way to them; it works for %s.", target.Email, linkLifetime(store.LinkReset))
+			break
+		}
 		plain, err := passwordauth.Generate(s.passwordContext(target.Email)...)
 		if err == nil {
 			var encoded string
@@ -1022,6 +1072,33 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		audit("admin.password_reset", target.ID, "")
 		res.Notice = fmt.Sprintf("Reset the password for %s and signed them out everywhere. Share the temporary password with them.", target.Email)
 		res.Secret, res.SecretTitle, res.Reopen = plain, "Password reset", reopenTempPassword
+	case "send-link":
+		// Not gated: it emails the account's own address a new link and
+		// changes no password; the earlier link stops working.
+		if !s.cfg.PasswordLinksEnabled() || self {
+			res.Status = http.StatusBadRequest
+			return res
+		}
+		purpose, err := s.store.ResendPasswordLinkBy(ctx, target.Email, actor.ID, nil, now.Unix())
+		switch {
+		case errors.Is(err, store.ErrNoPendingLink):
+			res.Error = fmt.Sprintf("%s has already chosen their own password. Use Reset password to send them a reset link.", target.Email)
+			return res
+		case errors.Is(err, store.ErrLinkTooSoon):
+			res.Error = fmt.Sprintf("A link went to %s under a minute ago. Wait a moment before sending another.", target.Email)
+			return res
+		case errors.Is(err, store.ErrAccountDisabled):
+			res.Error = fmt.Sprintf("%s is disabled. Enable the account first.", target.Email)
+			return res
+		case err != nil:
+			return res.failed("send link", err)
+		}
+		audit("admin.password_link_queued", target.ID, "")
+		kind := "invite"
+		if purpose == store.LinkReset {
+			kind = "reset"
+		}
+		res.Notice = fmt.Sprintf("A new %s link is on its way to %s; the earlier one no longer works.", kind, target.Email)
 	case "revoke-sessions":
 		// Allowed on one's own row too: it is "sign out everywhere", which
 		// ends this session as well, so the browser goes to the sign-in page.
@@ -1540,6 +1617,13 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 			logUnlessCancelled("admin count sessions", err)
 			data["Error"] = joinMessages(result.Error, "Session counts could not be loaded.")
 		}
+		var links map[string]store.PasswordLink
+		if s.cfg.PasswordLinksEnabled() {
+			if links, err = s.store.PasswordLinks(ctx); err != nil {
+				logUnlessCancelled("admin list password links", err)
+				data["Error"] = joinMessages(result.Error, "Emailed links could not be loaded.")
+			}
+		}
 		rows := make([]adminAccountRow, 0, len(accounts))
 		for _, a := range accounts {
 			row := adminAccountRow{
@@ -1558,6 +1642,10 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 				row.StatusTitle = "Created " + a.CreatedAt.UTC().Format("2006-01-02 15:04") + " UTC; they have not signed in and chosen a password yet."
 			default:
 				row.Status, row.StatusClass = "Active", "ok"
+			}
+			if links != nil {
+				l, ok := links[a.ID]
+				row.Link, row.LinkChip, row.CanSendLink = describeLink(a, l, ok, row.Self, now)
 			}
 			lastAdmin := a.IsAdmin && a.DisabledAt == nil && enabledAdmins == 1
 			row.CanDisable = !row.Self && !lastAdmin
@@ -1603,6 +1691,8 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		}
 		sort.Strings(teams)
 		data["Accounts"] = rows
+		data["EmailLinks"] = s.cfg.PasswordLinksEnabled()
+		data["InviteLifetime"], data["ResetLifetime"] = linkLifetime(store.LinkInvite), linkLifetime(store.LinkReset)
 		data["AppChoices"] = choices
 		data["Teams"] = teams
 		if counts, err := s.store.TeamCounts(ctx); err != nil {
@@ -1699,4 +1789,54 @@ func joinMessages(parts ...string) string {
 	}
 	sort.Strings(kept)
 	return strings.Join(kept, " ")
+}
+
+// emailsResetLink reports whether a reset with this delivery choice emails a
+// link: when the deployment sends them, unless the administrator chose a
+// temporary password instead.
+func (s *Server) emailsResetLink(delivery string) bool {
+	return s.cfg.PasswordLinksEnabled() && delivery != "password"
+}
+
+// linkLifetime is how long a link of purpose works, in words.
+func linkLifetime(purpose string) string {
+	d := store.LinkTTL(purpose)
+	if d >= 48*time.Hour {
+		return plural(int(d/(24*time.Hour)), "day")
+	}
+	return plural(int(d/time.Hour), "hour")
+}
+
+// describeLink is an account's emailed link as Settings states it, the chip
+// the table shows when it needs attention, and whether a new one may be
+// sent: to an enabled account (not the administrator's own) that is still
+// waiting to choose its own password.
+func describeLink(a store.Account, l store.PasswordLink, has, self bool, now time.Time) (text, chip string, canSend bool) {
+	canSend = !self && a.DisabledAt == nil && (has || a.MustChangePassword)
+	if !has {
+		if canSend {
+			text = "No link has been emailed. Send one to let them choose their own password instead of a temporary one."
+		}
+		return text, "", canSend
+	}
+	kind := "invite"
+	if l.Purpose == store.LinkReset {
+		kind = "reset"
+	}
+	stamp := func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04") + " UTC" }
+	switch {
+	case l.FailedAt != nil:
+		text = fmt.Sprintf("The %s email could not be sent: %s", kind, l.LastError)
+		chip = "Email failed"
+	case l.SentAt == nil && l.Attempts > 0:
+		text = fmt.Sprintf("Sending the %s email again after an error: %s", kind, l.LastError)
+	case l.SentAt == nil:
+		text = fmt.Sprintf("Sending the %s email.", kind)
+	case l.Expired(now):
+		text = fmt.Sprintf("The %s link expired %s.", kind, stamp(*l.ExpiresAt))
+		chip = "Link expired"
+	default:
+		text = fmt.Sprintf("%s link emailed %s; it works until %s.", strings.ToUpper(kind[:1])+kind[1:], stamp(*l.SentAt), stamp(*l.ExpiresAt))
+	}
+	return text, chip, canSend
 }

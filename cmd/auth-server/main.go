@@ -27,6 +27,7 @@ import (
 	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/email"
 	"github.com/elcanotek/auth/internal/httpapi"
+	"github.com/elcanotek/auth/internal/passwordlinks"
 	"github.com/elcanotek/auth/internal/provisioning"
 	"github.com/elcanotek/auth/internal/store"
 )
@@ -197,6 +198,27 @@ func main() {
 			}
 		}()
 	}
+	// Emailed password links (invites and resets) go out from here; the
+	// console and the CLI only queue them.
+	mailerDone := make(chan struct{})
+	if cfg.PasswordLinksEnabled() {
+		mailer := passwordlinks.New(st, sender, cfg.IssuerURL, httpapi.BrandName(cfg))
+		go func() {
+			defer close(mailerDone)
+			t := time.NewTicker(2 * time.Second)
+			defer t.Stop()
+			for {
+				if err := mailer.RunOnce(ctx, time.Now()); err != nil && ctx.Err() == nil {
+					log.Printf("password link email: %v", err)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
+	}
 
 	go func() {
 		log.Printf("auth-server listening on %s (hostname=%s, login_mode=%s, cookie_domain=%q)",
@@ -219,6 +241,14 @@ func main() {
 	// each; in practice the /magic handler returns instantly so the sends get
 	// almost all of it.
 	srv.WaitSends(shutCtx)
+	// A password-link email already being sent finishes and is recorded
+	// (passwordlinks.Mailer.RunOnce), within the same budget.
+	if cfg.PasswordLinksEnabled() {
+		select {
+		case <-mailerDone:
+		case <-shutCtx.Done():
+		}
+	}
 	log.Printf("shutdown: done")
 }
 
@@ -239,6 +269,11 @@ func magicAllowlistStartCheck(cfg *config.Config, st *store.Store) error {
 // shape check upstream so this function never sees an unknown driver.
 func pickSender(cfg *config.Config) email.Sender {
 	switch cfg.EmailDriver {
+	case "ses":
+		return &email.SES{
+			Region: cfg.SESRegion, AccessKeyID: cfg.SESAccessKeyID, SecretAccessKey: cfg.SESSecretAccessKey,
+			From: cfg.EmailFrom, ConfigurationSet: cfg.SESConfigurationSet,
+		}
 	case "sendgrid":
 		return &email.SendGrid{APIKey: cfg.SendGridAPIKey, From: cfg.EmailFrom}
 	case "smtp":

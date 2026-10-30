@@ -338,6 +338,14 @@ check_env() {
       missing+=("SENDGRID_API_KEY")
     fi
     unset sendgrid
+  elif [[ "$driver" == "ses" ]]; then
+    # Present, not valid: auth-server -check-config (update.sh) and the
+    # first send check the values. The secret is read only to test it is set.
+    for key in AUTH_SES_REGION AUTH_SES_ACCESS_KEY_ID AUTH_SES_SECRET_ACCESS_KEY AUTH_EMAIL_FROM; do
+      if [[ -z "$(env_get "$key" "$ENV_FILE" 2>/dev/null || true)" ]]; then
+        missing+=("$key")
+      fi
+    done
   elif [[ "$login" == "magic" && "$driver" == "stdout" ]]; then
     notes+=("AUTH_EMAIL_DRIVER is stdout")
   fi

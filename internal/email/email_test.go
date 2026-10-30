@@ -1,9 +1,17 @@
 package email
 
 import (
+	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -80,6 +88,7 @@ func TestSendGridPayloadShape(t *testing.T) {
 		authHeader string
 		ctHeader   string
 		body       sgMail
+		raw        string
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +96,9 @@ func TestSendGridPayloadShape(t *testing.T) {
 		captured.path = r.URL.Path
 		captured.authHeader = r.Header.Get("Authorization")
 		captured.ctHeader = r.Header.Get("Content-Type")
-		_ = json.NewDecoder(r.Body).Decode(&captured.body)
+		raw, _ := io.ReadAll(r.Body)
+		captured.raw = string(raw)
+		_ = json.Unmarshal(raw, &captured.body)
 		w.WriteHeader(http.StatusAccepted) // SendGrid returns 202
 	}))
 	defer srv.Close()
@@ -128,6 +139,11 @@ func TestSendGridPayloadShape(t *testing.T) {
 		len(captured.body.Personalizations[0].To) != 1 ||
 		captured.body.Personalizations[0].To[0].Email != "alice@example.com" {
 		t.Errorf("Personalizations wrong: %+v", captured.body.Personalizations)
+	}
+	// Sent explicitly: an omitted setting would leave the account's
+	// default (often click tracking on) in force.
+	if !strings.Contains(captured.raw, `"tracking_settings":{"click_tracking":{"enable":false,"enable_text":false},"open_tracking":{"enable":false}}`) {
+		t.Errorf("tracking not turned off explicitly: %s", captured.raw)
 	}
 	if len(captured.body.Content) != 2 ||
 		captured.body.Content[0].Type != "text/plain" ||
@@ -246,5 +262,116 @@ func TestSMTPDeadlineBoundsStalledServer(t *testing.T) {
 	}
 	if elapsed > 3*time.Second {
 		t.Errorf("Send took %v; the conn deadline should have fired ~300ms (SMTP exchange not bounded?)", elapsed)
+	}
+}
+
+// fakeRelay is a one-shot SMTP relay with STARTTLS that accepts one message
+// and then hangs up on QUIT instead of answering it.
+func fakeRelay(t *testing.T) (host string, port int, roots *x509.CertPool, got chan string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "127.0.0.1"},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(der)
+	roots = x509.NewCertPool()
+	roots.AddCert(leaf)
+	cert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	got = make(chan string, 1)
+	go func() {
+		raw, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = raw.Close() }()
+		_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
+		conn := raw
+		r := bufio.NewReader(conn)
+		say := func(s string) { _, _ = io.WriteString(conn, s+"\r\n") }
+		say("220 relay ready")
+		var data strings.Builder
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			switch cmd := strings.ToUpper(strings.TrimSpace(line)); {
+			case strings.HasPrefix(cmd, "EHLO"):
+				say("250-relay")
+				say("250 STARTTLS")
+			case cmd == "STARTTLS":
+				say("220 go ahead")
+				tc := tls.Server(raw, &tls.Config{Certificates: []tls.Certificate{cert}})
+				if tc.Handshake() != nil {
+					return
+				}
+				conn, r = tc, bufio.NewReader(tc)
+			case strings.HasPrefix(cmd, "MAIL FROM"), strings.HasPrefix(cmd, "RCPT TO"):
+				say("250 ok")
+			case cmd == "DATA":
+				say("354 go")
+				for {
+					l, err := r.ReadString('\n')
+					if err != nil {
+						return
+					}
+					if l == ".\r\n" {
+						break
+					}
+					data.WriteString(l)
+				}
+				say("250 queued as 1")
+				got <- data.String()
+			case cmd == "QUIT":
+				return // hang up without the 221
+			default:
+				say("250 ok")
+			}
+		}
+	}()
+	addr := ln.Addr().(*net.TCPAddr)
+	return "127.0.0.1", addr.Port, roots, got
+}
+
+// Once the relay has accepted the message it is sent, even when the relay
+// hangs up at QUIT: reporting a failure would make a password link be
+// replaced while the delivered one is already in someone's inbox.
+func TestSMTPCountsAMessageTheRelayAcceptedAsSent(t *testing.T) {
+	host, port, roots, got := fakeRelay(t)
+	s := &SMTP{Host: host, Port: port, From: "Sign in <signin@example.com>",
+		tlsConfig: &tls.Config{ServerName: host, RootCAs: roots, MinVersion: tls.VersionTLS12}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Send(ctx, "person@example.org", "Set your password", "text body", "<p>html</p>"); err != nil {
+		t.Fatalf("Send after an accepted message = %v", err)
+	}
+	select {
+	case msg := <-got:
+		if !strings.Contains(msg, "To: person@example.org") || !strings.Contains(msg, "text body") {
+			t.Fatalf("message:\n%s", msg)
+		}
+	default:
+		t.Fatal("the relay did not receive the message")
+	}
+}
+
+func TestBuildMIMEEncodesANonASCIISubject(t *testing.T) {
+	msg := buildMIME("a@example.com", "b@example.com", "Your Société password", "t", "h")
+	if !strings.Contains(msg, "Subject: =?utf-8?q?Your_Soci=C3=A9t=C3=A9_password?=\r\n") {
+		t.Fatalf("subject header:\n%s", msg)
+	}
+	if plain := buildMIME("a@example.com", "b@example.com", "Plain subject", "t", "h"); !strings.Contains(plain, "Subject: Plain subject\r\n") {
+		t.Fatalf("ASCII subject changed:\n%s", plain)
 	}
 }

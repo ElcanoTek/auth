@@ -2,6 +2,7 @@ package email
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 )
 
@@ -110,4 +111,37 @@ func headerSafeAddress(addr string) (string, error) {
 		out[i] = addressAlphabet[j]
 	}
 	return string(out), nil
+}
+
+// ValidFrom checks a From value for the drivers that pass it through whole
+// (SES): "addr@domain" or "Display Name <addr@domain>", the address
+// canonical and the display name plain printable ASCII with none of the
+// characters that would need RFC 5322 quoting.
+func ValidFrom(from string) error {
+	addr, name := splitAddress(from)
+	if canonical, err := CanonicalAddress(addr); err != nil || canonical != strings.ToLower(addr) {
+		return errors.New("not a plain email address, or a display name followed by one in <>")
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c < 0x20 || c >= 0x7f || strings.IndexByte(`"<>()[]:;@,\`, c) >= 0 {
+			return errors.New("the display name must be printable ASCII without quotes, brackets, parentheses, : ; @ , or a backslash")
+		}
+	}
+	if strings.ContainsAny(from, "\"\r\n") || strings.Count(from, "<") > 1 || strings.Count(from, ">") > 1 {
+		return errors.New("not a plain email address, or a display name followed by one in <>")
+	}
+	return nil
+}
+
+// addressInText matches anything shaped like an email address in free text:
+// a local part of any characters an address may hold (so o'brien@ is caught
+// whole), "@", and a domain.
+var addressInText = regexp.MustCompile(`[^\s<>()\[\]",;:@]+@[^\s<>()\[\]",;:@]+`)
+
+// RedactAddresses replaces every email address in s with "<address>". A
+// provider's refusal can quote the recipient (SES's "not verified" message
+// does); this keeps it out of logs, which hold no personal data.
+func RedactAddresses(s string) string {
+	return addressInText.ReplaceAllString(s, "<address>")
 }

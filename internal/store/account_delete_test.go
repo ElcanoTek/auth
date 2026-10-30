@@ -422,10 +422,10 @@ func TestAccountDeleteMigrationAddsTheColumn(t *testing.T) {
 	if _, err := s.CreatePasswordAccount(ctx, "old@example.com", "hash", false, 1000); err != nil {
 		t.Fatal(err)
 	}
-	for _, q := range []string{
+	for _, q := range append(withoutPasswordLinks(),
 		`ALTER TABLE accounts DROP COLUMN deleted_at`,
 		`DELETE FROM schema_migrations WHERE version = 15`,
-	} {
+	) {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
@@ -504,7 +504,7 @@ func TestTeamImportPreviewReadsADatabaseBeforeV15(t *testing.T) {
 	if _, _, err := s.SetApplicationAccess(ctx, a.ID, []string{"fleet"}, 1000); err != nil {
 		t.Fatal(err)
 	}
-	for _, q := range []string{`ALTER TABLE accounts DROP COLUMN deleted_at`, `DELETE FROM schema_migrations WHERE version = 15`} {
+	for _, q := range append(withoutPasswordLinks(), `ALTER TABLE accounts DROP COLUMN deleted_at`, `DELETE FROM schema_migrations WHERE version = 15`) {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
@@ -518,5 +518,17 @@ func TestTeamImportPreviewReadsADatabaseBeforeV15(t *testing.T) {
 	plan, err := ro.PreviewTeamImport(ctx, "fleet", []TeamImportEntry{{Email: "person@example.com", Team: "Ops", Enabled: true}})
 	if err != nil || len(plan) != 1 || plan[0].Action != TeamImportSet {
 		t.Fatalf("preview on v14 = %+v (%v)", plan, err)
+	}
+}
+
+// withoutPasswordLinks is what takes a database back from schema v16, so a
+// test can make one from before v15 (the triggers name accounts.deleted_at).
+func withoutPasswordLinks() []string {
+	return []string{
+		`DROP TRIGGER password_links_end_on_password_change`,
+		`DROP TRIGGER password_links_end_on_password_removal`,
+		`DROP TRIGGER password_links_end_on_disable`,
+		`DROP TABLE password_links`,
+		`DELETE FROM schema_migrations WHERE version = 16`,
 	}
 }

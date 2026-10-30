@@ -106,7 +106,7 @@
         {{range $i, $row := .Accounts}}<tr data-account-row data-account-search-value="{{$row.Email}} {{$row.Team}} {{$row.Status}} {{$row.MFAStatus}}{{if $row.IsAdmin}} administrator admin{{end}}{{range $row.Apps}}{{if .Granted}} {{.Name}}{{end}}{{end}}" data-account-filter-values="{{if eq $row.Status "Active"}}active{{else if eq $row.Status "Disabled"}}disabled{{else if eq $row.Status "Reset pending"}}reset-pending{{else}}invited{{end}}{{if $row.IsAdmin}} admin{{end}}{{if $row.MFAEnrolled}} mfa-enabled{{else}} mfa-missing{{end}}">
           <td class="sel"><input type="checkbox" name="emails" value="{{$row.Email}}" form="batch-form" data-select aria-label="Select {{$row.Email}}"></td>
           <td class="who">{{$row.Email}}{{if $row.IsAdmin}} <span class="badge admin">Admin</span>{{end}}{{if $row.Self}} <span class="badge">You</span>{{end}}</td>
-          <td><div class="chips"><span class="badge {{$row.StatusClass}}"{{with $row.StatusTitle}} title="{{.}}"{{end}}>{{$row.Status}}</span><span class="badge {{$row.MFAClass}}" title="Two-factor sign-in">2FA: {{$row.MFAStatus}}</span></div></td>
+          <td><div class="chips"><span class="badge {{$row.StatusClass}}"{{with $row.StatusTitle}} title="{{.}}"{{end}}>{{$row.Status}}</span>{{with $row.LinkChip}}<span class="badge warn" title="{{$row.Link}}">{{.}}</span>{{end}}<span class="badge {{$row.MFAClass}}" title="Two-factor sign-in">2FA: {{$row.MFAStatus}}</span></div></td>
           <td>{{if $row.Team}}<span class="tag">{{$row.Team}}</span>{{else}}<span class="chip off">none</span>{{end}}</td>
           <td><div class="chips">{{if $row.AllApps}}<span class="chip" title="{{range $j, $app := $row.Apps}}{{if $j}}, {{end}}{{$app.Name}}{{end}}">All</span>{{else}}{{range $row.Apps}}{{if .Granted}}<span class="chip">{{.Name}}</span>{{end}}{{end}}{{if eq $row.GrantedApps 0}}<span class="chip off">none</span>{{end}}{{end}}</div></td>
           <td><div class="row-actions">
@@ -159,14 +159,30 @@
               </div>
             </form>
             {{if not $row.Self}}
+            {{if and $.EmailLinks (or $row.Link $row.CanSendLink)}}
             <div class="setting">
-              <div><strong>Reset password</strong><p class="muted">Signs them out of every app and device; shows a new temporary password they must change.</p></div>
+              <div><strong>Emailed link</strong><p class="muted">{{$row.Link}}</p></div>
+              {{if $row.CanSendLink}}<form method="post" action="/admin">
+                <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="send-link"><input type="hidden" name="email" value="{{$row.Email}}">
+                <button class="btn-ghost" type="submit">Send a new link</button>
+              </form>{{end}}
+            </div>
+            {{end}}
+            <div class="setting">
+              <div><strong>Reset password</strong><p class="muted">{{if $.EmailLinks}}Their current password stops working and they are signed out of every app and device; they are emailed a link to choose a new one.{{else}}Signs them out of every app and device; shows a new temporary password they must change.{{end}}</p></div>
               <details class="confirm danger"><summary aria-label="Reset password: {{$row.Email}}">Reset</summary>
                 <form class="pane" method="post" action="/admin">
                   <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{$row.Email}}">
-                  <p class="muted">{{$row.Email}} is signed out everywhere and gets a new temporary password.</p>
-                  <button class="btn" type="submit">Confirm reset</button>
+                  {{if $.EmailLinks}}<input type="hidden" name="delivery" value="email">
+                  <p class="muted">{{$row.Email}} is signed out everywhere and emailed a link to choose a new password; it works for {{$.ResetLifetime}}.</p>
+                  <button class="btn" type="submit">Email a reset link</button>
+                  {{else}}<p class="muted">{{$row.Email}} is signed out everywhere and gets a new temporary password.</p>
+                  <button class="btn" type="submit">Confirm reset</button>{{end}}
                 </form>
+                {{if $.EmailLinks}}<form class="pane" method="post" action="/admin">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{$row.Email}}"><input type="hidden" name="delivery" value="password">
+                  <button class="btn-ghost" type="submit">Show a temporary password instead</button>
+                </form>{{end}}
               </details>
             </div>
             <div class="setting">
@@ -250,16 +266,20 @@
       <div class="modal-head"><h3 id="add-user-title">Add user</h3><button class="icon-btn close" type="button" commandfor="add-user" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
       {{/* A rejected Add user reopens this dialog (Reopen), and showModal makes the page behind it inert, so the reason has to be in here. */}}
       {{if eq .Reopen "add-user"}}{{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}{{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}{{end}}
-      <p class="who">A temporary password is shown once; they choose their own at first sign-in.</p>
+      <p class="who">{{if .EmailLinks}}They are emailed a link to choose their own password, or you set a temporary password to share yourself.{{else}}A temporary password is shown once; they choose their own at first sign-in.{{end}}</p>
       <form method="post" action="/admin">
         <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="create">
         <div class="field"><label for="new-email">Work email</label>
           <input id="new-email" name="email" type="email" required autocomplete="off" placeholder="name@company.com"{{with .Draft}} value="{{.Email}}"{{end}}></div>
         <div class="field"><label for="new-team">Team <span class="muted">(optional)</span></label>
           <input id="new-team" name="team" type="text" list="teams" maxlength="64" placeholder="e.g. Trading"{{with .Draft}} value="{{.Team}}"{{end}}></div>
+        {{if .EmailLinks}}{{$temp := and .Draft (eq .Draft.Delivery "password")}}<div class="seg-group"><span class="seg-label">Password</span>
+          <label class="permission-choice"><input type="radio" name="delivery" value="email"{{if not $temp}} checked{{end}}> Email an invite link<small>They choose their own password through a link that works once, for {{.InviteLifetime}}.</small></label>
+          <label class="permission-choice"><input type="radio" name="delivery" value="password"{{if $temp}} checked{{end}}> Set a temporary password<small>Shown to you once to share; they change it at first sign-in.</small></label>
+        </div>{{end}}
         <div class="field"><label for="new-password">Temporary password</label>
           <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="Leave blank to generate one"{{with .Draft}} value="{{.Password}}"{{end}}><button class="btn-ghost" type="button" data-generate="new-password">Generate</button></div>
-          <p class="hint">At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>
+          <p class="hint">{{if .EmailLinks}}Only with Set a temporary password. {{end}}At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>
         <div class="seg-group"><span class="seg-label">Auth Admin</span>
           <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"{{if and .Draft .Draft.Admin}} checked{{end}}> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>
         </div>
@@ -298,7 +318,7 @@
       <p class="who">Creating an account needs your authenticator code from the last five minutes. Then check the details and choose Create account again.</p>
       <form method="post" action="/admin" autocomplete="off">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="step-up">
-        <input type="hidden" name="email" value="{{.Email}}"><input type="hidden" name="team" value="{{.Team}}"><input type="hidden" name="password" value="{{.Password}}">
+        <input type="hidden" name="email" value="{{.Email}}"><input type="hidden" name="team" value="{{.Team}}"><input type="hidden" name="delivery" value="{{.Delivery}}"><input type="hidden" name="password" value="{{.Password}}">
         {{if .Admin}}<input type="hidden" name="admin" value="on">{{end}}{{range $id, $on := .Apps}}{{if $on}}<input type="hidden" name="apps" value="{{$id}}">{{end}}{{end}}
         {{if .FleetAdmin}}<input type="hidden" name="fleet_admin" value="on">{{end}}<input type="hidden" name="fleet_chat_role" value="{{.FleetChatRole}}"><input type="hidden" name="fleet_ops_role" value="{{.FleetOpsRole}}">
         <div class="field"><label for="add-user-code-input">Authenticator code</label>
