@@ -147,11 +147,19 @@ func main() {
 					log.Printf("password state sweep: %v", err)
 					continue
 				}
+				purged, err := st.PurgeDeletedAccounts(ctx, now)
+				if err != nil {
+					log.Printf("deleted account purge: %v", err)
+					continue
+				}
 				if n > 0 {
 					log.Printf("sweep: deleted %d expired magic_links", n)
 				}
 				if passwordN > 0 {
 					log.Printf("sweep: deleted %d expired password-state rows", passwordN)
+				}
+				if purged > 0 {
+					log.Printf("sweep: removed %d accounts deleted over %d days ago", purged, int(store.DeletedAccountRetention.Hours()/24))
 				}
 			}
 		}

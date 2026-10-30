@@ -973,10 +973,16 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		for _, id := range granted {
 			audit("admin.access_granted", account.ID, id)
 		}
+		created, with := "Created "+account.Email, " with"
+		if account.Restored {
+			// A deleted account with this email came back with its history
+			// and team; its old authenticator and access did not.
+			created, with = "Restored "+account.Email+" (deleted earlier) with its history and team", ", and"
+		}
 		if typed {
-			res.Notice = fmt.Sprintf("Created %s with the password you entered; they must change it at first sign-in.", account.Email)
+			res.Notice = fmt.Sprintf("%s%s the password you entered; they must change it at first sign-in.", created, with)
 		} else {
-			res.Notice = fmt.Sprintf("Created %s. Share the temporary password with them; they must change it at first sign-in.", account.Email)
+			res.Notice = fmt.Sprintf("%s. Share the temporary password with them; they must change it at first sign-in.", created)
 			res.Secret, res.SecretTitle, res.Reopen = plain, "Account created", reopenTempPassword
 		}
 		return res

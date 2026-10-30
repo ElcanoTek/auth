@@ -81,7 +81,7 @@ credential. The upgrade requires no schema migration or operator setting.
 
 The password/session foundation adds:
 
-- `accounts`: immutable ID, normalized email, disabled and must-change state, and when an administrator's reset left a temporary password still to change (`password_reset_at`, schema v14).
+- `accounts`: immutable ID, normalized email, disabled and must-change state, when an administrator's reset left a temporary password still to change (`password_reset_at`, schema v14), and when the account was deleted (`deleted_at`, schema v15; kept 30 days, restored by a create with the same email, then removed by the sweep).
 - `password_credentials`: one versioned PHC hash per password account.
 - `auth_sessions`: hashed token, activity/expiry, revocation reason.
 - `login_attempts`: hashed email/IP rate keys and attempt timestamps.

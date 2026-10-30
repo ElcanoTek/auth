@@ -328,6 +328,44 @@ auth app clear-backchannel explorer-northwind
 auth app disable explorer-northwind
 ```
 
+### Deleting an account
+
+There is no delete in the admin console; it is a CLI operation:
+
+```bash
+auth user delete alice@example.com
+```
+
+In one transaction the account loses every application (each one is told,
+so Fleet disables its copy of the user), is disabled and signed out
+everywhere, loses its password, authenticator, recovery codes and
+administrator flag, and is marked deleted. It then disappears from the
+console, from `auth user list`'s account table and from every command, and
+cannot sign in. The last enabled administrator cannot be deleted. (`auth
+user del` is a different, older command: it only removes an email from the
+magic-link login audit and never touches an account.)
+
+A deleted account is kept for 30 days and listed under DELETED ACCOUNTS in
+`auth user list` (`auth user show` still describes it). Creating an account
+with the same email in that time, from the CLI or the console, restores it
+under the same ID with its audit history, team, two-factor requirement and
+per-application roles. It comes back with the new temporary password, no
+authenticator (they enroll again), no administrator flag and no applications
+until they are granted again.
+
+Rolling Auth back to a release from before account deletion is safe: with no
+password, a deleted account is invisible to the older `auth` commands and
+console, so nothing there can re-enable it.
+
+After 30 days the server's sweep removes the account for good, together with
+everything tied to it; its audit events stay without an account. The sweep
+waits while an application has not yet acknowledged the lost access,
+including one with no back-channel receiver set (it is told when one is),
+and `auth user list` names that application; until then a create still
+restores the account. The application's own data, such as
+Fleet's user and its chats, is not touched: delete that in the application
+(`fleet chat user del`, `fleet sched user del`).
+
 The authorization request must use the exact registered callback and S256
 PKCE. Codes contain 256 random bits, live for 60 seconds, are single-use, and
 remain bound to the central browser session that authorized them. Discovery is

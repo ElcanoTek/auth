@@ -239,11 +239,18 @@ func planTeamImport(ctx context.Context, q rowQuerier, clientID string, entries 
 		granted         bool
 		hasSettings     bool
 	}
+	// The dry run opens the database read-only, so it can run against one
+	// the server has not migrated to schema v15 yet: no column, no deleted
+	// accounts.
+	live := ""
+	if hasColumnQ(ctx, q, "accounts", "deleted_at") {
+		live = "WHERE a.deleted_at IS NULL"
+	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT a.id, a.normalized_email, a.team,
 		       EXISTS(SELECT 1 FROM application_access aa WHERE aa.user_id = a.id AND aa.application_id = ?),
 		       EXISTS(SELECT 1 FROM application_access_settings st WHERE st.user_id = a.id AND st.application_id = ?)
-		FROM accounts a ORDER BY a.normalized_email`, clientID, clientID)
+		FROM accounts a `+live+` ORDER BY a.normalized_email`, clientID, clientID)
 	if err != nil {
 		return nil, err
 	}

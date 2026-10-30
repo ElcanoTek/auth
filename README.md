@@ -313,6 +313,7 @@ Day-to-day:
 ```bash
 auth user create alice@example.com   # password mode: provision an account
 auth user admin alice@example.com on # let them open the admin console
+auth user delete alice@example.com   # delete: kept 30 days, `auth user create` restores it
 auth app create <id> <callback>      # register an application
 auth app team-sync fleet on          # send Auth's teams to Fleet (one way; a Fleet that has teams: import-teams first)
 auth team rename Trading Research    # rename a team on every account, and in Fleet keeping its shares

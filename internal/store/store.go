@@ -478,7 +478,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateTeamRenames(ctx); err != nil {
 		return err
 	}
-	return s.migratePasswordReset(ctx)
+	if err := s.migratePasswordReset(ctx); err != nil {
+		return err
+	}
+	return s.migrateAccountDelete(ctx)
 }
 
 // migrateAccessProvisioning is schema v8. It snapshots every existing grant
@@ -902,6 +905,9 @@ type Account struct {
 	SecurityVersion    int64  // bumped by every factor-affecting change
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	// Restored is set on the account a create returns when it brought back
+	// a deleted account with the same email (account_delete.go).
+	Restored bool
 	// PasswordResetAt is when an administrator's reset set the temporary
 	// password this account must still change (accounts.password_reset_at,
 	// password_reset.go); nil when no reset is pending. Only
@@ -937,41 +943,51 @@ func (s *Store) CreatePasswordAccount(ctx context.Context, email, passwordHash s
 		return Account{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	id, err := createPasswordAccountTx(ctx, tx, email, passwordHash, mustChange, now)
+	id, restored, err := createPasswordAccountTx(ctx, tx, email, passwordHash, mustChange, now)
 	if err != nil {
 		return Account{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Account{}, err
 	}
-	return s.PasswordAccountByID(ctx, id)
+	a, err := s.PasswordAccountByID(ctx, id)
+	a.Restored = restored
+	return a, err
 }
 
 // createPasswordAccountTx is CreatePasswordAccount inside a caller's
-// transaction; it returns the new account's ID.
-func createPasswordAccountTx(ctx context.Context, tx *sql.Tx, email, passwordHash string, mustChange bool, now int64) (string, error) {
+// transaction; it returns the account's ID and whether it restored a deleted
+// account with the same email (account_delete.go) instead of creating one.
+func createPasswordAccountTx(ctx context.Context, tx *sql.Tx, email, passwordHash string, mustChange bool, now int64) (string, bool, error) {
+	deletedID, err := deletedAccountIDTx(ctx, tx, email)
+	if err != nil {
+		return "", false, err
+	}
+	if deletedID != "" {
+		return deletedID, true, restoreDeletedAccountTx(ctx, tx, deletedID, email, passwordHash, mustChange, now)
+	}
 	id, err := randomID()
 	if err != nil {
-		return "", fmt.Errorf("generate account id: %w", err)
+		return "", false, fmt.Errorf("generate account id: %w", err)
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO accounts(id, email, normalized_email, must_change_password, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?)`, id, strings.TrimSpace(email), normalizeAccountEmail(email), boolInt(mustChange), now, now)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return "", ErrAccountExists
+			return "", false, ErrAccountExists
 		}
-		return "", err
+		return "", false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO password_credentials(user_id, password_hash, changed_at) VALUES(?, ?, ?)`,
 		id, passwordHash, now); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := insertAudit(ctx, tx, "account.created", id, now, `{}`); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return id, nil
+	return id, false, nil
 }
 
 // AccountCreate is what the console's Add user saves.
@@ -1008,7 +1024,7 @@ func (s *Store) CreateAccountBy(ctx context.Context, c AccountCreate, actorID st
 	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
 		return Account{}, nil, err
 	}
-	id, err := createPasswordAccountTx(ctx, tx, c.Email, c.PasswordHash, true, now)
+	id, restored, err := createPasswordAccountTx(ctx, tx, c.Email, c.PasswordHash, true, now)
 	if err != nil {
 		return Account{}, nil, err
 	}
@@ -1036,22 +1052,34 @@ func (s *Store) CreateAccountBy(ctx context.Context, c AccountCreate, actorID st
 	if err != nil {
 		return Account{}, nil, err
 	}
+	account.Restored = restored
 	if err := tx.Commit(); err != nil {
 		return Account{}, nil, err
 	}
 	return account, granted, nil
 }
 
+// PasswordAccountByEmail finds an account by email. A deleted account
+// (account_delete.go) is not found: nothing signs in as it or changes it
+// until a create restores it.
 func (s *Store) PasswordAccountByEmail(ctx context.Context, email string) (Account, error) {
-	return scanAccount(s.db.QueryRowContext(ctx, `
+	return passwordAccountByEmailQ(ctx, s.db, email)
+}
+
+// passwordAccountByEmailQ is PasswordAccountByEmail on a database or
+// transaction.
+func passwordAccountByEmailQ(ctx context.Context, q querier, email string) (Account, error) {
+	return scanAccount(q.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
 		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
 		       a.mfa_required, a.security_version,
 		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
-		WHERE a.normalized_email = ?`, normalizeAccountEmail(email)))
+		WHERE a.normalized_email = ? AND a.deleted_at IS NULL`, normalizeAccountEmail(email)))
 }
 
+// PasswordAccountByID finds an account by ID; like PasswordAccountByEmail,
+// it does not find a deleted one.
 func (s *Store) PasswordAccountByID(ctx context.Context, id string) (Account, error) {
 	return passwordAccountByIDQ(ctx, s.db, id)
 }
@@ -1064,7 +1092,7 @@ func passwordAccountByIDQ(ctx context.Context, q querier, id string) (Account, e
 		       a.mfa_required, a.security_version,
 		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
-		WHERE a.id = ?`, id))
+		WHERE a.id = ? AND a.deleted_at IS NULL`, id))
 }
 
 type rowScanner interface{ Scan(...any) error }
@@ -1253,23 +1281,12 @@ func (s *Store) SetAccountDisabledBy(ctx context.Context, email string, disabled
 	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
 		return err
 	}
-	var disabledAt any
 	event := "account.enabled"
 	if disabled {
-		disabledAt = now
 		event = "account.disabled"
 	}
-	// Disabling an administrator is conditional at write time on another
-	// enabled administrator existing, so two concurrent disables that each
-	// observed two admins cannot both succeed: the second finds zero rows.
-	res, err := tx.ExecContext(ctx, `UPDATE accounts SET disabled_at = ?, updated_at = ? WHERE id = ?
-		AND (? = 0 OR is_admin = 0 OR `+anotherEnabledAdminExists+`)`,
-		disabledAt, now, a.ID, boolInt(disabled), a.ID)
-	if err != nil {
+	if err := setAccountDisabledTx(ctx, tx, a.ID, disabled, now); err != nil {
 		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrLastAdmin
 	}
 	if disabled {
 		if _, err := revokeSessionsTx(ctx, tx, a.ID, now, "account_disabled"); err != nil {
@@ -1285,6 +1302,29 @@ func (s *Store) SetAccountDisabledBy(ctx context.Context, email string, disabled
 	return tx.Commit()
 }
 
+// setAccountDisabledTx is SetAccountDisabledBy's write. Disabling an
+// administrator is conditional at write time on another enabled
+// administrator existing, so two concurrent disables that each observed two
+// admins cannot both succeed: the second finds zero rows (ErrLastAdmin). A
+// delete that commits after the caller's lookup must not be undone by an
+// enable, so a deleted account matches nothing (ErrAccountNotFound).
+func setAccountDisabledTx(ctx context.Context, tx *sql.Tx, userID string, disabled bool, now int64) error {
+	var disabledAt any
+	if disabled {
+		disabledAt = now
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE accounts SET disabled_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL
+		AND (? = 0 OR is_admin = 0 OR `+anotherEnabledAdminExists+`)`,
+		disabledAt, now, userID, boolInt(disabled), userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	return deletedOrTx(ctx, tx, userID, ErrLastAdmin)
+}
+
 func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
@@ -1293,6 +1333,7 @@ func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL),
 		       a.password_reset_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
+		WHERE a.deleted_at IS NULL
 		ORDER BY a.normalized_email`)
 	if err != nil {
 		return nil, err
@@ -1353,15 +1394,16 @@ func setAccountAdminTx(ctx context.Context, tx *sql.Tx, a Account, admin bool, n
 	}
 	// Demotion is conditional at write time (see SetAccountDisabled): it
 	// applies only while another enabled administrator exists, or when the
-	// target is disabled and so never counted as cover.
-	res, err := tx.ExecContext(ctx, `UPDATE accounts SET is_admin = ?, updated_at = ? WHERE id = ?
+	// target is disabled and so never counted as cover. A delete that
+	// committed after the caller's lookup is not written to.
+	res, err := tx.ExecContext(ctx, `UPDATE accounts SET is_admin = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL
 		AND (? = 1 OR disabled_at IS NOT NULL OR `+anotherEnabledAdminExists+`)`,
 		boolInt(admin), now, a.ID, boolInt(admin), a.ID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrLastAdmin
+		return deletedOrTx(ctx, tx, a.ID, ErrLastAdmin)
 	}
 	if err := insertAudit(ctx, tx, event, a.ID, now, `{}`); err != nil {
 		return err
@@ -1474,7 +1516,7 @@ func canonicalTeamSpellingTx(ctx context.Context, tx *sql.Tx, userID, team strin
 	if current != "" && strings.EqualFold(current, team) {
 		return current, nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT team, COUNT(*) FROM accounts WHERE team != '' GROUP BY team`)
+	rows, err := tx.QueryContext(ctx, `SELECT team, COUNT(*) FROM accounts WHERE team != '' AND deleted_at IS NULL GROUP BY team`)
 	if err != nil {
 		return "", err
 	}
@@ -1506,10 +1548,15 @@ func canonicalTeamSpellingTx(ctx context.Context, tx *sql.Tx, userID, team strin
 // and audits it. A real change also stamps team_updated_at and, when push is
 // true, queues a provisioning push to every team-synced application the
 // account is granted, so Fleet follows an Auth team change. Import writes
-// pass push=false: the application already holds those teams.
+// pass push=false: the application already holds those teams. A deleted
+// account (deleted after the caller's lookup) is ErrAccountNotFound.
 func setAccountTeamTx(ctx context.Context, tx *sql.Tx, userID, team string, now int64, metadata string, push bool) error {
 	var previous string
-	if err := tx.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ?`, userID).Scan(&previous); err != nil {
+	err := tx.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ? AND deleted_at IS NULL`, userID).Scan(&previous)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAccountNotFound
+	}
+	if err != nil {
 		return err
 	}
 	if previous == team {
@@ -1610,8 +1657,9 @@ type ApplicationSignIn struct {
 
 // ApplicationSignIns answers "who signs in to this application": one row per
 // account, most recent first, capped at limit (default and maximum 500).
-// Deleted accounts drop out (their audit rows lose user_id via ON DELETE SET
-// NULL), so every row names a live or disabled account.
+// Deleted accounts drop out (a soft-deleted one by the filter, a purged one
+// because its audit rows lose user_id via ON DELETE SET NULL), so every row
+// names a live or disabled account.
 func (s *Store) ApplicationSignIns(ctx context.Context, applicationID string, limit int) ([]ApplicationSignIn, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 500
@@ -1620,6 +1668,7 @@ func (s *Store) ApplicationSignIns(ctx context.Context, applicationID string, li
 		SELECT e.user_id, COALESCE(a.email, ''), COUNT(*), MAX(e.occurred_at), a.disabled_at IS NOT NULL
 		FROM audit_events e LEFT JOIN accounts a ON a.id = e.user_id
 		WHERE e.application_id = ? AND e.event_type = 'authorization.code_exchanged' AND e.user_id IS NOT NULL
+		  AND a.deleted_at IS NULL
 		GROUP BY e.user_id
 		ORDER BY MAX(e.occurred_at) DESC
 		LIMIT ?`, strings.TrimSpace(applicationID), limit)
@@ -1761,8 +1810,10 @@ func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, appl
 			want[id] = true
 		}
 	}
+	// A deleted account gains nothing: an application would be told it may
+	// sign in. (Deleting revokes before it marks the account.)
 	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE id = ?`, userID).Scan(&exists); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE id = ? AND deleted_at IS NULL`, userID).Scan(&exists); err != nil {
 		return nil, nil, nil, err
 	}
 	if exists == 0 {

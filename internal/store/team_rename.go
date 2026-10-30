@@ -241,11 +241,28 @@ func (s *Store) RenameTeamAsPreviewed(ctx context.Context, from, to string, expe
 	if expect != nil && (res.To != expect.To || res.Merged != expect.Merged) {
 		return res, ErrTeamRenameChanged
 	}
-	updated, err := tx.ExecContext(ctx, `UPDATE accounts SET team = ?, team_updated_at = ? WHERE team = ?`, res.To, now, res.From)
+	// Deleted accounts are renamed too, so one restored later comes back on
+	// the team's current name, but like the preview only live ones count.
+	updated, err := tx.QueryContext(ctx, `UPDATE accounts SET team = ?, team_updated_at = ? WHERE team = ? RETURNING deleted_at IS NULL`, res.To, now, res.From)
 	if err != nil {
 		return res, err
 	}
-	res.Accounts, _ = updated.RowsAffected()
+	for updated.Next() {
+		var live bool
+		if err := updated.Scan(&live); err != nil {
+			_ = updated.Close()
+			return res, err
+		}
+		if live {
+			res.Accounts++
+		}
+	}
+	if err := updated.Close(); err != nil {
+		return res, err
+	}
+	if err := updated.Err(); err != nil {
+		return res, err
+	}
 	if err := queueTeamRenamesTx(ctx, tx, &res, now); err != nil {
 		return res, err
 	}
@@ -259,7 +276,7 @@ func (s *Store) RenameTeamAsPreviewed(ctx context.Context, from, to string, expe
 }
 
 func teamCountsQ(ctx context.Context, q rowQuerier) ([]TeamCount, error) {
-	rows, err := q.QueryContext(ctx, `SELECT team, COUNT(*) FROM accounts WHERE team <> '' GROUP BY team ORDER BY team`)
+	rows, err := q.QueryContext(ctx, `SELECT team, COUNT(*) FROM accounts WHERE team <> '' AND deleted_at IS NULL GROUP BY team ORDER BY team`)
 	if err != nil {
 		return nil, err
 	}
