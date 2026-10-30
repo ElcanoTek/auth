@@ -15,10 +15,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"github.com/elcanotek/auth/internal/branding"
+	"github.com/elcanotek/auth/internal/email"
 	"github.com/elcanotek/auth/internal/mfa"
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -96,6 +98,9 @@ var allowedEnvVars = map[string]bool{
 	"AUTH_ALLOWED_DOMAINS": true,
 
 	// Email delivery. AUTH_EMAIL_DRIVER picks the backend:
+	//   - "ses":      Amazon SES's v2 API in AUTH_SES_REGION with a
+	//                 send-only key (AUTH_SES_ACCESS_KEY_ID /
+	//                 AUTH_SES_SECRET_ACCESS_KEY) locked to AUTH_EMAIL_FROM
 	//   - "sendgrid": POST to api.sendgrid.com with SENDGRID_API_KEY
 	//   - "stdout":   print the magic link to stderr (dev only)
 	//   - "smtp":     STARTTLS to AUTH_SMTP_HOST:AUTH_SMTP_PORT with
@@ -103,13 +108,17 @@ var allowedEnvVars = map[string]bool{
 	// Default is "stdout" so password-mode local development does not require
 	// a provider. Magic-mode validation permits it only behind the explicit,
 	// loopback-only development override.
-	"AUTH_EMAIL_DRIVER": true,
-	"AUTH_EMAIL_FROM":   true, // e.g. "Sign in <login@example.com>"
-	"SENDGRID_API_KEY":  true, // conventional name, so one key can serve a whole stack
-	"AUTH_SMTP_HOST":    true,
-	"AUTH_SMTP_PORT":    true,
-	"AUTH_SMTP_USER":    true,
-	"AUTH_SMTP_PASS":    true,
+	"AUTH_EMAIL_DRIVER":          true,
+	"AUTH_EMAIL_FROM":            true, // e.g. "Sign in <login@example.com>"
+	"SENDGRID_API_KEY":           true, // conventional name, so one key can serve a whole stack
+	"AUTH_SMTP_HOST":             true,
+	"AUTH_SMTP_PORT":             true,
+	"AUTH_SMTP_USER":             true,
+	"AUTH_SMTP_PASS":             true,
+	"AUTH_SES_REGION":            true,
+	"AUTH_SES_ACCESS_KEY_ID":     true,
+	"AUTH_SES_SECRET_ACCESS_KEY": true,
+	"AUTH_SES_CONFIGURATION_SET": true, // optional: where SES records bounces and complaints
 
 	// UX. AUTH_BRAND_NAME shows up in the login form + email body —
 	// "Elcano" by default. AUTH_DEFAULT_RETURN_TO is where /callback
@@ -179,6 +188,11 @@ type Config struct {
 	SMTPPort       int
 	SMTPUser       string
 	SMTPPass       string
+	// SES (AUTH_EMAIL_DRIVER=ses).
+	SESRegion           string
+	SESAccessKeyID      string
+	SESSecretAccessKey  string
+	SESConfigurationSet string
 
 	BrandName string
 	// ClientConfigDir is the bundle checkout whose branding block re-skins
@@ -220,26 +234,30 @@ func Load(envFile string) (*Config, error) {
 
 	env := &envReader{}
 	cfg := &Config{
-		Addr:               envOr("AUTH_ADDR", "127.0.0.1:9000"),
-		Hostname:           envOr("AUTH_HOSTNAME", "localhost"),
-		DataDir:            envOr("AUTH_DATA_DIR", "/opt/auth/data"),
-		LoginMode:          strings.ToLower(envOr("AUTH_LOGIN_MODE", "password")),
-		IssuerURL:          strings.TrimSpace(os.Getenv("AUTH_ISSUER_URL")),
-		AllowInsecureDev:   env.boolean("AUTH_ALLOW_INSECURE_DEV", false),
-		CookieName:         envOr("AUTH_COOKIE_NAME", "elcano_auth"),
-		CookieDomain:       os.Getenv("AUTH_COOKIE_DOMAIN"),
-		CookieSecure:       env.boolean("AUTH_COOKIE_SECURE", true),
-		PasswordCookieName: envOr("AUTH_PASSWORD_COOKIE_NAME", "__Host-auth_session"),
-		EmailDriver:        strings.ToLower(envOr("AUTH_EMAIL_DRIVER", "stdout")),
-		EmailFrom:          envOr("AUTH_EMAIL_FROM", "Sign in <login@example.com>"),
-		SendGridAPIKey:     os.Getenv("SENDGRID_API_KEY"),
-		SMTPHost:           os.Getenv("AUTH_SMTP_HOST"),
-		SMTPPort:           env.integer("AUTH_SMTP_PORT", 587),
-		SMTPUser:           os.Getenv("AUTH_SMTP_USER"),
-		SMTPPass:           os.Getenv("AUTH_SMTP_PASS"),
-		BrandName:          envOr("AUTH_BRAND_NAME", "Elcano"),
-		DefaultReturnTo:    os.Getenv("AUTH_DEFAULT_RETURN_TO"),
-		ClientConfigDir:    strings.TrimSpace(os.Getenv("AUTH_CLIENT_CONFIG_DIR")),
+		Addr:                envOr("AUTH_ADDR", "127.0.0.1:9000"),
+		Hostname:            envOr("AUTH_HOSTNAME", "localhost"),
+		DataDir:             envOr("AUTH_DATA_DIR", "/opt/auth/data"),
+		LoginMode:           strings.ToLower(envOr("AUTH_LOGIN_MODE", "password")),
+		IssuerURL:           strings.TrimSpace(os.Getenv("AUTH_ISSUER_URL")),
+		AllowInsecureDev:    env.boolean("AUTH_ALLOW_INSECURE_DEV", false),
+		CookieName:          envOr("AUTH_COOKIE_NAME", "elcano_auth"),
+		CookieDomain:        os.Getenv("AUTH_COOKIE_DOMAIN"),
+		CookieSecure:        env.boolean("AUTH_COOKIE_SECURE", true),
+		PasswordCookieName:  envOr("AUTH_PASSWORD_COOKIE_NAME", "__Host-auth_session"),
+		EmailDriver:         strings.ToLower(envOr("AUTH_EMAIL_DRIVER", "stdout")),
+		EmailFrom:           envOr("AUTH_EMAIL_FROM", "Sign in <login@example.com>"),
+		SendGridAPIKey:      os.Getenv("SENDGRID_API_KEY"),
+		SMTPHost:            os.Getenv("AUTH_SMTP_HOST"),
+		SMTPPort:            env.integer("AUTH_SMTP_PORT", 587),
+		SMTPUser:            os.Getenv("AUTH_SMTP_USER"),
+		SMTPPass:            os.Getenv("AUTH_SMTP_PASS"),
+		SESRegion:           strings.TrimSpace(os.Getenv("AUTH_SES_REGION")),
+		SESAccessKeyID:      strings.TrimSpace(os.Getenv("AUTH_SES_ACCESS_KEY_ID")),
+		SESSecretAccessKey:  strings.TrimSpace(os.Getenv("AUTH_SES_SECRET_ACCESS_KEY")),
+		SESConfigurationSet: strings.TrimSpace(os.Getenv("AUTH_SES_CONFIGURATION_SET")),
+		BrandName:           envOr("AUTH_BRAND_NAME", "Elcano"),
+		DefaultReturnTo:     os.Getenv("AUTH_DEFAULT_RETURN_TO"),
+		ClientConfigDir:     strings.TrimSpace(os.Getenv("AUTH_CLIENT_CONFIG_DIR")),
 	}
 
 	// The signing seed is the one secret that can mint sessions. bootstrap.sh
@@ -364,8 +382,12 @@ func (c *Config) Validate() error {
 		if c.SMTPHost == "" {
 			return fmt.Errorf("AUTH_EMAIL_DRIVER=smtp requires AUTH_SMTP_HOST")
 		}
+	case "ses":
+		if err := c.validateSES(); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("unknown AUTH_EMAIL_DRIVER %q (want stdout|sendgrid|smtp)", c.EmailDriver)
+		return fmt.Errorf("unknown AUTH_EMAIL_DRIVER %q (want stdout|ses|sendgrid|smtp)", c.EmailDriver)
 	}
 	if c.AllowInsecureDev && (!isLoopbackHostname(c.Hostname) || !isLoopbackOrigin(c.IssuerURL)) {
 		return fmt.Errorf("AUTH_ALLOW_INSECURE_DEV may only be used with loopback AUTH_HOSTNAME and AUTH_ISSUER_URL")
@@ -432,6 +454,53 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+var (
+	sesRegionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]{1,2}$`)
+	// Long-term IAM user keys start AKIA; session credentials (ASIA) expire
+	// and cannot live in an env file, so they are refused.
+	sesKeyIDPattern            = regexp.MustCompile(`^AKIA[A-Z2-7]{16}$`)
+	sesConfigurationSetPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+)
+
+// validateSES checks the SES settings' shape, not that the key works: the
+// first send says that.
+func (c *Config) validateSES() error {
+	if !sesRegionPattern.MatchString(c.SESRegion) {
+		return fmt.Errorf("AUTH_EMAIL_DRIVER=ses requires AUTH_SES_REGION, an AWS region such as us-east-2")
+	}
+	if !sesKeyIDPattern.MatchString(c.SESAccessKeyID) {
+		return fmt.Errorf("AUTH_EMAIL_DRIVER=ses requires AUTH_SES_ACCESS_KEY_ID, a long-term IAM access key ID (AKIA...)")
+	}
+	if len(c.SESSecretAccessKey) < 20 || strings.ContainsAny(c.SESSecretAccessKey, " \t\r\n") {
+		return fmt.Errorf("AUTH_EMAIL_DRIVER=ses requires AUTH_SES_SECRET_ACCESS_KEY")
+	}
+	if c.SESConfigurationSet != "" && !sesConfigurationSetPattern.MatchString(c.SESConfigurationSet) {
+		return fmt.Errorf("AUTH_SES_CONFIGURATION_SET %q is not a configuration set name", c.SESConfigurationSet)
+	}
+	if err := email.ValidFrom(c.EmailFrom); err != nil {
+		return fmt.Errorf("AUTH_EMAIL_FROM %q: %w", c.EmailFrom, err)
+	}
+	return nil
+}
+
+// PasswordLinksEnabled reports whether this deployment emails one-time
+// password links (invites and resets) instead of only showing temporary
+// passwords: password mode with a real email driver, or the stdout driver
+// behind the loopback-only development override (the link then lands in
+// the journal, which is acceptable only there).
+func (c *Config) PasswordLinksEnabled() bool {
+	if c.LoginMode != "password" {
+		return false
+	}
+	switch c.EmailDriver {
+	case "ses", "sendgrid", "smtp":
+		return true
+	case "", "stdout":
+		return c.AllowInsecureDev
+	}
+	return false
 }
 
 // ValidateMagicAllowlist completes startup validation once the caller has

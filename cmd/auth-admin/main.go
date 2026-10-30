@@ -7,6 +7,7 @@
 //	auth-admin domain del <example.com>
 //	auth-admin domain list
 //	auth-admin user create|set-password|disable|enable|show|revoke-sessions <email>
+//	auth-admin user invite|reset-password <email>
 //	auth-admin user list
 //	auth-admin user delete|del <email>
 //	auth-admin audit list [email] [limit]
@@ -39,6 +40,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/elcanotek/auth/internal/config"
 	"github.com/elcanotek/auth/internal/mfa"
 	passwordauth "github.com/elcanotek/auth/internal/password"
 	"github.com/elcanotek/auth/internal/store"
@@ -93,6 +95,8 @@ DOMAIN ALLOWLIST
 USERS
   auth-admin user create <email>          create a password account (prompts securely)
   auth-admin user set-password <email>    replace password + revoke sessions
+  auth-admin user invite <email>          create an account and email an invite link (or send it again)
+  auth-admin user reset-password <email>  stop the current password, revoke sessions, email a reset link
   auth-admin user disable <email>         disable account + revoke sessions
   auth-admin user enable <email>          re-enable account
   auth-admin user show <email>            show account state
@@ -286,7 +290,7 @@ func domainCmd(dataDir string, args []string) {
 
 func userCmd(dataDir string, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|set-password|disable|enable|admin|access|team|mfa-required|mfa-reset|show|revoke-sessions|list|delete|del> [email]")
+		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|invite|set-password|reset-password|disable|enable|admin|access|team|mfa-required|mfa-reset|show|revoke-sessions|list|delete|del> [email]")
 		os.Exit(2)
 	}
 	st, ctx := openStore(dataDir)
@@ -319,6 +323,61 @@ func userCmd(dataDir string, args []string) {
 			return
 		}
 		fmt.Printf("✓ created %s (%s); password change required on first login\n", a.Email, a.ID)
+	case "invite":
+		requireUserEmailArg(args, "invite")
+		email := validateAccountEmail(args[1])
+		requirePasswordLinks()
+		requireRunningMailer(ctx, st)
+		now := time.Now().Unix()
+		if existing, err := st.PasswordAccountByEmail(ctx, email); err == nil {
+			// An account already: send its link again, if it is still
+			// waiting to choose its own password.
+			purpose, err := st.ResendPasswordLinkBy(ctx, existing.Email, "", nil, now)
+			switch {
+			case errors.Is(err, store.ErrNoPendingLink):
+				fatalf("%s already has an account with a password they chose; `auth user reset-password %s` emails a reset link", existing.Email, existing.Email)
+			case errors.Is(err, store.ErrLinkTooSoon):
+				fatalf("a link went to %s under a minute ago; wait a moment", existing.Email)
+			case errors.Is(err, store.ErrAccountDisabled):
+				fatalf("%s is disabled; `auth user enable %s` first", existing.Email, existing.Email)
+			case err != nil:
+				fatalf("invite: %v", err)
+			}
+			fmt.Printf("✓ queued a new %s link for %s; the earlier one no longer works. The server emails it within seconds (`auth user show %s` reports it).\n", purpose, existing.Email, existing.Email)
+			return
+		} else if !errors.Is(err, store.ErrAccountNotFound) {
+			fatalf("invite: %v", err)
+		}
+		if d, err := st.DeletedAccountByEmail(ctx, email); err == nil && d.MFARequired {
+			requireMFAKeyConfigured("restoring " + d.Email + ", a deleted account that requires two-factor sign-in,")
+		}
+		a, err := st.InvitePasswordAccount(ctx, email, unusablePasswordHash(email), now)
+		if err != nil {
+			fatalf("invite: %v", err)
+		}
+		if a.Restored {
+			fmt.Printf("✓ restored deleted account %s (%s) with its history and team and queued an invite email\n", a.Email, a.ID)
+			fmt.Println("  It has no applications and no authenticator: grant access again (earlier roles come back) and they enroll again.")
+		} else {
+			fmt.Printf("✓ created %s (%s) and queued an invite email\n", a.Email, a.ID)
+		}
+		fmt.Printf("  Its link works for %s once sent; `auth user show %s` reports it.\n", cliLinkLifetime(store.LinkInvite), a.Email)
+	case "reset-password":
+		requireUserEmailArg(args, "reset-password")
+		email := validateAccountEmail(args[1])
+		requirePasswordLinks()
+		requireRunningMailer(ctx, st)
+		_, err := st.ResetPasswordWithLinkBy(ctx, email, unusablePasswordHash(email), "", nil, time.Now().Unix())
+		switch {
+		case errors.Is(err, store.ErrAccountNotFound):
+			fatalf("no such account: %s", email)
+		case errors.Is(err, store.ErrAccountDisabled):
+			fatalf("%s is disabled; `auth user enable %s` first", email, email)
+		case err != nil:
+			fatalf("reset-password: %v", err)
+		}
+		fmt.Printf("✓ reset %s: the old password no longer works, every session is signed out, and a reset link is queued\n", email)
+		fmt.Printf("  It works for %s once sent; `auth user show %s` reports it.\n", cliLinkLifetime(store.LinkReset), email)
 	case "set-password":
 		requireUserEmailArg(args, "set-password")
 		email := validateAccountEmail(args[1])
@@ -401,6 +460,11 @@ func userCmd(dataDir string, args []string) {
 		}
 		fmt.Printf("email: %s\nid: %s\nstatus: %s\nadmin: %t\nteam: %s\nmust change password: %t\ntwo-factor: %s\nactive sessions: %d\napplications: %s\n",
 			a.Email, a.ID, status, a.IsAdmin, team, a.MustChangePassword, twoFactor, active, appList)
+		if l, ok, err := st.PasswordLinkFor(ctx, a.ID); err != nil {
+			fatalf("show emailed link: %v", err)
+		} else if ok {
+			fmt.Printf("emailed link: %s\n", describeLinkForCLI(l, time.Now()))
+		}
 	case "admin":
 		if len(args) != 3 || (args[2] != "on" && args[2] != "off") {
 			fatalf("usage: auth-admin user admin <email> on|off")
@@ -1240,6 +1304,88 @@ func readSecretLine(r *bufio.Reader) (string, error) {
 func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
+}
+
+// requirePasswordLinks stops unless this deployment emails password links:
+// the server only sends them when its email driver is configured (see
+// config.PasswordLinksEnabled), so queuing one otherwise would send nothing.
+func requirePasswordLinks() {
+	cfg := config.Config{
+		LoginMode:        strings.ToLower(strings.TrimSpace(envOrDefault("AUTH_LOGIN_MODE", "password"))),
+		EmailDriver:      strings.ToLower(strings.TrimSpace(envOrDefault("AUTH_EMAIL_DRIVER", "stdout"))),
+		AllowInsecureDev: envTrue("AUTH_ALLOW_INSECURE_DEV"),
+	}
+	if !cfg.PasswordLinksEnabled() {
+		fatalf("emailed links need AUTH_EMAIL_DRIVER (ses, sendgrid or smtp) in .env.local and the server restarted; `auth user create` and `auth user set-password` set a temporary password instead")
+	}
+}
+
+// requireRunningMailer stops unless the running server sends emailed links:
+// one that still runs with an earlier configuration (not restarted after
+// AUTH_EMAIL_DRIVER was set) would leave a reset's account with no password
+// and no link.
+func requireRunningMailer(ctx context.Context, st *store.Store) {
+	running, err := st.MailerRunning(ctx, time.Now().Unix())
+	if err != nil {
+		fatalf("check the server's mailer: %v", err)
+	}
+	if !running {
+		fatalf("the running server is not sending emailed links (restart it after setting AUTH_EMAIL_DRIVER: sudo auth restart), then run this again")
+	}
+}
+
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envTrue(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "true", "1", "yes", "y", "on":
+		return true
+	}
+	return false
+}
+
+// unusablePasswordHash hashes a random password that is never shown or
+// kept: the account cannot be signed in to until its owner chooses a
+// password through the emailed link.
+func unusablePasswordHash(email string) string {
+	plain, err := passwordauth.Generate(adminPasswordContext(email)...)
+	if err != nil {
+		fatalf("generate password: %v", err)
+	}
+	encoded, err := passwordauth.Hash(plain)
+	if err != nil {
+		fatalf("%s", passwordauth.UserMessage(err))
+	}
+	return encoded
+}
+
+func cliLinkLifetime(purpose string) string {
+	d := store.LinkTTL(purpose)
+	if d >= 48*time.Hour {
+		return fmt.Sprintf("%d days", int(d/(24*time.Hour)))
+	}
+	return fmt.Sprintf("%d hours", int(d/time.Hour))
+}
+
+// describeLinkForCLI is `user show`'s line for an emailed link.
+func describeLinkForCLI(l store.PasswordLink, now time.Time) string {
+	stamp := func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") }
+	switch {
+	case l.FailedAt != nil:
+		return fmt.Sprintf("%s email failed %s: %s (`auth user invite` or `reset-password` sends a new one)", l.Purpose, stamp(*l.FailedAt), l.LastError)
+	case l.SentAt == nil && l.Attempts > 0:
+		return fmt.Sprintf("%s email retrying after: %s", l.Purpose, l.LastError)
+	case l.SentAt == nil:
+		return fmt.Sprintf("%s email queued %s", l.Purpose, stamp(l.RequestedAt))
+	case l.Expired(now):
+		return fmt.Sprintf("%s link expired %s", l.Purpose, stamp(*l.ExpiresAt))
+	}
+	return fmt.Sprintf("%s link emailed %s, works until %s", l.Purpose, stamp(*l.SentAt), stamp(*l.ExpiresAt))
 }
 
 // printDeletedAccount is `user show` for a deleted account.

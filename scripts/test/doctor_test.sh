@@ -452,6 +452,23 @@ keys = next(c for c in doc["checks"] if c["name"] == "env-keys")
 assert keys["status"] == "fail" and "SENDGRID_API_KEY" in keys["detail"], keys
 PY
 
+echo "== SES needs its region, key and From"
+write_env 127.0.0.1:9000 auth.example.com "$DATA" password ses "$SIGNING" "$MFA" true "AUTH_SES_REGION=us-east-2"
+set +e
+out="$(doctor --json)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+keys = next(c for c in doc["checks"] if c["name"] == "env-keys")
+assert keys["status"] == "fail", keys
+for k in ("AUTH_SES_ACCESS_KEY_ID", "AUTH_SES_SECRET_ACCESS_KEY", "AUTH_EMAIL_FROM"):
+    assert k in keys["detail"], keys
+assert "AUTH_SES_REGION" not in keys["detail"], keys
+PY
+
 echo "== AUTH_COOKIE_SECURE=false skips TLS"
 write_env 127.0.0.1:9000 auth.example.com "$DATA" password stdout "$SIGNING" "$MFA" false
 export DOCTOR_OPENSSL_LOG="$TMP/openssl.log"

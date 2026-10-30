@@ -90,7 +90,7 @@ run_admin() {
   # PATH and a HOME it can write.
   for v in $(compgen -e); do
     case "$v" in
-      AUTH_DATA_DIR|AUTH_MFA_KEY|AUTH_MFA_KEY_ID|AUTH_MFA_PREVIOUS_KEYS|AUTH_SIGNING_KEY|AUTH_BRAND_NAME|AUTH_HOSTNAME|AUTH_ISSUER_URL|AUTH_PASSWORD_BLOCKED_TERMS|AUTH_LOGIN_MODE|TERM|LANG|LC_ALL) ;;
+      AUTH_DATA_DIR|AUTH_MFA_KEY|AUTH_MFA_KEY_ID|AUTH_MFA_PREVIOUS_KEYS|AUTH_SIGNING_KEY|AUTH_BRAND_NAME|AUTH_HOSTNAME|AUTH_ISSUER_URL|AUTH_PASSWORD_BLOCKED_TERMS|AUTH_LOGIN_MODE|AUTH_EMAIL_DRIVER|AUTH_ALLOW_INSECURE_DEV|TERM|LANG|LC_ALL) ;;
       *) unset "$v" ;;
     esac
   done
@@ -476,6 +476,9 @@ DOMAIN ALLOWLIST
 USERS
   auth user create <email>          create password account (secure prompt)
   auth user set-password <email>    replace password and revoke sessions
+  auth user invite <email>          create an account and email an invite link
+                                    (an invited account: send a new link)
+  auth user reset-password <email>  stop the password, revoke sessions, email a reset link
   auth user disable <email>         disable account and revoke sessions
   auth user enable <email>          re-enable account
   auth user admin <email> on|off    grant or remove access to the web admin console

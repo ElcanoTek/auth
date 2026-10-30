@@ -90,3 +90,33 @@ func TestHeaderSafeAddressMatchesCanonical(t *testing.T) {
 		t.Fatalf("header injection accepted: %v", err)
 	}
 }
+
+func TestValidFrom(t *testing.T) {
+	for _, ok := range []string{"signin@acme.example", "Acme sign-in <signin@acme.example>", "Acme & Co. <signin@acme.example>"} {
+		if err := ValidFrom(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"", "Sign in", "signin@", "Acme <signin@acme.example", `"Acme" <signin@acme.example>`,
+		"Acme <a@acme.example> <b@acme.example>", "signin@acme.example\r\nBcc: x@evil.example",
+		"Acme: <signin@acme.example>", "Acme, Inc <signin@acme.example>", "Café <signin@acme.example>",
+	} {
+		if err := ValidFrom(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+func TestRedactAddresses(t *testing.T) {
+	in := "Email address is not verified. The following identities failed the check in region US-EAST-2: jane@client.com, o'brien@x.co.uk <a.b+tag@sub.example.org> and 'quoted@example.com'"
+	out := RedactAddresses(in)
+	for _, leaked := range []string{"jane", "brien", "a.b+tag", "quoted", "client.com", "example.org"} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("%q kept in %q", leaked, out)
+		}
+	}
+	if !strings.Contains(out, "Email address is not verified") || strings.Count(out, "<address>") != 4 {
+		t.Fatalf("redacted = %q", out)
+	}
+}

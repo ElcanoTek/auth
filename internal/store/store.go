@@ -481,7 +481,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migratePasswordReset(ctx); err != nil {
 		return err
 	}
-	return s.migrateAccountDelete(ctx)
+	if err := s.migrateAccountDelete(ctx); err != nil {
+		return err
+	}
+	return s.migratePasswordLinks(ctx)
 }
 
 // migrateAccessProvisioning is schema v8. It snapshots every existing grant
@@ -1002,6 +1005,10 @@ type AccountCreate struct {
 	Admin               bool
 	Applications        []string
 	ApplicationSettings map[string]string
+	// Invite queues an invite link (password_links.go): PasswordHash is
+	// then the hash of a random password nobody keeps, and the person
+	// chooses theirs through the link.
+	Invite bool
 }
 
 // CreateAccountBy is Add user in ONE transaction: the acting administrator
@@ -1049,6 +1056,11 @@ func (s *Store) CreateAccountBy(ctx context.Context, c AccountCreate, actorID st
 	var granted []string
 	if len(c.Applications) > 0 {
 		if granted, _, _, err = setApplicationAccessTx(ctx, tx, id, c.Applications, c.ApplicationSettings, now, ""); err != nil {
+			return Account{}, nil, err
+		}
+	}
+	if c.Invite {
+		if err := queuePasswordLinkTx(ctx, tx, id, LinkInvite, actorID, now); err != nil {
 			return Account{}, nil, err
 		}
 	}
@@ -1199,6 +1211,15 @@ func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passw
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := replacePasswordTx(ctx, tx, userID, expectedHash, passwordHash, mustChange, rotate, actor, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// replacePasswordTx is replacePassword inside a caller's transaction.
+func replacePasswordTx(ctx context.Context, tx *sql.Tx, userID, expectedHash, passwordHash string, mustChange bool, rotate *sessionRotation, actor *actorCheck, now int64) error {
+	var err error
 	if actor != nil {
 		if err := requireActorTx(ctx, tx, actor.id, actor.proof, now); err != nil {
 			return err
@@ -1223,6 +1244,10 @@ func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passw
 			return ErrCredentialChanged
 		}
 		return ErrAccountNotFound
+	}
+	// A link emailed before this change must not set a password over it.
+	if err := deletePasswordLinkTx(ctx, tx, userID); err != nil {
+		return err
 	}
 	// A must-change replacement is an administrator's reset; the person's own
 	// password clears the marker (password_reset.go).
@@ -1260,10 +1285,7 @@ func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passw
 	if err := enqueueLogoutEventTx(ctx, tx, userID, "password_replaced", now); err != nil {
 		return err
 	}
-	if err := insertAudit(ctx, tx, "password.replaced", userID, now, `{}`); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return insertAudit(ctx, tx, "password.replaced", userID, now, `{}`)
 }
 
 func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled bool, now int64) error {
@@ -1340,6 +1362,11 @@ func setAccountDisabledTx(ctx context.Context, tx *sql.Tx, userID string, disabl
 		return err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
+		if disabled {
+			// An emailed link must not work once the account is enabled
+			// again; a new one can be sent then.
+			return deletePasswordLinkTx(ctx, tx, userID)
+		}
 		return nil
 	}
 	if err := deletedOrTx(ctx, tx, userID, nil); err != nil {
@@ -2847,7 +2874,11 @@ func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetent
 		return 0, err
 	}
 	pending, _ := res.RowsAffected()
-	attempts += transactions + pending
+	links, err := sweepPasswordLinksTx(ctx, tx, now)
+	if err != nil {
+		return 0, err
+	}
+	attempts += transactions + pending + links
 	var audits int64
 	if auditRetention > 0 {
 		res, err = tx.ExecContext(ctx, `DELETE FROM audit_events WHERE occurred_at < ?`, now-int64(auditRetention.Seconds()))

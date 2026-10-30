@@ -216,8 +216,10 @@ For anything beyond localhost, also set:
   allowlist; empty means open enrollment, never in production), and
   `AUTH_EMAIL_DRIVER` plus `SENDGRID_API_KEY` or the `AUTH_SMTP_*` settings
   with `AUTH_EMAIL_FROM`.
-- In password mode, email is optional. With `sendgrid` or `smtp` configured,
-  Auth sends best-effort security notices about two-factor and recovery-code
+- In password mode, email is optional. With `ses`, `sendgrid` or `smtp`
+  configured, Add user and Reset password email a one-time link to choose a
+  password (the console can still show a temporary password instead), and Auth
+  sends best-effort security notices about two-factor and recovery-code
   changes; with
   `stdout` or no driver it sends nothing and the audit log is the record.
 - Never set `AUTH_ALLOW_INSECURE_DEV=true` outside loopback development. The

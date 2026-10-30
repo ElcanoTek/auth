@@ -658,3 +658,88 @@ func TestEnvFileValueStripsQuotesAndTrailingComments(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateChecksSESSettings(t *testing.T) {
+	good := func() *Config {
+		cfg := validMagicConfig()
+		cfg.EmailDriver = "ses"
+		cfg.SESRegion = "us-east-2"
+		cfg.SESAccessKeyID = "AKIAIOSFODNN7EXAMPLE"
+		cfg.SESSecretAccessKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" // gitleaks:allow -- AWS's documented example secret, not a credential
+		cfg.EmailFrom = "Acme sign-in <signin@acme.example>"
+		return cfg
+	}
+	if err := good().Validate(); err != nil {
+		t.Fatalf("valid SES settings: %v", err)
+	}
+	cases := map[string]struct {
+		edit  func(*Config)
+		wantE string
+	}{
+		"no region":              {func(c *Config) { c.SESRegion = "" }, "AUTH_SES_REGION"},
+		"not a region":           {func(c *Config) { c.SESRegion = "https://evil.example" }, "AUTH_SES_REGION"},
+		"no key ID":              {func(c *Config) { c.SESAccessKeyID = "" }, "AUTH_SES_ACCESS_KEY_ID"},
+		"session key":            {func(c *Config) { c.SESAccessKeyID = "ASIAIOSFODNN7EXAMPLE" }, "AUTH_SES_ACCESS_KEY_ID"},
+		"no secret":              {func(c *Config) { c.SESSecretAccessKey = "" }, "AUTH_SES_SECRET_ACCESS_KEY"},
+		"bad configuration set":  {func(c *Config) { c.SESConfigurationSet = "a b" }, "AUTH_SES_CONFIGURATION_SET"},
+		"From with a line break": {func(c *Config) { c.EmailFrom = "signin@acme.example\r\nBcc: x@evil.example" }, "AUTH_EMAIL_FROM"},
+		"From with a quote":      {func(c *Config) { c.EmailFrom = `"Acme" <signin@acme.example>` }, "AUTH_EMAIL_FROM"},
+		"From not an address":    {func(c *Config) { c.EmailFrom = "Sign in" }, "AUTH_EMAIL_FROM"},
+	}
+	for name, tc := range cases {
+		cfg := good()
+		tc.edit(cfg)
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.wantE) {
+			t.Errorf("%s: want error containing %q, got %v", name, tc.wantE, err)
+		}
+	}
+	cfg := good()
+	cfg.SESConfigurationSet = "auth-links"
+	cfg.EmailFrom = "signin@acme.example"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("bare From and a configuration set: %v", err)
+	}
+}
+
+func TestLoadReadsSESSettings(t *testing.T) {
+	clearAllAuthEnv(t)
+	t.Setenv("AUTH_SIGNING_KEY", testSeedB64)
+	t.Setenv("AUTH_EMAIL_DRIVER", "SES")
+	t.Setenv("AUTH_SES_REGION", " us-east-2 ")
+	t.Setenv("AUTH_SES_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+	t.Setenv("AUTH_SES_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY") // gitleaks:allow -- AWS's documented example secret, not a credential
+	t.Setenv("AUTH_SES_CONFIGURATION_SET", "auth-links")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EmailDriver != "ses" || cfg.SESRegion != "us-east-2" || cfg.SESAccessKeyID != "AKIAIOSFODNN7EXAMPLE" ||
+		cfg.SESSecretAccessKey == "" || cfg.SESConfigurationSet != "auth-links" {
+		t.Fatalf("loaded = %+v", cfg)
+	}
+}
+
+// Password links go out only from password mode with a real driver, or the
+// stdout driver behind the loopback-only development override.
+func TestPasswordLinksEnabled(t *testing.T) {
+	cases := []struct {
+		mode, driver string
+		insecureDev  bool
+		want         bool
+	}{
+		{"password", "ses", false, true},
+		{"password", "sendgrid", false, true},
+		{"password", "smtp", false, true},
+		{"password", "stdout", false, false},
+		{"password", "", false, false},
+		{"password", "stdout", true, true},
+		{"magic", "ses", false, false},
+		{"password", "pigeon", false, false},
+	}
+	for _, c := range cases {
+		cfg := Config{LoginMode: c.mode, EmailDriver: c.driver, AllowInsecureDev: c.insecureDev}
+		if got := cfg.PasswordLinksEnabled(); got != c.want {
+			t.Errorf("%s/%s/insecure=%v: %v, want %v", c.mode, c.driver, c.insecureDev, got, c.want)
+		}
+	}
+}

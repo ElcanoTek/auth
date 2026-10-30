@@ -134,6 +134,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/magic/code", s.handleMagicCode)
 	mux.HandleFunc("/login", s.handlePasswordLogin)
 	mux.HandleFunc("/change-password", s.handleChangePassword)
+	mux.HandleFunc("/set-password", s.handleSetPassword)
 	mux.HandleFunc("/login/verify", s.handleLoginVerify)
 	mux.HandleFunc("/login/enroll", s.handleLoginEnroll)
 	mux.HandleFunc("/login/cancel", s.handleLoginCancel)
@@ -453,7 +454,7 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		if err := s.sender.Send(ctx, to, subj, t, h); err != nil {
 			// Log the tenant (domain) only — the full recipient address is
 			// PII we don't want persisted in the journal.
-			log.Printf("send magic email failed (tenant=%s): %v", emailTenant(to), err)
+			log.Printf("send magic email failed (tenant=%s): %s", emailTenant(to), redactedError(err))
 		}
 	}(email, subject, text, html)
 
@@ -575,6 +576,8 @@ func (s *Server) noticeMessage(code string) string {
 		return staleFormMessage
 	case "mfa_required":
 		return "Your account now requires an authenticator app. Sign in again to set it up."
+	case "password_set":
+		return "Your password is set. Sign in with it."
 	}
 	return ""
 }
@@ -2007,6 +2010,12 @@ func emailTenant(email string) string {
 	return logSafe(strings.ToLower(email[at+1:]))
 }
 
+// redactedError is err's text with any email address in it replaced: a
+// provider's refusal can quote the recipient.
+func redactedError(err error) string {
+	return email.RedactAddresses(err.Error())
+}
+
 // logSafe removes line breaks from a value bound for a log line, so it can
 // never end the line and start a forged one.
 func logSafe(v string) string {
@@ -2114,7 +2123,7 @@ const pageCSP = "default-src 'none'; script-src 'self'; style-src 'self'; " +
 // palette overrides, which the branding package validated against a strict
 // grammar at load and Handler serves as a stylesheet.
 func (s *Server) decorate(data map[string]any) {
-	data["Wordmark"] = s.cfg.BrandName
+	data["Wordmark"] = BrandName(s.cfg)
 	data["LogoURL"] = ""
 	data["BrandCSSURL"] = ""
 	data["LoginTitle"] = ""
@@ -2123,15 +2132,21 @@ func (s *Server) decorate(data map[string]any) {
 	if b == nil {
 		return
 	}
-	if b.AppName != "" {
-		data["Wordmark"] = b.AppName
-	}
 	if len(b.Logo) > 0 {
 		data["LogoURL"] = "/brand/logo?v=" + brandLogoVersion(b.Logo)
 	}
 	data["BrandCSSURL"] = brandCSSPath(b.CSS)
 	data["LoginTitle"] = b.LoginTitle
 	data["LoginTagline"] = b.LoginTagline
+}
+
+// BrandName is the name people know the deployment by: the bundle's
+// wordmark when one is configured, AUTH_BRAND_NAME otherwise.
+func BrandName(cfg *config.Config) string {
+	if cfg.Brand != nil && cfg.Brand.AppName != "" {
+		return cfg.Brand.AppName
+	}
+	return cfg.BrandName
 }
 
 // handleBrandLogo serves the bundle's mark from the bytes captured at load

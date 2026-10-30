@@ -148,11 +148,14 @@ func deletedAccountIDTx(ctx context.Context, tx *sql.Tx, email string) (string, 
 }
 
 // removeCredentialsTx removes everything an account signs in with: the
-// password, an active or pending authenticator, recovery codes and
-// in-progress sign-ins. The security version moves on, so no evidence
+// password, an emailed password link, an active or pending authenticator,
+// recovery codes and in-progress sign-ins. The security version moves on, so no evidence
 // recorded before it counts.
 func removeCredentialsTx(ctx context.Context, tx *sql.Tx, userID string, now int64) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM password_credentials WHERE user_id = ?`, userID); err != nil {
+		return err
+	}
+	if err := deletePasswordLinkTx(ctx, tx, userID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE authenticators SET disabled_at = ? WHERE user_id = ? AND verified_at IS NOT NULL AND disabled_at IS NULL`, now, userID); err != nil {

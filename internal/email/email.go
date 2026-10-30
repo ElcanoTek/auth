@@ -1,16 +1,19 @@
-// Package email delivers magic-link emails. Three drivers:
+// Package email delivers Auth's emails: magic links, password links and
+// security notices. Four drivers:
 //
 //   - stdout:   prints the link to stderr. Dev only; trivially insecure
 //     because anyone with journalctl access can read other
 //     users' login links. Default so a fresh install proves
 //     the click-through flow before the operator picks a
 //     real provider.
+//   - ses:      Amazon SES's v2 API over HTTPS (ses.go), with a send-only
+//     key locked to one From address. The client deployments' choice.
 //   - sendgrid: POST to api.sendgrid.com/v3/mail/send. One account and
 //     one verified sender can serve every service in a stack.
 //   - smtp:     STARTTLS to host:port. The escape hatch for shops that
 //     have an existing relay (corporate / regulated envs).
 //
-// All three drivers receive the SAME pre-rendered text and HTML, so the
+// Every driver receives the SAME pre-rendered text and HTML, so the
 // switching cost is just a config change.
 package email
 
@@ -22,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -67,6 +71,21 @@ type sgMail struct {
 	From             sgAddress           `json:"from"`
 	Subject          string              `json:"subject"`
 	Content          []sgContent         `json:"content"`
+	TrackingSettings sgTracking          `json:"tracking_settings"`
+}
+
+// sgTracking turns SendGrid's click and open tracking off for every
+// message, whatever the account's defaults: click tracking rewrites each
+// link through SendGrid's redirector, which would carry sign-in and
+// password links (and their tokens) through a third party.
+type sgTracking struct {
+	ClickTracking struct {
+		Enable     bool `json:"enable"`
+		EnableText bool `json:"enable_text"`
+	} `json:"click_tracking"`
+	OpenTracking struct {
+		Enable bool `json:"enable"`
+	} `json:"open_tracking"`
 }
 type sgPersonalization struct {
 	To []sgAddress `json:"to"`
@@ -136,6 +155,9 @@ type SMTP struct {
 	User string
 	Pass string
 	From string
+	// tlsConfig replaces the STARTTLS configuration; tests only (it trusts
+	// the test relay's certificate).
+	tlsConfig *tls.Config
 }
 
 func (s *SMTP) Send(ctx context.Context, to, subject, textBody, htmlBody string) error {
@@ -182,7 +204,11 @@ func (s *SMTP) Send(ctx context.Context, to, subject, textBody, htmlBody string)
 	if ok, _ := c.Extension("STARTTLS"); !ok {
 		return fmt.Errorf("smtp host %s does not advertise STARTTLS", s.Host)
 	}
-	if err := c.StartTLS(&tls.Config{ServerName: s.Host}); err != nil {
+	tlsConfig := &tls.Config{ServerName: s.Host}
+	if s.tlsConfig != nil {
+		tlsConfig = s.tlsConfig
+	}
+	if err := c.StartTLS(tlsConfig); err != nil {
 		return fmt.Errorf("starttls: %w", err)
 	}
 	if s.User != "" {
@@ -212,7 +238,12 @@ func (s *SMTP) Send(ctx context.Context, to, subject, textBody, htmlBody string)
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("close data: %w", err)
 	}
-	return c.Quit()
+	// The relay accepted the message when DATA closed: it is sent. QUIT is
+	// only cleanup, and a relay that hangs up instead of answering it must
+	// not turn a delivered message into a failure (a password link would be
+	// retried with a new token, leaving the delivered one dead).
+	_ = c.Quit()
+	return nil
 }
 
 // addressOnly extracts the angle-bracketed address from "Name <a@b>"
@@ -248,7 +279,9 @@ func buildMIME(from, to, subject, textBody, htmlBody string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
-	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
+	// A subject outside ASCII (a brand name such as "Société") is encoded
+	// as RFC 2047 words; plain ASCII goes as it is.
+	fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
 	fmt.Fprintf(&b, "MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=%q\r\n\r\n", boundary)
 	fmt.Fprintf(&b, "--%s\r\n", boundary)
