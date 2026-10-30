@@ -88,14 +88,15 @@ func TestDeleteAccountSignsOutRemovesAccessAndHidesIt(t *testing.T) {
 	if !contains(auditTypes(t, s, alice.ID), "account.deleted") {
 		t.Fatalf("audit = %v", auditTypes(t, s, alice.ID))
 	}
-	// Listed as deleted, waiting on fleet's acknowledgement.
+	// Listed as deleted, waiting on fleet's acknowledgement and on lens,
+	// which has no receiver to tell yet.
 	list, err := s.ListDeletedAccounts(ctx)
 	if err != nil || len(list) != 1 {
 		t.Fatalf("deleted list = %+v (%v)", list, err)
 	}
 	d := list[0]
 	if d.ID != alice.ID || d.Email != "Alice@Example.com" || d.Team != "Ops" || d.DeletedAt.Unix() != now+10 ||
-		strings.Join(d.PendingApplications, ",") != "fleet" || d.PurgeAt().Unix() != now+10+30*day {
+		strings.Join(d.PendingApplications, ",") != "fleet,lens" || d.PurgeAt().Unix() != now+10+30*day {
 		t.Fatalf("deleted account = %+v", d)
 	}
 	if got, err := s.DeletedAccountByEmail(ctx, "alice@EXAMPLE.com"); err != nil || got.ID != alice.ID {
@@ -123,9 +124,12 @@ func TestDeleteAccountSignsOutRemovesAccessAndHidesIt(t *testing.T) {
 	}
 }
 
-// An enable whose lookup ran before a delete committed still cannot bring
-// the account back: the write itself skips deleted accounts.
-func TestEnableCannotUndoADeleteThatCommittedFirst(t *testing.T) {
+// A change whose lookup ran before a delete committed still cannot touch
+// the account: each write itself skips deleted accounts. Enabling would
+// bring it back; granting administrator, a team or a two-factor
+// requirement would change what a restore brings back and audit a change
+// that never applied.
+func TestWritesLookedUpBeforeADeleteDoNotChangeIt(t *testing.T) {
 	s, alice, now := deleteFixture(t)
 	ctx := context.Background()
 	if _, _, err := s.DeleteAccount(ctx, alice.Email, now+10); err != nil {
@@ -136,12 +140,29 @@ func TestEnableCannotUndoADeleteThatCommittedFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := setAccountDisabledTx(ctx, tx, alice.ID, false, now+20); !errors.Is(err, ErrAccountNotFound) {
-		t.Fatalf("enable of a deleted account = %v", err)
+	writes := map[string]func() error{
+		"enable":       func() error { return setAccountDisabledTx(ctx, tx, alice.ID, false, now+20) },
+		"admin":        func() error { return setAccountAdminTx(ctx, tx, alice, true, now+20) },
+		"team":         func() error { return setAccountTeamTx(ctx, tx, alice.ID, "Growth", now+20, `{}`, true) },
+		"mfa-required": func() error { return setAccountMFARequiredTx(ctx, tx, alice.ID, true, now+20) },
 	}
-	var disabled bool
-	if err := tx.QueryRowContext(ctx, `SELECT disabled_at IS NOT NULL FROM accounts WHERE id = ?`, alice.ID).Scan(&disabled); err != nil || !disabled {
-		t.Fatalf("deleted account enabled (disabled=%v, %v)", disabled, err)
+	for name, write := range writes {
+		if err := write(); !errors.Is(err, ErrAccountNotFound) {
+			t.Fatalf("%s on a deleted account = %v", name, err)
+		}
+	}
+	var disabled, admin, mfaRequired bool
+	var team string
+	if err := tx.QueryRowContext(ctx, `SELECT disabled_at IS NOT NULL, is_admin, team, mfa_required FROM accounts WHERE id = ?`, alice.ID).
+		Scan(&disabled, &admin, &team, &mfaRequired); err != nil {
+		t.Fatal(err)
+	}
+	if !disabled || admin || team != "Ops" || mfaRequired {
+		t.Fatalf("deleted account changed: disabled=%v admin=%v team=%q mfa_required=%v", disabled, admin, team, mfaRequired)
+	}
+	var later int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE user_id = ? AND occurred_at > ?`, alice.ID, now+10).Scan(&later); err != nil || later != 0 {
+		t.Fatalf("%d audit events after the delete (%v)", later, err)
 	}
 }
 
@@ -331,22 +352,41 @@ func TestPurgeRemovesDeletedAccountsAfterThirtyDaysOnceAppsKnow(t *testing.T) {
 	if n := purge(now + 30*day - 1); n != 0 {
 		t.Fatalf("purged %d inside the window", n)
 	}
-	// Bob had no applications and goes; alice waits for fleet.
+	// Bob had no applications and goes; alice waits for fleet and lens.
 	if n := purge(now + 30*day); n != 1 {
 		t.Fatalf("purged %d at thirty days, want bob only", n)
 	}
 	if _, err := s.DeletedAccountByEmail(ctx, bob.Email); !errors.Is(err, ErrAccountNotFound) {
 		t.Fatalf("bob after purge = %v", err)
 	}
-	if d, err := s.DeletedAccountByEmail(ctx, alice.Email); err != nil || strings.Join(d.PendingApplications, ",") != "fleet" {
+	if d, err := s.DeletedAccountByEmail(ctx, alice.Email); err != nil || strings.Join(d.PendingApplications, ",") != "fleet,lens" {
 		t.Fatalf("alice held = %+v (%v)", d, err)
 	}
-	push, _, _ := s.AccessProvisioningState(ctx, alice.ID, "fleet")
-	if err := s.MarkAccessProvisioningDelivered(ctx, alice.ID, "fleet", push.EventID, push.Endpoint, now+31*day); err != nil {
+	acknowledge := func(app string, at int64) {
+		t.Helper()
+		push, ok, err := s.AccessProvisioningState(ctx, alice.ID, app)
+		if err != nil || !ok || push.Allowed || push.Endpoint == "" {
+			t.Fatalf("%s push = %+v ok=%v err=%v", app, push, ok, err)
+		}
+		if err := s.MarkAccessProvisioningDelivered(ctx, alice.ID, app, push.EventID, push.Endpoint, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acknowledge("fleet", now+31*day)
+	// Lens has no receiver, so it has not been told: purging now would
+	// delete the notice it is owed when one is set.
+	if n := purge(now + 31*day); n != 0 {
+		t.Fatalf("purged %d while lens has not been told", n)
+	}
+	if err := s.SetApplicationBackchannelLogoutURI(ctx, "lens", "https://lens.example/bc", now+32*day); err != nil {
 		t.Fatal(err)
 	}
-	if n := purge(now + 31*day); n != 1 {
-		t.Fatalf("purged %d after fleet acknowledged, want alice", n)
+	if n := purge(now + 32*day); n != 0 {
+		t.Fatalf("purged %d before lens acknowledged", n)
+	}
+	acknowledge("lens", now+32*day)
+	if n := purge(now + 32*day); n != 1 {
+		t.Fatalf("purged %d after every application acknowledged, want alice", n)
 	}
 	// Everything tied to alice went with her; her audit events stay, tied
 	// to no one.

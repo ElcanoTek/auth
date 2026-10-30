@@ -71,4 +71,24 @@ func TestConsoleAndSignInTreatADeletedAccountAsGone(t *testing.T) {
 	if !strings.Contains(body, "Restored bob@example.com (deleted earlier) with its history and team, and the password you entered; they must change it at first sign-in.") {
 		t.Fatalf("typed restore notice:\n%s", body)
 	}
+
+	// A server without AUTH_MFA_KEY cannot restore an account that requires
+	// two-factor sign-in from the console: every create is refused there,
+	// before the restore (the CLI checks for the key itself).
+	if _, err := st.SetAccountMFARequired(ctx, "bob@example.com", true, "", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.DeleteAccount(ctx, "bob@example.com", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	ring := cfg.MFAKeyring
+	cfg.MFAKeyring = nil
+	_, body = alice.post(url.Values{"action": {"create"}, "email": {"bob@example.com"}})
+	cfg.MFAKeyring = ring
+	if !strings.Contains(body, "AUTH_MFA_KEY is unset") {
+		t.Fatalf("keyless restore:\n%s", body)
+	}
+	if d, err := st.DeletedAccountByEmail(ctx, "bob@example.com"); err != nil || !d.MFARequired {
+		t.Fatalf("bob after a keyless restore = %+v (%v), want still deleted", d, err)
+	}
 }

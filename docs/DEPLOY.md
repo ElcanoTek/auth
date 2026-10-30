@@ -359,9 +359,10 @@ console, so nothing there can re-enable it.
 
 After 30 days the server's sweep removes the account for good, together with
 everything tied to it; its audit events stay without an account. The sweep
-waits while an application has not yet acknowledged the lost access, and
-`auth user list` names that application; until then a create still restores
-the account. The application's own data, such as
+waits while an application has not yet acknowledged the lost access,
+including one with no back-channel receiver set (it is told when one is),
+and `auth user list` names that application; until then a create still
+restores the account. The application's own data, such as
 Fleet's user and its chats, is not touched: delete that in the application
 (`fleet chat user del`, `fleet sched user del`).
 

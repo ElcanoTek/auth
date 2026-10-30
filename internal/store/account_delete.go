@@ -35,8 +35,10 @@ type DeletedAccount struct {
 	MFARequired bool // restoring it brings the per-account requirement back
 	DeletedAt   time.Time
 	// PendingApplications have not yet acknowledged that the account lost
-	// access. The purge waits for them: removing the account would drop
-	// the queued notice, and the application would keep its copy enabled.
+	// access, including one with no back-channel receiver set, which is told
+	// once one is. The purge waits for them: removing the account would
+	// drop the queued notice, and the application would keep its copy
+	// enabled.
 	PendingApplications []string
 }
 
@@ -122,6 +124,17 @@ func (s *Store) DeleteAccount(ctx context.Context, email string, now int64) (Acc
 	return a, removed, nil
 }
 
+// deletedOrTx is the error for a conditional write to an account that
+// matched nothing: ErrAccountNotFound when the account was deleted (or is
+// gone) since the caller looked it up, otherwise the caller's error.
+func deletedOrTx(ctx context.Context, tx *sql.Tx, userID string, otherwise error) error {
+	var deleted bool
+	if err := tx.QueryRowContext(ctx, `SELECT deleted_at IS NOT NULL FROM accounts WHERE id = ?`, userID).Scan(&deleted); err != nil || deleted {
+		return ErrAccountNotFound
+	}
+	return otherwise
+}
+
 // deletedAccountIDTx returns the ID of the deleted account with this email,
 // or "" when there is none.
 func deletedAccountIDTx(ctx context.Context, tx *sql.Tx, email string) (string, error) {
@@ -184,7 +197,7 @@ const deletedAccountColumns = `SELECT id, email, team, mfa_required, deleted_at 
 // acknowledged the account's lost access.
 func withPendingApplications(ctx context.Context, q rowQuerier, d *DeletedAccount) error {
 	rows, err := q.QueryContext(ctx, `SELECT client_id FROM access_provisioning
-		WHERE user_id = ? AND delivered_at IS NULL AND endpoint <> '' ORDER BY client_id`, d.ID)
+		WHERE user_id = ? AND delivered_at IS NULL ORDER BY client_id`, d.ID)
 	if err != nil {
 		return err
 	}
@@ -254,12 +267,15 @@ func (s *Store) DeletedAccountByEmail(ctx context.Context, email string) (Delete
 
 // PurgeDeletedAccounts removes, for good, the accounts deleted at least
 // DeletedAccountRetention ago that no application is still to be told
-// about. Everything that belongs to an account goes with it (foreign-key
+// about. An application whose receiver is not set yet still counts: its
+// notice is desired state, replayed when a receiver is set
+// (SetApplicationBackchannelLogoutURI), and purging would delete it.
+// Everything that belongs to an account goes with it (foreign-key
 // cascades); its audit events stay, no longer tied to anyone.
 func (s *Store) PurgeDeletedAccounts(ctx context.Context, now int64) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM accounts WHERE deleted_at IS NOT NULL AND deleted_at <= ?
 		AND NOT EXISTS (SELECT 1 FROM access_provisioning p
-		  WHERE p.user_id = accounts.id AND p.delivered_at IS NULL AND p.endpoint <> '')`,
+		  WHERE p.user_id = accounts.id AND p.delivered_at IS NULL)`,
 		now-int64(DeletedAccountRetention.Seconds()))
 	if err != nil {
 		return 0, err

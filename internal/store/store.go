@@ -1322,11 +1322,7 @@ func setAccountDisabledTx(ctx context.Context, tx *sql.Tx, userID string, disabl
 	if n, _ := res.RowsAffected(); n > 0 {
 		return nil
 	}
-	var deleted bool
-	if err := tx.QueryRowContext(ctx, `SELECT deleted_at IS NOT NULL FROM accounts WHERE id = ?`, userID).Scan(&deleted); err != nil || deleted {
-		return ErrAccountNotFound
-	}
-	return ErrLastAdmin
+	return deletedOrTx(ctx, tx, userID, ErrLastAdmin)
 }
 
 func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
@@ -1398,15 +1394,16 @@ func setAccountAdminTx(ctx context.Context, tx *sql.Tx, a Account, admin bool, n
 	}
 	// Demotion is conditional at write time (see SetAccountDisabled): it
 	// applies only while another enabled administrator exists, or when the
-	// target is disabled and so never counted as cover.
-	res, err := tx.ExecContext(ctx, `UPDATE accounts SET is_admin = ?, updated_at = ? WHERE id = ?
+	// target is disabled and so never counted as cover. A delete that
+	// committed after the caller's lookup is not written to.
+	res, err := tx.ExecContext(ctx, `UPDATE accounts SET is_admin = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL
 		AND (? = 1 OR disabled_at IS NOT NULL OR `+anotherEnabledAdminExists+`)`,
 		boolInt(admin), now, a.ID, boolInt(admin), a.ID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrLastAdmin
+		return deletedOrTx(ctx, tx, a.ID, ErrLastAdmin)
 	}
 	if err := insertAudit(ctx, tx, event, a.ID, now, `{}`); err != nil {
 		return err
@@ -1551,10 +1548,15 @@ func canonicalTeamSpellingTx(ctx context.Context, tx *sql.Tx, userID, team strin
 // and audits it. A real change also stamps team_updated_at and, when push is
 // true, queues a provisioning push to every team-synced application the
 // account is granted, so Fleet follows an Auth team change. Import writes
-// pass push=false: the application already holds those teams.
+// pass push=false: the application already holds those teams. A deleted
+// account (deleted after the caller's lookup) is ErrAccountNotFound.
 func setAccountTeamTx(ctx context.Context, tx *sql.Tx, userID, team string, now int64, metadata string, push bool) error {
 	var previous string
-	if err := tx.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ?`, userID).Scan(&previous); err != nil {
+	err := tx.QueryRowContext(ctx, `SELECT team FROM accounts WHERE id = ? AND deleted_at IS NULL`, userID).Scan(&previous)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAccountNotFound
+	}
+	if err != nil {
 		return err
 	}
 	if previous == team {

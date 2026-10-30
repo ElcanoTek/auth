@@ -444,6 +444,20 @@ func signOutUnenrolledRequiredTx(ctx context.Context, tx *sql.Tx, mode mfa.Mode,
 	return int64(len(users)), nil
 }
 
+// setAccountMFARequiredTx writes the per-user requirement. A delete that
+// committed after the caller's lookup is not written to
+// (ErrAccountNotFound).
+func setAccountMFARequiredTx(ctx context.Context, tx *sql.Tx, userID string, required bool, now int64) error {
+	res, err := tx.ExecContext(ctx, `UPDATE accounts SET mfa_required = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, boolInt(required), now, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrAccountNotFound
+	}
+	return nil
+}
+
 // SetAccountMFARequired sets the per-user requirement. Turning it on for an
 // account without a factor signs that account out everywhere, exactly as a
 // policy change would. Returns 1 when the account was signed out.
@@ -466,7 +480,7 @@ func (s *Store) SetAccountMFARequiredBy(ctx context.Context, email string, requi
 	if err := requireActorTx(ctx, tx, actorID, proof, now); err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET mfa_required = ?, updated_at = ? WHERE id = ?`, boolInt(required), now, a.ID); err != nil {
+	if err := setAccountMFARequiredTx(ctx, tx, a.ID, required, now); err != nil {
 		return 0, err
 	}
 	var signedOut int64
@@ -1765,7 +1779,7 @@ func (s *Store) SaveAccountAccess(ctx context.Context, email string, save Access
 		}
 	}
 	if save.MFARequired != nil && *save.MFARequired != a.MFARequired {
-		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET mfa_required = ?, updated_at = ? WHERE id = ?`, boolInt(*save.MFARequired), now, a.ID); err != nil {
+		if err := setAccountMFARequiredTx(ctx, tx, a.ID, *save.MFARequired, now); err != nil {
 			return AccessSaveResult{}, err
 		}
 		event := "mfa.required_cleared"
