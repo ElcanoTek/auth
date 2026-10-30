@@ -154,3 +154,30 @@ func TestButtonFillHasAFallbackWithoutColorMix(t *testing.T) {
 		}
 	}
 }
+
+// The page gradient is several layers (Flag's token and the brand's). As a
+// body background with `fixed` in the shorthand only the last layer stayed
+// put, and on a page taller than the window (a long Accounts table) the
+// others scrolled and repeated every screen height. It is one fixed layer
+// behind the page, and the body grows with its content so a long page keeps
+// its bottom padding.
+func TestPageGradientIsOneFixedLayerBehindAGrowingPage(t *testing.T) {
+	css := componentCSS
+	layer := regexp.MustCompile(`(?s)\nbody::before \{([^}]*)\}`).FindStringSubmatch(css)
+	if layer == nil {
+		t.Fatal("no body::before layer paints the page gradient")
+	}
+	for _, want := range []string{`content: "";`, "position: fixed;", "inset: 0;", "z-index: -1;", "background: var(--gradient-bg-home-signature);", "pointer-events: none;"} {
+		if !strings.Contains(layer[1], want) {
+			t.Errorf("body::before lacks %q", want)
+		}
+	}
+	if n := strings.Count(css, "--gradient-bg-home-signature"); n != 1 {
+		t.Errorf("the page gradient is painted %d times, want only by body::before", n)
+	}
+	for _, rule := range regexp.MustCompile(`(?s)(?:^|\n)[^{}\n]*\bbody\b[^{}\n]*\{[^}]*\}`).FindAllString(css, -1) {
+		if regexp.MustCompile(`(?m)^\s*height:|[{;]\s*height:`).MatchString(rule) {
+			t.Errorf("a body rule pins its height, so a long page loses its bottom padding:\n%s", strings.TrimSpace(rule))
+		}
+	}
+}

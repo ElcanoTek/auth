@@ -9,7 +9,8 @@
  * contrast fix goes into Flag first (see AGENTS.md).
  */
 * { box-sizing: border-box; }
-html, body { height: 100%; }
+/* The page grows with its content (a min-height, not a fixed height), so a
+   long Accounts table keeps the bottom padding below the card. */
 body {
   margin: 0;
   min-height: 100vh;
@@ -18,9 +19,22 @@ body {
   font-family: var(--font-body);
   font-size: var(--font-size-body); line-height: var(--line-height-body);
   color: var(--color-text-secondary);
-  background: var(--gradient-bg-home-signature) fixed;
   background-color: var(--color-bg);
   -webkit-font-smoothing: antialiased;
+}
+/* The page gradient is one window-sized layer that stays put while the page
+   scrolls. As a body background with `fixed` in the shorthand it was not:
+   `fixed` applies to the last of the token's layers only, so on a page
+   taller than the window its glows scrolled and repeated every screen
+   height. A fixed layer also holds where background-attachment: fixed is
+   ignored (iOS Safari). */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: var(--gradient-bg-home-signature);
+  pointer-events: none;
 }
 .card {
   width: 100%; max-width: 25rem;
