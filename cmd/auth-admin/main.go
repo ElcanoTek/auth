@@ -7,7 +7,8 @@
 //	auth-admin domain del <example.com>
 //	auth-admin domain list
 //	auth-admin user create|set-password|disable|enable|show|revoke-sessions <email>
-//	auth-admin user list|del
+//	auth-admin user list
+//	auth-admin user delete|del <email>
 //	auth-admin audit list [email] [limit]
 //
 // Reads AUTH_DATA_DIR from the env (the `auth` wrapper sources .env.local
@@ -99,14 +100,15 @@ USERS
   auth-admin user team <email> <team|->   set the team (- removes it)
   auth-admin user access <email> <app-id> on|off  grant or revoke application access
   auth-admin user revoke-sessions <email> revoke every central session
-  auth-admin user list                    show password accounts + legacy login audit
+  auth-admin user list                    show password accounts (and deleted ones) + legacy login audit
+  auth-admin user delete <email>          delete an account; kept 30 days, and creating the same email restores it
 
 TEAMS
   auth-admin team list                    every team and how many accounts are on it
   auth-admin team rename <from> <to>      rename a team on every account (and in Fleet, keeping its shares)
   auth-admin user mfa-required <email> on|off  require (or stop requiring) two-factor sign-in for one account
   auth-admin user mfa-reset <email> --reason "<text>"  remove a lost authenticator; they enroll again at next sign-in
-  auth-admin user del <email>             remove a user from the audit log
+  auth-admin user del <email>             remove a user from the legacy login audit (not an account)
 
 AUDIT
   auth-admin audit list [email] [limit]   newest security events (default 50, max 1000)
@@ -284,7 +286,7 @@ func domainCmd(dataDir string, args []string) {
 
 func userCmd(dataDir string, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|set-password|disable|enable|admin|access|team|mfa-required|mfa-reset|show|revoke-sessions|list|del> [email]")
+		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|set-password|disable|enable|admin|access|team|mfa-required|mfa-reset|show|revoke-sessions|list|delete|del> [email]")
 		os.Exit(2)
 	}
 	st, ctx := openStore(dataDir)
@@ -294,6 +296,11 @@ func userCmd(dataDir string, args []string) {
 	case "create":
 		requireUserEmailArg(args, "create")
 		email := validateAccountEmail(args[1])
+		// Restoring a deleted account brings back its per-account two-factor
+		// requirement, which needs the key like `user mfa-required on`.
+		if d, err := st.DeletedAccountByEmail(ctx, email); err == nil && d.MFARequired {
+			requireMFAKeyConfigured("restoring " + d.Email + ", a deleted account that requires two-factor sign-in,")
+		}
 		plain := promptNewPassword()
 		if err := passwordauth.Validate(plain, adminPasswordContext(email)...); err != nil {
 			fatalf("%s", passwordauth.UserMessage(err))
@@ -305,6 +312,11 @@ func userCmd(dataDir string, args []string) {
 		a, err := st.CreatePasswordAccount(ctx, email, encoded, true, time.Now().Unix())
 		if err != nil {
 			fatalf("create: %v", err)
+		}
+		if a.Restored {
+			fmt.Printf("✓ restored deleted account %s (%s) with its history and team; password change required on first login\n", a.Email, a.ID)
+			fmt.Println("  It has no applications and no authenticator: grant access again (earlier roles come back) and they enroll again.")
+			return
 		}
 		fmt.Printf("✓ created %s (%s); password change required on first login\n", a.Email, a.ID)
 	case "set-password":
@@ -337,6 +349,12 @@ func userCmd(dataDir string, args []string) {
 	case "show":
 		requireUserEmailArg(args, "show")
 		a, err := st.PasswordAccountByEmail(ctx, args[1])
+		if errors.Is(err, store.ErrAccountNotFound) {
+			if d, derr := st.DeletedAccountByEmail(ctx, args[1]); derr == nil {
+				printDeletedAccount(d)
+				return
+			}
+		}
 		if err != nil {
 			fatalf("show: %v", err)
 		}
@@ -543,19 +561,39 @@ func userCmd(dataDir string, args []string) {
 			}
 			_ = tw.Flush()
 		}
+		deleted, err := st.ListDeletedAccounts(ctx)
+		if err != nil {
+			fatalf("list deleted accounts: %v", err)
+		}
+		if len(deleted) > 0 {
+			if len(accounts) > 0 {
+				fmt.Println()
+			}
+			fmt.Println("DELETED ACCOUNTS (`auth user create <email>` restores one until it is removed)")
+			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			_, _ = fmt.Fprintln(tw, "EMAIL\tTEAM\tDELETED\tREMOVED AFTER")
+			for _, d := range deleted {
+				team := d.Team
+				if team == "" {
+					team = "-"
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", d.Email, team, d.DeletedAt.UTC().Format("2006-01-02"), purgeWhen(d))
+			}
+			_ = tw.Flush()
+		}
 		users, err := st.ListUsers(ctx)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "list: %v\n", err)
 			os.Exit(1)
 		}
-		if len(users) == 0 && len(accounts) == 0 {
+		if len(users) == 0 && len(accounts) == 0 && len(deleted) == 0 {
 			fmt.Println("(no logins recorded yet)")
 			return
 		}
 		if len(users) == 0 {
 			return
 		}
-		if len(accounts) > 0 {
+		if len(accounts) > 0 || len(deleted) > 0 {
 			fmt.Println("\nLEGACY MAGIC-LINK LOGIN AUDIT")
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -566,7 +604,31 @@ func userCmd(dataDir string, args []string) {
 				humanTime(u.LastSeen), u.FirstSeen.Format("2006-01-02"))
 		}
 		_ = tw.Flush()
-	case "del", "delete", "rm":
+	case "delete":
+		// Deletes a password account. The legacy magic-link login audit has
+		// its own command (del), so cleaning that up never deletes an
+		// account that shares the email.
+		requireUserEmailArg(args, "delete")
+		a, removed, err := st.DeleteAccount(ctx, args[1], time.Now().Unix())
+		switch {
+		case errors.Is(err, store.ErrLastAdmin):
+			fatalf("delete: %s is the last enabled administrator; make someone else an administrator first", args[1])
+		case errors.Is(err, store.ErrAccountNotFound):
+			if d, derr := st.DeletedAccountByEmail(ctx, args[1]); derr == nil {
+				fatalf("%s is already deleted (on %s); removed after %s", d.Email, d.DeletedAt.UTC().Format("2006-01-02"), purgeWhen(d))
+			}
+			fatalf("no such account: %s (`auth user del` removes an email from the legacy magic-link login audit)", args[1])
+		case err != nil:
+			fatalf("delete: %v", err)
+		}
+		apps := "no applications to remove"
+		if len(removed) > 0 {
+			apps = "removed from " + strings.Join(removed, ", ")
+		}
+		fmt.Printf("✓ deleted %s: disabled, signed out everywhere, %s\n", a.Email, apps)
+		fmt.Printf("  Kept until %s; `auth user create %s` before then restores it.\n",
+			time.Now().Add(store.DeletedAccountRetention).UTC().Format("2006-01-02"), a.Email)
+	case "del", "rm":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: auth-admin user del <email>")
 			os.Exit(2)
@@ -1165,6 +1227,26 @@ func readSecretLine(r *bufio.Reader) (string, error) {
 func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
+}
+
+// printDeletedAccount is `user show` for a deleted account.
+func printDeletedAccount(d store.DeletedAccount) {
+	team := d.Team
+	if team == "" {
+		team = "(none)"
+	}
+	fmt.Printf("email: %s\nid: %s\nstatus: deleted %s\nremoved after: %s\nrestore: auth user create %s\nteam: %s\n",
+		d.Email, d.ID, d.DeletedAt.UTC().Format("2006-01-02 15:04 UTC"), purgeWhen(d), d.Email, team)
+}
+
+// purgeWhen is when the sweep removes a deleted account: its date, plus any
+// application it still waits for.
+func purgeWhen(d store.DeletedAccount) string {
+	when := d.PurgeAt().UTC().Format("2006-01-02")
+	if len(d.PendingApplications) > 0 {
+		when += " (once " + strings.Join(d.PendingApplications, ", ") + " confirms)"
+	}
+	return when
 }
 
 // humanTime renders an age relative to now. Older than a day shows the

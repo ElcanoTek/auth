@@ -506,3 +506,99 @@ func TestCLITeamListAndRename(t *testing.T) {
 		t.Fatalf("app show with sync off:\n%s", show)
 	}
 }
+
+// `user delete` keeps the account 30 days, lists and shows it as deleted,
+// refuses the last administrator, and `user create` brings it back. The
+// legacy `user del` only ever touches the magic-link login audit, even when
+// a password account has the same email.
+func TestCLIDeleteListShowAndRestore(t *testing.T) {
+	c := newCLI(t)
+	const pw = "a long enough passphrase 123\na long enough passphrase 123\n"
+	c.must(pw, "user", "create", "alice@example.com")
+	c.must(pw, "user", "create", "bob@example.com")
+	c.must("", "user", "admin", "alice@example.com", "on")
+	c.must("", "user", "team", "bob@example.com", "Trading")
+	c.must("", "app", "create", "fleet", "https://fleet.example.test/cb")
+	c.must("", "user", "access", "bob@example.com", "fleet", "on")
+	c.must("", "user", "mfa-required", "bob@example.com", "on")
+	st := c.store()
+	ctx := context.Background()
+	bob, err := st.PasswordAccountByEmail(ctx, "bob@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if out, code := c.run("", "user", "delete", "alice@example.com"); code == 0 || !strings.Contains(out, "last enabled administrator") {
+		t.Fatalf("last admin deleted: %d\n%s", code, out)
+	}
+	out := c.must("", "user", "delete", "BOB@example.com")
+	purge := time.Now().Add(store.DeletedAccountRetention).UTC().Format("2006-01-02")
+	for _, want := range []string{"deleted bob@example.com", "signed out everywhere", "removed from fleet", "Kept until " + purge, "auth user create bob@example.com"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("delete output lacks %q:\n%s", want, out)
+		}
+	}
+	list := c.must("", "user", "list")
+	accountsTable, deletedTable, ok := strings.Cut(list, "DELETED ACCOUNTS")
+	if !ok || strings.Contains(accountsTable, "bob@example.com") || !strings.Contains(deletedTable, "bob@example.com") ||
+		!strings.Contains(deletedTable, "Trading") || !strings.Contains(deletedTable, purge) {
+		t.Fatalf("list:\n%s", list)
+	}
+	show := c.must("", "user", "show", "bob@example.com")
+	if !strings.Contains(show, "status: deleted") || !strings.Contains(show, bob.ID) || !strings.Contains(show, "removed after: "+purge) {
+		t.Fatalf("show:\n%s", show)
+	}
+	if out, code := c.run("", "user", "delete", "bob@example.com"); code == 0 || !strings.Contains(out, "already deleted") {
+		t.Fatalf("second delete: %d\n%s", code, out)
+	}
+	for _, args := range [][]string{{"user", "enable", "bob@example.com"}, {"user", "access", "bob@example.com", "fleet", "on"}} {
+		if out, code := c.run("", args...); code == 0 || !strings.Contains(out, "not found") {
+			t.Fatalf("%v on a deleted account: %d\n%s", args, code, out)
+		}
+	}
+
+	// bob's two-factor requirement would come back, so restoring him needs
+	// the key, like `user mfa-required on`. Meanwhile it cannot be changed.
+	if _, err := st.SetAccountMFARequired(ctx, "bob@example.com", true, "", time.Now().Unix()); err == nil {
+		t.Fatal("changed a deleted account's two-factor requirement")
+	}
+	keyed := c.env
+	c.env = nil
+	for _, kv := range keyed {
+		if !strings.HasPrefix(kv, "AUTH_MFA_KEY=") {
+			c.env = append(c.env, kv)
+		}
+	}
+	if out, code := c.run(pw, "user", "create", "bob@example.com"); code == 0 || !strings.Contains(out, "needs AUTH_MFA_KEY") {
+		t.Fatalf("restore without the key: %d\n%s", code, out)
+	}
+	c.env = keyed
+	out = c.must(pw, "user", "create", "bob@example.com")
+	if !strings.Contains(out, "restored deleted account bob@example.com ("+bob.ID+")") || !strings.Contains(out, "no applications") {
+		t.Fatalf("restore:\n%s", out)
+	}
+	if restored, err := st.PasswordAccountByEmail(ctx, "bob@example.com"); err != nil || restored.ID != bob.ID || restored.Team != "Trading" {
+		t.Fatalf("restored = %+v (%v)", restored, err)
+	}
+	if list := c.must("", "user", "list"); strings.Contains(list, "DELETED ACCOUNTS") {
+		t.Fatalf("restored account still listed as deleted:\n%s", list)
+	}
+
+	if out, code := c.run("", "user", "delete", "nobody@example.com"); code == 0 || !strings.Contains(out, "no such account") {
+		t.Fatalf("unknown delete: %d\n%s", code, out)
+	}
+	// bob also has a legacy login-audit row: del removes that row and
+	// leaves his account alone.
+	if err := st.RecordLogin(ctx, "bob@example.com", "example.com", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if out := c.must("", "user", "del", "bob@example.com"); !strings.Contains(out, "removed bob@example.com") {
+		t.Fatalf("legacy del:\n%s", out)
+	}
+	if _, err := st.PasswordAccountByEmail(ctx, "bob@example.com"); err != nil {
+		t.Fatalf("legacy del touched the account: %v", err)
+	}
+	if out, code := c.run("", "user", "del", "bob@example.com"); code == 0 || !strings.Contains(out, "no such user") {
+		t.Fatalf("legacy del again: %d\n%s", code, out)
+	}
+}
