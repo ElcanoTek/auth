@@ -574,6 +574,10 @@ Server configuration:
   into `.env.local` and `auth restart`. Unset, 2FA is simply unavailable; once
   any account holds a factor, the policy requires one, or an account is
   individually required to enroll, the server refuses to start without it.
+  While it is unset the `auth` CLI refuses the changes that would lead
+  there: a policy that requires 2FA, requiring it of an account, promoting
+  an administrator who must then enroll, and enabling or restoring an
+  account that requires it.
 - `AUTH_MFA_KEY_ID` (default `1`) labels the key. To rotate, generate a new
   key, give it a new id, move the old pair to `AUTH_MFA_PREVIOUS_KEYS` as
   `id:key`, restart, and keep it there until every factor has been re-sealed

@@ -511,6 +511,43 @@ func TestCLITeamListAndRename(t *testing.T) {
 // refuses the last administrator, and `user create` brings it back. The
 // legacy `user del` only ever touches the magic-link login audit, even when
 // a password account has the same email.
+// Enabling a disabled account that requires two-factor sign-in needs the
+// key, like `user mfa-required on`: without it the account could not enroll
+// and the server would refuse to start. Accounts without the requirement,
+// and one already enabled, are not held up.
+func TestCLIEnableNeedsTheKeyForAnAccountThatRequiresTwoFactor(t *testing.T) {
+	c := newCLI(t)
+	const pw = "a long enough passphrase 123\na long enough passphrase 123\n"
+	for _, email := range []string{"bob@example.com", "carol@example.com", "dave@example.com"} {
+		c.must(pw, "user", "create", email)
+	}
+	c.must("", "user", "mfa-required", "bob@example.com", "on")
+	c.must("", "user", "mfa-required", "dave@example.com", "on")
+	c.must("", "user", "disable", "bob@example.com")
+	c.must("", "user", "disable", "carol@example.com")
+	st := c.store()
+	ctx := context.Background()
+
+	keyed := c.env
+	c.env = append(append([]string(nil), keyed...), "AUTH_MFA_KEY=")
+	if out, code := c.run("", "user", "enable", "bob@example.com"); code == 0 || !strings.Contains(out, "enabling bob@example.com, an account that requires two-factor sign-in, needs AUTH_MFA_KEY") {
+		t.Fatalf("enable without the key: %d\n%s", code, out)
+	}
+	if bob, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); bob.DisabledAt == nil {
+		t.Fatal("bob was enabled without the key")
+	}
+	c.must("", "user", "enable", "carol@example.com")
+	c.must("", "user", "enable", "dave@example.com")
+	c.must("", "user", "disable", "bob@example.com")
+	c.env = keyed
+	if out := c.must("", "user", "enable", "bob@example.com"); !strings.Contains(out, "enabled bob@example.com") {
+		t.Fatalf("enable with the key:\n%s", out)
+	}
+	if bob, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); bob.DisabledAt != nil || !bob.MFARequired {
+		t.Fatalf("bob after enable: disabled=%v required=%v", bob.DisabledAt != nil, bob.MFARequired)
+	}
+}
+
 func TestCLIDeleteListShowAndRestore(t *testing.T) {
 	c := newCLI(t)
 	const pw = "a long enough passphrase 123\na long enough passphrase 123\n"

@@ -338,6 +338,12 @@ func userCmd(dataDir string, args []string) {
 		requireUserEmailArg(args, args[0])
 		email := validateAccountEmail(args[1])
 		disabled := args[0] == "disable"
+		// An enabled account that requires two-factor sign-in needs the key,
+		// like `user mfa-required on`: without it the account could not
+		// enroll, and the server would refuse to start.
+		if a, err := st.PasswordAccountByEmail(ctx, email); err == nil && !disabled && a.DisabledAt != nil && a.MFARequired {
+			requireMFAKeyConfigured("enabling " + a.Email + ", an account that requires two-factor sign-in,")
+		}
 		if err := st.SetAccountDisabled(ctx, email, disabled, time.Now().Unix()); err != nil {
 			fatalf("%s: %v", args[0], err)
 		}
