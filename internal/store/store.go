@@ -889,6 +889,10 @@ var (
 	// ErrLastAdmin means the change would leave the deployment with no
 	// enabled administrator, locking everyone out of the admin console.
 	ErrLastAdmin = errors.New("this is the last enabled administrator")
+	// ErrMFAKeyRequired means an enable without AUTH_MFA_KEY was refused:
+	// the account is required to use two-factor sign-in, so enabled it
+	// could not enroll and the server would refuse to start.
+	ErrMFAKeyRequired = errors.New("the account requires two-factor sign-in, which needs AUTH_MFA_KEY")
 )
 
 type Account struct {
@@ -1269,6 +1273,19 @@ func (s *Store) SetAccountDisabled(ctx context.Context, email string, disabled b
 // SetAccountDisabledBy is SetAccountDisabled with the acting administrator
 // re-checked (ActorProof) in the same transaction. The CLI passes nil.
 func (s *Store) SetAccountDisabledBy(ctx context.Context, email string, disabled bool, actorID string, proof *ActorProof, now int64) error {
+	return s.setAccountDisabled(ctx, email, disabled, false, actorID, proof, now)
+}
+
+// EnableAccountWithoutMFAKey enables an account for a caller without a
+// usable AUTH_MFA_KEY (the CLI). A disabled account that is required to use
+// two-factor sign-in stays disabled (ErrMFAKeyRequired). The enabling write
+// decides it, so a requirement set meanwhile by a process that has the key
+// (a running server, another CLI) still holds.
+func (s *Store) EnableAccountWithoutMFAKey(ctx context.Context, email string, now int64) error {
+	return s.setAccountDisabled(ctx, email, false, true, "", nil, now)
+}
+
+func (s *Store) setAccountDisabled(ctx context.Context, email string, disabled, keyless bool, actorID string, proof *ActorProof, now int64) error {
 	a, err := s.PasswordAccountByEmail(ctx, email)
 	if err != nil {
 		return err
@@ -1285,7 +1302,7 @@ func (s *Store) SetAccountDisabledBy(ctx context.Context, email string, disabled
 	if disabled {
 		event = "account.disabled"
 	}
-	if err := setAccountDisabledTx(ctx, tx, a.ID, disabled, now); err != nil {
+	if err := setAccountDisabledTx(ctx, tx, a.ID, disabled, keyless, now); err != nil {
 		return err
 	}
 	if disabled {
@@ -1307,22 +1324,31 @@ func (s *Store) SetAccountDisabledBy(ctx context.Context, email string, disabled
 // administrator existing, so two concurrent disables that each observed two
 // admins cannot both succeed: the second finds zero rows (ErrLastAdmin). A
 // delete that commits after the caller's lookup must not be undone by an
-// enable, so a deleted account matches nothing (ErrAccountNotFound).
-func setAccountDisabledTx(ctx context.Context, tx *sql.Tx, userID string, disabled bool, now int64) error {
+// enable, so a deleted account matches nothing (ErrAccountNotFound). A
+// keyless enable leaves a disabled account that requires two-factor sign-in
+// alone (ErrMFAKeyRequired).
+func setAccountDisabledTx(ctx context.Context, tx *sql.Tx, userID string, disabled, keyless bool, now int64) error {
 	var disabledAt any
 	if disabled {
 		disabledAt = now
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE accounts SET disabled_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL
-		AND (? = 0 OR is_admin = 0 OR `+anotherEnabledAdminExists+`)`,
-		disabledAt, now, userID, boolInt(disabled), userID)
+		AND (? = 0 OR is_admin = 0 OR `+anotherEnabledAdminExists+`)
+		AND (? = 0 OR mfa_required = 0 OR disabled_at IS NULL)`,
+		disabledAt, now, userID, boolInt(disabled), userID, boolInt(!disabled && keyless))
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
 		return nil
 	}
-	return deletedOrTx(ctx, tx, userID, ErrLastAdmin)
+	if err := deletedOrTx(ctx, tx, userID, nil); err != nil {
+		return err
+	}
+	if !disabled && keyless {
+		return ErrMFAKeyRequired
+	}
+	return ErrLastAdmin
 }
 
 func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
