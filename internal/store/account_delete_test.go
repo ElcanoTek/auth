@@ -141,7 +141,7 @@ func TestWritesLookedUpBeforeADeleteDoNotChangeIt(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	writes := map[string]func() error{
-		"enable":       func() error { return setAccountDisabledTx(ctx, tx, alice.ID, false, now+20) },
+		"enable":       func() error { return setAccountDisabledTx(ctx, tx, alice.ID, false, false, now+20) },
 		"admin":        func() error { return setAccountAdminTx(ctx, tx, alice, true, now+20) },
 		"team":         func() error { return setAccountTeamTx(ctx, tx, alice.ID, "Growth", now+20, `{}`, true) },
 		"mfa-required": func() error { return setAccountMFARequiredTx(ctx, tx, alice.ID, true, now+20) },

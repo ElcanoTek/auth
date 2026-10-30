@@ -338,13 +338,20 @@ func userCmd(dataDir string, args []string) {
 		requireUserEmailArg(args, args[0])
 		email := validateAccountEmail(args[1])
 		disabled := args[0] == "disable"
-		// An enabled account that requires two-factor sign-in needs the key,
-		// like `user mfa-required on`: without it the account could not
-		// enroll, and the server would refuse to start.
-		if a, err := st.PasswordAccountByEmail(ctx, email); err == nil && !disabled && a.DisabledAt != nil && a.MFARequired {
-			requireMFAKeyConfigured("enabling " + a.Email + ", an account that requires two-factor sign-in,")
+		var err error
+		if disabled || mfaKeyUsable() {
+			err = st.SetAccountDisabled(ctx, email, disabled, time.Now().Unix())
+		} else {
+			// Without the key an account that requires two-factor sign-in
+			// stays disabled, like `user mfa-required on`: enabled, it could
+			// not enroll and the server would refuse to start. The store
+			// decides it in the enabling write itself.
+			err = st.EnableAccountWithoutMFAKey(ctx, email, time.Now().Unix())
 		}
-		if err := st.SetAccountDisabled(ctx, email, disabled, time.Now().Unix()); err != nil {
+		if errors.Is(err, store.ErrMFAKeyRequired) {
+			requireMFAKeyConfigured("enabling " + email + ", an account that requires two-factor sign-in,")
+		}
+		if err != nil {
 			fatalf("%s: %v", args[0], err)
 		}
 		if disabled {
@@ -1324,6 +1331,16 @@ func cliActor() string {
 // requireMFAKeyConfigured refuses a change that would lock people out on a
 // server that cannot store authenticator secrets. The `auth` wrapper sources
 // .env.local, so AUTH_MFA_KEY is in the environment when configured.
+// mfaKeyUsable reports whether AUTH_MFA_KEY is set and parses as the
+// server parses it (requireMFAKeyConfigured says what is wrong).
+func mfaKeyUsable() bool {
+	if strings.TrimSpace(os.Getenv("AUTH_MFA_KEY")) == "" {
+		return false
+	}
+	_, err := mfa.ParseKeyring(os.Getenv("AUTH_MFA_KEY"), os.Getenv("AUTH_MFA_KEY_ID"), os.Getenv("AUTH_MFA_PREVIOUS_KEYS"))
+	return err == nil
+}
+
 func requireMFAKeyConfigured(what string) {
 	if strings.TrimSpace(os.Getenv("AUTH_MFA_KEY")) == "" {
 		fatalf("%s needs AUTH_MFA_KEY in .env.local first (generate one with `auth mfa keygen`, then `auth restart`); otherwise the affected accounts could not enroll and would be locked out", what)

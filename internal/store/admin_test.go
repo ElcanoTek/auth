@@ -583,3 +583,56 @@ func TestTeamTagSetClearedValidatedAndMigrated(t *testing.T) {
 		t.Fatalf("audit = %+v", events)
 	}
 }
+
+// An enable without the two-factor key leaves a disabled account that
+// requires two-factor sign-in alone, judged by the enabling write: a
+// requirement set after the caller decided it had no key to check still
+// holds. Other accounts, an account already enabled and an enable with the
+// key are not held up.
+func TestEnableWithoutTheMFAKeyKeepsARequiredAccountDisabled(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := int64(1_800_000_000)
+	for _, email := range []string{"bob@example.com", "carol@example.com", "dave@example.com"} {
+		if _, err := s.CreatePasswordAccount(ctx, email, "$argon2id$x", false, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetAccountDisabled(ctx, email, true, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// As a process that has the key would, between this caller's decision
+	// and its write.
+	for _, email := range []string{"bob@example.com", "dave@example.com"} {
+		if _, err := s.SetAccountMFARequired(ctx, email, true, "", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bob, _ := s.PasswordAccountByEmail(ctx, "bob@example.com")
+	if err := s.EnableAccountWithoutMFAKey(ctx, "bob@example.com", now+1); !errors.Is(err, ErrMFAKeyRequired) {
+		t.Fatalf("keyless enable of a required account = %v", err)
+	}
+	if got, _ := s.PasswordAccountByEmail(ctx, "bob@example.com"); got.DisabledAt == nil {
+		t.Fatal("bob enabled without the key")
+	}
+	if contains(auditTypes(t, s, bob.ID), "account.enabled") {
+		t.Fatal("refused enable audited")
+	}
+	if err := s.EnableAccountWithoutMFAKey(ctx, "carol@example.com", now+1); err != nil {
+		t.Fatalf("keyless enable without a requirement = %v", err)
+	}
+	if err := s.SetAccountDisabled(ctx, "dave@example.com", false, now+1); err != nil {
+		t.Fatalf("enable with the key = %v", err)
+	}
+	if err := s.EnableAccountWithoutMFAKey(ctx, "dave@example.com", now+2); err != nil {
+		t.Fatalf("keyless enable of an already enabled account = %v", err)
+	}
+	for email, wantDisabled := range map[string]bool{"bob@example.com": true, "carol@example.com": false, "dave@example.com": false} {
+		if a, _ := s.PasswordAccountByEmail(ctx, email); (a.DisabledAt != nil) != wantDisabled {
+			t.Fatalf("%s disabled=%v, want %v", email, a.DisabledAt != nil, wantDisabled)
+		}
+	}
+	if err := s.EnableAccountWithoutMFAKey(ctx, "nobody@example.com", now+2); !errors.Is(err, ErrAccountNotFound) {
+		t.Fatalf("keyless enable of no account = %v", err)
+	}
+}
