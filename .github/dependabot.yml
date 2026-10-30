@@ -9,9 +9,10 @@
 #   only; security updates are not delayed.
 # - Minor + patch bumps are grouped into one PR per ecosystem; majors stay
 #   separate for their own review.
-# - Nothing merges itself. A human merges a bump only when it earns it: a
-#   security fix whose code path we use, a security scanner update (such as
-#   CodeQL), or a specific change we need (see
+# - Nothing merges itself. A human merges routine grouped refreshes once CI is
+#   green so drift stays small, and merges out-of-cycle manual bumps only when
+#   they earn it: a security fix whose code path we use, a security scanner
+#   update (such as CodeQL), or a specific change we need (see
 #   AGENTS.md › Dependencies and in-housed code). In-housed code
 #   (internal/mfa/qr, the TOTP code) is ours and is not tracked here.
 # - Not covered: the `go` line in go.mod (Dependabot does not move the
