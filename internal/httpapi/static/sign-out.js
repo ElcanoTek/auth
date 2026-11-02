@@ -7,9 +7,18 @@
   "use strict";
   var dialog = document.getElementById("sign-out");
   if (!dialog || typeof dialog.showModal !== "function") return;
+  // Closing puts focus back on the button that opened the popup: Safari
+  // does not focus a clicked button, so the dialog alone would return it to
+  // the page.
+  var opener = null;
+  dialog.addEventListener("close", function () {
+    if (opener && opener.isConnected) opener.focus();
+    opener = null;
+  });
   document.querySelectorAll("[data-sign-out]").forEach(function (button) {
     button.addEventListener("click", function (event) {
       event.preventDefault();
+      opener = button;
       if (!dialog.open) dialog.showModal();
     });
   });

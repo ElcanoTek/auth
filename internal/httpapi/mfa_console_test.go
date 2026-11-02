@@ -1240,7 +1240,8 @@ func TestSignOutAsksFirstInAPopup(t *testing.T) {
 	script := mustStatic("sign-out.js")
 	for _, want := range []string{
 		`if (!dialog || typeof dialog.showModal !== "function") return;`,
-		`document.querySelectorAll("[data-sign-out]")`, `event.preventDefault();`, `dialog.showModal();`,
+		"button.addEventListener(\"click\", function (event) {\n      event.preventDefault();\n      opener = button;\n      if (!dialog.open) dialog.showModal();",
+		"if (opener && opener.isConnected) opener.focus();",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("sign-out.js lacks %q", want)
