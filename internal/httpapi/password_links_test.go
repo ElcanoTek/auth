@@ -185,7 +185,7 @@ func TestConsoleInvitesAndResetsByEmail(t *testing.T) {
 
 	// Settings offers a new link to accounts still waiting for one.
 	_, page := alice.get("/admin")
-	for _, want := range []string{"Sending the invite email.", `value="send-link"`, "Email an invite link", "Email a reset link", "Show a temporary password instead"} {
+	for _, want := range []string{"Sending the invite email.", `value="send-link"`, "Email an invite link", "Email a reset link", "Show a temporary password instead", `<div class="field" data-temp-password>`, `<span data-temp-hint>Only with Set a temporary password. </span>`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("console lacks %q:\n%s", want, page)
 		}
