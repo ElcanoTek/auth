@@ -492,6 +492,10 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .confirm .pane .muted { margin: 0; font-size: var(--font-size-caption); }
 .confirm .pane .btn { margin-top: 0; min-height: 2.25rem; font-size: var(--font-size-caption); }
 .confirm.danger .pane .btn { background: none; background-color: var(--color-status-error-bg); color: var(--color-status-error-fg); border: 1px solid var(--color-status-error-border); }
+/* A quieter second choice under the pane's button (Reset password: show a
+   temporary password instead of emailing a link). */
+.confirm .pane button.linkish { align-self: center; margin-top: calc(-1 * var(--space-1)); padding: var(--space-1) 0; color: var(--color-text-muted); background: none; border: 0; font: inherit; font-size: var(--font-size-overline); cursor: pointer; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
+.confirm .pane button.linkish:hover { color: var(--color-text-primary); }
 .topline .confirm .pane { left: auto; right: 0; border-radius: var(--radius-md) 0 var(--radius-md) var(--radius-md); }
 /* Teams: a rename form opens in the dialog's flow, on its own line under the
    team, so a short list does not have to scroll to show it. */

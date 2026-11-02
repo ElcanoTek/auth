@@ -173,16 +173,13 @@
               <details class="confirm danger"><summary aria-label="Reset password: {{$row.Email}}">Reset</summary>
                 <form class="pane" method="post" action="/admin">
                   <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{$row.Email}}">
-                  {{if $.EmailLinks}}<input type="hidden" name="delivery" value="email">
+                  {{if $.EmailLinks}}{{/* One form: the submit button pressed says how the new password reaches them (email first, so Enter emails). */}}
                   <p class="muted">{{$row.Email}} is signed out everywhere and emailed a link to choose a new password; it works for {{$.ResetLifetime}}.</p>
-                  <button class="btn" type="submit">Email a reset link</button>
+                  <button class="btn" type="submit" name="delivery" value="email">Email a reset link</button>
+                  <button class="linkish" type="submit" name="delivery" value="password">Show a temporary password instead</button>
                   {{else}}<p class="muted">{{$row.Email}} is signed out everywhere and gets a new temporary password.</p>
                   <button class="btn" type="submit">Confirm reset</button>{{end}}
                 </form>
-                {{if $.EmailLinks}}<form class="pane" method="post" action="/admin">
-                  <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{$row.Email}}"><input type="hidden" name="delivery" value="password">
-                  <button class="btn-ghost" type="submit">Show a temporary password instead</button>
-                </form>{{end}}
               </details>
             </div>
             <div class="setting">
