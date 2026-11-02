@@ -1207,10 +1207,7 @@ func TestSignOutAsksFirstInAPopup(t *testing.T) {
 	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
 	_, admin := alice.get("/admin")
 	_, apps := alice.get("/account")
-	csrf := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(apps)
-	if csrf == nil {
-		t.Fatalf("apps page has no CSRF token:\n%s", apps)
-	}
+	token := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`)
 	for name, body := range map[string]string{"console": admin, "apps page": apps} {
 		mine := accountPopup(t, body)
 		if !strings.Contains(mine, `<button class="btn-ghost danger" type="button" commandfor="sign-out" command="show-modal" aria-label="Sign out everywhere: Alice@Example.com">Sign out</button>`) ||
@@ -1220,7 +1217,8 @@ func TestSignOutAsksFirstInAPopup(t *testing.T) {
 		popup := signOutPopup(t, body)
 		for _, want := range []string{
 			`<dialog id="sign-out" class="modal confirm-change" aria-labelledby="sign-out-title" aria-describedby="sign-out-detail" closedby="any">`,
-			`<h3 id="sign-out-title">Sign out everywhere?</h3>`, `commandfor="sign-out" command="close" aria-label="Close"`,
+			`<h3 id="sign-out-title">Sign out everywhere?</h3>`,
+			`<form method="dialog"><button class="icon-btn close" type="submit" aria-label="Close">`,
 			`<form method="post" action="/logout">`, `name="redirect_to" value="/?notice=signed_out"`,
 			`<button class="btn" type="submit">Sign out</button>`,
 			`<form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>`,
@@ -1229,7 +1227,7 @@ func TestSignOutAsksFirstInAPopup(t *testing.T) {
 				t.Errorf("%s: the Sign out popup lacks %q", name, want)
 			}
 		}
-		if !strings.Contains(popup, `name="csrf_token" value="`) {
+		if token.FindStringSubmatch(popup) == nil {
 			t.Errorf("%s: the Sign out popup's form has no CSRF token", name)
 		}
 		if !strings.Contains(body, `/sign-out.js" defer></script>`) {
@@ -1251,8 +1249,12 @@ func TestSignOutAsksFirstInAPopup(t *testing.T) {
 	if !strings.Contains(componentCSS, `.btn-ghost.danger:hover {`) {
 		t.Error("Your account's Sign out lost its red hover")
 	}
-	// The popup's form, as posted: every session ends, back to sign-in.
-	resp := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf[1]}, "redirect_to": {"/?notice=signed_out"}}, alice.session, alice.csrf)
+	// The popup's own form, as posted: every session ends, back to sign-in.
+	popupToken := token.FindStringSubmatch(signOutPopup(t, apps))
+	if popupToken == nil {
+		t.Fatal("no CSRF token in the apps page's Sign out popup")
+	}
+	resp := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {popupToken[1]}, "redirect_to": {"/?notice=signed_out"}}, alice.session, alice.csrf)
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?notice=signed_out" {
 		t.Fatalf("sign out = %d %q", resp.StatusCode, resp.Header.Get("Location"))

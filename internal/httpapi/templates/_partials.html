@@ -70,9 +70,10 @@
      signing out always asks first. Your account's Sign out opens it
      (commandfor, no script needed); the apps page's own Sign out button is a
      plain submit that sign-out.js turns into an opener, so without script it
-     still signs out directly. Only the popup's Sign out posts /logout. */}}
+     still signs out directly. Close and Cancel are method="dialog" forms, so
+     they work wherever the popup can open. Only its Sign out posts /logout. */}}
 {{define "sign-out"}}<dialog id="sign-out" class="modal confirm-change" aria-labelledby="sign-out-title" aria-describedby="sign-out-detail" closedby="any">
-    <div class="modal-head"><h3 id="sign-out-title">Sign out everywhere?</h3><button class="icon-btn close" type="button" commandfor="sign-out" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+    <div class="modal-head"><h3 id="sign-out-title">Sign out everywhere?</h3><form method="dialog"><button class="icon-btn close" type="submit" aria-label="Close">{{template "icon" "close"}}</button></form></div>
     <p class="hint" id="sign-out-detail">This ends every one of your sessions, in every application, on every device, this one included. You return to the sign-in page.</p>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="redirect_to" value="/?notice=signed_out">
