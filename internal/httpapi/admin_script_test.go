@@ -36,19 +36,23 @@ func TestTemporaryPasswordPopupScript(t *testing.T) {
 }
 
 // With an invite chosen, Add user hides the temporary password field and
-// disables its input (a typed value is not sent); CSS hides it without script.
+// disables its input (a typed value is not sent, and cannot block the form's
+// validation out of sight). Only script hides it: a stylesheet rule would
+// hide an enabled input, and a too-short value left in it would stop the
+// form submitting with nothing visible to fix.
 func TestInviteHidesTheTemporaryPasswordField(t *testing.T) {
 	for _, want := range []string{
 		`document.querySelectorAll("[data-temp-password]")`,
 		`field.hidden = !temp.checked`,
 		`input.disabled = !temp.checked`,
+		`if (only) only.hidden = true`,
 	} {
 		if !strings.Contains(adminScript, want) {
 			t.Fatalf("admin script lacks %q", want)
 		}
 	}
-	if !strings.Contains(componentCSS, `form:has(input[name="delivery"][value="email"]:checked) [data-temp-password] { display: none; }`) {
-		t.Fatal("the temporary password field shows with an invite when script is off")
+	if strings.Contains(componentCSS, "data-temp-password") {
+		t.Fatal("a stylesheet rule hides the temporary password field; without script its input stays enabled")
 	}
 }
 

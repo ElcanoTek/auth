@@ -122,12 +122,17 @@
   // Add user: the temporary password field and its Generate button belong
   // to "Set a temporary password" only. With an invite chosen the field is
   // hidden and its input disabled, so a value typed before switching is not
-  // sent (the server refuses a password with an invite).
+  // sent (the server refuses a password with an invite) and cannot block the
+  // form's validation while out of sight. Without script the field stays
+  // visible with its "Only with" hint; hiding it by CSS alone would leave an
+  // enabled, invalid input nobody can see or fix.
   document.querySelectorAll("[data-temp-password]").forEach(function (field) {
     var form = field.closest("form");
     var temp = form && form.querySelector('input[name="delivery"][value="password"]');
     if (!temp) return;
     var input = field.querySelector('input[name="password"]');
+    var only = field.querySelector("[data-temp-hint]");
+    if (only) only.hidden = true;
     function sync() {
       field.hidden = !temp.checked;
       if (input) input.disabled = !temp.checked;

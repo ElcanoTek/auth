@@ -279,7 +279,7 @@
         </div>{{end}}
         <div class="field" data-temp-password><label for="new-password">Temporary password</label>
           <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="Leave blank to generate one"{{with .Draft}} value="{{.Password}}"{{end}}><button class="btn-ghost" type="button" data-generate="new-password">Generate</button></div>
-          <p class="hint">At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>
+          <p class="hint">{{if .EmailLinks}}<span data-temp-hint>Only with Set a temporary password. </span>{{end}}At least 12 characters, not built from their name or {{.Brand}}. Blank means a strong one is generated for you.</p></div>
         <div class="seg-group"><span class="seg-label">Auth Admin</span>
           <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"{{if and .Draft .Draft.Admin}} checked{{end}}> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>
         </div>
