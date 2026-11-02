@@ -31,8 +31,8 @@
      these pages carry no separate theme toggle. Only an administrator changes their own password
      (handleChangePassword), so only they are offered it.
      Signing out ends every session of the account, in every application
-     (handlePasswordLogout). closedby lets a click outside close it where no
-     page script does. */}}
+     (handlePasswordLogout); it asks first, in the Sign out popup below.
+     closedby lets a click outside close it where no page script does. */}}
 {{define "account-button"}}<button class="icon-btn" type="button" commandfor="me" command="show-modal" aria-label="Your account" title="Your account">{{template "icon" "persona"}}</button>{{end}}
 
 {{define "account-menu"}}<dialog id="me" class="modal account-menu" aria-labelledby="me-title" closedby="any">
@@ -60,13 +60,24 @@
     </div>{{end}}
     <div class="setting">
       <div><strong>Sign out everywhere</strong><p class="muted">Ends every one of your sessions, in every application, on every device, this one included.</p></div>
-      <details class="confirm danger"><summary aria-label="Sign out everywhere: {{.Email}}">Sign out</summary>
-        <form class="pane" method="post" action="/logout">
-          <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="redirect_to" value="/?notice=signed_out">
-          <p class="muted">You will be signed out here too and return to the sign-in page.</p>
-          <button class="btn" type="submit">Confirm sign out</button>
-        </form>
-      </details>
+      <button class="btn-ghost danger" type="button" commandfor="sign-out" command="show-modal" aria-label="Sign out everywhere: {{.Email}}">Sign out</button>
     </div>
   </dialog>
+  {{template "sign-out" .}}
   <script nonce="{{.Nonce}}" src="{{asset "theme-choice.js"}}" defer></script>{{end}}
+
+{{/* The Sign out popup, in the middle of the screen over a dimmed page, so
+     signing out always asks first. Your account's Sign out opens it
+     (commandfor, no script needed); the apps page's own Sign out button is a
+     plain submit that sign-out.js turns into an opener, so without script it
+     still signs out directly. Only the popup's Sign out posts /logout. */}}
+{{define "sign-out"}}<dialog id="sign-out" class="modal confirm-change" aria-labelledby="sign-out-title" aria-describedby="sign-out-detail" closedby="any">
+    <div class="modal-head"><h3 id="sign-out-title">Sign out everywhere?</h3><button class="icon-btn close" type="button" commandfor="sign-out" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+    <p class="hint" id="sign-out-detail">This ends every one of your sessions, in every application, on every device, this one included. You return to the sign-in page.</p>
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="redirect_to" value="/?notice=signed_out">
+      <button class="btn" type="submit">Sign out</button>
+    </form>
+    <form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>
+  </dialog>
+  <script nonce="{{.Nonce}}" src="{{asset "sign-out.js"}}" defer></script>{{end}}

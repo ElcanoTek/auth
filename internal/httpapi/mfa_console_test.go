@@ -90,6 +90,17 @@ func accountPopup(t *testing.T, body string) string {
 	return chunk[:strings.Index(chunk, "</dialog>")]
 }
 
+// signOutPopup returns the Sign out popup (the dialog with id="sign-out").
+func signOutPopup(t *testing.T, body string) string {
+	t.Helper()
+	start := strings.Index(body, `<dialog id="sign-out" `)
+	if start < 0 {
+		t.Fatalf("no Sign out popup in:\n%s", body)
+	}
+	chunk := body[start:]
+	return chunk[:strings.Index(chunk, "</dialog>")]
+}
+
 // The console gives the signed-in administrator their own way in: the button
 // is in Your account (and in the policy popup, which cannot be saved without
 // an authenticator), and following it unlocks the sensitive changes that were
@@ -1116,7 +1127,7 @@ func TestYourAccountIsOnEveryTabWithTheTeam(t *testing.T) {
 		if strings.Contains(body, "Signed in as") {
 			t.Fatalf("%s: the console still says who is signed in outside Your account", path)
 		}
-		for _, want := range []string{"<strong>Team</strong></div>\n      <span class=\"chip off\">none</span>", "<strong>Reset password</strong>", "<strong>Sign out everywhere</strong>", `<form class="pane" method="post" action="/logout">`} {
+		for _, want := range []string{"<strong>Team</strong></div>\n      <span class=\"chip off\">none</span>", "<strong>Reset password</strong>", "<strong>Sign out everywhere</strong>", `commandfor="sign-out" command="show-modal"`} {
 			if !strings.Contains(mine, want) {
 				t.Fatalf("%s: Your account lacks %q:\n%s", path, want, mine)
 			}
@@ -1156,7 +1167,7 @@ func TestAppsPageHasYourAccount(t *testing.T) {
 	for _, want := range []string{
 		`<p class="who">bob@example.com</p>`, `<span class="tag">Trading</span>`,
 		`href="/account/security?return_to=%2Faccount"`,
-		`<form class="pane" method="post" action="/logout">`,
+		`commandfor="sign-out" command="show-modal"`,
 	} {
 		if !strings.Contains(mine, want) {
 			t.Fatalf("Your account on the apps page lacks %q:\n%s", want, mine)
@@ -1183,6 +1194,72 @@ func TestYourAccountShowsATeamChangedOnThisRequest(t *testing.T) {
 	}
 	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag">Trading</span>`) {
 		t.Fatalf("Your account after setting the team:\n%s", mine)
+	}
+}
+
+// Signing out asks first, in a popup in the middle of the screen. Your
+// account's Sign out opens it (commandfor, no script needed); the apps
+// page's own Sign out button is a plain submit that sign-out.js turns into an
+// opener, so without script it still signs out. Only the popup's form posts
+// /logout, with the page's CSRF token, and that post signs out everywhere.
+func TestSignOutAsksFirstInAPopup(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
+	_, admin := alice.get("/admin")
+	_, apps := alice.get("/account")
+	csrf := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(apps)
+	if csrf == nil {
+		t.Fatalf("apps page has no CSRF token:\n%s", apps)
+	}
+	for name, body := range map[string]string{"console": admin, "apps page": apps} {
+		mine := accountPopup(t, body)
+		if !strings.Contains(mine, `<button class="btn-ghost danger" type="button" commandfor="sign-out" command="show-modal" aria-label="Sign out everywhere: Alice@Example.com">Sign out</button>`) ||
+			strings.Contains(mine, `action="/logout"`) || strings.Contains(mine, "<details") {
+			t.Errorf("%s: Your account signs out without the popup:\n%s", name, mine)
+		}
+		popup := signOutPopup(t, body)
+		for _, want := range []string{
+			`<dialog id="sign-out" class="modal confirm-change" aria-labelledby="sign-out-title" aria-describedby="sign-out-detail" closedby="any">`,
+			`<h3 id="sign-out-title">Sign out everywhere?</h3>`, `commandfor="sign-out" command="close" aria-label="Close"`,
+			`<form method="post" action="/logout">`, `name="redirect_to" value="/?notice=signed_out"`,
+			`<button class="btn" type="submit">Sign out</button>`,
+			`<form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>`,
+		} {
+			if !strings.Contains(popup, want) {
+				t.Errorf("%s: the Sign out popup lacks %q", name, want)
+			}
+		}
+		if !strings.Contains(popup, `name="csrf_token" value="`) {
+			t.Errorf("%s: the Sign out popup's form has no CSRF token", name)
+		}
+		if !strings.Contains(body, `/sign-out.js" defer></script>`) {
+			t.Errorf("%s does not load sign-out.js", name)
+		}
+	}
+	if !strings.Contains(apps, `<button class="btn" type="submit" data-sign-out>Sign out</button>`) {
+		t.Fatalf("the apps page's Sign out button does not open the popup:\n%s", apps)
+	}
+	script := mustStatic("sign-out.js")
+	for _, want := range []string{
+		`if (!dialog || typeof dialog.showModal !== "function") return;`,
+		`document.querySelectorAll("[data-sign-out]")`, `event.preventDefault();`, `dialog.showModal();`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("sign-out.js lacks %q", want)
+		}
+	}
+	if !strings.Contains(componentCSS, `.btn-ghost.danger:hover {`) {
+		t.Error("Your account's Sign out lost its red hover")
+	}
+	// The popup's form, as posted: every session ends, back to sign-in.
+	resp := postPasswordForm(t, ts.URL+"/logout", url.Values{"csrf_token": {csrf[1]}, "redirect_to": {"/?notice=signed_out"}}, alice.session, alice.csrf)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?notice=signed_out" {
+		t.Fatalf("sign out = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	a, _ := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if n, _ := st.CountActiveAuthSessions(context.Background(), a.ID, time.Now().Unix()); n != 0 {
+		t.Fatalf("sessions after signing out = %d", n)
 	}
 }
 
@@ -1240,7 +1317,7 @@ func TestYourAccountSitsBottomLeft(t *testing.T) {
     <button class="icon-btn" type="button" commandfor="me"`) {
 			t.Errorf("%s: the person icon is still at the top right", path)
 		}
-		outside := strings.Replace(body, accountPopup(t, body), "", 1)
+		outside := strings.Replace(strings.Replace(body, accountPopup(t, body), "", 1), signOutPopup(t, body), "", 1)
 		if strings.Contains(outside, `action="/logout"`) && path == "/admin" {
 			t.Errorf("%s: the console still has a sign-out form outside Your account", path)
 		}
