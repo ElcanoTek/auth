@@ -389,3 +389,33 @@ func TestAValidLinkDoesNotResetTheFailureCount(t *testing.T) {
 		t.Fatalf("after 3 failures around a valid open: %d", code)
 	}
 }
+
+// Reset password with emailed links is one pane: the email button, then the
+// temporary password as a link-styled second choice in the same form (two
+// forms in one pane were drawn on top of each other).
+func TestResetPaneOffersTheTemporaryPasswordAsALinkInOneForm(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	enableLinks(cfg)
+	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
+	_, page := alice.get("/admin")
+	start := strings.Index(page, `<summary aria-label="Reset password: bob@example.com">`)
+	if start < 0 {
+		t.Fatalf("no reset pane for bob:\n%s", page)
+	}
+	pane := page[start:]
+	pane = pane[:strings.Index(pane, "</details>")]
+	if n := strings.Count(pane, "<form"); n != 1 {
+		t.Fatalf("reset pane has %d forms, want 1:\n%s", n, pane)
+	}
+	email := `<button class="btn" type="submit" name="delivery" value="email">Email a reset link</button>`
+	temp := `<button class="linkish" type="submit" name="delivery" value="password">Show a temporary password instead</button>`
+	if !strings.Contains(pane, email) || !strings.Contains(pane, temp) || strings.Index(pane, email) > strings.Index(pane, temp) {
+		t.Fatalf("reset pane lacks the email button first, then the temporary password link:\n%s", pane)
+	}
+	if strings.Contains(pane, `type="hidden" name="delivery"`) {
+		t.Fatalf("a hidden delivery field would override the button pressed:\n%s", pane)
+	}
+	if !strings.Contains(componentCSS, `.confirm .pane button.linkish {`) {
+		t.Fatal("the temporary password choice is not styled as a link")
+	}
+}
