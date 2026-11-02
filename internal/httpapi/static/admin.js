@@ -119,6 +119,27 @@
       if (fleetAdmin) fleetAdmin.checked = false;
     });
   });
+  // Add user: the temporary password field and its Generate button belong
+  // to "Set a temporary password" only. With an invite chosen the field is
+  // hidden and its input disabled, so a value typed before switching is not
+  // sent (the server refuses a password with an invite).
+  document.querySelectorAll("[data-temp-password]").forEach(function (field) {
+    var form = field.closest("form");
+    var temp = form && form.querySelector('input[name="delivery"][value="password"]');
+    if (!temp) return;
+    var input = field.querySelector('input[name="password"]');
+    function sync() {
+      field.hidden = !temp.checked;
+      if (input) input.disabled = !temp.checked;
+    }
+    form.querySelectorAll('input[name="delivery"]').forEach(function (radio) {
+      radio.addEventListener("change", sync);
+    });
+    // A page restored from the back/forward cache keeps the radio it had
+    // without firing change.
+    window.addEventListener("pageshow", sync);
+    sync();
+  });
   document.querySelectorAll("[data-generate]").forEach(function (button) {
     button.addEventListener("click", function () {
       var field = document.getElementById(button.getAttribute("data-generate"));

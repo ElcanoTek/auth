@@ -35,6 +35,23 @@ func TestTemporaryPasswordPopupScript(t *testing.T) {
 	}
 }
 
+// With an invite chosen, Add user hides the temporary password field and
+// disables its input (a typed value is not sent); CSS hides it without script.
+func TestInviteHidesTheTemporaryPasswordField(t *testing.T) {
+	for _, want := range []string{
+		`document.querySelectorAll("[data-temp-password]")`,
+		`field.hidden = !temp.checked`,
+		`input.disabled = !temp.checked`,
+	} {
+		if !strings.Contains(adminScript, want) {
+			t.Fatalf("admin script lacks %q", want)
+		}
+	}
+	if !strings.Contains(componentCSS, `form:has(input[name="delivery"][value="email"]:checked) [data-temp-password] { display: none; }`) {
+		t.Fatal("the temporary password field shows with an invite when script is off")
+	}
+}
+
 func TestSelectedPermissionChoiceGetsTheOutline(t *testing.T) {
 	if !strings.Contains(componentCSS, `.permission-choice:has(input:checked)`) {
 		t.Fatal("selected permission choices do not receive the outline")

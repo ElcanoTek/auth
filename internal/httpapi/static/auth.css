@@ -229,6 +229,12 @@ dialog.modal.account-menu::backdrop { background: transparent; }
 .modal .with-btn { display: flex; gap: var(--space-2); }
 .modal .with-btn input { flex: 1; min-width: 0; }
 .modal .with-btn .btn-ghost { min-height: 2.5rem; }
+/* Add user: the temporary password field is for "Set a temporary password"
+   only. The delivery script hides it ([hidden]) and disables its input;
+   where the browser supports :has(), this rule hides it without script too. */
+@supports selector(:has(*)) {
+  form:has(input[name="delivery"][value="email"]:checked) [data-temp-password] { display: none; }
+}
 .modal .btn { margin-top: var(--space-2); }
 .setting { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-3) 0; border-top: 1px solid var(--color-border); }
 .setting:first-of-type { border-top: 0; }
