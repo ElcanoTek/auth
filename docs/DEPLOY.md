@@ -593,7 +593,12 @@ password. What people see:
   setting up usually has a stale entry: they try the other entry and delete
   the one that fails, or an administrator resets two-factor.
   The key shown under the QR code goes into the app, not the code box; the
-  page says so when letters are entered there.
+  page says so when letters are entered there. A public guide at
+  `/help/authenticator` (password mode only) explains two-factor sign-in
+  and walks through Google Authenticator, Microsoft Authenticator, Bitwarden
+  and 1Password, with screenshots and troubleshooting; the sign-in, set-up,
+  sign-in code, step-up and Security pages link to it, so it is also the page
+  to send someone who is stuck.
 - **Signing in.** After the password, an enrolled account is asked for the
   current code (`/login/verify`); a recovery code works instead, once, and
   the signed-in page then says so. Five wrong codes end that sign-in attempt.

@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — Set up two-factor sign-in</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+{{template "assets" .}}
+</head>
+<body>
+  {{template "theme-toggle"}}
+  <main class="card wide guide">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>Set up two-factor sign-in</h1>
+    <p class="muted">A step-by-step guide to adding your {{.Brand}} account to an authenticator app. It takes about five minutes.</p>
+
+    <nav class="guide-toc" aria-label="On this page">
+      <ol>
+        <li><a href="#why">What it is and why it matters</a></li>
+        <li><a href="#need">What you need</a></li>
+        <li><a href="#page">What the set-up page shows</a></li>
+        <li><a href="#ways">Three ways to add the account</a></li>
+        <li><a href="#apps">App by app: Google, Microsoft, Bitwarden, 1Password</a></li>
+        <li><a href="#finish">Finish and save your recovery codes</a></li>
+        <li><a href="#trouble">If something goes wrong</a></li>
+      </ol>
+    </nav>
+
+    <section id="why">
+      <h2>What two-factor sign-in is</h2>
+      <p>Two-factor sign-in means two things are needed to get into your account: your password, and a six-digit code from an app on your phone. The code changes every 30 seconds, so a code someone copies stops working almost at once.</p>
+      <h3>Why it matters</h3>
+      <ul>
+        <li><strong>Passwords get stolen.</strong> They leak when other websites are breached, they get reused, and they get typed into fake sign-in pages.</li>
+        <li><strong>AI makes fake emails hard to spot.</strong> A scammer can now write a polished message that mentions your company, your clients or your colleagues, and build a convincing copy of a sign-in page, in minutes.</li>
+        <li><strong>Busy seasons are scam seasons.</strong> Phishing and account takeovers peak when everyone is busiest, above all from Black Friday through the end of the year, which is also when campaigns matter most. That is the worst time to lose access to an account.</li>
+        <li><strong>A stolen password is no longer enough on its own.</strong> With two-factor sign-in on, someone would also need the current code from your phone. That is also why a code should only ever go into the real sign-in page: a fake page can pass on a code you type into it.</li>
+      </ul>
+      <div class="banner warn" role="note"><strong>Keep your codes to yourself.</strong> {{.Brand}} will never ask for a code by email, chat or phone. Only type one into the sign-in page{{if .Host}}, and check that the address bar shows <b>{{.Host}}</b>{{end}}.</div>
+    </section>
+
+    <section id="need">
+      <h2>What you need</h2>
+      <p>Your phone, with one of these apps installed. All of them work; pick the one you already use, or Google or Microsoft Authenticator if you have none.</p>
+      <ul>
+        <li><strong>Google Authenticator</strong> (iPhone and Android). Free.</li>
+        <li><strong>Microsoft Authenticator</strong> (iPhone and Android). Free.</li>
+        <li><strong>Bitwarden Authenticator</strong> (iPhone and Android). Free, no account needed. Codes can also live in <strong>Bitwarden Password Manager</strong>, which needs a Premium or paid organization plan to show them.</li>
+        <li><strong>1Password</strong> (phone and computer). Included in every 1Password plan.</li>
+      </ul>
+      <p class="hint">Apple Passwords, Authy, Duo Mobile and other apps work too: look for an option to scan a QR code or to enter a setup key.</p>
+    </section>
+
+    <section id="page">
+      <h2>What the set-up page shows</h2>
+      <p>After your password, the set-up page shows three things:</p>
+      <figure class="shot">
+        <img src="{{asset "help/setup-page.webp"}}" width="760" height="2221" loading="lazy" alt="The set-up page, with the QR code marked 1, the setup key marked 2 and the code box marked 3.">
+        <figcaption>Your page shows your company's name and your email. The QR code and key in this picture are examples and will not work.</figcaption>
+      </figure>
+      <ol class="callouts">
+        <li><strong>The QR code.</strong> Your authenticator app scans it with the phone's camera.</li>
+        <li><strong>The setup key</strong>, 32 letters and numbers. If you cannot scan, you type or paste this into your authenticator app. It never goes in the code box.</li>
+        <li><strong>The code box.</strong> Once the app has the account, type the six-digit code it shows here.</li>
+      </ol>
+      <p class="hint">The set-up code lasts ten minutes. If it runs out, the page shows a new one.</p>
+    </section>
+
+    <section id="ways">
+      <h2>Three ways to add the account</h2>
+      <div class="ways">
+        <div class="way">
+          <img src="{{asset "help/way-scan.svg"}}" width="240" height="160" alt="A phone camera pointed at a QR code on a computer screen.">
+          <h3>1. Scan from a computer</h3>
+          <p>The set-up page is open on your computer. In your app, tap <strong>+</strong>, choose to scan a QR code, and point the phone at the screen.</p>
+        </div>
+        <div class="way">
+          <img src="{{asset "help/way-key.svg"}}" width="240" height="160" alt="An authenticator app's add menu with the option to enter a setup key highlighted.">
+          <h3>2. On the same phone</h3>
+          <p>You cannot scan your own screen. Tap the setup key once to select it and copy it. In your app, tap <strong>+</strong>, choose to enter a setup key, paste it, and pick <strong>Time based</strong> if asked.</p>
+        </div>
+        <div class="way">
+          <img src="{{asset "help/way-desktop.svg"}}" width="240" height="160" alt="A password manager on a computer reading the QR code from the screen.">
+          <h3>3. A password manager on your computer</h3>
+          <p>1Password (desktop app or browser extension) and the Bitwarden browser extension can read the QR code straight off your screen, then fill in codes for you when you sign in.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="apps">
+      <h2>App by app</h2>
+      <p>Button names can change a little between app versions. Each section links to the app maker's own guide, with pictures.</p>
+
+      <details class="app" id="google">
+        <summary>Google Authenticator</summary>
+        <h4>Scan the QR code</h4>
+        <ol>
+          <li>Open Google Authenticator and tap <strong>+</strong> (bottom right).</li>
+          <li>Tap <strong>Scan a QR code</strong> and point the camera at the QR code.</li>
+        </ol>
+        <h4>Or enter the setup key</h4>
+        <ol>
+          <li>Tap <strong>+</strong>, then <strong>Enter a setup key</strong>.</li>
+          <li>Account: type <strong>{{.Issuer}}</strong>. Key: paste the setup key. Type of key: <strong>Time based</strong>.</li>
+          <li>Tap <strong>Add</strong>.</li>
+        </ol>
+        <p class="hint"><a href="https://support.google.com/accounts/answer/1066447" rel="noopener noreferrer" target="_blank">Google's guide to Authenticator<span class="sr-only"> (opens in a new tab)</span></a></p>
+      </details>
+
+      <details class="app" id="microsoft">
+        <summary>Microsoft Authenticator</summary>
+        <h4>Scan the QR code</h4>
+        <ol>
+          <li>Open Microsoft Authenticator and tap <strong>+</strong> (top right).</li>
+          <li>Choose <strong>Other account (Google, Facebook, etc.)</strong>. Not "Work or school account": that one is for Microsoft sign-ins.</li>
+          <li>Point the camera at the QR code.</li>
+        </ol>
+        <h4>Or enter the setup key</h4>
+        <ol>
+          <li>Tap <strong>+</strong>, then <strong>Other account (Google, Facebook, etc.)</strong>.</li>
+          <li>On the camera screen, tap <strong>Enter code manually</strong>.</li>
+          <li>Account name: type <strong>{{.Issuer}}</strong>. Secret key: paste the setup key. Tap <strong>Finish</strong>.</li>
+        </ol>
+        <p class="hint"><a href="https://support.microsoft.com/en-us/topic/7a92b5d4-d6e5-4474-9ac6-be0b6773f574" rel="noopener noreferrer" target="_blank">Microsoft's guide to adding other accounts<span class="sr-only"> (opens in a new tab)</span></a></p>
+      </details>
+
+      <details class="app" id="bitwarden">
+        <summary>Bitwarden</summary>
+        <h4>Bitwarden Authenticator app (free)</h4>
+        <ol>
+          <li>Tap the add icon (<strong>+</strong>) and point the camera at the QR code. Or tap <strong>Enter key manually</strong> at the bottom, type <strong>{{.Issuer}}</strong> as the name and paste the setup key as the authenticator key.</li>
+          <li>Choose <strong>Save here</strong> (or <strong>Save to Bitwarden</strong> to keep it with your passwords).</li>
+        </ol>
+        <h4>Bitwarden Password Manager (Premium or paid organization plan)</h4>
+        <p class="hint">On a free Bitwarden account the Password Manager saves the key but does not show codes, so use the free Bitwarden Authenticator app above instead.</p>
+        <ol>
+          <li>Open or create the login for {{.Brand}} and tap <strong>Edit</strong>.</li>
+          <li>On a phone, tap <strong>Set up TOTP</strong> to scan the QR code, or <strong>Enter key manually</strong> to paste the setup key. In the browser extension, select <strong>TOTP</strong> to read the QR code from the open page (the whole code must be visible), or paste the key into <strong>Authenticator key</strong>.</li>
+          <li><strong>Save</strong>.</li>
+        </ol>
+        <p class="hint"><a href="https://bitwarden.com/help/bitwarden-authenticator/" rel="noopener noreferrer" target="_blank">Bitwarden Authenticator guide<span class="sr-only"> (opens in a new tab)</span></a> · <a href="https://bitwarden.com/help/integrated-authenticator/" rel="noopener noreferrer" target="_blank">Password Manager guide<span class="sr-only"> (opens in a new tab)</span></a></p>
+      </details>
+
+      <details class="app" id="1password">
+        <summary>1Password</summary>
+        <h4>Phone or desktop app</h4>
+        <ol>
+          <li>Open or create the login for {{.Brand}} and select <strong>Edit</strong>.</li>
+          <li>Select <strong>Add More</strong>, then <strong>One-Time Password</strong> (you may need to scroll).</li>
+          <li>Select the QR code icon: on a phone it opens the camera, on a computer it reads the QR code from your screen. Or paste the setup key into the field instead.</li>
+          <li>Select <strong>Save</strong>.</li>
+        </ol>
+        <h4>Browser extension</h4>
+        <ol>
+          <li>With the set-up page open, select the login for {{.Brand}} in the extension.</li>
+          <li>Select the <strong>⋯</strong> menu, then <strong>Scan QR Code</strong>.</li>
+        </ol>
+        <p class="hint">1Password then fills in the code for you at sign-in. <a href="https://support.1password.com/one-time-passwords/" rel="noopener noreferrer" target="_blank">1Password's guide<span class="sr-only"> (opens in a new tab)</span></a></p>
+      </details>
+    </section>
+
+    <section id="finish">
+      <h2>Finish and save your recovery codes</h2>
+      <p class="hint">Opened this guide from the set-up page? It is in a new tab: switch back to the set-up tab to enter the code.</p>
+      <ol>
+        <li>Type the six-digit code from your app into the code box and select <strong>Turn on two-factor sign-in</strong>. If the code is about to change, wait for the next one.</li>
+        <li>Save the ten recovery codes you see next. They are shown once. Each one signs you in a single time if you lose your phone, so keep them somewhere safe, such as your password manager.</li>
+        <li>From now on, sign in with your password and then the current code from your app.</li>
+      </ol>
+      <div class="shots">
+        <figure class="shot">
+          <img src="{{asset "help/recovery-codes.webp"}}" width="760" height="1516" loading="lazy" alt="The recovery codes page: ten one-time codes and a button to continue once they are saved.">
+          <figcaption>Your recovery codes, shown once after set-up. These are placeholders.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="{{asset "help/sign-in-code.webp"}}" width="760" height="629" loading="lazy" alt="The sign-in page that asks for the six-digit code from your authenticator app.">
+          <figcaption>Every later sign-in: your password, then this page.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="trouble">
+      <h2>If something goes wrong</h2>
+      <dl class="faq">
+        <dt>"Please match the requested format" or "That looks like the setup key"</dt>
+        <dd>The setup key was typed into the code box. The key goes into your app; the box takes the six digits the app shows.</dd>
+        <dt>"That code did not match" or "That code did not work"</dt>
+        <dd>Codes depend on your phone's clock. Set the date and time to automatic in your phone's settings, then try the current code.</dd>
+        <dt>"That set-up code expired"</dt>
+        <dd>Set-up codes last ten minutes, so the page now shows a new one. Add it as a new entry, and once it works, delete the older entries.</dd>
+        <dt>Your app lists {{.Issuer}} more than once</dt>
+        <dd>Only one of the entries works. Try the other one, then delete the one that fails.</dd>
+        <dt>New phone</dt>
+        <dd>Before you reset the old phone, move your codes with your app's transfer, backup or export option: Google Authenticator, Microsoft Authenticator and Bitwarden Authenticator (for codes saved only on the phone) each have one. Codes kept in 1Password or in your Bitwarden vault sync on their own.</dd>
+        <dt>Lost phone</dt>
+        <dd>Sign in with one of your recovery codes, then set up a new app from Security. No recovery codes left? Ask your administrator to reset two-factor sign-in for your account.</dd>
+      </dl>
+    </section>
+
+    <div class="link-row"><a href="/">Back to sign-in</a><span></span></div>
+  </main>
+</body>
+</html>

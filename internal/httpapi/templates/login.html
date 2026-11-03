@@ -38,7 +38,8 @@
       {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
       <button class="btn" type="submit">{{if .PasswordMode}}Sign in{{else}}Send link{{end}}</button>
     </form>
-    {{if .PasswordMode}}<div class="foot">Accounts are created by an administrator.</div>{{else}}<div class="foot">No passwords. Links expire after 15 minutes.</div>{{end}}
+    {{if .PasswordMode}}<p class="help-link">Setting up two-factor sign-in? <a href="/help/authenticator">How to use an authenticator app</a></p>
+    <div class="foot">Accounts are created by an administrator.</div>{{else}}<div class="foot">No passwords. Links expire after 15 minutes.</div>{{end}}
   </main>
 </body>
 </html>

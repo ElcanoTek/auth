@@ -28,6 +28,7 @@
       {{end}}
       <button class="btn" type="submit">Continue</button>
     </form>
+    {{if .Enrolled}}<p class="help-link">Code not working? <a href="/help/authenticator#trouble" target="_blank" rel="noopener">See what to try<span class="sr-only"> (opens in a new tab)</span></a></p>{{end}}
     <div class="link-row"><a href="/account/security">Cancel</a><span></span></div>
   </main>
 </body>

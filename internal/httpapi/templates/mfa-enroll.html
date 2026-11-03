@@ -17,6 +17,7 @@
     <p class="muted">{{if .Required}}Your account requires a second step at sign-in. {{end}}Scan this code with an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others all work), then enter the six-digit code it shows.</p>
     {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
     <p class="muted">Added {{.Issuer}} to an app before? Add this code as a new entry, and once it works, delete the older {{.Issuer}} entries: only this one will work.</p>
+    <p class="help-link">New to authenticator apps? <a href="/help/authenticator" target="_blank" rel="noopener">Step-by-step guide for Google Authenticator, Microsoft Authenticator, Bitwarden and 1Password<span class="sr-only"> (opens in a new tab)</span></a></p>
     <img class="qr" src="{{.QR}}" alt="QR code for {{.Issuer}}: {{.Email}}" width="264" height="264">
     <div class="secret">
       <p class="muted">On this phone, or cannot scan? In your authenticator app, choose to enter a setup key and type this one (time-based). It goes in the app, not in the box below.</p>
