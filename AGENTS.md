@@ -96,7 +96,9 @@ signed-out pages and the Your account menu of the signed-in ones). Their
 CSS and JavaScript are files in `internal/httpapi/static/`: `auth.css` (all
 page styles), `admin.js` (the admin console's only script; the console works
 without it), `theme-choice.js` (the Light, Dark and Auto choice in Your
-account; without it the row stays hidden) and `admin-noscript.css`. Both trees are embedded
+account; without it the row stays hidden), `sign-out.js` (the apps page's
+Sign out button opens the Sign out popup; without it the button signs out
+directly) and `admin-noscript.css`. Both trees are embedded
 (`internal/httpapi/assets.go`); nothing is read from disk at runtime.
 
 - Static files are served at `/assets/<hash>/<path>`, where `<hash>` covers the

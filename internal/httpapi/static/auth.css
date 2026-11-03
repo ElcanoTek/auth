@@ -478,7 +478,7 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .confirm > summary::-webkit-details-marker { display: none; }
 .btn-ghost:hover, .confirm > summary:hover { color: var(--color-text-primary); border-color: var(--color-border-strong); background: var(--color-surface-1); }
 .btn-ghost:focus-visible, .confirm > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.confirm.danger > summary:hover { color: var(--color-status-error-fg); border-color: var(--color-status-error-border); background: var(--color-status-error-bg); }
+.confirm.danger > summary:hover, .btn-ghost.danger:hover { color: var(--color-status-error-fg); border-color: var(--color-status-error-border); background: var(--color-status-error-bg); }
 .confirm[open] > summary { color: var(--color-text-primary); border-color: var(--color-border-strong); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .confirm[open].danger > summary { color: var(--color-status-error-fg); border-color: var(--color-status-error-border); background: var(--color-status-error-bg); }
 .confirm { position: relative; display: inline-block; }

@@ -590,7 +590,8 @@ func TestAuthorizeRefusesAccountsWithoutAccess(t *testing.T) {
 	// Which account was refused is in Your account (where signing out lets
 	// them switch), not in the page text.
 	if strings.Contains(string(body), "signed in as") || !strings.Contains(accountPopup(t, string(body)), "bob@example.com") ||
-		!strings.Contains(string(body), `<form class="pane" method="post" action="/logout">`) {
+		!strings.Contains(accountPopup(t, string(body)), `commandfor="sign-out" command="show-modal"`) ||
+		!strings.Contains(signOutPopup(t, string(body)), `<form method="post" action="/logout">`) {
 		t.Fatalf("no-access page should name the account only in Your account:\n%s", body)
 	}
 	// The 403 is a real page: HTML content type and the nonce policy that
