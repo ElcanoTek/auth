@@ -251,6 +251,73 @@ func TestMFAPolicyDefaultSetAndRevokeInsufficientSessions(t *testing.T) {
 	}
 }
 
+func TestInitMFAPolicySetsOnlyANewDeployment(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().Unix()
+
+	// New deployment: no policy stored, no accounts. It gets the mode, audited.
+	s := openTestStore(t)
+	p, outcome, err := s.InitMFAPolicy(ctx, mfa.ModeAdmins, "cli:bootstrap", now)
+	if err != nil || outcome != MFAPolicyInitialized || p.Mode != mfa.ModeAdmins || p.Revision != 1 {
+		t.Fatalf("new deployment: %+v outcome=%d err=%v", p, outcome, err)
+	}
+	if got, _ := s.MFAPolicy(ctx); got.Mode != mfa.ModeAdmins || got.Revision != 1 {
+		t.Fatalf("stored policy = %+v", got)
+	}
+	events, _ := s.RecentAuditEvents(ctx, "", 10)
+	if len(events) != 1 || events[0].EventType != "mfa.policy_changed" || !strings.Contains(events[0].Metadata, `"initial":true`) {
+		t.Fatalf("audit = %+v", events)
+	}
+	// Running it again (a bootstrap rerun) keeps what is stored, even with a
+	// different mode asked for.
+	p, outcome, err = s.InitMFAPolicy(ctx, mfa.ModeEveryone, "cli:bootstrap", now+1)
+	if err != nil || outcome != MFAPolicyAlreadySet || p.Mode != mfa.ModeAdmins || p.Revision != 1 {
+		t.Fatalf("rerun: %+v outcome=%d err=%v", p, outcome, err)
+	}
+
+	// An explicitly stored policy is never overridden: optional and everyone.
+	// (Saving optional over the never-set default stores nothing, so the
+	// stored optional here is one relaxed from admins, as the console does.)
+	for _, explicit := range []mfa.Mode{mfa.ModeOptional, mfa.ModeEveryone} {
+		s := openTestStore(t)
+		for i, mode := range []mfa.Mode{mfa.ModeAdmins, explicit} {
+			if _, _, err := s.SetMFAPolicy(ctx, mode, "cli:operator", now+int64(i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before, _ := s.MFAPolicy(ctx)
+		p, outcome, err := s.InitMFAPolicy(ctx, mfa.ModeAdmins, "cli:bootstrap", now+2)
+		if err != nil || outcome != MFAPolicyAlreadySet || p.Mode != explicit || p.Revision != before.Revision {
+			t.Fatalf("explicit %s: %+v (before %+v) outcome=%d err=%v", explicit, p, before, outcome, err)
+		}
+		if after, _ := s.MFAPolicy(ctx); after.Mode != before.Mode || after.Revision != before.Revision {
+			t.Fatalf("explicit %s changed to %+v", explicit, after)
+		}
+	}
+
+	// A deployment already in use that never stored a policy keeps behaving
+	// as it does: no row is written and nobody is signed out.
+	s, alice, now := mfaFixture(t)
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	session(t, s, alice, "alice-1", now)
+	p, outcome, err = s.InitMFAPolicy(ctx, mfa.ModeAdmins, "cli:bootstrap", now+1)
+	if err != nil || outcome != MFAPolicyAccountsExist || p.Mode != mfa.ModeOptional || p.Revision != 0 {
+		t.Fatalf("in use: %+v outcome=%d err=%v", p, outcome, err)
+	}
+	if liveSessions(t, s, alice.ID, now+2) != 1 {
+		t.Fatal("an account in use was signed out")
+	}
+	if contains(auditTypes(t, s, ""), "mfa.policy_changed") {
+		t.Fatal("a policy change was audited for a deployment in use")
+	}
+
+	if _, _, err := openTestStore(t).InitMFAPolicy(ctx, mfa.Mode("bogus"), "cli:bootstrap", now); err == nil {
+		t.Fatal("bogus mode accepted")
+	}
+}
+
 func TestEnrollmentActivatesAtomicallyAndUpgradesTheEnrollingSession(t *testing.T) {
 	s, a, now := mfaFixture(t)
 	ctx := context.Background()

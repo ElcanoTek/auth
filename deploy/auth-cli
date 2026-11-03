@@ -513,6 +513,8 @@ CRYPTO
   auth mfa keygen                   print a fresh AUTH_MFA_KEY for 2FA secrets
   auth mfa policy [mode]            show or set the two-factor policy
                                     (optional | admins | everyone)
+  auth mfa policy --if-new <mode>   set it only on a new deployment (no policy
+                                    stored, no accounts yet); bootstrap uses it
 
 UPDATES
   auth update                       git pull + rebuild + restart
