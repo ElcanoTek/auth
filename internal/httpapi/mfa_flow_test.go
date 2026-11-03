@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
@@ -8,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -299,6 +301,141 @@ func TestEnrollFromSecurityPageThenLoginNeedsTheCode(t *testing.T) {
 	}
 	if amr, _ := json.Marshal(claims["amr"]); string(amr) != `["pwd","otp"]` {
 		t.Fatalf("amr = %s", amr)
+	}
+}
+
+// The code box takes whatever an app or keyboard pastes and the server says
+// what went wrong: six digits wanted, the set-up code expired (the page now
+// shows a new QR the app does not have), or a wrong code at sign-in, where an
+// app set up more than once may be showing a stale entry.
+func TestEnrollmentAndSignInExplainRefusedCodes(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	alice := newBrowser(t, ts)
+	alice.login("alice@example.com", plain)
+	_, page := alice.post("/account/security", url.Values{"action": {"start"}})
+	if strings.Contains(page, "pattern=") || !strings.Contains(page, `maxlength="20"`) {
+		t.Fatalf("the code box must not restrict what is pasted (the server normalises it):\n%s", page)
+	}
+	// Older entries go only once the new code works: a replacement keeps the
+	// current authenticator active until then.
+	if !strings.Contains(page, "once it works, delete the older "+cfg.MFAIssuer+" entries") {
+		t.Fatalf("enrollment page does not explain earlier entries:\n%s", page)
+	}
+	secret := extractSecret(t, page)
+
+	resp, page := alice.post("/account/security", url.Values{"action": {"confirm"}, "code": {"12a456"}})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Enter the six-digit code your authenticator app shows.") || string(extractSecret(t, page)) != string(secret) {
+		t.Fatalf("malformed confirm code: %d\n%s", resp.StatusCode, page)
+	}
+	// The start of the manual key typed into the code box (with 0 misread
+	// for O), the way someone who cannot scan does it: told where it goes.
+	for _, typed := range []string{"7OIDP42", "70IDP42", "abcd efgh"} {
+		resp, page = alice.post("/account/security", url.Values{"action": {"confirm"}, "code": {typed}})
+		if resp.StatusCode != http.StatusOK || !strings.Contains(page, "That looks like the setup key, not a code.") || string(extractSecret(t, page)) != string(secret) {
+			t.Fatalf("set-up key %q in the code box: %d\n%s", typed, resp.StatusCode, page)
+		}
+	}
+
+	// The pending secret goes away (expiry and Cancel both delete or skip
+	// it): the page says the QR is new, and it is.
+	a, err := st.PasswordAccountByEmail(context.Background(), "alice@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AbandonPendingAuthenticator(context.Background(), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	resp, page = alice.post("/account/security", url.Values{"action": {"confirm"}, "code": {codeFor(t, secret, time.Now())}})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "That set-up code expired, so this page shows a new one.") {
+		t.Fatalf("expired pending secret: %d\n%s", resp.StatusCode, page)
+	}
+	fresh := extractSecret(t, page)
+	if string(fresh) == string(secret) {
+		t.Fatal("expired enrollment re-rendered the old secret")
+	}
+	// Expired and malformed at once: the new QR is still called out.
+	if err := st.AbandonPendingAuthenticator(context.Background(), a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, page = alice.post("/account/security", url.Values{"action": {"confirm"}, "code": {"12345"}}); !strings.Contains(page, "That set-up code expired") {
+		t.Fatalf("expired pending secret with a malformed code:\n%s", page)
+	}
+	fresh = extractSecret(t, page)
+
+	// A code pasted with a no-break space and a direction mark confirms.
+	code := codeFor(t, fresh, time.Now())
+	resp, page = alice.post("/account/security", url.Values{"action": {"confirm"}, "code": {"\u200e" + code[:3] + "\u00a0" + code[3:]}})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Authenticator set up") {
+		t.Fatalf("pasted confirm code: %d\n%s", resp.StatusCode, page)
+	}
+
+	phone := newBrowser(t, ts)
+	phone.login("alice@example.com", plain)
+	if _, page := phone.get("/login/verify"); strings.Contains(page, "pattern=") {
+		t.Fatalf("verify code box restricts input:\n%s", page)
+	}
+	if _, page := phone.post("/login/verify", url.Values{"code": {"12345"}}); !strings.Contains(page, "Enter the six-digit code your authenticator app shows.") {
+		t.Fatalf("short code at sign-in:\n%s", page)
+	}
+	if _, page := phone.post("/login/verify", url.Values{"code": {"000000"}}); !strings.Contains(page, "If your app lists "+cfg.MFAIssuer+" more than once, only one of those entries works: try another.") {
+		t.Fatalf("wrong code at sign-in:\n%s", page)
+	}
+	// A wrong recovery code gets neither authenticator hint.
+	for _, form := range []url.Values{
+		{"mode": {"recovery"}, "recovery_code": {"aaaaa-bbbbb-ccccc-ddddd-eeeee-f"}},
+		{"recovery_code": {"aaaaa-bbbbb-ccccc-ddddd-eeeee-f"}},
+	} {
+		if _, page := phone.post("/login/verify", form); !strings.Contains(page, "That code did not work.") || strings.Contains(page, codeFormatMessage) || strings.Contains(page, "more than once") {
+			t.Fatalf("wrong recovery code %v:\n%s", form, page)
+		}
+	}
+}
+
+// The enrollment QR needs a quiet zone of four modules for scanners to find
+// it. The PNG's own margin varies with the code's size, so the white padding
+// of .qr in auth.css (var(--space-5): 1.25rem, 20px at the 16px root) makes up
+// the rest; this measures the rendered PNG for every size an account's email
+// can produce.
+func TestEnrollmentQRQuietZone(t *testing.T) {
+	const paddingPx = 20
+	secret := make([]byte, mfa.SecretSize)
+	for _, issuer := range []string{"Elcano", "A considerably longer issuer name"} {
+		for n := 1; n <= 64; n++ {
+			key, err := mfa.Key(issuer, strings.Repeat("a", n)+"@example.com", secret)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := mfa.QRPNG(key, enrollQRSize)
+			if err != nil {
+				t.Fatalf("%s, %d-character local part: %v", issuer, n, err)
+			}
+			img, err := png.Decode(bytes.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The top-left finder pattern starts at the first dark pixel and
+			// its top edge is seven modules of dark.
+			margin, module := -1, 0
+			for y := 0; y < enrollQRSize && margin < 0; y++ {
+				for x := 0; x < enrollQRSize; x++ {
+					if r, _, _, _ := img.At(x, y).RGBA(); r == 0 {
+						margin = x
+						for x < enrollQRSize {
+							if r, _, _, _ := img.At(x, y).RGBA(); r != 0 {
+								break
+							}
+							module++
+							x++
+						}
+						module /= 7
+						break
+					}
+				}
+			}
+			if module < 3 || margin+paddingPx < 4*module {
+				t.Errorf("%s, %d-character local part: %dpx modules, %dpx margin + %dpx padding is under four modules", issuer, n, module, margin, paddingPx)
+			}
+		}
 	}
 }
 

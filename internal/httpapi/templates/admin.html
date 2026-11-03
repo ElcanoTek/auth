@@ -50,7 +50,7 @@
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="step-up"><input type="hidden" name="pending_action" value="{{.Action}}">
         {{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
         <div class="field"><label for="step-up-code">Authenticator code</label>
-          <input id="step-up-code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000"></div>
+          <input id="step-up-code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000"></div>
         <button class="btn" type="submit">Verify</button>
       </form>
       {{/* method="dialog" closes it with no script and no invoker-command support. */}}
@@ -319,7 +319,7 @@
         {{if .Admin}}<input type="hidden" name="admin" value="on">{{end}}{{range $id, $on := .Apps}}{{if $on}}<input type="hidden" name="apps" value="{{$id}}">{{end}}{{end}}
         {{if .FleetAdmin}}<input type="hidden" name="fleet_admin" value="on">{{end}}<input type="hidden" name="fleet_chat_role" value="{{.FleetChatRole}}"><input type="hidden" name="fleet_ops_role" value="{{.FleetOpsRole}}">
         <div class="field"><label for="add-user-code-input">Authenticator code</label>
-          <input id="add-user-code-input" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000"></div>
+          <input id="add-user-code-input" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000"></div>
         <button class="btn" type="submit">Verify</button>
       </form>
     </dialog>{{end}}{{end}}

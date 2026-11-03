@@ -429,7 +429,13 @@ dialog.modal.fleet-perms .btn { margin-top: var(--space-4); }
 .notice button.linkish { color: inherit; background: none; border: 0; padding: 0; font: inherit; font-weight: var(--font-weight-bold); cursor: pointer; text-decoration: underline; }
 .temp-password .banner { margin: var(--space-4) 0 0; }
 .temp-password .hint { margin-bottom: var(--space-4); }
-.qr { display: block; width: 220px; max-width: 100%; height: auto; aspect-ratio: 1 / 1; margin: 0 auto var(--space-4); border-radius: var(--radius-md); background: var(--color-white); padding: var(--space-2); }
+/* The enrollment QR: the PNG (enrollQRSize, whole pixels per module) is shown
+   at its own size where the card has room (narrow screens scale it down), and
+   pixelated, so module edges stay sharp rather than blurred. The
+   white padding is the quiet zone a scanner needs around the code: with the
+   PNG's own margin it is at least four modules wide for every code an
+   enrollment produces (TestEnrollmentQRQuietZone). */
+.qr { display: block; box-sizing: content-box; width: 264px; max-width: calc(100% - 2 * var(--space-5)); height: auto; aspect-ratio: 1 / 1; margin: 0 auto var(--space-4); border-radius: var(--radius-md); background: var(--color-white); padding: var(--space-5); image-rendering: pixelated; }
 .codes { display: grid; grid-template-columns: 1fr; gap: var(--space-2); margin: 0 0 var(--space-5); padding: 0; list-style: none; }
 .codes li { font-family: var(--font-code); font-size: 0.9rem; letter-spacing: 0.03em; overflow-wrap: anywhere; color: var(--color-text-primary); padding: var(--space-2) var(--space-3); background: var(--color-surface-1); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); user-select: all; -webkit-user-select: all; }
 a.btn { text-decoration: none; }

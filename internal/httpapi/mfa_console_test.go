@@ -737,8 +737,9 @@ func TestAddUserKeepsTheDraftAfterARecoverySignInOrARejectedEntry(t *testing.T) 
 	if popup := dialogForm(t, page, "add-user-code"); !strings.Contains(popup, `name="email" value="dan@example.com"`) {
 		t.Fatalf("recovery-code session was not asked for the code:\n%s", page)
 	}
-	// The recovery code is not accepted in the popup either.
-	if _, page = rc.post("/admin", url.Values{"action": {"step-up"}, "email": {"dan@example.com"}, "recovery_code": {seeded[1]}}); !strings.Contains(page, "That code did not work.") {
+	// The recovery code is not accepted in the popup either: with no
+	// authenticator code the step-up asks for the six digits.
+	if _, page = rc.post("/admin", url.Values{"action": {"step-up"}, "email": {"dan@example.com"}, "recovery_code": {seeded[1]}}); !strings.Contains(page, "Enter the six-digit code your authenticator app shows.") {
 		t.Fatalf("recovery code accepted as the step-up:\n%s", page)
 	}
 

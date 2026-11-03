@@ -63,9 +63,50 @@ const (
 	mfaResetLimit  = 10
 )
 
+// enrollQRSize is the enrollment QR's PNG width and height in pixels, and
+// its display size (mfa-enroll.html, .qr in auth.css). At 264 the codes real
+// accounts produce (versions 6 to 10) get four to six pixels per module.
+const enrollQRSize = 264
+
 // errEnrollLimited: too many fresh enrollment secrets for one account in the
 // window; the person waits rather than being locked out.
 var errEnrollLimited = errors.New("too many enrollment attempts")
+
+// Why confirmEnrollment refused a code, so the page can say what to do next.
+var (
+	// errCodeFormat: what was typed is not six digits once separators are
+	// stripped, so no secret was checked.
+	errCodeFormat = errors.New("code is not six digits")
+	// errCodeIsKey: what was typed has letters in it, so it is most likely
+	// the set-up key from the page, which belongs in the app.
+	errCodeIsKey = errors.New("code looks like the set-up key")
+	// errEnrollExpired: the pending secret the person scanned expired or was
+	// cancelled; the page re-renders with a new one.
+	errEnrollExpired = errors.New("pending enrollment expired")
+	errCodeMismatch  = errors.New("code did not match")
+)
+
+// codeFormatMessage answers a code that is not six digits.
+const codeFormatMessage = "Enter the six-digit code your authenticator app shows."
+
+// enrollFailureText is what the set-up page says after confirmEnrollment
+// refuses a code; mismatch is the page's own wording for a wrong code. An
+// expired secret is called out because the page now shows a new QR code and
+// the entry already in the person's app will never work. Older entries are
+// deleted only after the new code works: when replacing, the current
+// authenticator stays active until then.
+func enrollFailureText(err error, mismatch string) string {
+	switch {
+	case errors.Is(err, errCodeFormat):
+		return codeFormatMessage
+	case errors.Is(err, errCodeIsKey):
+		return "That looks like the setup key, not a code. Type the key into your authenticator app, then enter the six-digit code the app shows."
+	case errors.Is(err, errEnrollExpired):
+		return "That set-up code expired, so this page shows a new one. Scan this code, enter the code it shows, and once that works, delete the older entries for this account from your app."
+	default:
+		return mismatch
+	}
+}
 
 type loginTxMeta struct {
 	ReturnTo string `json:"return_to,omitempty"`
@@ -469,7 +510,18 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 			s.restartLogin(w, r, store.AuthTransaction{}, errMFALocked)
 			return
 		}
-		render("That code did not work. Check the time on your phone and try the current code.")
+		if r.FormValue("mode") == "recovery" || r.FormValue("recovery_code") != "" {
+			render("That code did not work. Check the time on your phone and try the current code.")
+			return
+		}
+		if mfa.NormalizeCode(r.FormValue("code")) == "" {
+			render(codeFormatMessage)
+			return
+		}
+		// An app set up more than once lists identical entries and only one
+		// secret is live. Which one is not knowable here: a replacement that
+		// was scanned but never confirmed leaves the older entry the live one.
+		render("That code did not work. Check the time on your phone and try the current code. If your app lists " + s.cfg.MFAIssuer + " more than once, only one of those entries works: try another.")
 	}
 	if !verified {
 		fail()
@@ -549,7 +601,7 @@ func (s *Server) enrollmentView(r *http.Request, account store.Account, now time
 	if err != nil {
 		return nil, err
 	}
-	png, err := mfa.QRPNG(key, 220)
+	png, err := mfa.QRPNG(key, enrollQRSize)
 	if err != nil {
 		return nil, err
 	}
@@ -561,6 +613,20 @@ func (s *Server) enrollmentView(r *http.Request, account store.Account, now time
 		"Issuer":    s.cfg.MFAIssuer,
 		"Email":     account.Email,
 	}, nil
+}
+
+// looksLikeSetupKey reports whether a refused code has two or more ASCII
+// letters: people who cannot scan the QR type or paste the manual key (base32
+// letters and digits) into the code box. One letter is more likely a typo in
+// a code. Misread characters (0 for O) still count, since only letters are.
+func looksLikeSetupKey(code string) bool {
+	letters := 0
+	for _, r := range code {
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+			letters++
+		}
+	}
+	return letters >= 2
 }
 
 // groupSecret spaces the manual key in fours so it can be read aloud or
@@ -577,22 +643,35 @@ func groupSecret(b32 string) string {
 }
 
 // confirmEnrollment checks the first code against the pending secret and
-// returns the pending row and matched step for activation.
-func (s *Server) confirmEnrollment(r *http.Request, account store.Account, code string, now time.Time) (store.Authenticator, int64, bool) {
+// returns the pending row and matched step for activation, or why it refused
+// (errCodeFormat, errCodeIsKey, errEnrollExpired, errCodeMismatch, or a
+// store error).
+func (s *Server) confirmEnrollment(r *http.Request, account store.Account, code string, now time.Time) (store.Authenticator, int64, error) {
+	// Expiry is checked first: the page re-renders with a new secret, and
+	// that must be said even when what was typed is also malformed.
 	pending, err := s.store.PendingAuthenticator(r.Context(), account.ID, now.Unix())
+	if errors.Is(err, store.ErrPendingNotFound) {
+		return store.Authenticator{}, 0, errEnrollExpired
+	}
 	if err != nil {
-		return store.Authenticator{}, 0, false
+		return store.Authenticator{}, 0, err
+	}
+	if mfa.NormalizeCode(code) == "" {
+		if looksLikeSetupKey(code) {
+			return store.Authenticator{}, 0, errCodeIsKey
+		}
+		return store.Authenticator{}, 0, errCodeFormat
 	}
 	secret, _, _, err := s.openSecret(pending)
 	if err != nil {
 		log.Printf("mfa: open pending secret for %s: %v", pending.ID, err)
-		return store.Authenticator{}, 0, false
+		return store.Authenticator{}, 0, err
 	}
 	step, ok := mfa.Verify(secret, code, now, -1)
 	if !ok {
-		return store.Authenticator{}, 0, false
+		return store.Authenticator{}, 0, errCodeMismatch
 	}
-	return pending, step, true
+	return pending, step, nil
 }
 
 func newRecoverySet() ([]string, []string, string, error) {
@@ -711,15 +790,15 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 		render("Too many attempts. Wait a few minutes and try again.")
 		return
 	}
-	pending, step, verified := s.confirmEnrollment(r, account, r.FormValue("code"), now)
-	if !verified {
+	pending, step, refused := s.confirmEnrollment(r, account, r.FormValue("code"), now)
+	if refused != nil {
 		_ = s.store.RecordAudit(r.Context(), "login.mfa_failed", account.ID, ipKey, now.Unix())
 		if left <= 0 {
 			_ = s.store.AbandonAuthTransaction(r.Context(), tr.ID)
 			s.restartLogin(w, r, store.AuthTransaction{}, errMFALocked)
 			return
 		}
-		render("That code did not match. Scan the QR code again if you need to, then enter the current code.")
+		render(enrollFailureText(refused, "That code did not match. Scan the QR code again if you need to, then enter the current code."))
 		return
 	}
 	_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
@@ -851,6 +930,9 @@ func (s *Server) verifySessionCode(r *http.Request, identity *passwordIdentity, 
 	proof, ok := s.factorProof(r, account, code, "", now)
 	if !ok || proof.Kind != store.ProofTOTP {
 		_ = s.store.RecordAudit(r.Context(), "reauth.mfa_failed", account.ID, ipKey, now.Unix())
+		if mfa.NormalizeCode(code) == "" {
+			return codeFormatMessage, nil
+		}
 		return "That code did not work. Enter the current code from your authenticator app.", nil
 	}
 	verify := s.store.VerifyFactorOnSession
@@ -1010,8 +1092,8 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 			renderPage("", "Too many attempts. Wait a few minutes and try again.")
 			return
 		}
-		pending, step, verified := s.confirmEnrollment(r, account, r.FormValue("code"), now)
-		if !verified {
+		pending, step, refused := s.confirmEnrollment(r, account, r.FormValue("code"), now)
+		if refused != nil {
 			_ = s.store.RecordAudit(r.Context(), "mfa.enroll_failed", account.ID, ipKey, now.Unix())
 			view, err := s.enrollmentView(r, account, now)
 			if err != nil {
@@ -1019,7 +1101,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			view["Brand"], view["CSRF"], view["Action"], view["Required"], view["ReturnTo"] = s.cfg.BrandName, csrf, "/account/security", required, returnTo
-			view["Replace"], view["Error"] = account.MFAEnrolled, "That code did not match. Enter the current code from your authenticator app."
+			view["Replace"], view["Error"] = account.MFAEnrolled, enrollFailureText(refused, "That code did not match. Enter the current code from your authenticator app.")
 			if err := s.render(w, "mfa-enroll.html", view); err != nil {
 				log.Printf("render mfa enroll: %v", err)
 			}
