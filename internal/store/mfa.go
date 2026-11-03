@@ -405,6 +405,62 @@ func (s *Store) SetMFAPolicyBy(ctx context.Context, mode mfa.Mode, expectedRevis
 	return next, affected, tx.Commit()
 }
 
+// MFAPolicyInit says what InitMFAPolicy did.
+type MFAPolicyInit int
+
+const (
+	// MFAPolicyInitialized: the deployment was new and now has the mode.
+	MFAPolicyInitialized MFAPolicyInit = iota
+	// MFAPolicyAlreadySet: a policy was stored before; it is kept.
+	MFAPolicyAlreadySet
+	// MFAPolicyAccountsExist: no policy was ever stored, but the deployment
+	// already has accounts, so its behaviour is kept as it is.
+	MFAPolicyAccountsExist
+)
+
+// InitMFAPolicy stores mode as the policy of a new deployment: one that has
+// never stored a policy and has no accounts yet. Anything else is left
+// exactly as it is, so an explicit choice is never overridden and a
+// deployment people already use never changes on a rerun. With no accounts
+// nobody can be signed out. Returns the policy in force afterwards.
+func (s *Store) InitMFAPolicy(ctx context.Context, mode mfa.Mode, actorID string, now int64) (MFAPolicy, MFAPolicyInit, error) {
+	if _, err := mfa.ParseMode(string(mode)); err != nil {
+		return MFAPolicy{}, 0, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return MFAPolicy{}, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := mfaPolicyQ(ctx, tx)
+	if err != nil {
+		return MFAPolicy{}, 0, err
+	}
+	var stored, accounts bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM authentication_policies WHERE name = ?), EXISTS(SELECT 1 FROM accounts)`,
+		mfaPolicyName).Scan(&stored, &accounts); err != nil {
+		return MFAPolicy{}, 0, err
+	}
+	if stored {
+		return current, MFAPolicyAlreadySet, nil
+	}
+	if accounts {
+		return current, MFAPolicyAccountsExist, nil
+	}
+	next := MFAPolicy{Mode: mode, Revision: current.Revision + 1, UpdatedAt: time.Unix(now, 0)}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO authentication_policies(id, name, definition, revision, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?)`,
+		mfaPolicyName, mfaPolicyName, string(mode), next.Revision, now, now); err != nil {
+		return MFAPolicy{}, 0, err
+	}
+	meta, _ := json.Marshal(map[string]any{"actor": actorID, "mode": string(mode), "revision": next.Revision, "accounts_signed_out": 0, "initial": true})
+	if err := insertAudit(ctx, tx, "mfa.policy_changed", "", now, string(meta)); err != nil {
+		return MFAPolicy{}, 0, err
+	}
+	return next, MFAPolicyInitialized, tx.Commit()
+}
+
 // signOutUnenrolledRequiredTx finds every enabled account that mode (or its
 // own mfa_required flag) requires a factor from but that has none, revokes
 // its central sessions and queues one back-channel logout for it. The

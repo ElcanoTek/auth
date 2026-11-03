@@ -199,6 +199,7 @@ This will:
   • create an '${APP_USER}' system user; root owns ${APP_DIR}, the service owns only data/
   • build the auth-server + auth-admin binaries as the service user
   • generate the Ed25519 signing keypair and, in password mode, the two-factor key
+  • in password mode, require two-factor sign-in of administrators on a new deployment
   • write .env.local from your answers (hostname, mode, branding, TLS)
   • install the systemd units and (optionally) Caddy with automatic TLS
   • drop /usr/local/bin/auth — the operator CLI
@@ -860,6 +861,7 @@ else
   ok "systemd units + ${CLI_PATH} installed; auth-server is healthy on $HEALTH_ADDR"
 fi
 
+
 # Seed the DB-side domain allowlist from .env.local (auth-server does
 # this at startup too, but doing it here means `auth domain list`
 # right after bootstrap shows the expected entries).
@@ -1062,6 +1064,40 @@ else
   install -m 0644 "$APP_DIR/deploy/motd" /etc/motd
 fi
 
+# Two-factor sign-in for administrators from the first account on: a new
+# password-mode deployment (no policy ever stored, no accounts yet) starts at
+# "admins", so the first administrator enrolls at first sign-in. A stored
+# policy, or a deployment that already has accounts, is left exactly as it
+# is: auth-admin decides both in one transaction, and both are successful
+# no-ops here. It fails closed: a new deployment whose policy could not be
+# set (after a few tries, for a busy database) fails the install, because
+# once the first account exists this step never sets it again. It runs last,
+# so everything else is in place by then. Magic mode has no second factor,
+# so its policy is not touched.
+MFA_POLICY_NOW=""
+if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
+  if [[ "$DRY_RUN" == "1" ]]; then
+    info "DRY_RUN: would set the two-factor policy to admins if this is a new deployment"
+  else
+    mfa_ok=0
+    for mfa_try in 1 2 3 4 5; do
+      if mfa_out="$(APP_DIR="$APP_DIR" APP_USER="$APP_USER" "$CLI_PATH" mfa policy --if-new admins 2>&1)"; then
+        mfa_ok=1; info "$mfa_out"; break
+      fi
+      if (( mfa_try < 5 )); then sleep 2; fi
+    done
+    if [[ "$mfa_ok" != "1" ]]; then
+      mfa_out="${mfa_out##*$'\n'}"
+      die "could not set the two-factor policy after 5 tries (${mfa_out:0:200}). Auth is installed and running, but administrators are not yet required to use two-factor sign-in: run 'sudo auth mfa policy admins' before creating the first account, then check it with 'sudo auth mfa policy'."
+    fi
+    for mfa_try in 1 2 3; do
+      MFA_POLICY_NOW="$(APP_DIR="$APP_DIR" APP_USER="$APP_USER" "$CLI_PATH" mfa policy 2>/dev/null | sed -n 's/^two-factor policy: //p' | head -n1 || true)"
+      [[ -n "$MFA_POLICY_NOW" ]] && break
+      if (( mfa_try < 3 )); then sleep 2; fi
+    done
+  fi
+fi
+
 # ── final card ──────────────────────────────────────────────────────
 say
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
@@ -1076,6 +1112,9 @@ else
   say "  URL          ${c_bold}http://${HOSTNAME_ANSWER}:9000${c_reset}"
 fi
 say "  Login mode   ${c_dim}${LOGIN_MODE_ANSWER}${c_reset}"
+if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
+  say "  Two-factor   ${c_dim}${MFA_POLICY_NOW:-not read (check: auth mfa policy)}${c_reset}"
+fi
 if [[ -n "$CLIENT_CONFIG_DIR" ]]; then
   say "  Branding     ${c_dim}${CLIENT_CONFIG_DIR} (bundle branding: block)${c_reset}"
 fi
@@ -1112,9 +1151,15 @@ if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
   say "       ${c_dim}auth app set-backchannel fleet https://fleet.${HOSTNAME_ANSWER#auth.}/api/auth/backchannel-logout${c_reset}"
   say "       ${c_dim}auth user access you@${HOSTNAME_ANSWER#auth.} fleet on${c_reset}"
   say "       ${c_dim}(the secret printed by 'app create' goes into the application's config; it is shown once)${c_reset}"
-  say "    3. Sign in at ${APP_URL}, change the temporary password, then set up your authenticator"
-  say "       at ${APP_URL}/account/security. Administrators need it before any sensitive console action."
-  say "    4. Once every administrator has one: ${c_dim}auth mfa policy admins${c_reset}"
+  case "$MFA_POLICY_NOW" in
+    admins*|everyone*)
+      say "    3. Sign in at ${APP_URL} and change the temporary password; the two-factor policy then has"
+      say "       you set up an authenticator before you get in." ;;
+    *)
+      say "    3. Sign in at ${APP_URL}, change the temporary password, then set up your authenticator"
+      say "       at ${APP_URL}/account/security. Administrators need it before any sensitive console action."
+      say "    4. Once every administrator has one: ${c_dim}auth mfa policy admins${c_reset}" ;;
+  esac
 else
   say "  Next: drop the forward_auth snippet from deploy/Caddyfile into"
   say "  each downstream service's Caddyfile to gate it on this cookie."

@@ -220,11 +220,20 @@ one edit; nothing here is optional for the first sign-in to work.
    The person must change the temporary password at first login; after
    that they can open the web admin console at `https://auth.<client>/admin`
    and create every other account from there (see "Admin console" below).
-   Before any sensitive console action (creating accounts, granting
-   applications, resets, sign-outs, policy) they set up their authenticator:
-   **Settings** on their own row in the console has a **Set up** button for
-   it, and the page itself is `/account/security`. Once every administrator
-   has one, run `auth mfa policy admins`.
+   A new password-mode deployment starts with the two-factor policy
+   **Required for administrators**: bootstrap sets it when no policy was
+   ever stored and no account exists yet (`auth mfa policy --if-new admins`),
+   and its summary shows the policy in force. If it cannot set it (after a
+   few tries) the install fails with that message, and Auth is installed and
+   running: run `sudo auth mfa policy admins` before creating the first
+   account. So right after the password
+   change the first administrator sets up an authenticator before getting
+   in. A box whose policy was set before, or that already had accounts, is
+   left as it is; check it with `auth mfa policy`, and if it still says
+   Optional, have every administrator set up their authenticator
+   (**Settings** on their own row in the console has a **Set up** button,
+   and the page itself is `/account/security`), then run
+   `auth mfa policy admins`.
 5. Register each application with its exact callback and logout URLs, then its
    back-channel endpoint. One client ID and secret per deployment; never share
    a secret between applications or between clients:
@@ -634,9 +643,10 @@ password. What people see:
   **Confirm** makes it. **Create account** instead reopens Add user with
   everything that was typed. An
   administrator without an authenticator is sent to set one up first.
-  Recommended rollout: leave the policy
-  Optional, have every administrator enroll from Security, then switch to
-  Required for administrators.
+  A new password-mode deployment starts at Required for administrators
+  (bootstrap, step 4 of "First password-mode client"). Recommended rollout
+  for a deployment that is still Optional: have every administrator enroll
+  from Security, then switch to Required for administrators.
 - **Limits.** Five wrong codes end a sign-in attempt; ten failed factor
   attempts per account, and fifty per address, in fifteen minutes pause
   further attempts (the same counters as passwords, and they survive a

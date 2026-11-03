@@ -133,6 +133,7 @@ CRYPTO
   auth-admin pubkey                       print AUTH_SIGNING_PUBKEY for the current AUTH_SIGNING_KEY
   auth-admin mfa keygen                   generate AUTH_MFA_KEY (encrypts authenticator secrets at rest)
   auth-admin mfa policy [optional|admins|everyone]  show or set who must use two-factor sign-in
+  auth-admin mfa policy --if-new <mode>   set it only on a new deployment (no policy stored, no accounts yet)
 
 Reads AUTH_DATA_DIR from the env (default /opt/auth/data).
 The 'auth' shell wrapper sources .env.local before calling us.`)
@@ -163,7 +164,7 @@ func keygenCmd() {
 // administrator resets), so it belongs in the same backup as .env.local.
 func mfaCmd(dataDir string, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: auth-admin mfa keygen | auth-admin mfa policy [optional|admins|everyone]")
+		fmt.Fprintln(os.Stderr, "usage: auth-admin mfa keygen | auth-admin mfa policy [--if-new] [optional|admins|everyone]")
 		os.Exit(2)
 	}
 	if args[0] == "policy" {
@@ -171,7 +172,7 @@ func mfaCmd(dataDir string, args []string) {
 		return
 	}
 	if args[0] != "keygen" {
-		fmt.Fprintln(os.Stderr, "usage: auth-admin mfa keygen | auth-admin mfa policy [optional|admins|everyone]")
+		fmt.Fprintln(os.Stderr, "usage: auth-admin mfa keygen | auth-admin mfa policy [--if-new] [optional|admins|everyone]")
 		os.Exit(2)
 	}
 	key, err := mfa.NewKey()
@@ -1447,12 +1448,36 @@ func mfaPolicyCmd(dataDir string, args []string) {
 		}
 		return
 	}
+	ifNew := args[0] == "--if-new"
+	if ifNew {
+		args = args[1:]
+	}
+	if len(args) != 1 {
+		fatalf("usage: auth-admin mfa policy [--if-new] [optional|admins|everyone]")
+	}
 	mode, err := mfa.ParseMode(args[0])
 	if err != nil {
-		fatalf("usage: auth-admin mfa policy [optional|admins|everyone]")
+		fatalf("usage: auth-admin mfa policy [--if-new] [optional|admins|everyone]")
 	}
 	if mode != mfa.ModeOptional {
 		requireMFAKeyConfigured("a policy that requires two-factor sign-in")
+	}
+	if ifNew {
+		// bootstrap's first-install default: never overrides a stored policy
+		// and never changes a deployment that already has accounts.
+		policy, outcome, err := st.InitMFAPolicy(ctx, mode, cliActor(), time.Now().Unix())
+		if err != nil {
+			fatalf("mfa policy: %v", err)
+		}
+		switch outcome {
+		case store.MFAPolicyInitialized:
+			fmt.Printf("✓ two-factor policy is now %s (%s) on this new deployment\n", policy.Mode, policy.Mode.Label())
+		case store.MFAPolicyAlreadySet:
+			fmt.Printf("two-factor policy: %s (%s), set earlier; left as it is\n", policy.Mode, policy.Mode.Label())
+		default:
+			fmt.Printf("two-factor policy: %s (%s), never set; left as it is because accounts already exist (auth mfa policy %s sets it)\n", policy.Mode, policy.Mode.Label(), mode)
+		}
+		return
 	}
 	policy, signedOut, err := st.SetMFAPolicy(ctx, mode, cliActor(), time.Now().Unix())
 	if err != nil {

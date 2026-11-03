@@ -239,6 +239,70 @@ func TestCLITwoFactorPolicyRequirementAndReset(t *testing.T) {
 	}
 }
 
+// `mfa policy --if-new` is bootstrap's first-install default: it sets the
+// policy on a new deployment and leaves every other one exactly as it is.
+func TestCLITwoFactorPolicyIfNew(t *testing.T) {
+	ctx := context.Background()
+	const pw = "a long enough passphrase 123\na long enough passphrase 123\n"
+
+	// New deployment: set, attributed to the operator; a rerun keeps it.
+	c := newCLI(t)
+	if out := c.must("", "mfa", "policy", "--if-new", "admins"); !strings.Contains(out, "two-factor policy is now admins (Required for administrators) on this new deployment") {
+		t.Fatalf("new deployment:\n%s", out)
+	}
+	st := c.store()
+	if p, _ := st.MFAPolicy(ctx); p.Mode != mfa.ModeAdmins {
+		t.Fatalf("policy = %s", p.Mode)
+	}
+	events, _ := st.RecentAuditEvents(ctx, "", 10)
+	if len(events) != 1 || !strings.Contains(events[0].Metadata, "cli:operator") {
+		t.Fatalf("audit = %+v", events)
+	}
+	if out := c.must("", "mfa", "policy", "--if-new", "everyone"); !strings.Contains(out, "admins (Required for administrators), set earlier; left as it is") {
+		t.Fatalf("rerun:\n%s", out)
+	}
+	if p, _ := st.MFAPolicy(ctx); p.Mode != mfa.ModeAdmins {
+		t.Fatalf("rerun changed the policy to %s", p.Mode)
+	}
+
+	// An explicit choice stays: optional (relaxed from admins) and everyone.
+	for _, explicit := range []string{"optional", "everyone"} {
+		c := newCLI(t)
+		c.must("", "mfa", "policy", "admins")
+		c.must("", "mfa", "policy", explicit)
+		if out := c.must("", "mfa", "policy", "--if-new", "admins"); !strings.Contains(out, "two-factor policy: "+explicit+" (") || !strings.Contains(out, "left as it is") {
+			t.Fatalf("explicit %s:\n%s", explicit, out)
+		}
+		if p, _ := c.store().MFAPolicy(ctx); string(p.Mode) != explicit {
+			t.Fatalf("explicit %s became %s", explicit, p.Mode)
+		}
+	}
+
+	// A deployment with accounts that never set a policy is left alone.
+	c = newCLI(t)
+	c.must(pw, "user", "create", "alice@example.com")
+	c.must("", "user", "admin", "alice@example.com", "on")
+	if out := c.must("", "mfa", "policy", "--if-new", "admins"); !strings.Contains(out, "optional (Optional), never set; left as it is because accounts already exist") {
+		t.Fatalf("in use:\n%s", out)
+	}
+	if p, _ := c.store().MFAPolicy(ctx); p.Mode != mfa.ModeOptional || p.Revision != 0 {
+		t.Fatalf("in use: policy = %+v", p)
+	}
+
+	// No mode, or no key for a requiring mode: refused, nothing stored.
+	c = newCLI(t)
+	if out, code := c.run("", "mfa", "policy", "--if-new"); code == 0 || !strings.Contains(out, "usage") {
+		t.Fatalf("no mode: %d\n%s", code, out)
+	}
+	c.env = append(c.env, "AUTH_MFA_KEY=")
+	if out, code := c.run("", "mfa", "policy", "--if-new", "admins"); code == 0 || !strings.Contains(out, "AUTH_MFA_KEY") {
+		t.Fatalf("no key: %d\n%s", code, out)
+	}
+	if p, _ := c.store().MFAPolicy(ctx); p.Revision != 0 {
+		t.Fatalf("no key: policy = %+v", p)
+	}
+}
+
 func TestCLIApplicationsAndKeys(t *testing.T) {
 	c := newCLI(t)
 	out := c.must("", "app", "create", "fleet", "https://fleet.example.com/api/auth/oidc/callback", "https://fleet.example.com/signed-out")
