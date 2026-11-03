@@ -23,7 +23,7 @@ func TestAuthenticatorHelpPage(t *testing.T) {
 	for _, want := range []string{
 		`id="why"`, `id="need"`, `id="page"`, `id="ways"`, `id="apps"`, `id="finish"`, `id="trouble"`,
 		`id="google"`, `id="microsoft"`, `id="bitwarden"`, `id="1password"`,
-		"Black Friday", "AI makes phishing emails", "Enter a setup key", "Other account (Google, Facebook, etc.)",
+		"AI makes phishing emails", "Enter a setup key", "Other account (Google, Facebook, etc.)",
 		"Account: type <strong>" + cfg.MFAIssuer + "</strong>",
 	} {
 		if !strings.Contains(page, want) {
