@@ -16,9 +16,10 @@
     <h1>{{if .Replace}}Replace your authenticator{{else}}Set up your authenticator{{end}}</h1>
     <p class="muted">{{if .Required}}Your account requires a second step at sign-in. {{end}}Scan this code with an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others all work), then enter the six-digit code it shows.</p>
     {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
-    <img class="qr" src="{{.QR}}" alt="QR code for {{.Issuer}}: {{.Email}}" width="220" height="220">
+    <p class="muted">Added {{.Issuer}} to an app before? Add this code as a new entry, and once it works, delete the older {{.Issuer}} entries: only this one will work.</p>
+    <img class="qr" src="{{.QR}}" alt="QR code for {{.Issuer}}: {{.Email}}" width="264" height="264">
     <div class="secret">
-      <p class="muted">Cannot scan? Enter this key by hand (time-based, six digits):</p>
+      <p class="muted">On this phone, or cannot scan? Add the account in your app by entering this key (time-based, six digits):</p>
       <code id="manual-key">{{.ManualKey}}</code>
       <p class="muted">Account: {{.Email}} · Issuer: {{.Issuer}}</p>
     </div>
@@ -27,7 +28,7 @@
       <input type="hidden" name="action" value="confirm">
       {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
       <label for="code">Code from the app</label>
-      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000">
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000">
       <button class="btn" type="submit">{{if .Replace}}Replace authenticator{{else}}Turn on two-factor sign-in{{end}}</button>
     </form>
     {{if eq .Action "/login/enroll"}}<div class="link-row"><span></span><form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="linkish" type="submit">Cancel sign-in</button></form></div>

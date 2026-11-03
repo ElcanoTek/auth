@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/elcanotek/auth/internal/mfa/qr"
 )
@@ -170,17 +171,20 @@ func StepAt(t time.Time) int64 {
 	return t.Unix() / Period
 }
 
-// NormalizeCode strips the spaces and separators people type between digit
-// groups and returns "" unless exactly six ASCII digits remain. Leading zeros
-// are significant and preserved.
+// NormalizeCode strips the spaces and separators people type or paste between
+// digit groups and returns "" unless exactly six ASCII digits remain. Leading
+// zeros are significant and preserved. Authenticator apps and phone keyboards
+// copy codes with non-breaking or thin spaces, invisible direction marks and
+// dashes, so any Unicode space, format character, dash or "." is ignored;
+// letters and other symbols still reject the code.
 func NormalizeCode(code string) string {
 	var b strings.Builder
 	for _, r := range code {
 		switch {
 		case r >= '0' && r <= '9':
 			b.WriteRune(r)
-		case r == ' ' || r == '-' || r == ' ':
-			// separators people type; ignore
+		case unicode.IsSpace(r) || unicode.In(r, unicode.Cf, unicode.Pd) || r == '.':
+			// separators people type or paste; ignore
 		default:
 			return ""
 		}

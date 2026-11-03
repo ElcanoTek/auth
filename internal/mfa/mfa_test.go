@@ -85,6 +85,13 @@ func TestNormalizeCode(t *testing.T) {
 	cases := map[string]string{
 		"005924": "005924", " 005 924 ": "005924", "005-924": "005924",
 		"5924": "", "0059240": "", "00592a": "", "": "",
+		// What apps and phone keyboards paste: no-break, narrow no-break and
+		// thin spaces, a zero-width space, a direction mark, an en dash, a
+		// dot, a tab and a trailing newline.
+		"005\u00a0924": "005924", "005\u202f924": "005924", "005\u2009924": "005924",
+		"005\u200b924": "005924", "\u200e005924": "005924", "005\u2013924": "005924",
+		"005.924": "005924", "005\t924": "005924", "005924\n": "005924",
+		"005 924 1": "", "005+924": "", "\uff10\uff10\uff15\uff19\uff12\uff14": "",
 	}
 	for in, want := range cases {
 		if got := NormalizeCode(in); got != want {

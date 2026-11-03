@@ -24,7 +24,7 @@
       <input id="recovery_code" name="recovery_code" type="text" required autofocus autocomplete="off" spellcheck="false" placeholder="xxxxx-xxxxx-xxxxx-xxxxx-xxxxx-x">
       {{else}}
       <label for="code">Authenticator code</label>
-      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" required autofocus autocomplete="one-time-code" placeholder="000000">
+      <input id="code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000">
       {{end}}
       <button class="btn" type="submit">Continue</button>
     </form>

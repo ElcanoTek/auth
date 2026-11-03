@@ -584,7 +584,12 @@ password. What people see:
   once. Every other session of that account is signed out at that moment;
   the one that enrolled stays. Changes on the Security page ask for the
   password (and current code) again when the sign-in is older than five
-  minutes.
+  minutes. Codes may be typed or pasted with spaces or dashes. A set-up
+  code lasts ten minutes (and ends with a cancelled sign-in); a later
+  attempt shows a new QR code, so an app used for both attempts lists the
+  account twice and only the newest entry works. Someone whose codes fail
+  right after setting up usually has that stale entry: they try the other
+  entry and delete the one that fails, or an administrator resets two-factor.
 - **Signing in.** After the password, an enrolled account is asked for the
   current code (`/login/verify`); a recovery code works instead, once, and
   the signed-in page then says so. Five wrong codes end that sign-in attempt.
