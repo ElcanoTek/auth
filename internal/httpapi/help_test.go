@@ -21,10 +21,10 @@ func TestAuthenticatorHelpPage(t *testing.T) {
 		t.Fatalf("help page: %d cache=%q csp=%q", resp.StatusCode, resp.Header.Get("Cache-Control"), resp.Header.Get("Content-Security-Policy"))
 	}
 	for _, want := range []string{
-		`id="why"`, `id="need"`, `id="page"`, `id="ways"`, `id="apps"`, `id="finish"`, `id="trouble"`,
+		`id="why"`, `id="open"`, `id="add"`, `id="code"`, `id="trouble"`, "Scan from inside the app",
 		`id="google"`, `id="microsoft"`, `id="bitwarden"`, `id="1password"`,
 		"AI makes phishing emails", "Enter a setup key", "Other account (Google, Facebook, etc.)",
-		"Account: type <strong>" + cfg.MFAIssuer + "</strong>",
+		"account <strong>" + cfg.MFAIssuer + "</strong>",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("help page lacks %q", want)
@@ -50,8 +50,8 @@ func TestAuthenticatorHelpPage(t *testing.T) {
 			}
 		}
 	}
-	if images != 6 {
-		t.Errorf("help page shows %d embedded pictures, want 3 screenshots and 3 illustrations", images)
+	if images != 3 {
+		t.Errorf("help page shows %d embedded pictures, want the app illustration and two screenshots", images)
 	}
 
 	// Off-site references are links to the app makers' own guides only, and
@@ -104,7 +104,7 @@ func TestPagesLinkTheAuthenticatorGuide(t *testing.T) {
 	_, page := alice.post("/account/security", url.Values{"action": {"start"}})
 	guide := strings.Index(page, `href="/help/authenticator" target="_blank" rel="noopener"`)
 	qr := strings.Index(page, `class="qr"`)
-	if guide < 0 || qr < 0 || guide > qr || !strings.Contains(page, "(opens in a new tab)") {
+	if guide < 0 || qr < 0 || guide > qr || !strings.Contains(page, "(opens in a new tab)") || !strings.Contains(page, "from inside the app, not with your phone's camera") {
 		t.Errorf("set-up page must link the guide, in a new tab, just above the QR code:\n%s", page)
 	}
 	secret := extractSecret(t, page)

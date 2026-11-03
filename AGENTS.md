@@ -99,10 +99,11 @@ without it), `theme-choice.js` (the Light, Dark and Auto choice in Your
 account; without it the row stays hidden), `sign-out.js` (the apps page's
 Sign out button opens the Sign out popup; without it the button signs out
 directly) and `admin-noscript.css`. `help/` holds the pictures of the
-authenticator guide (`/help/authenticator`): three drawn `.svg`
-illustrations (presentation attributes only, since an SVG asset is served
-under `default-src 'none'`) and three `.webp` screenshots of the set-up,
-recovery-code and sign-in code pages, taken in Chromium (light, 2x, resized
+authenticator guide (`/help/authenticator`): a drawn `.svg` illustration
+of an app's add menu (presentation attributes only, since an SVG asset is
+served under `default-src 'none'`) and two `.webp` screenshots, of the
+set-up page (cropped to the QR code, setup key and code box) and the
+recovery-code page, taken in Chromium (light, 2x, resized
 to 760px wide) from a local password-mode server with
 `AUTH_BRAND_NAME=Example` and `alex@example.com`. In the screenshots the QR
 is replaced by one that only reads "This is an example picture..." and the

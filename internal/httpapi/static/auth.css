@@ -563,9 +563,9 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
-/* The authenticator guide (/help/authenticator): a long read in the wide
-   card, sections with their own headings, the annotated set-up screenshot,
-   the three ways side by side, and one collapsible block per app. */
+/* The authenticator guide (/help/authenticator): three numbered steps in the
+   wide card, the app illustration beside the annotated set-up screenshot, and
+   one collapsible block per app. */
 .card.guide { max-width: 46rem; } /* beats .card.wide */
 .guide section { margin-top: var(--space-7); scroll-margin-top: var(--space-5); }
 .guide h2 { font-family: var(--font-heading); font-size: var(--font-size-subtitle); font-weight: var(--font-weight-bold); color: var(--color-text-primary); margin: 0 0 var(--space-3); }
@@ -580,13 +580,8 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .guide .hint { font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .shot { margin: var(--space-4) 0; }
 .shot img { display: block; width: 100%; max-width: 380px; height: auto; margin: 0 auto; border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
+.shot.small img { max-width: 260px; }
 .shot figcaption { margin-top: var(--space-2); text-align: center; font-size: var(--font-size-caption); color: var(--color-text-muted); }
-.ways { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); }
-.way { padding: var(--space-4); background: var(--color-surface-1); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
-.way img { display: block; width: 100%; height: auto; margin-bottom: var(--space-3); border-radius: var(--radius-sm); }
-.way h3 { margin-top: 0; }
-.way p { font-size: var(--font-size-caption); margin: 0; }
-@media (max-width: 40rem) { .ways { grid-template-columns: 1fr; } .way img { max-width: 240px; } }
 .app { margin: var(--space-3) 0; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-1); }
 .app > summary { cursor: pointer; padding: var(--space-3) var(--space-4); font-weight: var(--font-weight-bold); color: var(--color-text-primary); }
 .app > summary:focus-visible { outline: none; border-radius: var(--radius-md); box-shadow: var(--focus-ring); }
