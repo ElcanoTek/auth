@@ -587,9 +587,11 @@ password. What people see:
   minutes. Codes may be typed or pasted with spaces or dashes. A set-up
   code lasts ten minutes (and ends with a cancelled sign-in); a later
   attempt shows a new QR code, so an app used for both attempts lists the
-  account twice and only the newest entry works. Someone whose codes fail
-  right after setting up usually has that stale entry: they try the other
-  entry and delete the one that fails, or an administrator resets two-factor.
+  account twice, the entries look identical, and only one of them works
+  (usually the newest, but the older one after a replacement that was
+  scanned and never confirmed). Someone whose codes fail right after
+  setting up usually has a stale entry: they try the other entry and delete
+  the one that fails, or an administrator resets two-factor.
   The key shown under the QR code goes into the app, not the code box; the
   page says so when letters are entered there.
 - **Signing in.** After the password, an enrolled account is asked for the
