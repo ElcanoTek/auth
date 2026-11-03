@@ -24,7 +24,6 @@ func (s *Server) handleAuthenticatorHelp(w http.ResponseWriter, r *http.Request)
 	if err := s.render(w, "help-authenticator.html", map[string]any{
 		"Brand":  s.cfg.BrandName,
 		"Issuer": s.cfg.MFAIssuer,
-		"Host":   s.cfg.Hostname,
 	}); err != nil {
 		log.Printf("render authenticator help: %v", err)
 	}
