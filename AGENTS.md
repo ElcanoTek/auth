@@ -101,13 +101,13 @@ Sign out button opens the Sign out popup; without it the button signs out
 directly) and `admin-noscript.css`. `help/` holds the pictures of the
 authenticator guide (`/help/authenticator`): a drawn `.svg` illustration
 of an app's add menu (presentation attributes only, since an SVG asset is
-served under `default-src 'none'`) and two `.webp` screenshots, of the
-set-up page (cropped to the QR code, setup key and code box) and the
-recovery-code page, taken in Chromium (light, 2x, resized
+served under `default-src 'none'`) and two `.webp` screenshots: the
+set-up page cropped to the QR code, setup key and code box, and the code
+box and its button alone, taken in Chromium (light, 2x, resized
 to 760px wide) from a local password-mode server with
 `AUTH_BRAND_NAME=Example` and `alex@example.com`. In the screenshots the QR
 is replaced by one that only reads "This is an example picture..." and the
-key and recovery codes by placeholders, so nothing in them can be scanned or
+key by a placeholder, so nothing in them can be scanned or
 used; refresh them the same way when those pages change. Both trees are
 embedded (`internal/httpapi/assets.go`); nothing is read from disk at
 runtime.

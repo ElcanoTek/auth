@@ -580,7 +580,7 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 .guide .hint { font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .shot { margin: var(--space-4) 0; }
 .shot img { display: block; width: 100%; max-width: 380px; height: auto; margin: 0 auto; border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
-.shot.small img { max-width: 260px; }
+.shot.compact img { max-width: 320px; }
 .shot figcaption { margin-top: var(--space-2); text-align: center; font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .app { margin: var(--space-3) 0; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-1); }
 .app > summary { cursor: pointer; padding: var(--space-3) var(--space-4); font-weight: var(--font-weight-bold); color: var(--color-text-primary); }
