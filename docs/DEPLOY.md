@@ -590,6 +590,8 @@ password. What people see:
   account twice and only the newest entry works. Someone whose codes fail
   right after setting up usually has that stale entry: they try the other
   entry and delete the one that fails, or an administrator resets two-factor.
+  The key shown under the QR code goes into the app, not the code box; the
+  page says so when letters are entered there.
 - **Signing in.** After the password, an enrolled account is asked for the
   current code (`/login/verify`); a recovery code works instead, once, and
   the signed-in page then says so. Five wrong codes end that sign-in attempt.

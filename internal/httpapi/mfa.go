@@ -77,6 +77,9 @@ var (
 	// errCodeFormat: what was typed is not six digits once separators are
 	// stripped, so no secret was checked.
 	errCodeFormat = errors.New("code is not six digits")
+	// errCodeIsKey: what was typed has letters in it, so it is most likely
+	// the set-up key from the page, which belongs in the app.
+	errCodeIsKey = errors.New("code looks like the set-up key")
 	// errEnrollExpired: the pending secret the person scanned expired or was
 	// cancelled; the page re-renders with a new one.
 	errEnrollExpired = errors.New("pending enrollment expired")
@@ -96,6 +99,8 @@ func enrollFailureText(err error, mismatch string) string {
 	switch {
 	case errors.Is(err, errCodeFormat):
 		return codeFormatMessage
+	case errors.Is(err, errCodeIsKey):
+		return "That looks like the setup key, not a code. Type the key into your authenticator app, then enter the six-digit code the app shows."
 	case errors.Is(err, errEnrollExpired):
 		return "That set-up code expired, so this page shows a new one. Scan this code, enter the code it shows, and once that works, delete the older entries for this account from your app."
 	default:
@@ -610,6 +615,20 @@ func (s *Server) enrollmentView(r *http.Request, account store.Account, now time
 	}, nil
 }
 
+// looksLikeSetupKey reports whether a refused code has two or more ASCII
+// letters: people who cannot scan the QR type or paste the manual key (base32
+// letters and digits) into the code box. One letter is more likely a typo in
+// a code. Misread characters (0 for O) still count, since only letters are.
+func looksLikeSetupKey(code string) bool {
+	letters := 0
+	for _, r := range code {
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+			letters++
+		}
+	}
+	return letters >= 2
+}
+
 // groupSecret spaces the manual key in fours so it can be read aloud or
 // typed; authenticator apps ignore the spaces.
 func groupSecret(b32 string) string {
@@ -625,7 +644,8 @@ func groupSecret(b32 string) string {
 
 // confirmEnrollment checks the first code against the pending secret and
 // returns the pending row and matched step for activation, or why it refused
-// (errCodeFormat, errEnrollExpired, errCodeMismatch, or a store error).
+// (errCodeFormat, errCodeIsKey, errEnrollExpired, errCodeMismatch, or a
+// store error).
 func (s *Server) confirmEnrollment(r *http.Request, account store.Account, code string, now time.Time) (store.Authenticator, int64, error) {
 	// Expiry is checked first: the page re-renders with a new secret, and
 	// that must be said even when what was typed is also malformed.
@@ -637,6 +657,9 @@ func (s *Server) confirmEnrollment(r *http.Request, account store.Account, code 
 		return store.Authenticator{}, 0, err
 	}
 	if mfa.NormalizeCode(code) == "" {
+		if looksLikeSetupKey(code) {
+			return store.Authenticator{}, 0, errCodeIsKey
+		}
 		return store.Authenticator{}, 0, errCodeFormat
 	}
 	secret, _, _, err := s.openSecret(pending)

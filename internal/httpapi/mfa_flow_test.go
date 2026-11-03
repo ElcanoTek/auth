@@ -327,6 +327,14 @@ func TestEnrollmentAndSignInExplainRefusedCodes(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Enter the six-digit code your authenticator app shows.") || string(extractSecret(t, page)) != string(secret) {
 		t.Fatalf("malformed confirm code: %d\n%s", resp.StatusCode, page)
 	}
+	// The start of the manual key typed into the code box (with 0 misread
+	// for O), the way someone who cannot scan does it: told where it goes.
+	for _, typed := range []string{"7OIDP42", "70IDP42", "abcd efgh"} {
+		resp, page = alice.post("/account/security", url.Values{"action": {"confirm"}, "code": {typed}})
+		if resp.StatusCode != http.StatusOK || !strings.Contains(page, "That looks like the setup key, not a code.") || string(extractSecret(t, page)) != string(secret) {
+			t.Fatalf("set-up key %q in the code box: %d\n%s", typed, resp.StatusCode, page)
+		}
+	}
 
 	// The pending secret goes away (expiry and Cancel both delete or skip
 	// it): the page says the QR is new, and it is.
