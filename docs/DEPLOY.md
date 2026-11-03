@@ -223,7 +223,10 @@ one edit; nothing here is optional for the first sign-in to work.
    A new password-mode deployment starts with the two-factor policy
    **Required for administrators**: bootstrap sets it when no policy was
    ever stored and no account exists yet (`auth mfa policy --if-new admins`),
-   and its summary shows the policy in force. So right after the password
+   and its summary shows the policy in force. If it cannot set it (after a
+   few tries) the install fails with that message, and Auth is installed and
+   running: run `sudo auth mfa policy admins` before creating the first
+   account. So right after the password
    change the first administrator sets up an authenticator before getting
    in. A box whose policy was set before, or that already had accounts, is
    left as it is; check it with `auth mfa policy`, and if it still says

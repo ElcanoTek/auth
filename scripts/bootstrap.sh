@@ -861,25 +861,6 @@ else
   ok "systemd units + ${CLI_PATH} installed; auth-server is healthy on $HEALTH_ADDR"
 fi
 
-# Two-factor sign-in for administrators from the first account on: a new
-# password-mode deployment (no policy ever stored, no accounts yet) starts at
-# "admins", so the first administrator enrolls at first sign-in. A stored
-# policy, or a deployment that already has accounts, is left exactly as it
-# is: auth-admin decides both in one transaction. Magic mode has no second
-# factor, so its policy is not touched.
-MFA_POLICY_NOW=""
-if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
-  if [[ "$DRY_RUN" == "1" ]]; then
-    info "DRY_RUN: would set the two-factor policy to admins if this is a new deployment"
-  else
-    if mfa_out="$(APP_DIR="$APP_DIR" APP_USER="$APP_USER" "$CLI_PATH" mfa policy --if-new admins 2>&1)"; then
-      info "$mfa_out"
-    else
-      warn "could not set the two-factor policy ($mfa_out); set it with: auth mfa policy admins"
-    fi
-    MFA_POLICY_NOW="$(APP_DIR="$APP_DIR" APP_USER="$APP_USER" "$CLI_PATH" mfa policy 2>/dev/null | sed -n 's/^two-factor policy: //p' | head -n1 || true)"
-  fi
-fi
 
 # Seed the DB-side domain allowlist from .env.local (auth-server does
 # this at startup too, but doing it here means `auth domain list`
@@ -1081,6 +1062,40 @@ if [[ "$DRY_RUN" == "1" ]]; then
   info "DRY_RUN: would install $APP_DIR/deploy/motd to /etc/motd"
 else
   install -m 0644 "$APP_DIR/deploy/motd" /etc/motd
+fi
+
+# Two-factor sign-in for administrators from the first account on: a new
+# password-mode deployment (no policy ever stored, no accounts yet) starts at
+# "admins", so the first administrator enrolls at first sign-in. A stored
+# policy, or a deployment that already has accounts, is left exactly as it
+# is: auth-admin decides both in one transaction, and both are successful
+# no-ops here. It fails closed: a new deployment whose policy could not be
+# set (after a few tries, for a busy database) fails the install, because
+# once the first account exists this step never sets it again. It runs last,
+# so everything else is in place by then. Magic mode has no second factor,
+# so its policy is not touched.
+MFA_POLICY_NOW=""
+if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
+  if [[ "$DRY_RUN" == "1" ]]; then
+    info "DRY_RUN: would set the two-factor policy to admins if this is a new deployment"
+  else
+    mfa_ok=0
+    for mfa_try in 1 2 3 4 5; do
+      if mfa_out="$(APP_DIR="$APP_DIR" APP_USER="$APP_USER" "$CLI_PATH" mfa policy --if-new admins 2>&1)"; then
+        mfa_ok=1; info "$mfa_out"; break
+      fi
+      if (( mfa_try < 5 )); then sleep 2; fi
+    done
+    if [[ "$mfa_ok" != "1" ]]; then
+      mfa_out="${mfa_out##*$'\n'}"
+      die "could not set the two-factor policy after 5 tries (${mfa_out:0:200}). Auth is installed and running, but administrators are not yet required to use two-factor sign-in: run 'sudo auth mfa policy admins' before creating the first account, then check it with 'sudo auth mfa policy'."
+    fi
+    for mfa_try in 1 2 3; do
+      MFA_POLICY_NOW="$(APP_DIR="$APP_DIR" APP_USER="$APP_USER" "$CLI_PATH" mfa policy 2>/dev/null | sed -n 's/^two-factor policy: //p' | head -n1 || true)"
+      [[ -n "$MFA_POLICY_NOW" ]] && break
+      if (( mfa_try < 3 )); then sleep 2; fi
+    done
+  fi
 fi
 
 # ── final card ──────────────────────────────────────────────────────
