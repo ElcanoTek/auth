@@ -34,7 +34,7 @@ func TestAuthenticatorHelpPage(t *testing.T) {
 		t.Error("the guide must not have form fields: nothing to type a code into, nothing to autofill")
 	}
 
-	types := map[string]string{".webp": "image/webp", ".svg": "image/svg+xml"}
+	types := map[string]string{".webp": "image/webp"}
 	images := 0
 	for _, ref := range assetRef.FindAllStringSubmatch(page, -1) {
 		r, _ := get(t, ts.URL+ref[1])
