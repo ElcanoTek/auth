@@ -138,6 +138,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/login/verify", s.handleLoginVerify)
 	mux.HandleFunc("/login/enroll", s.handleLoginEnroll)
 	mux.HandleFunc("/login/cancel", s.handleLoginCancel)
+	mux.HandleFunc("/help/authenticator", s.handleAuthenticatorHelp)
 	mux.HandleFunc("/account", s.handleAccount)
 	mux.HandleFunc("/account/security", s.handleAccountSecurity)
 	mux.HandleFunc("/account/security/verify", s.handleAccountSecurityVerify)

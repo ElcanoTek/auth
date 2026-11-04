@@ -626,7 +626,7 @@ func TestSecurityPageStepUpDisableAndRegenerate(t *testing.T) {
 
 func TestMagicModeHasNoSecondFactorRoutes(t *testing.T) {
 	ts, _, _, _ := newTestServer(t)
-	for _, p := range []string{"/login/verify", "/login/enroll", "/account/security", "/account/security/verify"} {
+	for _, p := range []string{"/login/verify", "/login/enroll", "/account/security", "/account/security/verify", "/help/authenticator"} {
 		resp, err := noFollowClient().Get(ts.URL + p)
 		if err != nil {
 			t.Fatal(err)

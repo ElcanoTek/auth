@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Wordmark}} — Set up two-factor sign-in</title>
+{{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
+{{template "assets" .}}
+</head>
+<body>
+  {{template "theme-toggle"}}
+  <main class="card wide guide">
+    {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
+    <div class="brand">{{.Wordmark}}</div>
+    <h1>Set up two-factor sign-in</h1>
+    <p class="muted">Three steps, about five minutes.</p>
+
+    <section id="why">
+      <h2>What it is</h2>
+      <p>An extra six-digit code, from an app on your phone, that you enter after your password to keep your account secure.</p>
+      <h3>Why it matters</h3>
+      <ul>
+        <li>Passwords get stolen and reused.</li>
+        <li>AI makes phishing emails and fake sign-in pages hard to spot.</li>
+        <li>With two-factor on, a stolen password alone is not enough.</li>
+      </ul>
+    </section>
+
+    <section id="open">
+      <h2>1. Open an authenticator app</h2>
+      <p>Install one if you need to, then open it: <strong>Google Authenticator</strong>, <strong>Microsoft Authenticator</strong> or <strong>Bitwarden Authenticator</strong> (all free), or <strong>1Password</strong>.</p>
+      <div class="banner warn" role="note"><strong>Scan from inside the app.</strong> Your phone's regular camera app cannot add the account to your authenticator.</div>
+    </section>
+
+    <section id="add">
+      <h2>2. Add your account</h2>
+      <ul>
+        <li><strong>Scan the QR code in your app:</strong> tap <strong>+</strong>, choose <strong>Scan a QR code</strong> and point your phone at the QR code (1).</li>
+        <li><strong>Or copy and paste the setup key into your app</strong>, handy when the set-up page is on the same phone: copy the key (2), then in the app tap <strong>+</strong>, choose <strong>Enter a setup key</strong>, paste it and pick <strong>Time based</strong>.</li>
+      </ul>
+      <div class="shots">
+        <figure class="shot">
+          <img src="{{asset "help/way-key.webp"}}" width="480" height="320" alt="An authenticator app: tap + and choose Scan a QR code or Enter a setup key.">
+          <figcaption>In your app</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="{{asset "help/setup-page.webp"}}" width="760" height="1087" loading="lazy" alt="Part of the set-up page: the QR code marked 1 and the setup key marked 2.">
+          <figcaption>On the set-up page (example: this QR code and key will not work)</figcaption>
+        </figure>
+      </div>
+      <p class="hint">Exact buttons for your app:</p>
+
+      <details class="app" id="google">
+        <summary>Google Authenticator</summary>
+        <ul>
+          <li>Tap <strong>+</strong>, then <strong>Scan a QR code</strong>.</li>
+          <li>Or tap <strong>+</strong>, then <strong>Enter a setup key</strong>: account <strong>{{.Issuer}}</strong>, paste the key, <strong>Time based</strong>, <strong>Add</strong>.</li>
+        </ul>
+        <p class="hint"><a href="https://support.google.com/accounts/answer/1066447" rel="noopener noreferrer" target="_blank">Google's guide<span class="sr-only"> (opens in a new tab)</span></a></p>
+      </details>
+
+      <details class="app" id="microsoft">
+        <summary>Microsoft Authenticator</summary>
+        <ul>
+          <li>Tap <strong>+</strong>, then <strong>Other account (Google, Facebook, etc.)</strong>, not "Work or school account", and scan.</li>
+          <li>Or, on the camera screen, tap <strong>Enter code manually</strong>: account <strong>{{.Issuer}}</strong>, paste the key as the secret key, <strong>Finish</strong>.</li>
+        </ul>
+        <p class="hint"><a href="https://support.microsoft.com/en-us/topic/7a92b5d4-d6e5-4474-9ac6-be0b6773f574" rel="noopener noreferrer" target="_blank">Microsoft's guide<span class="sr-only"> (opens in a new tab)</span></a></p>
+      </details>
+
+      <details class="app" id="bitwarden">
+        <summary>Bitwarden</summary>
+        <ul>
+          <li>Bitwarden Authenticator: tap <strong>+</strong> and scan, or tap <strong>Enter key manually</strong> and paste the key. Choose <strong>Save here</strong>.</li>
+          <li>Bitwarden Password Manager (Premium or a paid plan): edit the login, <strong>Set up TOTP</strong>, scan or paste the key, <strong>Save</strong>.</li>
+        </ul>
+        <p class="hint"><a href="https://bitwarden.com/help/bitwarden-authenticator/" rel="noopener noreferrer" target="_blank">Authenticator guide<span class="sr-only"> (opens in a new tab)</span></a> · <a href="https://bitwarden.com/help/integrated-authenticator/" rel="noopener noreferrer" target="_blank">Password Manager guide<span class="sr-only"> (opens in a new tab)</span></a></p>
+      </details>
+
+      <details class="app" id="1password">
+        <summary>1Password</summary>
+        <ul>
+          <li>Edit the login for {{.Brand}}, select <strong>Add More</strong>, then <strong>One-Time Password</strong>.</li>
+          <li>Scan the QR code (on a computer, 1Password reads it from your screen) or paste the key, then <strong>Save</strong>.</li>
+        </ul>
+        <p class="hint"><a href="https://support.1password.com/one-time-passwords/" rel="noopener noreferrer" target="_blank">1Password's guide<span class="sr-only"> (opens in a new tab)</span></a></p>
+      </details>
+    </section>
+
+    <section id="code">
+      <h2>3. Enter the code</h2>
+      <p>Type the six-digit code the app shows into the code box (3) and select <strong>Turn on two-factor sign-in</strong>.</p>
+      <figure class="shot compact">
+        <img src="{{asset "help/code-box.webp"}}" width="760" height="327" loading="lazy" alt="The code box, marked 3, and the Turn on two-factor sign-in button.">
+      </figure>
+      <p class="hint">Opened this guide from the set-up page? Switch back to that tab.</p>
+      <h3>Save your recovery codes</h3>
+      <p>Next you will see ten recovery codes, shown only once. Each one lets you sign in a single time if you lose or replace your phone, so keep them somewhere safe, such as your password manager.</p>
+    </section>
+
+    <section id="trouble">
+      <h2>Trouble?</h2>
+      <dl class="faq">
+        <dt>Scanned with your phone's camera</dt>
+        <dd>Open your authenticator app and scan from there instead.</dd>
+        <dt>"Please match the requested format" or "That looks like the setup key"</dt>
+        <dd>The key goes into your app. The code box takes the six digits the app shows.</dd>
+        <dt>"That code did not match" or "did not work"</dt>
+        <dd>Set your phone's date and time to automatic, then try the current code.</dd>
+        <dt>"That set-up code expired"</dt>
+        <dd>Add the new QR code, and once it works, delete the older entries.</dd>
+        <dt>Your app lists {{.Issuer}} twice</dt>
+        <dd>Only one entry works. Try the other, then delete the one that fails.</dd>
+        <dt>New or lost phone</dt>
+        <dd>Move your codes with your app's transfer or export option before resetting a phone. Lost it? Sign in with a recovery code, or ask your administrator to reset two-factor sign-in.</dd>
+      </dl>
+    </section>
+
+    <div class="link-row"><a href="/">Back to sign-in</a><span></span></div>
+  </main>
+</body>
+</html>

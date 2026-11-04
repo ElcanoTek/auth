@@ -28,6 +28,7 @@
       {{end}}
       <button class="btn" type="submit">Continue</button>
     </form>
+    {{if not .Recovery}}<p class="help-link">Code not working? <a href="/help/authenticator#trouble" target="_blank" rel="noopener">See what to try<span class="sr-only"> (opens in a new tab)</span></a></p>{{end}}
     <div class="link-row">
       {{if .Recovery}}<a href="/login/verify">Use my authenticator app</a>{{else if .HasRecovery}}<a href="/login/verify?mode=recovery">Use a recovery code</a>{{else}}<span></span>{{end}}
       <form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="linkish" type="submit">Cancel sign-in</button></form>

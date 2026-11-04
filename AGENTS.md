@@ -98,8 +98,20 @@ page styles), `admin.js` (the admin console's only script; the console works
 without it), `theme-choice.js` (the Light, Dark and Auto choice in Your
 account; without it the row stays hidden), `sign-out.js` (the apps page's
 Sign out button opens the Sign out popup; without it the button signs out
-directly) and `admin-noscript.css`. Both trees are embedded
-(`internal/httpapi/assets.go`); nothing is read from disk at runtime.
+directly) and `admin-noscript.css`. `help/` holds the pictures of the
+authenticator guide (`/help/authenticator`), all `.webp`: a drawn
+illustration of an app's add menu, rendered in Chromium at 2x with the
+vendored Nebula Sans and Hack (an SVG image cannot load the self-hosted
+faces, so it would fall back to system fonts), and two screenshots: the
+set-up page cropped to the QR code and setup key, and the code box and
+its button, taken in Chromium (light, 2x, resized
+to 760px wide) from a local password-mode server with
+`AUTH_BRAND_NAME=Example` and `alex@example.com`. In the screenshots the QR
+is replaced by one that only reads "This is an example picture..." and the
+key by a placeholder, so nothing in them can be scanned or
+used; refresh them the same way when those pages change. Both trees are
+embedded (`internal/httpapi/assets.go`); nothing is read from disk at
+runtime.
 
 - Static files are served at `/assets/<hash>/<path>`, where `<hash>` covers the
   whole static tree; templates write URLs with `{{asset "auth.css"}}`, which
