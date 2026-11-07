@@ -32,6 +32,7 @@ test:
 	bash scripts/test/ssh_test.sh
 	bash scripts/test/dnscheck_test.sh
 	bash scripts/test/bootstrap_mfa_test.sh
+	bash scripts/test/release_test.sh
 
 ## stack-check: Elcano frontend standard (stack.conf, AGENTS.md block,
 ##              flag.lock drift, no remote assets); offline, as CI runs it

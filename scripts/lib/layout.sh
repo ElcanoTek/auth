@@ -197,6 +197,27 @@ layout_build() {
   chmod -R go-w "$staging" || return 1
 }
 
+# layout_stage_release SRC STAGING TAG [COMMIT] downloads and verifies TAG's
+# signed release binaries (auth-server and auth-admin) into STAGING/bin/ using
+# scripts/lib/release.sh, then tightens STAGING to root:root 0755 (go-w) so the
+# service user can execute STAGING/bin/auth-server for the pre-flight check and
+# layout_install_tree can install both binaries. Does not need Go on the host.
+layout_stage_release() {
+  local src="$1" staging="$2" tag="$3" commit="${4:-}" cache="${AUTH_RELEASE_CACHE_DIR:-/var/cache/auth-release}"
+  layout_require_trusted "$src" || return 1
+  layout_require_real "$staging" || return 1
+  if ! declare -F auth_release_fetch >/dev/null 2>&1; then
+    # shellcheck disable=SC1091
+    . "$src/scripts/lib/release.sh" || return 1
+  fi
+  chown root:root "$staging" || return 1
+  chmod 0700 "$staging" || return 1
+  auth_release_fetch "$src" "$tag" "$staging" "$cache" "$commit" >/dev/null || return 1
+  chown -R -h root:root "$staging" || return 1
+  chmod 0755 "$staging" "$staging/bin" || return 1
+  chmod -R go-w "$staging" || return 1
+}
+
 # layout_install_tree SRC STAGING syncs the source tree from root's trusted
 # checkout SRC into APP_DIR (root-owned, unwritable by others) and installs
 # the two binaries built in STAGING as root:root 0755. Only the binaries come

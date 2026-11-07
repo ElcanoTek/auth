@@ -842,7 +842,13 @@ check_git() {
   elif [[ -n "$branch" && "$branch" != "HEAD" ]]; then
     add warn git-branch "on $branch, not main"
   else
-    add warn git-branch "detached HEAD at $SRC_DIR, not main"
+    local rel_tag
+    rel_tag="$(gitc describe --tags --exact-match --match 'v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].[0-9]*' HEAD 2>/dev/null || true)"
+    if [[ "$rel_tag" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$ ]]; then
+      add pass git-branch "on release $rel_tag"
+    else
+      add warn git-branch "detached HEAD at $SRC_DIR, not main"
+    fi
   fi
   # ls-remote does not write FETCH_HEAD or remote-tracking refs, so --check
   # cannot change the checkout. A missing object locally still reports drift.

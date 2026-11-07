@@ -364,16 +364,24 @@ case "$cmd" in
     ;;
   update)
     # sudo starts with a clean environment on the supported hosts, so forward
-    # the one documented control flag explicitly. Never preserve the caller's
+    # the documented control flags explicitly. Never preserve the caller's
     # environment wholesale: this wrapper crosses a privilege boundary.
-    if [[ "${AUTH_UPDATE_YES:-0}" == "1" ]]; then
-      exec sudo env AUTH_UPDATE_YES=1 bash "$APP_DIR/scripts/update.sh" "$@"
+    update_env=()
+    [[ "${AUTH_UPDATE_NO_PULL:-0}" == "1" ]] && update_env+=(AUTH_UPDATE_NO_PULL=1)
+    [[ "${AUTH_UPDATE_YES:-0}" == "1" ]] && update_env+=(AUTH_UPDATE_YES=1)
+    [[ "${AUTH_FROM_SOURCE:-0}" == "1" ]] && update_env+=(AUTH_FROM_SOURCE=1)
+    [[ -n "${AUTH_UPDATE_TAG:-}" ]] && update_env+=("AUTH_UPDATE_TAG=${AUTH_UPDATE_TAG}")
+    [[ "${AUTH_UPDATE_ALLOW_DOWNGRADE:-0}" == "1" ]] && update_env+=(AUTH_UPDATE_ALLOW_DOWNGRADE=1)
+    if [[ "${#update_env[@]}" -gt 0 ]]; then
+      exec sudo env "${update_env[@]}" bash "$APP_DIR/scripts/update.sh" "$@"
     fi
     exec sudo bash "$APP_DIR/scripts/update.sh" "$@"
     ;;
   rebuild)
-    # Rebuild and restart whatever is checked out, without git fetch.
-    exec sudo env AUTH_UPDATE_NO_PULL=1 AUTH_UPDATE_YES=1 bash "$APP_DIR/scripts/update.sh"
+    # Reinstall (or rebuild with --from-source) and restart whatever is checked out, without git fetch.
+    rebuild_env=(AUTH_UPDATE_NO_PULL=1 AUTH_UPDATE_YES=1)
+    [[ "${AUTH_FROM_SOURCE:-0}" == "1" ]] && rebuild_env+=(AUTH_FROM_SOURCE=1)
+    exec sudo env "${rebuild_env[@]}" bash "$APP_DIR/scripts/update.sh" "$@"
     ;;
   start)
     exec sudo systemctl start auth.target

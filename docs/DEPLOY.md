@@ -164,7 +164,8 @@ the new `update.sh` runs; see [Upgrading](#upgrading)):
 | `/opt/auth/bin/auth-server`, `auth-admin` | `root:root` | `0755` | the service and the CLI execute them |
 | `/opt/auth/.env.local` | `root:auth` | `0640` | root writes it (`auth env edit`), the service reads it through the group |
 | `/opt/auth/data/` | `auth:auth` | `0700` | the only place the service writes: `state.db` and `backups/` |
-| `/var/cache/auth-build/` | `auth:auth` | `0700` | Go caches for the unprivileged build |
+| `/var/cache/auth-release/` | `root:root` | `0700` | pinned `cosign` binary (`scripts/cosign.lock`) for signed release verification |
+| `/var/cache/auth-build/` | `auth:auth` | `0700` | Go caches for `--from-source` unprivileged builds |
 | `/opt/auth-client/` (bundle checkout) | `root:root` | `go-w` | root pulls it with hooks disabled; a service-writable `.git/hooks` would run as root at the next pull |
 
 `AUTH_DATA_DIR` may stay at `/opt/auth/data` or point outside `/opt/auth`.
@@ -175,8 +176,15 @@ a drop-in adding it to `ReadWritePaths`. Any other path inside `/opt/auth`
 is refused, because the source sync and the ownership pass could not
 protect it.
 
-Builds run as `auth` in a throwaway staging copy with those caches, and root
-installs the result. `auth user|domain|app|audit|mfa|keygen|pubkey` and
+By default, bootstrap and `auth update` download the signed release binaries
+(`auth-server` and `auth-admin`) into a root-private `0700` staging directory,
+verify `SHA256SUMS`, `release.json`, and both binaries with the pinned `cosign`
+build (`scripts/cosign.lock`) against the GitHub Actions OIDC identity for
+`ElcanoTek/auth`'s release workflow on `main`, and install the verified
+binaries as `root:root 0755` — no Go toolchain is needed on the box. When
+`--from-source` (`AUTH_FROM_SOURCE=1`) is passed, builds run as `auth` in a
+throwaway staging copy with `/var/cache/auth-build/`, and root installs the
+result. `auth user|domain|app|audit|mfa|keygen|pubkey` and
 `auth backup` run `auth-admin` and `sqlite3` as `auth` (root reads
 `.env.local` and passes the needed settings through the environment, never
 on a command line), so the database never acquires root-owned files.
@@ -1043,17 +1051,22 @@ key; in-flight lockouts reset at rotation.
 
 ## Upgrading
 
-### Go toolchain
+### Signed binary releases and `--from-source`
 
-The `go 1.27.x` line in `go.mod` names the exact Go patch release the
-service is built with, not just the language version. Every build path
-(`auth update`, `auth rebuild`, bootstrap) runs with `GOTOOLCHAIN=auto`, so a
-box whose distro Go is older downloads exactly that version on first build
-(needs outbound HTTPS, which the box already has for `git pull`) and uses it
-from then on; CI's setup-go reads the same line. That line is where
-standard-library security fixes land: when govulncheck reports advisories
-fixed in a newer Go patch, bump it, run the checks, merge, and the next
-`auth update` rebuilds with it.
+Every commit on `main` that passes the full CI gate is tagged `vYYYY.MM.DD.N`
+by `.github/workflows/release.yml`, compiled as static `linux/amd64` and
+`linux/arm64` binaries (`CGO_ENABLED=0`), and signed with keyless Sigstore OIDC
+(`cosign sign-blob --bundle`). Production boxes (`bootstrap.sh`, `auth update`,
+`auth rebuild`) download and verify the signed release artifacts using the
+`cosign` digest pinned in `scripts/cosign.lock` and do **not** require Go on
+the host.
+
+When `--from-source` (`AUTH_FROM_SOURCE=1`) is passed (or in CI), the `go 1.27.x`
+line in `go.mod` names the exact Go patch release the service is built with,
+and `GOTOOLCHAIN=auto` downloads that toolchain on first source build. That
+line is where standard-library security fixes land: when govulncheck reports
+advisories fixed in a newer Go patch, bump it, run the checks, merge, and the
+next signed release (and `--from-source` build) carries it.
 
 
 ```bash
@@ -1063,17 +1076,22 @@ sudo auth update
 That runs `scripts/update.sh`, which:
 
 1. Takes an exclusive lock so two updates can't run at once, then
-   `git fetch`-es in `/opt/auth-src`, shows the incoming commits, and
-   asks for confirmation.
-2. Builds the new Go binary in a staging dir — if the build fails,
-   the running install is untouched.
+   `git fetch --tags`-es in `/opt/auth-src`, resolves the latest published
+   release tag (or `--tag vYYYY.MM.DD.N`), verifies its signed `release.json`
+   manifest against the tag's commit before moving the checkout, shows the
+   incoming commits, and asks for confirmation (self-re-executing if
+   `scripts/update.sh` or its libraries changed).
+2. Downloads and verifies the signed `auth-server` and `auth-admin` binaries
+   (or builds from source when `--from-source` is passed) in a private staging
+   dir and validates the live `.env.local` with `-check-config` — if verification,
+   staging, or config validation fails, the running install is untouched.
 3. Snapshots the live binaries, systemd units, and CLI, then stops the
-   service briefly, swaps the new build in place, and restarts.
-4. Health-checks `/healthz`. **If the new build fails to start or come up
+   service briefly, swaps the new release in place, and restarts.
+4. Health-checks `/healthz`. **If the new release fails to start or come up
    healthy, it automatically rolls back** — restoring the previous
    binaries + units + CLI and leaving the service healthy on the old
    version. The journalctl pointer it prints is for *investigating* the
-   bad build, not manual recovery. (Only if the rollback _itself_ also
+   bad release, not manual recovery. (Only if the rollback _itself_ also
    fails `/healthz` does it stop and ask for manual recovery.)
 5. Re-installs the login banner (`/etc/motd`) from `deploy/motd` when it
    differs. Bootstrap installs it too, replacing whatever the image shipped.
@@ -1124,31 +1142,44 @@ live outside the paths `update.sh` replaces.
 
 ### Non-interactive update
 
-Skip the confirm prompt with `AUTH_UPDATE_YES=1`:
+Skip the confirm prompt with `AUTH_UPDATE_YES=1` (or `--yes`):
 
 ```bash
 sudo env AUTH_UPDATE_YES=1 auth update
 ```
 
-The wrapper forwards only this control flag across its internal `sudo`
-boundary; it deliberately does not preserve arbitrary caller environment
-variables.
+The wrapper forwards only known update control flags (`AUTH_UPDATE_YES`,
+`AUTH_UPDATE_NO_PULL`, `AUTH_FROM_SOURCE`, `AUTH_UPDATE_TAG`,
+`AUTH_UPDATE_ALLOW_DOWNGRADE`) across its internal `sudo` boundary; it
+deliberately does not preserve arbitrary caller environment variables.
 
 ### Rolling back
 
-If a bad update slipped through:
+If a bad update slipped through, roll back to the previous signed release tag:
+
+```bash
+sudo auth update --tag vYYYY.MM.DD.N --allow-downgrade
+```
+
+GitHub retains the newest 20 published release objects, while each host caches
+its 5 most recently installed verified release bundles under
+`/var/cache/auth-release/releases` so `sudo auth rebuild` and rolling back to
+the host's previous release work even after GitHub prunes older release
+assets. To roll back to an uncached release older than the newest 20 published
+releases (or to an arbitrary untagged commit), build from source (requires Go
+on the host):
 
 ```bash
 cd /opt/auth-src
-sudo git checkout <pre-update-sha>      # rewind to known-good
-sudo auth rebuild                        # rebuild + restart at that commit
+sudo git checkout <pre-update-sha>      # rewind to known-good commit
+sudo auth rebuild --from-source         # compile from source + restart at that commit
 ```
 
-> **Don't run `auth update` after a manual rollback** — it would
-> fast-forward to the latest remote branch again.
+> **Don't run a plain `auth update` after a manual rollback** — it would
+> advance to the latest published release again.
 
-`update.sh` prints the roll-back hint in its final status card,
-pointing at the exact pre-update SHA.
+`update.sh` prints the roll-back command in its final status card,
+naming the previous release tag (or commit SHA for `--from-source`).
 
 ### Database migrations
 
