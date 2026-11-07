@@ -55,7 +55,7 @@ readonly TAG_GLOB='v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].[0-9]*'
 # but this scheme cannot parse is rejected here rather than surfacing as an
 # arithmetic error in `semver` (`10#1oops`) or, worse, as a release name the
 # tagging workflow mistakes for "already released" and silently skips.
-readonly TAG_RE='^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$'
+readonly TAG_RE='^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$'
 
 # The sentinel an unreleased/unstamped build reports.
 readonly DEV_SENTINEL='dev'
@@ -101,18 +101,21 @@ tree_is_dirty() {
 	[ -n "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]
 }
 
-# newest_tag prints the highest release tag REACHABLE FROM HEAD, or nothing.
+# newest_tag prints the highest release tag REACHABLE FROM rev (default HEAD),
+# or nothing. Filtering every merged candidate through cmd_filter ensures a
+# malformed tag that matches TAG_GLOB (e.g. v2026.11.07.2oops) never masks an
+# earlier valid release tag.
 newest_tag() {
-	local tag
-	tag="$(git describe --tags --abbrev=0 --match "$TAG_GLOB" 2>/dev/null)" || return 0
-	is_release_tag "$tag" || return 0
+	local rev="${1:-HEAD}" tag
+	tag="$(git tag --merged "$rev" --list "$TAG_GLOB" 2>/dev/null | cmd_filter | tail -n 1)" || return 0
+	[ -n "$tag" ] || return 0
 	printf '%s' "$tag"
 }
 
 cmd_current() {
-	local tag=''
+	local rev="${1:-HEAD}" tag=''
 	if in_auth_git_repo; then
-		tag="$(newest_tag)"
+		tag="$(newest_tag "$rev")"
 	fi
 	if [ -z "$tag" ]; then
 		echo "$DEV_SENTINEL"
@@ -127,8 +130,8 @@ cmd_current() {
 cmd_released_at() {
 	local rev="${1:-HEAD}" tag
 	in_auth_git_repo || return 0
-	tag="$(git describe --tags --exact-match --match "$TAG_GLOB" "$rev" 2>/dev/null)" || return 0
-	is_release_tag "$tag" || return 0
+	tag="$(git tag --points-at "$rev" --list "$TAG_GLOB" 2>/dev/null | cmd_filter | tail -n 1)" || return 0
+	[ -n "$tag" ] || return 0
 	printf '%s\n' "$tag"
 }
 
@@ -139,24 +142,15 @@ cmd_describe() {
 	fi
 
 	local -a meta=()
-	local version
+	local version tag
 
-	local described
-	if described="$(git describe --tags --long --abbrev=12 --match "$TAG_GLOB" 2>/dev/null)"; then
-		# described looks like v2026.11.07.1-3-g1a2b3c4d5e6f
-		local sha without_sha distance
-		sha="${described##*-g}"
-		without_sha="${described%-g*}"
-		distance="${without_sha##*-}"
-		version="${without_sha%-*}"
-		if is_release_tag "$version"; then
-			version="${version#v}"
-			if [ "$distance" != "0" ]; then
-				meta+=("$distance" "g${sha}")
-			fi
-		else
-			version="$DEV_SENTINEL"
-			meta=("g$(short_sha)")
+	tag="$(newest_tag)"
+	if [ -n "$tag" ]; then
+		local distance
+		distance="$(git rev-list --count "${tag}..HEAD" 2>/dev/null || echo 0)"
+		version="${tag#v}"
+		if [ "$distance" != "0" ]; then
+			meta+=("$distance" "g$(short_sha)")
 		fi
 	else
 		version="$DEV_SENTINEL"

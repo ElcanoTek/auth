@@ -103,9 +103,13 @@ jobs:
           fi
 
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            ci_ok="$(gh run list --workflow ci.yml --commit "${HEAD_SHA}" --status success --json databaseId --jq 'length')"
+            if ! git rev-list --first-parent HEAD | grep -qx "${HEAD_SHA}"; then
+              echo "::error::${HEAD_SHA} is not a first-parent commit on main; refusing to release a side-branch commit."
+              exit 1
+            fi
+            ci_ok="$(gh run list --workflow ci.yml --event push --branch main --commit "${HEAD_SHA}" --status success --json databaseId --jq 'length')"
             if [ "${ci_ok:-0}" -lt 1 ]; then
-              echo "::error::no successful CI workflow run found for ${HEAD_SHA}; refusing to release an uncertified commit."
+              echo "::error::no successful push CI workflow run on main found for ${HEAD_SHA}; refusing to release an uncertified commit."
               exit 1
             fi
           fi

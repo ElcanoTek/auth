@@ -39,6 +39,15 @@ git -C "$G" commit -m "c2" -q
 [[ "$(cd "$G" && bash "$G/scripts/version.sh" describe)" == 2026.04.19.1+1.g* ]]
 [[ -z "$(cd "$G" && bash "$G/scripts/version.sh" released-at HEAD)" ]]
 
+# A malformed tag matching the coarse glob must never mask a valid release tag:
+git -C "$G" tag v2026.04.19.2oops
+git -C "$G" tag v2026.04.19.1oops "$c1"
+[[ "$(cd "$G" && bash "$G/scripts/version.sh" current)" == "2026.04.19.1" ]]
+[[ "$(cd "$G" && bash "$G/scripts/version.sh" describe)" == 2026.04.19.1+1.g* ]]
+[[ "$(cd "$G" && bash "$G/scripts/version.sh" released-at "$c1")" == "v2026.04.19.1" ]]
+[[ -z "$(cd "$G" && bash "$G/scripts/version.sh" released-at HEAD)" ]]
+git -C "$G" tag -d v2026.04.19.2oops v2026.04.19.1oops >/dev/null
+
 filtered="$(printf 'v2026.04.19.2\nnot-a-tag\nv2026.04.19.10\nv2026.04.19.1\n' | bash "$G/scripts/version.sh" filter)"
 [[ "$filtered" == $'v2026.04.19.1\nv2026.04.19.2\nv2026.04.19.10' ]]
 
@@ -221,6 +230,16 @@ if auth_release_fetch "$REPO" "$TAG" "$TAMPER_STAGE" "$COSIGN_CACHE" "$c2" 2>/de
 fi
 [[ ! -e "$TAMPER_STAGE/bin/auth-server" ]]
 mv "$T/orig-server" "$DL/auth-server-linux-$arch"
+
+# If GitHub prunes an older release object, a previously installed release in
+# $COSIGN_CACHE/releases/$TAG remains verifiable for `auth rebuild` and rollback:
+mv "$DL" "$T/pruned-dl"
+CACHED_STAGE="$T/cstage"
+mkdir -p "$CACHED_STAGE" && chmod 0700 "$CACHED_STAGE"
+auth_release_verify_manifest "$REPO" "$TAG" "$c2" "$COSIGN_CACHE"
+auth_release_fetch "$REPO" "$TAG" "$CACHED_STAGE" "$COSIGN_CACHE" "$c2" >/dev/null
+cmp -s "$CACHED_STAGE/bin/auth-server" "$T/pruned-dl/auth-server-linux-$arch"
+mv "$T/pruned-dl" "$DL"
 
 # ── 6. bootstrap.sh rejects contradictory --from-source + --tag ────────
 if AUTH_BOOTSTRAP_NON_INTERACTIVE=1 bash "$REPO/scripts/bootstrap.sh" --from-source --tag v2026.04.19.1 2>/dev/null; then

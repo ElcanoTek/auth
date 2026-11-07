@@ -578,8 +578,17 @@ if [[ "$FROM_SOURCE" == "1" ]]; then
 else
   # Verified signed release binaries downloaded into a root-owned 0700 staging
   # directory (no Go toolchain needed on the host).
-  layout_stage_release "$SRC_DIR" "$STAGING" "$RELEASE_TAG" "$after_sha"
-  ok "signed release ${RELEASE_TAG} verified and staged"
+  if layout_stage_release "$SRC_DIR" "$STAGING" "$RELEASE_TAG" "$after_sha"; then
+    ok "signed release ${RELEASE_TAG} verified and staged"
+  elif [[ "$NO_PULL" == "1" && "$before_sha" == "$after_sha" && -x "$APP_DIR/bin/auth-server" && ! -L "$APP_DIR/bin/auth-server" && -x "$APP_DIR/bin/auth-admin" && ! -L "$APP_DIR/bin/auth-admin" && "$(stat -c %u "$APP_DIR/bin/auth-server")" == "0" && "$(stat -c %u "$APP_DIR/bin/auth-admin")" == "0" ]]; then
+    warn "release ${RELEASE_TAG} is no longer on GitHub (pruned beyond the 20-release retention window) and not in $RELEASE_CACHE; preserving installed root-owned binaries from $APP_DIR/bin"
+    install -d -m 0700 -o root -g root "$STAGING" "$STAGING/bin"
+    install -o root -g root -m 0755 "$APP_DIR/bin/auth-server" "$STAGING/bin/auth-server"
+    install -o root -g root -m 0755 "$APP_DIR/bin/auth-admin"  "$STAGING/bin/auth-admin"
+    ok "preserved installed binaries for ${RELEASE_TAG}"
+  else
+    die "failed to download or verify signed release ${RELEASE_TAG}"
+  fi
 fi
 # Apply the ownership model to the current install before anything here is
 # executed against it (the pre-flight runs the staged binary, not an
@@ -712,7 +721,8 @@ fi
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
 say
 say "  Logs:  ${c_dim}auth logs${c_reset}"
-prev_tag="$(git -C "$SRC_DIR" describe --tags --abbrev=0 --match 'v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].[0-9]*' "$before_sha" 2>/dev/null || true)"
+prev_tag="$(cd "$SRC_DIR" && "$SRC_DIR/scripts/version.sh" current "$before_sha" 2>/dev/null || true)"
+[[ -z "$prev_tag" || "$prev_tag" == "dev" || "$prev_tag" == v* ]] || prev_tag="v${prev_tag}"
 if [[ "$FROM_SOURCE" != "1" && "$prev_tag" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$ && "$prev_tag" != "$RELEASE_TAG" ]]; then
   say "  Roll back: sudo auth update --tag $prev_tag --allow-downgrade"
 else

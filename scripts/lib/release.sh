@@ -23,11 +23,11 @@ AUTH_RELEASE_MAX_META=$((4 << 20))
 AUTH_RELEASE_MAX_BINARY=$((256 << 20))
 
 # auth_release_get URL OUT MAX — download URL to OUT (0600) under a size
-# ceiling; a failed or oversized transfer leaves no partial file behind.
+# ceiling and time bounds; a failed or oversized transfer leaves no partial file behind.
 auth_release_get() {
   local url="$1" out="$2" max="$3"
   rm -f "$out"
-  if ! curl -fsSL --retry 3 --max-filesize "$max" -o "$out" "$url"; then
+  if ! curl -fsSL --connect-timeout 15 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --max-filesize "$max" -o "$out" "$url"; then
     rm -f "$out"
     return 1
   fi
@@ -57,7 +57,7 @@ auth_release_base_url() {
 # release that is still building).
 auth_release_latest_tag() {
   local json tag
-  json="$(curl -fsSL --retry 3 --max-filesize "$AUTH_RELEASE_MAX_META" -H 'Accept: application/vnd.github+json' \
+  json="$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --max-filesize "$AUTH_RELEASE_MAX_META" -H 'Accept: application/vnd.github+json' \
     "${AUTH_RELEASE_LATEST_URL:-https://api.github.com/repos/${AUTH_RELEASE_REPO}/releases/latest}")" || return 1
   # Pretty-printed or compact JSON alike (no jq dependency for bootstrap).
   tag="$(printf '%s' "$json" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')"
@@ -145,6 +145,25 @@ auth_release_older() {
   [[ "$t" != "$c" && "$(printf 'v%s\nv%s\n' "$t" "$c" | sort -t. -k1.2,1n -k2,2n -k3,3n -k4,4n | head -n1)" == "v$t" ]]
 }
 
+# auth_release_get_or_cached URL CACHE_FILE OUT MAX — fetch URL via
+# auth_release_get; if the remote asset is unavailable (e.g. a release older
+# than GitHub's 20-release retention window) and CACHE_FILE exists in the local
+# private release cache, copy it to OUT (0600) so the caller can run full
+# Sigstore and SHA-256 verification on it.
+auth_release_get_or_cached() {
+  local url="$1" cached="$2" out="$3" max="$4"
+  if auth_release_get "$url" "$out" "$max"; then
+    return 0
+  fi
+  if [[ -f "$cached" && ! -L "$cached" ]] && auth_release_private_dir "$(dirname "$cached")" 2>/dev/null; then
+    if [[ "$(stat -c %s "$cached" 2>/dev/null || echo 0)" -le "$max" ]]; then
+      cp -f --no-preserve=ownership "$cached" "$out" && chmod 0600 "$out" && return 0
+    fi
+  fi
+  rm -f "$out"
+  return 1
+}
+
 # auth_release_verify_manifest ROOT TAG COMMIT CACHE — fetch TAG's
 # SHA256SUMS (+ signature) and release.json into a private temp dir and
 # require: the signature by the release identity, release.json matching the
@@ -156,11 +175,12 @@ auth_release_verify_manifest() {
   [[ "$tag" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$ ]] || { echo "not a release tag: $tag" >&2; return 1; }
   [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "not a commit: $commit" >&2; return 1; }
   cosign="$(auth_release_cosign "$root" "$cache")" || return 1
-  tmp="$(mktemp -d)" || return 1
+  tmp="$(mktemp -d "$cache/.verify.XXXXXX")" || return 1
   chmod 0700 "$tmp" || { rm -rf "$tmp"; return 1; }
+  auth_release_private_dir "$tmp" || { rm -rf "$tmp"; return 1; }
   base="$(auth_release_base_url)/${tag}"
   for name in SHA256SUMS SHA256SUMS.sigstore.json release.json; do
-    auth_release_get "$base/$name" "$tmp/$name" "$AUTH_RELEASE_MAX_META" \
+    auth_release_get_or_cached "$base/$name" "$cache/releases/$tag/$name" "$tmp/$name" "$AUTH_RELEASE_MAX_META" \
       || { echo "could not download ${name} for ${tag}" >&2; rc=1; break; }
   done
   if [[ "$rc" == 0 ]]; then
@@ -198,8 +218,9 @@ auth_release_fetch() {
   install -d -m 0700 "$dir" || return 1
   chmod 0700 "$dir" || return 1
   auth_release_private_dir "$dir" || return 1
-  tmp="$(mktemp -d)" || return 1
+  tmp="$(mktemp -d "$cache/.fetch.XXXXXX")" || return 1
   chmod 0700 "$tmp" || { rm -rf "$tmp"; return 1; }
+  auth_release_private_dir "$tmp" || { rm -rf "$tmp"; return 1; }
   for name in \
     SHA256SUMS SHA256SUMS.sigstore.json release.json \
     "auth-server-linux-${arch}" "auth-server-linux-${arch}.sigstore.json" \
@@ -208,7 +229,7 @@ auth_release_fetch() {
     case "$name" in
       "auth-server-linux-${arch}"|"auth-admin-linux-${arch}") _max="$AUTH_RELEASE_MAX_BINARY" ;;
     esac
-    if ! auth_release_get "$base/$name" "$tmp/$name" "$_max"; then
+    if ! auth_release_get_or_cached "$base/$name" "$cache/releases/$tag/$name" "$tmp/$name" "$_max"; then
       echo "could not download ${name} for ${tag}" >&2
       rc=1; break
     fi
@@ -261,6 +282,30 @@ auth_release_fetch() {
     fi
     if [[ "$rc" == 0 ]]; then
       auth_release_private_dir "$dir" || rc=1
+    fi
+    if [[ "$rc" == 0 ]]; then
+      # Retain the verified release bundle locally under $cache/releases/$tag
+      # (keeping the newest 5 cached tags on this host) so `auth rebuild` and
+      # rolling back to the box's previous release work even after GitHub
+      # prunes older releases beyond RETAIN=20.
+      if install -d -m 0700 "$cache/releases/$tag" && chmod 0700 "$cache/releases" "$cache/releases/$tag" 2>/dev/null; then
+        for name in SHA256SUMS SHA256SUMS.sigstore.json release.json \
+          "auth-server-linux-${arch}" "auth-server-linux-${arch}.sigstore.json" \
+          "auth-admin-linux-${arch}" "auth-admin-linux-${arch}.sigstore.json"; do
+          cp -f --no-preserve=ownership "$tmp/$name" "$cache/releases/$tag/$name" 2>/dev/null || true
+          chmod 0600 "$cache/releases/$tag/$name" 2>/dev/null || true
+        done
+        local _old_tag
+        while IFS= read -r _old_tag; do
+          [[ -n "$_old_tag" && "$_old_tag" != "$tag" ]] || continue
+          rm -rf "${cache}/releases/${_old_tag}" 2>/dev/null || true
+        done < <(
+          for _d in "$cache/releases"/v*; do
+            [[ -d "$_d" ]] || continue
+            basename "$_d"
+          done | sort -t. -k1.2,1n -k2,2n -k3,3n -k4,4n | head -n -5
+        )
+      fi
     fi
   fi
   rm -rf "$tmp"

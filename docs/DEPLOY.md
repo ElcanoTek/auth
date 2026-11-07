@@ -1161,7 +1161,13 @@ If a bad update slipped through, roll back to the previous signed release tag:
 sudo auth update --tag vYYYY.MM.DD.N --allow-downgrade
 ```
 
-Or, to roll back to an arbitrary untagged commit and build from source (requires Go on the host):
+GitHub retains the newest 20 published release objects, while each host caches
+its 5 most recently installed verified release bundles under
+`/var/cache/auth-release/releases` so `sudo auth rebuild` and rolling back to
+the host's previous release work even after GitHub prunes older release
+assets. To roll back to an uncached release older than the newest 20 published
+releases (or to an arbitrary untagged commit), build from source (requires Go
+on the host):
 
 ```bash
 cd /opt/auth-src
