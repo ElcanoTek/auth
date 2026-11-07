@@ -103,7 +103,7 @@ jobs:
           fi
 
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            if ! git rev-list --first-parent HEAD | grep -qx "${HEAD_SHA}"; then
+            if ! git rev-list --first-parent HEAD | awk -v s="${HEAD_SHA}" '$0 == s { found = 1 } END { exit !found }'; then
               echo "::error::${HEAD_SHA} is not a first-parent commit on main; refusing to release a side-branch commit."
               exit 1
             fi
@@ -225,10 +225,20 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          if info="$(gh release view "${TAG}" --json isDraft,assets 2>/dev/null)"; then
+          if info="$(gh release view "${TAG}" --json isDraft,isLatest,assets 2>/dev/null)"; then
             draft="$(printf '%s' "${info}" | jq -r '.isDraft')"
+            is_latest="$(printf '%s' "${info}" | jq -r '.isLatest')"
             complete="$(printf '%s' "${info}" | jq -r '([.assets[].name]) as $a | ["SHA256SUMS","SHA256SUMS.sigstore.json","release.json","auth-server-linux-amd64","auth-server-linux-amd64.sigstore.json","auth-server-linux-arm64","auth-server-linux-arm64.sigstore.json","auth-admin-linux-amd64","auth-admin-linux-amd64.sigstore.json","auth-admin-linux-arm64","auth-admin-linux-arm64.sigstore.json"] | all(. as $req | ($a | index($req)) != null)')"
             if [ "${draft}" = "false" ] && [ "${complete}" = "true" ]; then
+              if newer="$(scripts/release-newer-published.sh "${TAG}")"; then
+                if [ -z "${newer}" ] && [ "${is_latest}" != "true" ]; then
+                  gh release edit "${TAG}" --latest \
+                    || echo "::warning::could not mark ${TAG} Latest; the next release sets it."
+                elif [ -n "${newer}" ] && [ "${is_latest}" = "true" ]; then
+                  gh release edit "${TAG}" --latest=false \
+                    || echo "::warning::could not clear the Latest mark on ${TAG}; /releases/latest may name it until the next release."
+                fi
+              fi
               echo "::notice::${TAG} is already published with all of its artifacts; releases are immutable, so nothing is rebuilt."
               echo "build=false" >>"${GITHUB_OUTPUT}"
               exit 0

@@ -339,6 +339,8 @@ if [[ -n "$bundle_dir" ]]; then
   esac
 fi
 
+_realign=0
+target_branch=""
 if [[ "$REEXEC" == "1" ]]; then
   after_sha="$before_sha"
   before_sha="${AUTH_UPDATE_BASE_SHA:-$before_sha}"
@@ -525,7 +527,7 @@ else
   # scripts/lib/release.sh, re-exec the newly checked-out script so the rest of
   # the update runs the new logic. Keep fd 9 open across exec with
   # AUTH_UPDATE_LOCK_HELD=1 so the lock is never dropped.
-  if ! git diff --quiet "$before_sha" "$after_sha" -- scripts/update.sh scripts/lib/layout.sh scripts/lib/release.sh; then
+  if [[ "$REEXEC" != "1" ]] && ! git diff --quiet "$before_sha" "$after_sha" -- scripts/update.sh scripts/lib/layout.sh scripts/lib/release.sh; then
     warn "update.sh or its libraries changed in this update — re-executing the new version"
     exec env \
       AUTH_UPDATE_REEXEC=1 \
