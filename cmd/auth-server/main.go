@@ -143,7 +143,7 @@ func main() {
 					log.Printf("sweep: %v", err)
 					continue
 				}
-				passwordN, err := st.SweepPasswordState(ctx, now, 24*time.Hour, cfg.AuditRetention)
+				expiredRows, err := st.SweepPasswordState(ctx, now, 24*time.Hour, cfg.AuditRetention)
 				if err != nil {
 					log.Printf("password state sweep: %v", err)
 					continue
@@ -156,8 +156,8 @@ func main() {
 				if n > 0 {
 					log.Printf("sweep: deleted %d expired magic_links", n)
 				}
-				if passwordN > 0 {
-					log.Printf("sweep: deleted %d expired password-state rows", passwordN)
+				if expiredRows > 0 {
+					log.Printf("sweep: deleted %d expired password-state rows", expiredRows)
 				}
 				if purged > 0 {
 					log.Printf("sweep: removed %d accounts deleted over %d days ago", purged, int(store.DeletedAccountRetention.Hours()/24))

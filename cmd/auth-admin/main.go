@@ -459,8 +459,9 @@ func userCmd(dataDir string, args []string) {
 		if a.MFARequired {
 			twoFactor += " (required for this account)"
 		}
+		mustRotate := a.MustChangePassword
 		fmt.Printf("email: %s\nid: %s\nstatus: %s\nadmin: %t\nteam: %s\nmust change password: %t\ntwo-factor: %s\nactive sessions: %d\napplications: %s\n",
-			a.Email, a.ID, status, a.IsAdmin, team, a.MustChangePassword, twoFactor, active, appList)
+			a.Email, a.ID, status, a.IsAdmin, team, mustRotate, twoFactor, active, appList)
 		if l, ok, err := st.PasswordLinkFor(ctx, a.ID); err != nil {
 			fatalf("show emailed link: %v", err)
 		} else if ok {

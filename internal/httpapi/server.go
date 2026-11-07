@@ -1436,7 +1436,8 @@ func logUnlessCancelled(what string, err error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
-	log.Printf("%s: %v", what, err)
+	msg := strings.ReplaceAll(strings.ReplaceAll(err.Error(), "\n", " "), "\r", " ")
+	log.Printf("%s: %s", what, msg)
 }
 
 func acquire(ctx context.Context, slots chan struct{}) error {
@@ -1955,7 +1956,7 @@ func (s *Server) resolveReturnTo(raw string) string {
 			return ""
 		}
 	}
-	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
+	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") && !strings.HasPrefix(raw, `/\`) {
 		// Relative URL pointing at the auth host. Allowed.
 		return raw
 	}
