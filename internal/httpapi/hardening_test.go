@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -270,5 +271,16 @@ func TestRequestLogCannotBeSplit(t *testing.T) {
 		if got := logField(in); got != want {
 			t.Errorf("logField(%q) = %q, want %q", in, got, want)
 		}
+	}
+
+	var errBuf syncBuf
+	log.SetOutput(&errBuf)
+	logUnlessCancelled("domain check", errors.New("bad domain \"evil\r\n2026/01/01 forged\""))
+	errLine := errBuf.String()
+	if n := strings.Count(strings.TrimRight(errLine, "\n"), "\n"); n != 0 {
+		t.Fatalf("logUnlessCancelled produced %d extra log lines: %q", n, errLine)
+	}
+	if strings.ContainsAny(strings.TrimRight(errLine, "\n"), "\r\n") {
+		t.Fatalf("logUnlessCancelled left CR/LF in log line: %q", errLine)
 	}
 }

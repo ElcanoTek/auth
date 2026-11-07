@@ -1436,8 +1436,7 @@ func logUnlessCancelled(what string, err error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
-	msg := strings.ReplaceAll(strings.ReplaceAll(err.Error(), "\n", " "), "\r", " ")
-	log.Printf("%s: %s", what, msg)
+	log.Printf("%s: %s", what, logSafe(err.Error()))
 }
 
 func acquire(ctx context.Context, slots chan struct{}) error {
