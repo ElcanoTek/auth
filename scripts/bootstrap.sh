@@ -34,6 +34,20 @@ APP_USER="${APP_USER:-auth}"
 CLI_PATH="${CLI_PATH:-/usr/local/bin/auth}"
 
 DRY_RUN="${AUTH_BOOTSTRAP_DRY_RUN:-0}"
+FROM_SOURCE="${AUTH_FROM_SOURCE:-${AUTH_BOOTSTRAP_FROM_SOURCE:-0}}"
+RELEASE_TAG="${AUTH_BOOTSTRAP_TAG:-}"
+RELEASE_CACHE="${AUTH_RELEASE_CACHE_DIR:-/var/cache/auth-release}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --from-source) FROM_SOURCE=1 ;;
+    --artifact)    FROM_SOURCE=0 ;;
+    --tag)         shift; [[ $# -gt 0 ]] || { echo "error: --tag requires a release tag" >&2; exit 1; }; RELEASE_TAG="$1" ;;
+    --tag=*)       RELEASE_TAG="${1#*=}" ;;
+    *)             echo "error: unknown argument: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
 
 if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
   c_reset=$'\033[0m' c_dim=$'\033[2m' c_red=$'\033[0;31m'
@@ -195,9 +209,9 @@ ${c_bold}Elcano Auth — interactive install${c_reset}
 ${c_dim}Fedora / RHEL 9+  •  systemd  •  SQLite  •  optional Caddy${c_reset}
 
 This will:
-  • install system deps (git, go, rsync, openssl, sqlite, bind-utils; Caddy if asked)
+  • install system deps (git, curl, rsync, openssl, sqlite, bind-utils; Caddy if asked)
   • create an '${APP_USER}' system user; root owns ${APP_DIR}, the service owns only data/
-  • build the auth-server + auth-admin binaries as the service user
+  • install verified signed release binaries (auth-server + auth-admin; or build with --from-source)
   • generate the Ed25519 signing keypair and, in password mode, the two-factor key
   • in password mode, require two-factor sign-in of administrators on a new deployment
   • write .env.local from your answers (hostname, mode, branding, TLS)
@@ -237,8 +251,10 @@ require_trusted_checkout() {
 require_trusted_checkout "$SRC_DIR"
 # shellcheck disable=SC1091
 . "$SRC_DIR/scripts/lib/layout.sh"
+# shellcheck disable=SC1091
+. "$SRC_DIR/scripts/lib/release.sh"
 layout_require_trusted "$SRC_DIR"
-# `auth update` pulls and rebuilds from /opt/auth-src; a checkout elsewhere
+# `auth update` pulls and updates from /opt/auth-src; a checkout elsewhere
 # installs fine but the first update would not find it.
 if [[ "$(readlink -f -- "$SRC_DIR")" != "/opt/auth-src" ]]; then
   warn "this checkout is $SRC_DIR; 'auth update' expects /opt/auth-src. Either move it there afterwards or run updates with SRC_DIR=$SRC_DIR."
@@ -247,21 +263,28 @@ fi
 # a bundle repository the box has no credential for is reported instead.
 export GIT_TERMINAL_PROMPT=0
 # A small box builds one package at a time so the Go compiler does not get
-# killed for memory.
+# killed for memory when --from-source is used.
 if [[ "$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)" -lt 2500000 ]]; then
   export LAYOUT_BUILD_GOFLAGS="${LAYOUT_BUILD_GOFLAGS:-} -p=1"
 fi
 
 # ── 1. system packages ──────────────────────────────────────────────
 step "1/6  Installing system dependencies via dnf"
-PKGS=(git curl golang rsync openssl sqlite bind-utils python3)
+PKGS=(git curl rsync openssl sqlite bind-utils python3)
+if [[ "$FROM_SOURCE" == "1" ]]; then
+  PKGS+=(golang)
+fi
 if [[ "${AUTH_BOOTSTRAP_SKIP_PACKAGES:-0}" == "1" ]]; then
   info "AUTH_BOOTSTRAP_SKIP_PACKAGES=1: not running dnf (test harness)"
 else
-  info "dnf install ${PKGS[*]} (a few minutes on a fresh box; Go is large)"
+  info "dnf install ${PKGS[*]}"
   dnf install -y "${PKGS[@]}" >/dev/null || die "dnf install failed; run 'dnf install -y ${PKGS[*]}' by hand to see why"
 fi
-need_cmd go
+if [[ "$FROM_SOURCE" == "1" ]]; then
+  need_cmd go
+fi
+need_cmd curl
+need_cmd sha256sum
 need_cmd sqlite3
 need_cmd rsync
 need_cmd runuser
@@ -748,14 +771,37 @@ ok "env prepared (installed after the pre-flight)"
 info "Public signing key — set AUTH_SIGNING_PUBKEY to this on each verifying service:"
 printf '    AUTH_SIGNING_PUBKEY=%s\n' "$AUTH_SIGNING_PUBKEY"
 
-# ── 5. build + install ──────────────────────────────────────────────
-step "5/6  Building auth-server + auth-admin"
+# ── 5. stage + install ──────────────────────────────────────────────
+if [[ "$FROM_SOURCE" == "1" ]]; then
+  step "5/6  Building auth-server + auth-admin (from source)"
+else
+  step "5/6  Fetching and verifying signed release (auth-server + auth-admin)"
+fi
 
-# The service user builds in a staging copy with its own caches; root then
-# installs root-owned source and binaries into $APP_DIR (scripts/lib/layout.sh).
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING" "$ENV_OUT"; restore_bundle_on_failure' EXIT
-layout_build "$SRC_DIR" "$STAGING"
+if [[ "$FROM_SOURCE" == "1" ]]; then
+  layout_build "$SRC_DIR" "$STAGING"
+else
+  if [[ -z "$RELEASE_TAG" ]]; then
+    RELEASE_TAG="$(auth_release_latest_tag)" \
+      || die "could not query the latest release from GitHub — retry, name one with --tag vYYYY.MM.DD.N, or pass --from-source"
+  fi
+  if [[ "${AUTH_BOOTSTRAP_NO_PULL:-0}" != "1" ]]; then
+    git -C "$SRC_DIR" fetch --quiet --tags origin || true
+  fi
+  release_sha="$(git -C "$SRC_DIR" rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null)" \
+    || die "release ${RELEASE_TAG} is not a tag in ${SRC_DIR}"
+  auth_release_verify_manifest "$SRC_DIR" "$RELEASE_TAG" "$release_sha" "$RELEASE_CACHE" \
+    || die "release ${RELEASE_TAG} could not be verified — nothing was installed"
+  if [[ "$(git -C "$SRC_DIR" rev-parse HEAD)" != "$release_sha" ]]; then
+    git -C "$SRC_DIR" checkout --quiet -B main "$release_sha" \
+      || die "could not align $SRC_DIR to release ${RELEASE_TAG} (${release_sha:0:12})"
+    require_trusted_checkout "$SRC_DIR"
+  fi
+  layout_stage_release "$SRC_DIR" "$STAGING" "$RELEASE_TAG" "$release_sha"
+  ok "signed release ${RELEASE_TAG} verified and staged"
+fi
 
 # Pre-flight before anything live is replaced: the staged build must accept
 # the candidate configuration (the same check `auth update` runs). On a

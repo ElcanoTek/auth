@@ -326,6 +326,19 @@ assert "auth update" in git["detail"]
 PY
 [[ ! -e "$SRC/.git/FETCH_HEAD" ]]
 
+echo "== detached HEAD at a release tag is accepted"
+git -C "$SRC" tag v2026.04.19.1
+git -C "$SRC" checkout -q --detach v2026.04.19.1
+out="$(doctor --json)" || true
+python3 - "$out" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+branch = next(c for c in doc["checks"] if c["name"] == "git-branch")
+assert branch["status"] == "pass" and branch["detail"] == "on release v2026.04.19.1", branch
+PY
+git -C "$SRC" checkout -q main
+git -C "$SRC" tag -d v2026.04.19.1 >/dev/null
+
 echo "== reboot falls back to the installed kernel"
 cat > "$BIN/dnf" <<'EOF'
 #!/usr/bin/env bash

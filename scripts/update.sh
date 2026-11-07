@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
 # scripts/update.sh — in-place upgrade for an existing /opt/auth install.
 #
-# Build in a staging dir, swap atomically, restart. If the build fails
-# nothing gets touched. Preserves .env.local and data/state.db.
+# Default mode downloads and verifies signed release binaries (cosign keyless
+# Sigstore OIDC verification against ElcanoTek/auth's release workflow on main
+# and SHA256SUMS), checks the new binary against the live .env.local in a
+# staging directory, snapshots the live install + SQLite DB, swaps atomically,
+# restarts, and verifies /healthz (rolling back automatically if unhealthy).
+# Does not require Go on the host.
 #
-# Invoked by the `auth update` subcommand. Can also be run directly.
+# Pass --from-source (or AUTH_FROM_SOURCE=1) on development boxes or test
+# harnesses to compile from source via layout_build instead.
 #
-# Env overrides:
-#   SRC_DIR              where to pull from (default: /opt/auth-src)
-#   APP_DIR              where to deploy    (default: /opt/auth)
-#   AUTH_UPDATE_YES=1    skip the confirm prompt
-#   AUTH_UPDATE_BRANCH   override the branch checked out in SRC_DIR
-#   AUTH_UPDATE_NO_PULL=1 skip fetch/fast-forward; just rebuild current checkout
+# Invoked by the `auth update` and `auth rebuild` subcommands.
+#
+# Flags / env overrides:
+#   --from-source          compile from source in staging (env AUTH_FROM_SOURCE=1)
+#   --artifact             install signed release binaries (the default)
+#   --tag <vYYYY.MM.DD.N>  install a specific release tag (env AUTH_UPDATE_TAG)
+#   --allow-downgrade      allow --tag to install an older release (env AUTH_UPDATE_ALLOW_DOWNGRADE=1)
+#   --no-pull              skip fetch; reinstall/rebuild current checkout (env AUTH_UPDATE_NO_PULL=1)
+#   --branch <name>        override the branch in SRC_DIR (env AUTH_UPDATE_BRANCH)
+#   --yes / -y             skip the confirm prompt (env AUTH_UPDATE_YES=1)
+#   SRC_DIR                where to pull from (default: /opt/auth-src)
+#   APP_DIR                where to deploy    (default: /opt/auth)
 
 set -euo pipefail
 
@@ -22,6 +33,39 @@ APP_USER="${APP_USER:-auth}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}" # overridable for tests
 CLI_BIN="${CLI_BIN:-/usr/local/bin/auth}"         # overridable for tests
 MOTD_FILE="${MOTD_FILE:-/etc/motd}"               # overridable for tests
+LOCK_FILE="${LOCK_FILE:-/run/auth-update.lock}"   # overridable for tests
+RELEASE_CACHE="${AUTH_RELEASE_CACHE_DIR:-/var/cache/auth-release}"
+
+FROM_SOURCE="${AUTH_FROM_SOURCE:-${AUTH_UPDATE_FROM_SOURCE:-0}}"
+RELEASE_TAG="${AUTH_UPDATE_TAG:-}"
+ALLOW_DOWNGRADE="${AUTH_UPDATE_ALLOW_DOWNGRADE:-0}"
+NO_PULL="${AUTH_UPDATE_NO_PULL:-0}"
+ASSUME_YES="${AUTH_UPDATE_YES:-0}"
+BRANCH_OVERRIDE="${AUTH_UPDATE_BRANCH:-}"
+REEXEC="${AUTH_UPDATE_REEXEC:-0}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --from-source)       FROM_SOURCE=1 ;;
+    --artifact)          FROM_SOURCE=0 ;;
+    --tag)               shift; [[ $# -gt 0 ]] || { echo "error: --tag requires a release tag" >&2; exit 1; }; RELEASE_TAG="$1" ;;
+    --tag=*)             RELEASE_TAG="${1#*=}" ;;
+    --allow-downgrade)   ALLOW_DOWNGRADE=1 ;;
+    --no-pull)           NO_PULL=1 ;;
+    --branch)            shift; [[ $# -gt 0 ]] || { echo "error: --branch requires a branch name" >&2; exit 1; }; BRANCH_OVERRIDE="$1" ;;
+    --branch=*)          BRANCH_OVERRIDE="${1#*=}" ;;
+    --yes|-y)            ASSUME_YES=1 ;;
+    -h|--help)
+      sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1 (try --help)" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
 
 # Copy SRC onto DEST as a root-owned regular file. A symlink destination is
 # replaced; a symlink source is refused. GNU install would follow either.
@@ -65,7 +109,6 @@ install_auth_operator() {
   install_root_script "$APP_DIR/scripts/doctor.sh" "$prefix/lib/auth/doctor.sh"
   install_root_script "$APP_DIR/scripts/lib/envfile.sh" "$prefix/lib/auth/lib/envfile.sh" 0644
 }
-LOCK_FILE="${LOCK_FILE:-/run/auth-update.lock}"   # overridable for tests
 
 if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
   c_reset=$'\033[0m' c_dim=$'\033[2m' c_red=$'\033[0;31m'
@@ -80,6 +123,11 @@ ok()   { printf '%s✓ %s%s\n' "$c_green" "$*" "$c_reset"; }
 warn() { printf '%s! %s%s\n' "$c_yellow" "$*" "$c_reset" >&2; }
 info() { printf '%s» %s%s\n' "$c_dim" "$*" "$c_reset"; }
 die()  { printf '%s✗ %s%s\n' "$c_red" "$*" "$c_reset" >&2; exit 1; }
+
+if [[ -n "$RELEASE_TAG" && ! "$RELEASE_TAG" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$ ]]; then
+  die "--tag must be a release tag like v2026.11.07.1, got: ${RELEASE_TAG}"
+fi
+[[ "$FROM_SOURCE" != "1" || -z "$RELEASE_TAG" ]] || die "--tag selects a signed release; it cannot be combined with --from-source"
 
 # wait_healthy polls /healthz for ~10s. 0 = the server answered, 1 = never did.
 # The listen address comes from .env.local (default 127.0.0.1:9000); a box
@@ -172,18 +220,21 @@ host_upkeep() { sync_motd; }
 # the same APP_DIR/units: run 2 would snapshot the half-applied state of run 1,
 # so a later rollback would restore the WRONG (new) binary while reporting a
 # clean rollback. Non-blocking — fail fast rather than queue behind a long run.
-# The fd stays open for the script's lifetime; the lock auto-releases on exit.
-exec 9>"$LOCK_FILE" || die "cannot open lock file $LOCK_FILE"
-flock -n 9 || die "another 'auth update' or 'auth rebuild' is already running — refusing to run concurrently"
+# The fd stays open for the script's lifetime (including across a self-re-exec
+# via AUTH_UPDATE_LOCK_HELD=1); the lock auto-releases on exit.
+if [[ "${AUTH_UPDATE_LOCK_HELD:-0}" != "1" ]]; then
+  exec 9>"$LOCK_FILE" || die "cannot open lock file $LOCK_FILE"
+  flock -n 9 || die "another 'auth update' or 'auth rebuild' is already running — refusing to run concurrently"
+fi
 
 [[ -d "$SRC_DIR/.git" ]] || die "no git checkout at $SRC_DIR"
 [[ -d "$APP_DIR" ]]      || die "no existing install at $APP_DIR (did you skip bootstrap?)"
 
 # ── trust the source checkout before root reads anything from it ──────
-# Root will source scripts/lib/layout.sh from $SRC_DIR, run git in it and
-# sync it into $APP_DIR, so it must be root's alone: no ancestor or file owned
-# by the service user or writable by group or others. This check runs before
-# the library is sourced (it cannot come from the library it protects).
+# Root will source scripts/lib/layout.sh and scripts/lib/release.sh from
+# $SRC_DIR, run git in it and sync it into $APP_DIR, so it must be root's
+# alone: no ancestor or file owned by the service user or writable by group or
+# others. This check runs before the libraries are sourced.
 require_trusted_checkout() {
   local p owner mode stray
   p="$(readlink -f -- "$1")" || die "$1 does not resolve"
@@ -203,6 +254,7 @@ require_trusted_checkout "$SRC_DIR"
 # deployed, so the functions always match the code. Nothing under $APP_DIR is
 # sourced: a tree installed under the previous layout was service-writable.
 [[ -f "$SRC_DIR/scripts/lib/layout.sh" ]] || die "$SRC_DIR has no scripts/lib/layout.sh; check out a commit that has it (2026-09 or later) before updating"
+[[ -f "$SRC_DIR/scripts/lib/release.sh" ]] || die "$SRC_DIR has no scripts/lib/release.sh; check out a commit that has it before updating"
 # The database lives where the server was told (AUTH_DATA_DIR, default
 # $APP_DIR/data; a relative value is relative to $APP_DIR); the library
 # prunes and excludes it by this name.
@@ -211,6 +263,8 @@ DATA_DIR="${DATA_DIR:-$APP_DIR/data}"
 [[ "$DATA_DIR" == /* ]] || DATA_DIR="$APP_DIR/$DATA_DIR"
 # shellcheck disable=SC1091
 . "$SRC_DIR/scripts/lib/layout.sh"
+# shellcheck disable=SC1091
+. "$SRC_DIR/scripts/lib/release.sh"
 layout_require_trusted "$SRC_DIR"
 layout_require_data_dir
 
@@ -225,12 +279,17 @@ bundle_after=""
 # service user could once write would carry.
 bundle_git() { layout_bundle_git "$bundle_dir" "$@"; }
 if [[ -n "$bundle_dir" && -d "$bundle_dir/.git" ]]; then
-  # A checkout the service user could write (previous layout) is re-cloned
-  # from its remote before root runs any git command in it, on every path
-  # through this script, the rebuild-only one included.
-  layout_bundle_migrate "$bundle_dir" || die "could not migrate the client bundle at $bundle_dir"
-  bundle_before="$(bundle_git rev-parse HEAD 2>/dev/null || echo '')"
-  bundle_after="$bundle_before"
+  if [[ "$REEXEC" == "1" ]]; then
+    bundle_before="${AUTH_BUNDLE_BEFORE:-$(bundle_git rev-parse HEAD 2>/dev/null || echo '')}"
+    bundle_after="${AUTH_BUNDLE_AFTER:-$bundle_before}"
+  else
+    # A checkout the service user could write (previous layout) is re-cloned
+    # from its remote before root runs any git command in it, on every path
+    # through this script, the rebuild-only one included.
+    layout_bundle_migrate "$bundle_dir" || die "could not migrate the client bundle at $bundle_dir"
+    bundle_before="$(bundle_git rev-parse HEAD 2>/dev/null || echo '')"
+    bundle_after="$bundle_before"
+  fi
 fi
 # restore_bundle puts the checkout back on its pre-update commit. It reports
 # truthfully: bundle_after only changes when the reset succeeded, so a failed
@@ -252,6 +311,9 @@ restore_bundle() {
 restore_bundle_on_exit() {
   [[ "$update_succeeded" == "1" ]] || restore_bundle || true
 }
+if [[ -n "$bundle_before" && "$bundle_before" != "$bundle_after" ]]; then
+  trap restore_bundle_on_exit EXIT
+fi
 
 # ── 1. fetch ─────────────────────────────────────────────────────────
 step "1/4  Fetching latest from $SRC_DIR"
@@ -272,39 +334,87 @@ if [[ -n "$bundle_dir" ]]; then
   esac
 fi
 
-if [[ "${AUTH_UPDATE_NO_PULL:-0}" == "1" ]]; then
+if [[ "$REEXEC" == "1" ]]; then
   after_sha="$before_sha"
-  ok "rebuild-only mode — skipping fetch, building ${after_sha:0:12}"
+  before_sha="${AUTH_UPDATE_BASE_SHA:-$before_sha}"
+  ok "post-self-update re-exec — checkout already at ${RELEASE_TAG:+${RELEASE_TAG} }(${after_sha:0:12})"
+  say
+elif [[ "$NO_PULL" == "1" ]]; then
+  after_sha="$before_sha"
+  if [[ "$FROM_SOURCE" != "1" ]]; then
+    if [[ -z "$RELEASE_TAG" ]]; then
+      RELEASE_TAG="$("$SRC_DIR/scripts/version.sh" current 2>/dev/null || true)"
+      [[ -z "$RELEASE_TAG" || "$RELEASE_TAG" == v* ]] || RELEASE_TAG="v${RELEASE_TAG}"
+      if [[ ! "$RELEASE_TAG" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$ ]]; then
+        die "no release tag is reachable from ${SRC_DIR}'s HEAD, so --no-pull has no release to reinstall — name one with --tag vYYYY.MM.DD.N or pass --from-source"
+      fi
+    fi
+    _tag_sha="$(git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null || true)"
+    if [[ "$_tag_sha" != "$after_sha" ]]; then
+      die "--no-pull reinstalls the release the checkout is at, and ${SRC_DIR} is not at ${RELEASE_TAG} — drop --no-pull so the checkout moves to ${RELEASE_TAG}, or pass --from-source"
+    fi
+    ok "no-pull mode — skipping fetch, reinstalling release ${RELEASE_TAG} (${after_sha:0:12})"
+  else
+    ok "rebuild-only mode (--from-source) — skipping fetch, building ${after_sha:0:12}"
+  fi
   say
 else
-  git fetch --quiet origin
+  git fetch --quiet --tags origin
 
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
-  if [[ -n "${AUTH_UPDATE_BRANCH:-}" ]]; then
-    target_branch="$AUTH_UPDATE_BRANCH"
+  if [[ -n "$BRANCH_OVERRIDE" ]]; then
+    target_branch="$BRANCH_OVERRIDE"
   elif [[ "$current_branch" != "HEAD" ]]; then
     target_branch="$current_branch"
   else
-    # for-each-ref over refs/heads/ (not `git branch`, which prepends a bogus
-    # "(HEAD detached at ...)" pseudo-entry that would poison matching[0]).
-    # Default sort is alphabetical by refname, so with 2+ branches at HEAD this
-    # picks the alphabetically-first; the warn() surfaces which, so it's visible.
     mapfile -t matching < <(git for-each-ref --points-at HEAD --format='%(refname:short)' refs/heads/)
     if [[ ${#matching[@]} -ge 1 ]]; then
       target_branch="${matching[0]}"
       warn "HEAD is detached — recovering branch '$target_branch'"
     elif origin_head="$(git symbolic-ref -q --short refs/remotes/origin/HEAD)"; then
-      # symbolic-ref (not `rev-parse ... | sed`, whose pipe masked the failure):
-      # quietly fails when origin/HEAD is unset so we die with a clear message.
       target_branch="${origin_head#origin/}"
       warn "HEAD is detached — defaulting to '$target_branch'"
+    elif git show-ref --quiet --verify refs/remotes/origin/main; then
+      target_branch="main"
+      warn "HEAD is detached — defaulting to 'main'"
     else
       die "HEAD is detached, no local branch points at it, and origin/HEAD is unset — re-run with AUTH_UPDATE_BRANCH=<branch>, or set it once via: git -C $SRC_DIR remote set-head origin -a"
     fi
   fi
   target_ref="origin/$target_branch"
-  after_sha="$(git rev-parse --verify --quiet "$target_ref^{commit}")" \
+  branch_sha="$(git rev-parse --verify --quiet "$target_ref^{commit}")" \
     || die "no remote-tracking ref $target_ref — push '$target_branch', or re-run with AUTH_UPDATE_BRANCH=<branch>"
+
+  _realign=0
+  if [[ "$FROM_SOURCE" == "1" ]]; then
+    after_sha="$branch_sha"
+  else
+    if [[ -z "$RELEASE_TAG" ]]; then
+      RELEASE_TAG="$(auth_release_latest_tag)" \
+        || die "could not query the latest release from GitHub — retry, or name one: sudo auth update --tag vYYYY.MM.DD.N"
+    fi
+    _tag_sha="$(git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null)" \
+      || { git fetch --quiet --tags origin; _tag_sha="$(git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null)"; } \
+      || die "release ${RELEASE_TAG} is not a tag in ${SRC_DIR} even after fetching tags — is origin ElcanoTek/auth?"
+    git merge-base --is-ancestor "$_tag_sha" "$target_ref" \
+      || die "release ${RELEASE_TAG} is not on ${target_ref} — refusing to move the checkout off its branch"
+    after_sha="$_tag_sha"
+
+    current_ver="$("$SRC_DIR/scripts/version.sh" current 2>/dev/null || true)"
+    if [[ "$ALLOW_DOWNGRADE" != "1" ]] && auth_release_older "$RELEASE_TAG" "$current_ver"; then
+      die "release ${RELEASE_TAG} is older than the current checkout (${current_ver}) — pass --allow-downgrade to roll back"
+    fi
+    if [[ "$before_sha" != "$after_sha" ]] && git merge-base --is-ancestor "$after_sha" "$before_sha"; then
+      git merge-base --is-ancestor "$before_sha" "$target_ref" \
+        || die "${SRC_DIR} has local commits that are not on ${target_ref}; moving it back to ${RELEASE_TAG} would strand them — push or reset them first"
+      _realign=1
+    fi
+    if [[ "$before_sha" != "$after_sha" ]]; then
+      auth_release_verify_manifest "$SRC_DIR" "$RELEASE_TAG" "$after_sha" "$RELEASE_CACHE" \
+        || die "release ${RELEASE_TAG} could not be verified — the checkout was NOT moved and nothing was installed"
+      ok "verified signed release.json: ${RELEASE_TAG} = ${after_sha:0:12}"
+    fi
+  fi
 
   # ── 1b. client branding bundle ─────────────────────────────────────
   # AUTH_CLIENT_CONFIG_DIR (from .env.local) may be a git checkout of the
@@ -350,18 +460,25 @@ else
       wait_healthy && die "auth-server did not come up on the new bundle; reset to ${bundle_before:0:12} and healthy again"
       die "auth-server did not come up on the new bundle AND is unhealthy after the reset — manual recovery needed: journalctl -u auth-server -n 50"
     fi
-    ok "already on ${after_sha:0:12} — nothing to update"
+    ok "already on ${RELEASE_TAG:+${RELEASE_TAG} }${after_sha:0:12} — nothing to update"
     host_upkeep
     exit 0
   fi
 
   say
-  printf '%s  incoming commits:%s\n' "$c_dim" "$c_reset"
-  git --no-pager log --oneline --no-decorate "${before_sha}..${after_sha}" | sed 's/^/    /'
+  if [[ "$_realign" == "1" ]]; then
+    printf '%s  moving checkout back to %s (%s):%s\n' "$c_dim" "$RELEASE_TAG" "${after_sha:0:12}" "$c_reset"
+    git --no-pager log --oneline --no-decorate "${after_sha}..${before_sha}" | sed 's/^/    /'
+    _log_range="${after_sha}..${before_sha}"
+  else
+    printf '%s  incoming commits:%s\n' "$c_dim" "$c_reset"
+    git --no-pager log --oneline --no-decorate "${before_sha}..${after_sha}" | sed 's/^/    /'
+    _log_range="${before_sha}..${after_sha}"
+  fi
   say
 
-  if [[ "${AUTH_UPDATE_YES:-0}" != "1" ]]; then
-    count="$(git rev-list --count "${before_sha}..${after_sha}")"
+  if [[ "$ASSUME_YES" != "1" ]]; then
+    count="$(git rev-list --count "$_log_range")"
     printf '%s?%s Apply %s%d%s commits — %s..%s? %s(y/N)%s ' \
       "$c_cyan" "$c_reset" "$c_bold" "$count" "$c_reset" \
       "${before_sha:0:12}" "${after_sha:0:12}" \
@@ -373,16 +490,53 @@ else
     fi
   fi
 
-  if git show-ref --quiet --verify "refs/heads/$target_branch"; then
+  if [[ "$_realign" == "1" ]]; then
+    git diff --quiet HEAD -- || die "cannot move $target_branch back to ${RELEASE_TAG} — uncommitted changes in $SRC_DIR"
+    git checkout --quiet -B "$target_branch" "$after_sha"
+  elif git show-ref --quiet --verify "refs/heads/$target_branch"; then
     git checkout --quiet "$target_branch"
-    git merge --ff-only "$target_ref" || die "$target_branch diverged from $target_ref — resolve manually"
+    git merge --ff-only "$after_sha" || die "$target_branch diverged from ${after_sha:0:12} — resolve manually"
   else
-    git checkout --quiet -b "$target_branch" "$target_ref"
+    git checkout --quiet -b "$target_branch" "$after_sha"
+  fi
+  require_trusted_checkout "$SRC_DIR"
+
+  # If this update modified scripts/update.sh, scripts/lib/layout.sh, or
+  # scripts/lib/release.sh, re-exec the newly checked-out script so the rest of
+  # the update runs the new logic. Keep fd 9 open across exec with
+  # AUTH_UPDATE_LOCK_HELD=1 so the lock is never dropped.
+  if ! git diff --quiet "$before_sha" "$after_sha" -- scripts/update.sh scripts/lib/layout.sh scripts/lib/release.sh; then
+    warn "update.sh or its libraries changed in this update — re-executing the new version"
+    exec env \
+      AUTH_UPDATE_REEXEC=1 \
+      AUTH_UPDATE_LOCK_HELD=1 \
+      AUTH_UPDATE_YES=1 \
+      AUTH_UPDATE_BASE_SHA="$before_sha" \
+      AUTH_BUNDLE_BEFORE="$bundle_before" \
+      AUTH_BUNDLE_AFTER="$bundle_after" \
+      AUTH_FROM_SOURCE="$FROM_SOURCE" \
+      AUTH_UPDATE_TAG="$RELEASE_TAG" \
+      AUTH_UPDATE_ALLOW_DOWNGRADE="$ALLOW_DOWNGRADE" \
+      AUTH_UPDATE_BRANCH="$BRANCH_OVERRIDE" \
+      AUTH_RELEASE_CACHE_DIR="$RELEASE_CACHE" \
+      SRC_DIR="$SRC_DIR" \
+      APP_DIR="$APP_DIR" \
+      APP_USER="$APP_USER" \
+      SYSTEMD_DIR="$SYSTEMD_DIR" \
+      CLI_BIN="$CLI_BIN" \
+      MOTD_FILE="$MOTD_FILE" \
+      LOCK_FILE="$LOCK_FILE" \
+      BUILD_CACHE="${BUILD_CACHE:-/var/cache/auth-build}" \
+      bash "$SRC_DIR/scripts/update.sh"
   fi
 fi
 
-# ── 2. build in staging ──────────────────────────────────────────────
-step "2/4  Building new artifacts (staging)"
+# ── 2. stage new artifacts ───────────────────────────────────────────
+if [[ "$FROM_SOURCE" == "1" ]]; then
+  step "2/4  Building new artifacts (staging)"
+else
+  step "2/4  Fetching and verifying signed release ${RELEASE_TAG} (staging)"
+fi
 
 STAGING="$(mktemp -d)"
 BACKUP=""
@@ -396,10 +550,17 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT
 
-# Built by the service user in its own copy, with its own caches; root only
-# installs the result (see scripts/lib/layout.sh).
-layout_build "$SRC_DIR" "$STAGING"
-ok "staging build complete"
+if [[ "$FROM_SOURCE" == "1" ]]; then
+  # Built by the service user in its own copy, with its own caches; root only
+  # installs the result (see scripts/lib/layout.sh).
+  layout_build "$SRC_DIR" "$STAGING"
+  ok "staging build complete"
+else
+  # Verified signed release binaries downloaded into a root-owned 0700 staging
+  # directory (no Go toolchain needed on the host).
+  layout_stage_release "$SRC_DIR" "$STAGING" "$RELEASE_TAG" "$after_sha"
+  ok "signed release ${RELEASE_TAG} verified and staged"
+fi
 # Apply the ownership model to the current install before anything here is
 # executed against it (the pre-flight runs the staged binary, not an
 # installed one, but the swap below installs units and the CLI from the
@@ -523,9 +684,16 @@ host_upkeep
 
 say
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
-printf '%s ✓ Updated %s → %s%s\n' "$c_bold" "${before_sha:0:12}" "${after_sha:0:12}" "$c_reset"
+if [[ -n "$RELEASE_TAG" ]]; then
+  printf '%s ✓ Updated to %s (%s → %s)%s\n' "$c_bold" "$RELEASE_TAG" "${before_sha:0:12}" "${after_sha:0:12}" "$c_reset"
+else
+  printf '%s ✓ Updated %s → %s%s\n' "$c_bold" "${before_sha:0:12}" "${after_sha:0:12}" "$c_reset"
+fi
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
 say
 say "  Logs:  ${c_dim}auth logs${c_reset}"
-say "  Roll back: cd $SRC_DIR && sudo git checkout $before_sha && sudo auth rebuild"
-say "             ${c_dim}(rebuild, not update — 'update' would re-pull this commit)${c_reset}"
+if [[ "$FROM_SOURCE" == "1" ]]; then
+  say "  Roll back: cd $SRC_DIR && sudo git checkout $before_sha && sudo auth rebuild --from-source"
+else
+  say "  Roll back: sudo auth update --tag <older-tag> --allow-downgrade"
+fi

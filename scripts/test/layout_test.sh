@@ -153,7 +153,7 @@ ENV
 run_update() {  # extra env as args
   env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LAYOUT_BUILD_GOFLAGS="-p=1" \
     APP_DIR="$APP" SRC_DIR="$SRC" APP_USER="$APP_USER" SYSTEMD_DIR="$SYSTEMD" CLI_BIN="$BIN/auth" \
-    MOTD_FILE="$T/motd" LOCK_FILE="$T/lock" BUILD_CACHE="$CACHE" AUTH_UPDATE_NO_PULL=1 AUTH_UPDATE_YES=1 "$@" \
+    MOTD_FILE="$T/motd" LOCK_FILE="$T/lock" BUILD_CACHE="$CACHE" AUTH_UPDATE_NO_PULL=1 AUTH_UPDATE_YES=1 AUTH_FROM_SOURCE=1 "$@" \
     bash "$SRC/scripts/update.sh"
 }
 cli() {  # run the installed wrapper as root with the test prefix
@@ -397,7 +397,7 @@ if lib_call "$G" layout_bundle_restore "$BD" "0000000000000000000000000000000000
 section "bootstrap fresh install (DRY_RUN, non-interactive, password mode)"
 APP2="$T/app2"
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
-   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" AUTH_FROM_SOURCE=1 \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_LOGIN_MODE=password AUTH_BOOTSTRAP_SETUP_CADDY=n \
    AUTH_BOOTSTRAP_COOKIE_SECURE=n AUTH_BOOTSTRAP_BRAND_NAME='North "Wind" \ Co' \
@@ -414,7 +414,7 @@ grep -qF 'AUTH_BRAND_NAME="North \"Wind\" \\ Co"' "$APP2/.env.local" && ok "bran
 # Re-run keeps settings and stays in layout (env file read as data).
 echo 'AUTH_RETURN_TO_HOSTS="a.example.com"' >> "$APP2/.env.local"
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
-   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" AUTH_FROM_SOURCE=1 \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap2.log" 2>&1; then ok "bootstrap re-run succeeded"; else bad "bootstrap re-run failed"; tail -25 "$T/bootstrap2.log"; fi
@@ -428,7 +428,7 @@ grep -qF 'AUTH_BRAND_NAME="North \"Wind\" \\ Co"' "$APP2/.env.local" && ok "re-r
 # value (it could be a secret) is not echoed.
 cp "$APP2/.env.local" "$T/env2.before"
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
-   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" AUTH_FROM_SOURCE=1 \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n AUTH_BOOTSTRAP_BRAND_NAME=$'Fine\nAUTH_LOGIN_MODE=magic' \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap3.log" 2>&1; then bad "bootstrap accepted a brand with a line break"; else ok "bootstrap refuses a value with a line break"; fi
@@ -440,7 +440,7 @@ cmp -s "$APP2/.env.local" "$T/env2.before" && ok "live env untouched after the r
 # exported from the previous env file (the server lets the process
 # environment shadow the file): a re-run with a new hostname must report it.
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
-   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" AUTH_FROM_SOURCE=1 \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=auth.northwind.test AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=y \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap5.log" 2>&1; then ok "bootstrap re-run with a new hostname succeeded"; else bad "re-run with a new hostname failed"; tail -8 "$T/bootstrap5.log"; fi
@@ -448,7 +448,7 @@ grep -q 'configuration OK (hostname=auth.northwind.test,' "$T/bootstrap5.log" &&
 grep -q '^AUTH_HOSTNAME="auth.northwind.test"' "$APP2/.env.local" && ok "new hostname written" || bad "hostname not written"
 # Put the hostname back so the checks below compare against a known file.
 env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
-   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" AUTH_FROM_SOURCE=1 \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap6.log" 2>&1 || bad "restoring localhost failed"
@@ -460,7 +460,7 @@ echo "previous-build-marker" >> "$APP2/bin/auth-server"
 cp "$APP2/.env.local" "$T/env2.swap"
 mkdir -p "$T/tmp7"
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP2/bin/auth-admin" TMPDIR="$T/tmp7" \
-   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" AUTH_FROM_SOURCE=1 \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=auth.northwind.test AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=y \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap7.log" 2>&1; then bad "bootstrap reported success with an unreplaceable binary"; else ok "bootstrap fails when a binary cannot be replaced"; fi
@@ -476,7 +476,7 @@ grep -q "previous-build-marker" "$APP2/bin/auth-server" && ok "previous auth-ser
 # refused too.
 mkdir -p "$T/tmp9"; rm -f "$T/stub/second.count"
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP2/bin/auth-server" LT_FAIL_INSTALL_SECOND="$APP2/.env.local" TMPDIR="$T/tmp9" \
-   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" AUTH_FROM_SOURCE=1 \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap9.log" 2>&1; then bad "bootstrap reported success when nothing could be installed"; else ok "bootstrap fails when nothing can be installed"; fi
@@ -494,7 +494,7 @@ cmp -s "$APP2/.env.local" "$T/env2.swap" && ok "env put back by hand from the ke
 # the next attempt starts clean instead of finding a half install.
 APP3="$T/app3"
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb LT_FAIL_INSTALL="$APP3/bin/auth-admin" \
-   APP_DIR="$APP3" APP_USER="$APP_USER" CLI_PATH="$BIN/auth3" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   APP_DIR="$APP3" APP_USER="$APP_USER" CLI_PATH="$BIN/auth3" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" AUTH_FROM_SOURCE=1 \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_LOGIN_MODE=password AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap8.log" 2>&1; then bad "fresh bootstrap reported success with an unreplaceable binary"; else ok "fresh bootstrap fails when a binary cannot be installed"; fi
@@ -504,11 +504,146 @@ grep -q 'files this run created were removed again' "$T/bootstrap8.log" && ok "t
 # Only the loopback literal and localhost are local HTTP; a malformed
 # 127.x address is not a hostname at all.
 if env -i PATH="$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
-   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" \
+   APP_DIR="$APP2" APP_USER="$APP_USER" CLI_PATH="$BIN/auth2" BUILD_CACHE="$CACHE" LAYOUT_BUILD_GOFLAGS="-p=1" AUTH_FROM_SOURCE=1 \
    AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
    AUTH_BOOTSTRAP_HOSTNAME=127.999.999.999 AUTH_BOOTSTRAP_SETUP_CADDY=n AUTH_BOOTSTRAP_COOKIE_SECURE=n \
    bash "$SRC/scripts/bootstrap.sh" >"$T/bootstrap4.log" 2>&1; then bad "bootstrap accepted 127.999.999.999 as a hostname"; else ok "bootstrap rejects 127.999.999.999"; fi
 cmp -s "$APP2/.env.local" "$T/env2.before" && ok "live env untouched after the bad hostname" || bad "live env changed after the bad hostname"
+
+# ── 8. signed binary release install & update (no Go required) ─────────
+section "signed binary release update and bootstrap (without Go)"
+# Commit the uncommitted working tree in $SRC onto a local bare origin so
+# git fetch --tags origin and release tag checkout work cleanly.
+ORIGIN_AUTH="$T/auth-origin.git"
+git init -q --bare "$ORIGIN_AUTH"
+git -C "$SRC" config user.email t@t
+git -C "$SRC" config user.name t
+git -C "$SRC" add -A
+git -C "$SRC" commit -qm "signed-release-work" || true
+git -C "$SRC" remote set-url origin "$ORIGIN_AUTH"
+git -C "$SRC" push -q origin HEAD:refs/heads/main
+REL_SHA_1="$(git -C "$SRC" rev-parse HEAD)"
+git -C "$SRC" tag v2026.04.18.1 "$REL_SHA_1"
+git -C "$SRC" push -q origin refs/tags/v2026.04.18.1
+
+# Make a second commit that touches scripts/update.sh (to exercise self-re-exec)
+# and tag it v2026.04.19.1.
+printf '\n# release test marker\n' >> "$SRC/scripts/update.sh"
+git -C "$SRC" add scripts/update.sh
+git -C "$SRC" commit -qm "touch update.sh for re-exec"
+chmod -R go-w "$SRC"
+REL_SHA_2="$(git -C "$SRC" rev-parse HEAD)"
+git -C "$SRC" tag v2026.04.19.1 "$REL_SHA_2"
+git -C "$SRC" push -q origin HEAD:refs/heads/main refs/tags/v2026.04.19.1
+# Rewind $SRC to the older commit so update.sh fetches, sees scripts/update.sh
+# changed, and re-execs itself while holding LOCK_FILE.
+git -C "$SRC" checkout -q "$REL_SHA_1"
+chmod -R go-w "$SRC"
+
+REL_MIRROR="$T/releases"
+FAKE_COSIGN="$T/fake-cosign"
+cat > "$FAKE_COSIGN" <<'COSIGN'
+#!/usr/bin/env bash
+set -euo pipefail
+bundle=""; blob=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    verify-blob) shift ;;
+    --bundle) bundle="$2"; shift 2 ;;
+    --certificate-identity|--certificate-oidc-issuer) shift 2 ;;
+    *) blob="$1"; shift ;;
+  esac
+done
+[[ -n "$bundle" && -f "$bundle" && -n "$blob" && -f "$blob" ]] || exit 1
+[[ "$(cat "$bundle")" == "sig:$(sha256sum "$blob" | awk '{print $1}')" ]]
+COSIGN
+chmod 0755 "$FAKE_COSIGN"
+cosign_digest="$(sha256sum "$FAKE_COSIGN" | awk '{print $1}')"
+LOCK_OVERRIDE="$T/cosign.lock"
+cat > "$LOCK_OVERRIDE" <<EOF
+version v3.1.4
+linux/amd64 $cosign_digest
+linux/arm64 $cosign_digest
+EOF
+REL_CACHE="$T/rel-cache"
+mkdir -p "$REL_CACHE" && chmod 0700 "$REL_CACHE"
+arch="$(uname -m)"; [[ "$arch" == "x86_64" ]] && arch="amd64" || arch="arm64"
+cp "$FAKE_COSIGN" "$REL_CACHE/cosign-v3.1.4-linux-$arch"
+chmod 0755 "$REL_CACHE/cosign-v3.1.4-linux-$arch"
+
+publish_test_release() {
+  local tag="$1" sha="$2" dl="$REL_MIRROR/download/$1"
+  mkdir -p "$dl"
+  cp "$APP/bin/auth-server" "$dl/auth-server-linux-$arch"
+  cp "$APP/bin/auth-admin"  "$dl/auth-admin-linux-$arch"
+  local s_sha a_sha
+  s_sha="$(sha256sum "$dl/auth-server-linux-$arch" | awk '{print $1}')"
+  a_sha="$(sha256sum "$dl/auth-admin-linux-$arch"  | awk '{print $1}')"
+  printf 'sig:%s\n' "$s_sha" > "$dl/auth-server-linux-$arch.sigstore.json"
+  printf 'sig:%s\n' "$a_sha" > "$dl/auth-admin-linux-$arch.sigstore.json"
+  cat > "$dl/release.json" <<EOF
+{
+  "tag": "$tag",
+  "version": "${tag#v}",
+  "commit": "$sha",
+  "built_at": "2026-04-19T00:00:00Z",
+  "binaries": {
+    "auth-server-linux-$arch": { "sha256": "$s_sha" },
+    "auth-admin-linux-$arch":  { "sha256": "$a_sha" }
+  }
+}
+EOF
+  ( cd "$dl" && sha256sum "auth-server-linux-$arch" "auth-admin-linux-$arch" release.json > SHA256SUMS )
+  printf 'sig:%s\n' "$(sha256sum "$dl/SHA256SUMS" | awk '{print $1}')" > "$dl/SHA256SUMS.sigstore.json"
+  printf '{"tag_name": "%s"}\n' "$tag" > "$REL_MIRROR/latest.json"
+}
+publish_test_release v2026.04.18.1 "$REL_SHA_1"
+publish_test_release v2026.04.19.1 "$REL_SHA_2"
+
+# Shadow `go` with a failing stub to prove signed-release mode never invokes Go.
+NOGO="$T/no-go"; mkdir -p "$NOGO"
+cat > "$NOGO/go" <<'STUB'
+#!/usr/bin/env bash
+echo "go must not be invoked in signed-release mode" >&2
+exit 99
+STUB
+chmod 0755 "$NOGO/go"
+
+run_signed_update() {
+  env -i PATH="$NOGO:$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+    APP_DIR="$APP" SRC_DIR="$SRC" APP_USER="$APP_USER" SYSTEMD_DIR="$SYSTEMD" CLI_BIN="$BIN/auth" \
+    MOTD_FILE="$T/motd" LOCK_FILE="$T/lock" BUILD_CACHE="$CACHE" \
+    AUTH_RELEASE_BASE_URL="file://$REL_MIRROR/download" \
+    AUTH_RELEASE_LATEST_URL="file://$REL_MIRROR/latest.json" \
+    AUTH_COSIGN_LOCK="$LOCK_OVERRIDE" \
+    AUTH_RELEASE_CACHE_DIR="$REL_CACHE" \
+    AUTH_UPDATE_YES=1 "$@" \
+    bash "$SRC/scripts/update.sh"
+}
+
+if run_signed_update >"$T/signed-update1.log" 2>&1; then ok "signed release update succeeded without Go (including self-re-exec)"; else bad "signed release update failed"; tail -25 "$T/signed-update1.log"; fi
+grep -q 'update scripts changed — re-executing' "$T/signed-update1.log" && ok "self-re-exec ran when update.sh changed" || bad "expected self-re-exec in log"
+[[ "$(git -C "$SRC" describe --tags --exact-match HEAD 2>/dev/null)" == "v2026.04.19.1" ]] && ok "SRC_DIR checked out at release tag v2026.04.19.1" || bad "SRC_DIR at $(git -C "$SRC" rev-parse HEAD)"
+check layout_ok
+check healthy
+
+if run_signed_update --tag v2026.04.18.1 >"$T/signed-downgrade-refused.log" 2>&1; then bad "downgrade without --allow-downgrade succeeded"; else ok "downgrade refused without --allow-downgrade"; fi
+grep -q 'older than installed' "$T/signed-downgrade-refused.log" && ok "downgrade refusal message explains why" || bad "missing downgrade message"
+
+if run_signed_update --tag v2026.04.18.1 --allow-downgrade >"$T/signed-downgrade-ok.log" 2>&1; then ok "downgrade with --allow-downgrade succeeded"; else bad "downgrade with --allow-downgrade failed"; tail -20 "$T/signed-downgrade-ok.log"; fi
+[[ "$(git -C "$SRC" describe --tags --exact-match HEAD 2>/dev/null)" == "v2026.04.18.1" ]] && ok "SRC_DIR at v2026.04.18.1 after allowed downgrade" || bad "SRC_DIR not at v2026.04.18.1"
+
+APP4="$T/app4"
+if env -i PATH="$NOGO:$T/stub:/usr/local/bin:/usr/bin:/bin" HOME="$HOMEDIR" TERM=dumb \
+   APP_DIR="$APP4" APP_USER="$APP_USER" CLI_PATH="$BIN/auth4" BUILD_CACHE="$CACHE" \
+   AUTH_RELEASE_BASE_URL="file://$REL_MIRROR/download" \
+   AUTH_RELEASE_LATEST_URL="file://$REL_MIRROR/latest.json" \
+   AUTH_COSIGN_LOCK="$LOCK_OVERRIDE" \
+   AUTH_RELEASE_CACHE_DIR="$REL_CACHE" \
+   AUTH_BOOTSTRAP_DRY_RUN=1 AUTH_BOOTSTRAP_NON_INTERACTIVE=1 AUTH_BOOTSTRAP_SKIP_PACKAGES=1 \
+   AUTH_BOOTSTRAP_HOSTNAME=localhost AUTH_BOOTSTRAP_LOGIN_MODE=password AUTH_BOOTSTRAP_SETUP_CADDY=n \
+   AUTH_BOOTSTRAP_COOKIE_SECURE=n \
+   bash "$SRC/scripts/bootstrap.sh" --tag v2026.04.18.1 >"$T/bootstrap-signed.log" 2>&1; then ok "fresh bootstrap in signed-release mode succeeded without Go"; else bad "fresh bootstrap in signed-release mode failed"; tail -25 "$T/bootstrap-signed.log"; fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
