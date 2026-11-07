@@ -576,19 +576,11 @@ if [[ "$FROM_SOURCE" == "1" ]]; then
   layout_build "$SRC_DIR" "$STAGING"
   ok "staging build complete"
 else
-  # Verified signed release binaries downloaded into a root-owned 0700 staging
+  # Verified signed release binaries downloaded (or loaded from the local
+  # release cache if pruned on GitHub) into a root-owned 0700 staging
   # directory (no Go toolchain needed on the host).
-  if layout_stage_release "$SRC_DIR" "$STAGING" "$RELEASE_TAG" "$after_sha"; then
-    ok "signed release ${RELEASE_TAG} verified and staged"
-  elif [[ "$NO_PULL" == "1" && "$before_sha" == "$after_sha" && -x "$APP_DIR/bin/auth-server" && ! -L "$APP_DIR/bin/auth-server" && -x "$APP_DIR/bin/auth-admin" && ! -L "$APP_DIR/bin/auth-admin" && "$(stat -c %u "$APP_DIR/bin/auth-server")" == "0" && "$(stat -c %u "$APP_DIR/bin/auth-admin")" == "0" ]]; then
-    warn "release ${RELEASE_TAG} is no longer on GitHub (pruned beyond the 20-release retention window) and not in $RELEASE_CACHE; preserving installed root-owned binaries from $APP_DIR/bin"
-    install -d -m 0700 -o root -g root "$STAGING" "$STAGING/bin"
-    install -o root -g root -m 0755 "$APP_DIR/bin/auth-server" "$STAGING/bin/auth-server"
-    install -o root -g root -m 0755 "$APP_DIR/bin/auth-admin"  "$STAGING/bin/auth-admin"
-    ok "preserved installed binaries for ${RELEASE_TAG}"
-  else
-    die "failed to download or verify signed release ${RELEASE_TAG}"
-  fi
+  layout_stage_release "$SRC_DIR" "$STAGING" "$RELEASE_TAG" "$after_sha"
+  ok "signed release ${RELEASE_TAG} verified and staged"
 fi
 # Apply the ownership model to the current install before anything here is
 # executed against it (the pre-flight runs the staged binary, not an
