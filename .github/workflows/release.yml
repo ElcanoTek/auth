@@ -223,13 +223,13 @@ jobs:
           set -euo pipefail
           if info="$(gh release view "${TAG}" --json isDraft,assets 2>/dev/null)"; then
             draft="$(printf '%s' "${info}" | jq -r '.isDraft')"
-            sums="$(printf '%s' "${info}" | jq -r '[.assets[].name] | index("SHA256SUMS") != null')"
-            if [ "${draft}" = "false" ] && [ "${sums}" = "true" ]; then
-              echo "::notice::${TAG} is already published with its artifacts; releases are immutable, so nothing is rebuilt."
+            complete="$(printf '%s' "${info}" | jq -r '([.assets[].name]) as $a | ["SHA256SUMS","SHA256SUMS.sigstore.json","release.json","auth-server-linux-amd64","auth-server-linux-amd64.sigstore.json","auth-server-linux-arm64","auth-server-linux-arm64.sigstore.json","auth-admin-linux-amd64","auth-admin-linux-amd64.sigstore.json","auth-admin-linux-arm64","auth-admin-linux-arm64.sigstore.json"] | all(. as $req | ($a | index($req)) != null)')"
+            if [ "${draft}" = "false" ] && [ "${complete}" = "true" ]; then
+              echo "::notice::${TAG} is already published with all of its artifacts; releases are immutable, so nothing is rebuilt."
               echo "build=false" >>"${GITHUB_OUTPUT}"
               exit 0
             fi
-            echo "::error::${TAG} has a partial GitHub release (draft=${draft}, SHA256SUMS present=${sums}). Releases are immutable: refusing to rebuild over it. Delete that release and re-run, or let the next green push release."
+            echo "::error::${TAG} has a partial GitHub release (draft=${draft}, all assets present=${complete}). Releases are immutable: refusing to rebuild over it. Delete that release and re-run, or let the next green push release."
             exit 1
           fi
           echo "build=true" >>"${GITHUB_OUTPUT}"

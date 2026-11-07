@@ -25,7 +25,8 @@ newer="$(printf '%s\n%s\n' "$listed" "$tag" | awk 'NF && !seen[$0]++' | "$here/v
   | awk -v t="$tag" 'found { print } $0 == t { found = 1 }')"
 [[ -n "$newer" ]] || exit 0
 while IFS= read -r t; do
-  if ! complete="$(gh release view "$t" --json isDraft,assets --jq '(.isDraft | not) and ([.assets[].name] | index("SHA256SUMS") != null)')"; then
+  # shellcheck disable=SC2016
+  if ! complete="$(gh release view "$t" --json isDraft,assets --jq '(.isDraft | not) and (([.assets[].name]) as $a | ["SHA256SUMS","SHA256SUMS.sigstore.json","release.json","auth-server-linux-amd64","auth-server-linux-amd64.sigstore.json","auth-server-linux-arm64","auth-server-linux-arm64.sigstore.json","auth-admin-linux-amd64","auth-admin-linux-amd64.sigstore.json","auth-admin-linux-arm64","auth-admin-linux-arm64.sigstore.json"] | all(. as $req | ($a | index($req)) != null))')"; then
     echo "could not read release $t" >&2
     exit 2
   fi

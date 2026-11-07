@@ -712,8 +712,9 @@ fi
 printf '%s═══════════════════════════════════════════════%s\n' "$c_green" "$c_reset"
 say
 say "  Logs:  ${c_dim}auth logs${c_reset}"
-if [[ "$FROM_SOURCE" == "1" ]]; then
-  say "  Roll back: cd $SRC_DIR && sudo git checkout $before_sha && sudo auth rebuild --from-source"
+prev_tag="$(git -C "$SRC_DIR" describe --tags --abbrev=0 --match 'v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].[0-9]*' "$before_sha" 2>/dev/null || true)"
+if [[ "$FROM_SOURCE" != "1" && "$prev_tag" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$ && "$prev_tag" != "$RELEASE_TAG" ]]; then
+  say "  Roll back: sudo auth update --tag $prev_tag --allow-downgrade"
 else
-  say "  Roll back: sudo auth update --tag <older-tag> --allow-downgrade"
+  say "  Roll back: cd $SRC_DIR && sudo git checkout $before_sha && sudo auth rebuild --from-source"
 fi
