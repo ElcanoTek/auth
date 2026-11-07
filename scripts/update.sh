@@ -404,9 +404,14 @@ else
     if [[ "$ALLOW_DOWNGRADE" != "1" ]] && auth_release_older "$RELEASE_TAG" "$current_ver"; then
       die "release ${RELEASE_TAG} is older than the current checkout (${current_ver}) — pass --allow-downgrade to roll back"
     fi
+    local_branch_sha="$(git rev-parse -q --verify "refs/heads/$target_branch^{commit}" 2>/dev/null || true)"
     if [[ "$before_sha" != "$after_sha" ]] && git merge-base --is-ancestor "$after_sha" "$before_sha"; then
       git merge-base --is-ancestor "$before_sha" "$target_ref" \
         || die "${SRC_DIR} has local commits that are not on ${target_ref}; moving it back to ${RELEASE_TAG} would strand them — push or reset them first"
+      _realign=1
+    elif [[ -n "$local_branch_sha" && "$local_branch_sha" != "$after_sha" ]] && git merge-base --is-ancestor "$after_sha" "$local_branch_sha"; then
+      git merge-base --is-ancestor "$local_branch_sha" "$target_ref" \
+        || die "${SRC_DIR} branch ${target_branch} has local commits that are not on ${target_ref}; moving it back to ${RELEASE_TAG} would strand them — push or reset them first"
       _realign=1
     fi
     if [[ "$before_sha" != "$after_sha" ]]; then
@@ -499,6 +504,8 @@ else
   else
     git checkout --quiet -b "$target_branch" "$after_sha"
   fi
+  [[ "$(git rev-parse HEAD)" == "$after_sha" ]] \
+    || die "$SRC_DIR HEAD ($(git rev-parse --short=12 HEAD)) does not match target ${after_sha:0:12} — refusing to stage or sync an unverified commit"
   require_trusted_checkout "$SRC_DIR"
 
   # If this update modified scripts/update.sh, scripts/lib/layout.sh, or

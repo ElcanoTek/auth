@@ -829,6 +829,8 @@ else
     SRC_MOVED=1
     require_trusted_checkout "$SRC_DIR"
   fi
+  [[ "$(git -C "$SRC_DIR" rev-parse HEAD)" == "$release_sha" ]] \
+    || die "$SRC_DIR HEAD does not match release ${RELEASE_TAG} (${release_sha:0:12})"
   layout_stage_release "$SRC_DIR" "$STAGING" "$RELEASE_TAG" "$release_sha"
   ok "signed release ${RELEASE_TAG} verified and staged"
 fi

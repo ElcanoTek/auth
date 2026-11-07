@@ -306,9 +306,10 @@ mode additionally asks for its cookie domain and email provider:
 
 Plus a yes/no for "set up Caddy + Let's Encrypt for this hostname?". The
 script generates the Ed25519 signing keypair (and prints the public key to
-copy to verifying services), builds the binary, drops a systemd unit,
-optionally provisions Caddy, opens 80/443 in firewalld, and installs
-`/usr/local/bin/auth` for operations.
+copy to verifying services), downloads and verifies the keyless Sigstore OIDC
+signed release binaries (or compiles from source with `--from-source`), drops
+a systemd unit, optionally provisions Caddy, opens 80/443 in firewalld, and
+installs `/usr/local/bin/auth` for operations.
 
 Day-to-day:
 
@@ -326,7 +327,7 @@ auth logs                            # journalctl -fu auth-server
 auth backup                          # online sqlite snapshot
 auth doctor                          # read-only box check; add --json for a machine report
 sudo auth doctor --repair            # fix env and data-dir mode; start a stopped unit
-auth update                          # git pull + rebuild + restart (auto-rolls-back a bad build)
+auth update                          # fetch + verify signed release + restart (auto-rolls-back a bad release; --from-source builds locally)
 ```
 
 See **[docs/DEPLOY.md](docs/DEPLOY.md)** for the full walkthrough, the
