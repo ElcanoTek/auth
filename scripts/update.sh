@@ -321,6 +321,11 @@ step "1/4  Fetching latest from $SRC_DIR"
 cd "$SRC_DIR"
 git config --global --get-all safe.directory 2>/dev/null | grep -qx -- "$SRC_DIR" || git config --global --add safe.directory "$SRC_DIR" 2>/dev/null || true
 
+if [[ "$FROM_SOURCE" != "1" ]]; then
+  [[ -z "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]] \
+    || die "cannot install a signed release from a modified checkout ($SRC_DIR has uncommitted or untracked files) — commit/reset them or pass --from-source"
+fi
+
 before_sha="$(git rev-parse HEAD)"
 
 # The client bundle may not live inside $APP_DIR: every path through this
@@ -495,6 +500,10 @@ else
     fi
   fi
 
+  if [[ "$FROM_SOURCE" != "1" ]]; then
+    [[ -z "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]] \
+      || die "cannot install a signed release from a modified checkout ($SRC_DIR has uncommitted or untracked files) — commit/reset them or pass --from-source"
+  fi
   if [[ "$_realign" == "1" ]]; then
     git diff --quiet HEAD -- || die "cannot move $target_branch back to ${RELEASE_TAG} — uncommitted changes in $SRC_DIR"
     git checkout --quiet -B "$target_branch" "$after_sha"
@@ -503,6 +512,10 @@ else
     git merge --ff-only "$after_sha" || die "$target_branch diverged from ${after_sha:0:12} — resolve manually"
   else
     git checkout --quiet -b "$target_branch" "$after_sha"
+  fi
+  if [[ "$FROM_SOURCE" != "1" ]]; then
+    [[ -z "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]] \
+      || die "$SRC_DIR has uncommitted or untracked files after checking out ${RELEASE_TAG} — refusing to sync an unverified tree"
   fi
   [[ "$(git rev-parse HEAD)" == "$after_sha" ]] \
     || die "$SRC_DIR HEAD ($(git rev-parse --short=12 HEAD)) does not match target ${after_sha:0:12} — refusing to stage or sync an unverified commit"

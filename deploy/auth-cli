@@ -367,6 +367,7 @@ case "$cmd" in
     # the documented control flags explicitly. Never preserve the caller's
     # environment wholesale: this wrapper crosses a privilege boundary.
     update_env=()
+    [[ "${AUTH_UPDATE_NO_PULL:-0}" == "1" ]] && update_env+=(AUTH_UPDATE_NO_PULL=1)
     [[ "${AUTH_UPDATE_YES:-0}" == "1" ]] && update_env+=(AUTH_UPDATE_YES=1)
     [[ "${AUTH_FROM_SOURCE:-0}" == "1" ]] && update_env+=(AUTH_FROM_SOURCE=1)
     [[ -n "${AUTH_UPDATE_TAG:-}" ]] && update_env+=("AUTH_UPDATE_TAG=${AUTH_UPDATE_TAG}")

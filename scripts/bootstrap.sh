@@ -807,9 +807,9 @@ else
   fi
   release_sha="$(git -C "$SRC_DIR" rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null)" \
     || die "release ${RELEASE_TAG} is not a tag in ${SRC_DIR}"
+  [[ -z "$(git -C "$SRC_DIR" status --porcelain --untracked-files=normal 2>/dev/null)" ]] \
+    || die "cannot install a signed release from a modified checkout ($SRC_DIR has uncommitted or untracked files) — commit/reset them or pass --from-source"
   if [[ "$SRC_BEFORE_SHA" != "$release_sha" ]]; then
-    [[ -z "$(git -C "$SRC_DIR" status --porcelain --untracked-files=normal 2>/dev/null)" ]] \
-      || die "cannot align $SRC_DIR to release ${RELEASE_TAG} — uncommitted changes in $SRC_DIR (commit/reset them or pass --from-source)"
     if git -C "$SRC_DIR" show-ref --quiet --verify refs/remotes/origin/main; then
       git -C "$SRC_DIR" merge-base --is-ancestor "$release_sha" refs/remotes/origin/main \
         || die "release ${RELEASE_TAG} is not on origin/main — refusing to move $SRC_DIR off its branch"

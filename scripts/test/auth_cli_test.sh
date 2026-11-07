@@ -46,8 +46,8 @@ assert_args $'bash\n/opt/auth/scripts/update.sh\n--probe'
 run_update_dispatch AUTH_UPDATE_YES=0
 assert_args $'bash\n/opt/auth/scripts/update.sh\n--probe'
 
-run_update_dispatch AUTH_FROM_SOURCE=1 AUTH_UPDATE_TAG=v2026.04.19.1 AUTH_UPDATE_ALLOW_DOWNGRADE=1
-assert_args $'env\nAUTH_FROM_SOURCE=1\nAUTH_UPDATE_TAG=v2026.04.19.1\nAUTH_UPDATE_ALLOW_DOWNGRADE=1\nbash\n/opt/auth/scripts/update.sh\n--probe'
+run_update_dispatch AUTH_UPDATE_NO_PULL=1 AUTH_FROM_SOURCE=1 AUTH_UPDATE_TAG=v2026.04.19.1 AUTH_UPDATE_ALLOW_DOWNGRADE=1
+assert_args $'env\nAUTH_UPDATE_NO_PULL=1\nAUTH_FROM_SOURCE=1\nAUTH_UPDATE_TAG=v2026.04.19.1\nAUTH_UPDATE_ALLOW_DOWNGRADE=1\nbash\n/opt/auth/scripts/update.sh\n--probe'
 
 env -i \
   PATH="$T/bin:/usr/bin:/bin" \

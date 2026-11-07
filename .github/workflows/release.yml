@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: >-
-      ${{ github.event_name == 'workflow_dispatch'
+      ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
           || (github.event.workflow_run.conclusion == 'success'
               && github.event.workflow_run.event == 'push'
               && github.event.workflow_run.head_branch == 'main') }}
@@ -64,6 +64,7 @@ jobs:
       - name: Check out the default branch (trusted code) with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/heads/main
           fetch-depth: 0
           fetch-tags: true
 
@@ -334,6 +335,7 @@ jobs:
       - name: Check out the default branch (trusted code) with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/heads/main
           fetch-depth: 0
           fetch-tags: true
 
