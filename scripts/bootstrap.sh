@@ -48,6 +48,10 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+if [[ "$FROM_SOURCE" == "1" && -n "$RELEASE_TAG" ]]; then
+  echo "error: --from-source and --tag cannot be used together" >&2
+  exit 1
+fi
 
 if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
   c_reset=$'\033[0m' c_dim=$'\033[2m' c_red=$'\033[0;31m'
@@ -779,7 +783,18 @@ else
 fi
 
 STAGING="$(mktemp -d)"
-trap 'rm -rf "$STAGING" "$ENV_OUT"; restore_bundle_on_failure' EXIT
+SRC_BEFORE_SHA="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo '')"
+SRC_BEFORE_BRANCH="$(git -C "$SRC_DIR" symbolic-ref -q --short HEAD 2>/dev/null || echo '')"
+SRC_MOVED=0
+restore_src_on_failure() {
+  [[ "${BOOTSTRAP_DONE:-0}" != "1" && "$SRC_MOVED" == "1" && -n "$SRC_BEFORE_SHA" ]] || return 0
+  if [[ -n "$SRC_BEFORE_BRANCH" ]]; then
+    git -C "$SRC_DIR" checkout --quiet -B "$SRC_BEFORE_BRANCH" "$SRC_BEFORE_SHA" 2>/dev/null || true
+  else
+    git -C "$SRC_DIR" checkout --quiet --detach "$SRC_BEFORE_SHA" 2>/dev/null || true
+  fi
+}
+trap 'rm -rf "$STAGING" "$ENV_OUT"; restore_src_on_failure || true; restore_bundle_on_failure' EXIT
 if [[ "$FROM_SOURCE" == "1" ]]; then
   layout_build "$SRC_DIR" "$STAGING"
 else
@@ -792,11 +807,26 @@ else
   fi
   release_sha="$(git -C "$SRC_DIR" rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null)" \
     || die "release ${RELEASE_TAG} is not a tag in ${SRC_DIR}"
+  if [[ "$SRC_BEFORE_SHA" != "$release_sha" ]]; then
+    [[ -z "$(git -C "$SRC_DIR" status --porcelain --untracked-files=normal 2>/dev/null)" ]] \
+      || die "cannot align $SRC_DIR to release ${RELEASE_TAG} — uncommitted changes in $SRC_DIR (commit/reset them or pass --from-source)"
+    if git -C "$SRC_DIR" show-ref --quiet --verify refs/remotes/origin/main; then
+      git -C "$SRC_DIR" merge-base --is-ancestor "$release_sha" refs/remotes/origin/main \
+        || die "release ${RELEASE_TAG} is not on origin/main — refusing to move $SRC_DIR off its branch"
+      if git -C "$SRC_DIR" merge-base --is-ancestor "$release_sha" "$SRC_BEFORE_SHA"; then
+        git -C "$SRC_DIR" merge-base --is-ancestor "$SRC_BEFORE_SHA" refs/remotes/origin/main \
+          || die "$SRC_DIR has local commits that are not on origin/main; moving it back to ${RELEASE_TAG} would strand them — push/reset them first or pass --from-source"
+      fi
+    elif git -C "$SRC_DIR" merge-base --is-ancestor "$release_sha" "$SRC_BEFORE_SHA"; then
+      die "$SRC_DIR has local commits past ${RELEASE_TAG} and no origin/main to verify they are pushed — push/reset them first or pass --from-source"
+    fi
+  fi
   auth_release_verify_manifest "$SRC_DIR" "$RELEASE_TAG" "$release_sha" "$RELEASE_CACHE" \
     || die "release ${RELEASE_TAG} could not be verified — nothing was installed"
-  if [[ "$(git -C "$SRC_DIR" rev-parse HEAD)" != "$release_sha" ]]; then
-    git -C "$SRC_DIR" checkout --quiet -B main "$release_sha" \
+  if [[ "$SRC_BEFORE_SHA" != "$release_sha" ]]; then
+    git -C "$SRC_DIR" checkout --quiet --detach "refs/tags/${RELEASE_TAG}" \
       || die "could not align $SRC_DIR to release ${RELEASE_TAG} (${release_sha:0:12})"
+    SRC_MOVED=1
     require_trusted_checkout "$SRC_DIR"
   fi
   layout_stage_release "$SRC_DIR" "$STAGING" "$RELEASE_TAG" "$release_sha"
@@ -826,7 +856,7 @@ ok "configuration accepted by the new build"
 SNAP="$(mktemp -d)"; chmod 0700 "$SNAP"
 # The snapshot holds the live secrets: from this moment a failure removes it
 # (nothing has been swapped yet, so there is nothing to put back).
-trap 'restore_bundle_on_failure || true; rm -rf "$SNAP" "$STAGING" "$ENV_OUT" 2>/dev/null || true' EXIT
+trap 'restore_src_on_failure || true; restore_bundle_on_failure || true; rm -rf "$SNAP" "$STAGING" "$ENV_OUT" 2>/dev/null || true' EXIT
 SNAP_CREATED=()
 if [[ -f "$ENV_FILE" ]]; then cp -p "$ENV_FILE" "$SNAP/env"; else SNAP_CREATED+=("$ENV_FILE"); fi
 for b in auth-server auth-admin; do
@@ -864,7 +894,7 @@ restore_install_on_failure() {
 }
 # Restores first, each best-effort; cleanup last, so a failing rm cannot
 # skip a restore.
-trap 'restore_install_on_failure || true; restore_bundle_on_failure || true; rm -rf "$STAGING" "$ENV_OUT" 2>/dev/null || true' EXIT
+trap 'restore_install_on_failure || true; restore_src_on_failure || true; restore_bundle_on_failure || true; rm -rf "$STAGING" "$ENV_OUT" 2>/dev/null || true' EXIT
 install -o root -g "$APP_USER" -m 0640 "$ENV_OUT" "$ENV_FILE"
 rm -f "$ENV_OUT"
 layout_install_tree "$SRC_DIR" "$STAGING"

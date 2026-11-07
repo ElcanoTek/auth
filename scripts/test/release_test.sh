@@ -222,4 +222,10 @@ fi
 [[ ! -e "$TAMPER_STAGE/bin/auth-server" ]]
 mv "$T/orig-server" "$DL/auth-server-linux-$arch"
 
+# ── 6. bootstrap.sh rejects contradictory --from-source + --tag ────────
+if AUTH_BOOTSTRAP_NON_INTERACTIVE=1 bash "$REPO/scripts/bootstrap.sh" --from-source --tag v2026.04.19.1 2>/dev/null; then
+  echo "expected bootstrap.sh --from-source --tag to fail" >&2
+  exit 1
+fi
+
 echo "release unit tests passed"

@@ -622,13 +622,13 @@ run_signed_update() {
 }
 
 if run_signed_update >"$T/signed-update1.log" 2>&1; then ok "signed release update succeeded without Go (including self-re-exec)"; else bad "signed release update failed"; tail -25 "$T/signed-update1.log"; fi
-grep -q 'update scripts changed — re-executing' "$T/signed-update1.log" && ok "self-re-exec ran when update.sh changed" || bad "expected self-re-exec in log"
+grep -q 'update.sh or its libraries changed in this update — re-executing' "$T/signed-update1.log" && ok "self-re-exec ran when update.sh changed" || bad "expected self-re-exec in log"
 [[ "$(git -C "$SRC" describe --tags --exact-match HEAD 2>/dev/null)" == "v2026.04.19.1" ]] && ok "SRC_DIR checked out at release tag v2026.04.19.1" || bad "SRC_DIR at $(git -C "$SRC" rev-parse HEAD)"
 check layout_ok
 check healthy
 
 if run_signed_update --tag v2026.04.18.1 >"$T/signed-downgrade-refused.log" 2>&1; then bad "downgrade without --allow-downgrade succeeded"; else ok "downgrade refused without --allow-downgrade"; fi
-grep -q 'older than installed' "$T/signed-downgrade-refused.log" && ok "downgrade refusal message explains why" || bad "missing downgrade message"
+grep -q 'older than the current checkout' "$T/signed-downgrade-refused.log" && ok "downgrade refusal message explains why" || bad "missing downgrade message"
 
 if run_signed_update --tag v2026.04.18.1 --allow-downgrade >"$T/signed-downgrade-ok.log" 2>&1; then ok "downgrade with --allow-downgrade succeeded"; else bad "downgrade with --allow-downgrade failed"; tail -20 "$T/signed-downgrade-ok.log"; fi
 [[ "$(git -C "$SRC" describe --tags --exact-match HEAD 2>/dev/null)" == "v2026.04.18.1" ]] && ok "SRC_DIR at v2026.04.18.1 after allowed downgrade" || bad "SRC_DIR not at v2026.04.18.1"

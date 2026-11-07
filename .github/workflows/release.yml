@@ -138,6 +138,25 @@ jobs:
           attempt=0
           while :; do
             attempt=$((attempt + 1))
+
+            # Never mint a newer tag ordinal for an older commit after a
+            # descendant commit on main has already been tagged as a release:
+            # that would invert tag order relative to commit ancestry and let
+            # an out-of-order CI completion mark older code as Latest.
+            newer_descendant=""
+            while IFS= read -r rel_tag; do
+              [ -n "${rel_tag}" ] || continue
+              rel_commit="$(git rev-parse --verify "${rel_tag}^{commit}" 2>/dev/null)" || continue
+              if [ "${rel_commit}" != "${HEAD_SHA}" ] && git merge-base --is-ancestor "${HEAD_SHA}" "${rel_commit}"; then
+                newer_descendant="${rel_tag}"
+              fi
+            done < <(git tag --list | scripts/version.sh filter)
+            if [ -n "${newer_descendant}" ]; then
+              echo "::notice::${HEAD_SHA} is already an ancestor of release ${newer_descendant}; not minting an out-of-order release tag."
+              echo "released=false" >>"${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
             tag="$(scripts/version.sh next)"
             echo "attempt ${attempt}: tagging ${HEAD_SHA} as ${tag}"
 
