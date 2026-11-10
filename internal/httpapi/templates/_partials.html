@@ -18,7 +18,7 @@
 
 {{/* The shared sun/moon control. The Flag theme controller wires every
      [data-flag-theme-toggle]; auth.css swaps the glyph per data-theme. */}}
-{{define "theme-toggle"}}<button type="button" class="theme-toggle" data-flag-theme-toggle aria-label="{{tr "Toggle color theme"}}">
+{{define "theme-toggle"}}<button type="button" class="theme-toggle" data-flag-theme-toggle data-theme-label-light="{{tr "Switch to light mode"}}" data-theme-label-dark="{{tr "Switch to dark mode"}}" aria-label="{{tr "Toggle color theme"}}">
   {{template "icon" "sun"}}
   {{template "icon" "moon"}}
 </button>{{end}}

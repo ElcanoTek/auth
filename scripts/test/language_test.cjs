@@ -5,14 +5,19 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../../internal/httpapi/static/language.js'), 'utf8');
-function run({ query = '', lang = 'en', saved = '', post = false, blocked = false } = {}) {
+function run({ query = '', lang = 'en', saved = '', post = false, blocked = false, theme = false } = {}) {
   const result = { saved, redirect: null, submit: null };
+  const root = { lang, dataset: { languageSync: String(!post), theme: 'light' } };
+  const toggle = { dataset: { themeLabelLight: 'Modo claro', themeLabelDark: 'Modo oscuro' }, setAttribute: (name, value) => { result.label = value; } };
+  result.dark = () => { root.dataset.theme = 'dark'; result.observer(); };
   const form = { elements: { lang: { value: 'pt' } }, addEventListener: (_, fn) => { result.submit = fn; } };
   vm.runInNewContext(source, {
     URL,
+    MutationObserver: class { constructor(fn) { result.observer = fn; } observe() {} },
     window: { location: { href: 'https://auth.example/set-password?' + query + '#example-token', replace: url => { result.redirect = new URL(url); } } },
     document: {
-      documentElement: { lang, dataset: { languageSync: String(!post) } },
+      documentElement: root,
+      querySelectorAll: () => theme ? [toggle] : [],
       addEventListener: (_, fn) => fn(), querySelector: () => post ? null : form,
     },
     localStorage: {
@@ -48,4 +53,12 @@ test('one-time POST results are never replayed or redirected', () => {
 });
 test('the language form persists the selected autonym value', () => {
   const result = run(); result.submit(); assert.equal(result.saved, 'pt');
+});
+
+test('theme labels follow Flag changes on GET and one-time POST pages', () => {
+  for (const post of [false, true]) {
+    const result = run({ theme: true, post });
+    assert.equal(result.label, 'Modo oscuro'); result.dark();
+    assert.equal(result.label, 'Modo claro');
+  }
 });

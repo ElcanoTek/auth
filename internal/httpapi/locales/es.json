@@ -500,6 +500,8 @@
   "Stop requiring two-factor sign-in for %s?": "¿Dejar de exigir inicio de sesión con dos factores a %s?",
   "Stop requiring two-factor: {0}": "Dejar de exigir dos factores: {0}",
   "Stopped at %s: something went wrong. Already done before that: %s. Skipped: %s. Review the table before repeating.": "Se ha detenido en %s por un error. Completadas antes del error: %s. Omitidas: %s. Revisa la tabla antes de repetir la operación.",
+  "Switch to dark mode": "Cambiar al modo oscuro",
+  "Switch to light mode": "Cambiar al modo claro",
   "Tap": "Toca",
   "Team": "Equipo",
   "Team (for Set team; blank removes it)": "Equipo (para Establecer equipo; vacío lo elimina)",

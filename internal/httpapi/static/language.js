@@ -20,6 +20,18 @@
     try { localStorage.setItem('elcano.language', explicit || oidc); } catch (_) { /* The server cookie also persists the choice. */ }
   }
   document.addEventListener('DOMContentLoaded', function () {
+    // Flag owns theme behavior; this adapter supplies the translated labels.
+    // Its theme mutation precedes its label update, so the observer runs last.
+    var toggles = document.querySelectorAll('[data-theme-label-light]');
+    function syncThemeLabels() {
+      toggles.forEach(function (toggle) {
+        toggle.setAttribute('aria-label', page.dataset.theme === 'dark' ? toggle.dataset.themeLabelLight : toggle.dataset.themeLabelDark);
+      });
+    }
+    if (toggles.length) {
+      new MutationObserver(syncThemeLabels).observe(page, { attributes: true, attributeFilter: ['data-theme'] });
+      syncThemeLabels();
+    }
     var form = document.querySelector('[data-language-choice]');
     if (!form) return;
     form.addEventListener('submit', function () {
