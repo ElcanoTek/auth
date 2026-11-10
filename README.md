@@ -14,7 +14,8 @@ roles, and data.
 ## See it in action
 
 These are real captures from the embedded server-rendered UI. No frontend
-build or external asset host is involved.
+build or external asset host is involved. The interface is available in English,
+Spanish and Portuguese; the Language selector keeps your choice on this browser.
 
 **Administrator portal — accounts, application grants, teams, and 2FA state**
 

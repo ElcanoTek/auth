@@ -38,6 +38,25 @@ operator scripts, and `scripts/test/install_test.sh` as root.
 `scripts/test/layout_test.sh` exercises the installed layout and is run
 manually with `sudo`.
 
+## Interface translations
+
+English source messages live next to the UI; Spanish and Portuguese translations
+are embedded from `internal/httpapi/locales/{es,pt}.json`. Use `tr` in templates
+and `translate` for Go presentation messages. Keep a whole sentence together,
+use numbered `{0}` placeholders, and provide singular and plural sentences where
+the count changes the wording. Never translate user data, protocol values or
+credentials. Portuguese uses European terminology, including *utilizador*,
+*ficheiro*, *equipa* and *Definições*.
+
+`go test ./internal/httpapi` checks static message coverage, placeholders, locale
+precedence, and sign-in/MFA/OIDC behavior. If Node is installed, it also runs the
+plain JavaScript preference tests; they can be run separately with
+`node --test scripts/test/language_test.cjs`. Node is only a development tool.
+Review changed screens in all three languages, both themes and mobile/desktop
+sizes. The authenticator guide's `static/help/es/` and `static/help/pt/` pictures
+must use translated UI, a placeholder setup key, and a QR containing example
+text only, as described in `AGENTS.md`.
+
 ## Repository map
 
 ```text

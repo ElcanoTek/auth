@@ -1,41 +1,42 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{language}}" data-language-sync="{{.LanguageCanChange}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{.Wordmark}} — Security</title>
+<title>{{tr "{0} — Security" .Wordmark}}</title>
 {{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
 {{template "assets" .}}
 </head>
 <body>
+  {{template "language-choice" .}}
   {{template "theme-toggle"}}
   <main class="card">
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
-    <h1>Security</h1>
-    <p class="muted">Two-factor sign-in for <strong>{{.Email}}</strong>.</p>
-    {{if .Notice}}<div class="banner" role="status"><strong>Done.</strong> {{.Notice}}</div>{{end}}
-    {{if .UsedRecovery}}<div class="banner warn" role="status"><strong>Recovery code used.</strong> You signed in with a recovery code. If you lost your authenticator, replace it now.</div>{{end}}
-    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
-    <div class="status-line"><span class="tag {{if .Enrolled}}on{{else if .Required}}need{{end}}">{{.Status}}</span>{{if .Enrolled}}<span class="muted">{{.Remaining}} recovery codes left</span>{{else if .Required}}<span class="muted">Set up an authenticator to continue.</span>{{end}}</div>
-    {{if not .Available}}<div class="err">Two-factor sign-in is not set up on this server. Ask your administrator to configure AUTH_MFA_KEY.</div>{{else}}
+    <h1>{{tr "Security"}}</h1>
+    <p class="muted">{{tr "Two-factor sign-in for"}} <strong>{{.Email}}</strong>.</p>
+    {{if .Notice}}<div class="banner" role="status"><strong>{{tr "Done."}}</strong> {{tr .Notice}}</div>{{end}}
+    {{if .UsedRecovery}}<div class="banner warn" role="status"><strong>{{tr "Recovery code used."}}</strong> {{tr "You signed in with a recovery code. If you lost your authenticator, replace it now."}}</div>{{end}}
+    {{if .Error}}<div class="err" role="alert">{{tr .Error}}</div>{{end}}
+    <div class="status-line"><span class="tag {{if .Enrolled}}on{{else if .Required}}need{{end}}">{{tr .Status}}</span>{{if .Enrolled}}<span class="muted">{{if eq .Remaining 1}}{{tr "1 recovery code left"}}{{else}}{{tr "{0} recovery codes left" .Remaining}}{{end}}</span>{{else if .Required}}<span class="muted">{{tr "Set up an authenticator to continue."}}</span>{{end}}</div>
+    {{if not .Available}}<div class="err">{{tr "Two-factor sign-in is not set up on this server. Ask your administrator to configure AUTH_MFA_KEY."}}</div>{{else}}
     <div class="actions">
       <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="start">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
-        <button class="btn" type="submit">{{if .Enrolled}}Replace authenticator{{else}}Set up authenticator{{end}}</button></form>
+        <button class="btn" type="submit">{{if .Enrolled}}{{tr "Replace authenticator"}}{{else}}{{tr "Set up authenticator"}}{{end}}</button></form>
       {{if .Enrolled}}
       <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="regenerate">
-        <button class="btn-ghost" type="submit">New recovery codes</button></form>
+        <button class="btn-ghost" type="submit">{{tr "New recovery codes"}}</button></form>
       {{if not .Required}}
       <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="disable">
-        <button class="btn-ghost" type="submit">Turn off two-factor sign-in</button></form>
+        <button class="btn-ghost" type="submit">{{tr "Turn off two-factor sign-in"}}</button></form>
       {{end}}
       {{end}}
     </div>
-    <p class="help-link"><a href="/help/authenticator" target="_blank" rel="noopener">How to set up an authenticator app<span class="sr-only"> (opens in a new tab)</span></a>: Google, Microsoft, Bitwarden and 1Password, step by step.</p>
-    <p class="hint muted">Changes ask for your password{{if .Enrolled}} and current code{{end}} again if you signed in more than five minutes ago.</p>
+    <p class="help-link"><a href="/help/authenticator" target="_blank" rel="noopener">{{tr "How to set up an authenticator app"}}<span class="sr-only"> {{tr "(opens in a new tab)"}}</span></a>{{tr ": Google, Microsoft, Bitwarden and 1Password, step by step."}}</p>
+    <p class="hint muted">{{tr "Changes ask for your password"}}{{if .Enrolled}} {{tr "and current code"}}{{end}} {{tr "again if you signed in more than five minutes ago."}}</p>
     {{end}}
-    <div class="link-row"><a href="/account">Back to your apps</a>{{if .IsAdmin}}<a href="/admin">Admin</a>{{end}}</div>
+    <div class="link-row"><a href="/account">{{tr "Back to your apps"}}</a>{{if .IsAdmin}}<a href="/admin">{{tr "Admin"}}</a>{{end}}</div>
   </main>
 </body>
 </html>

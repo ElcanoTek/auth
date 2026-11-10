@@ -62,7 +62,7 @@ type Server struct {
 	cfg               *config.Config
 	store             *store.Store
 	sender            email.Sender
-	tmpl              *template.Template
+	tmpl              map[string]*template.Template
 	dummyPasswordHash string
 	passwordSlots     chan struct{} // bounds concurrent Argon2 computations
 	attemptGate       chan struct{} // 1-slot gate around limit-check + attempt-reserve
@@ -77,7 +77,7 @@ type Server struct {
 
 func New(cfg *config.Config, st *store.Store, sender email.Sender) *Server {
 	s := &Server{
-		cfg: cfg, store: st, sender: sender, tmpl: parseTemplates(), started: time.Now(),
+		cfg: cfg, store: st, sender: sender, tmpl: compiledTemplates(), started: time.Now(),
 		passwordSlots: make(chan struct{}, 2),
 		attemptGate:   make(chan struct{}, 1),
 	}
@@ -160,7 +160,7 @@ func (s *Server) Handler() http.Handler {
 	if b := s.cfg.Brand; b != nil && b.CSS != "" {
 		mux.HandleFunc(brandCSSPath(b.CSS), brandCSSHandler(b.CSS))
 	}
-	return logRequests(securityHeaders(mux))
+	return logRequests(securityHeaders(s.withLanguage(mux)))
 }
 
 // ── login UI ─────────────────────────────────────────────────────────
@@ -198,7 +198,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if err := s.render(w, "login.html", map[string]any{
 		"Brand":        s.cfg.BrandName,
 		"ReturnTo":     r.URL.Query().Get("return_to"),
-		"Error":        errorMessage(r.URL.Query().Get("err")),
+		"Error":        errorMessage(r.URL.Query().Get("err"), requestLanguage(r)),
 		"HasCode":      s.hasMagicTx(r),
 		"CodeReturnTo": s.resolveReturnTo(r.URL.Query().Get("return_to")),
 	}); err != nil {
@@ -238,15 +238,15 @@ func (s *Server) handlePasswordRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	if err := s.render(w, "login.html", map[string]any{
 		"Brand":        s.cfg.BrandName,
 		"PasswordMode": true,
 		"ReturnTo":     r.URL.Query().Get("return_to"),
-		"Error":        errorMessage(r.URL.Query().Get("err")),
-		"Notice":       s.noticeMessage(r.URL.Query().Get("notice")),
+		"Error":        errorMessage(r.URL.Query().Get("err"), requestLanguage(r)),
+		"Notice":       s.noticeMessage(r.URL.Query().Get("notice"), requestLanguage(r)),
 		"NoticeClass":  noticeClass(r.URL.Query().Get("notice")),
 		"NoticeTitle":  noticeTitle(r.URL.Query().Get("notice")),
 		"CSRF":         csrf,
@@ -267,7 +267,7 @@ func (s *Server) handleSent(w http.ResponseWriter, r *http.Request) {
 	if err := s.render(w, "sent.html", map[string]any{
 		"Brand":      s.cfg.BrandName,
 		"Email":      r.URL.Query().Get("email"),
-		"Error":      errorMessage(r.URL.Query().Get("err")),
+		"Error":      errorMessage(r.URL.Query().Get("err"), requestLanguage(r)),
 		"TTLMinutes": int(s.cfg.MagicTTL.Minutes()),
 		"ReturnTo":   returnTo,
 		"RetryHref":  loginLocation("", returnTo),
@@ -293,12 +293,12 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 		return
 	}
 	// One canonical address for everything below: the allowlist, the rate
@@ -436,9 +436,9 @@ func (s *Server) handleMagic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	link := s.absoluteURL(r, "/callback") + "?token=" + tok
-	subject := "Your " + s.cfg.BrandName + " sign-in link"
-	text := renderTextEmail(s.cfg.BrandName, link, code, s.cfg.MagicTTL)
-	html := renderHTMLEmail(s.cfg.BrandName, link, code, s.cfg.MagicTTL)
+	subject := translate(requestLanguage(r), "Your {0} sign-in link", s.cfg.BrandName)
+	text := renderTextEmail(s.cfg.BrandName, link, code, s.cfg.MagicTTL, requestLanguage(r))
+	html := renderHTMLEmail(s.cfg.BrandName, link, code, s.cfg.MagicTTL, requestLanguage(r))
 
 	// Send happens asynchronously so a slow provider can't slow the
 	// user's "check your inbox" page. We log the error if it fails —
@@ -513,7 +513,9 @@ const (
 
 // invalidCodeMessage is the only text a failed sign-in code shows (see
 // errInvalidCode): it names every reason without saying which one applied.
-var invalidCodeMessage = fmt.Sprintf("That code didn't work. Use the code from the newest email: a code stops working when its link is used or expires, or after %d wrong tries. You can also open the link on this device, or request a fresh one.", magicCodeMaxAttempts)
+const invalidCodeFormat = "That code didn't work. Use the code from the newest email: a code stops working when its link is used or expires, or after %d wrong tries. You can also open the link on this device, or request a fresh one."
+
+var invalidCodeMessage = fmt.Sprintf(invalidCodeFormat, magicCodeMaxAttempts)
 
 var errorMessages = map[string]string{
 	errInvalidEmail:       "Please enter a valid email address.",
@@ -530,8 +532,11 @@ var errorMessages = map[string]string{
 
 // errorMessage maps an ?err= code to its display text; unknown codes render
 // nothing rather than echoing the input.
-func errorMessage(code string) string {
-	return errorMessages[code]
+func errorMessage(code string, languages ...string) string {
+	if code == errInvalidCode {
+		return fmt.Sprintf(translate(selectedLanguage(languages), invalidCodeFormat), magicCodeMaxAttempts)
+	}
+	return translate(selectedLanguage(languages), errorMessages[code])
 }
 
 // noticeMessage maps a ?notice= code on the login page to neutral text; an
@@ -566,19 +571,19 @@ func noticeTitle(code string) string {
 	return ""
 }
 
-func (s *Server) noticeMessage(code string) string {
+func (s *Server) noticeMessage(code string, languages ...string) string {
 	switch code {
 	case "signed_out":
 		// Sign-out of the other apps is delivered over the back-channel
 		// (immediately, then a 2-second poll), so it is complete within
 		// seconds rather than at the instant this page renders.
-		return "You are signed out of " + s.cfg.BrandName + ". Any " + s.cfg.BrandName + " app still open is being signed out too."
+		return translate(selectedLanguage(languages), "You are signed out of {0}. Any {0} app still open is being signed out too.", s.cfg.BrandName)
 	case "stale_form":
 		return staleFormMessage
 	case "mfa_required":
-		return "Your account now requires an authenticator app. Sign in again to set it up."
+		return translate(selectedLanguage(languages), "Your account now requires an authenticator app. Sign in again to set it up.")
 	case "password_set":
-		return "Your password is set. Sign in with it."
+		return translate(selectedLanguage(languages), "Your password is set. Sign in with it.")
 	}
 	return ""
 }
@@ -613,12 +618,12 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 		return
 	}
 	if !s.validCSRF(r) {
@@ -846,7 +851,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	if r.Method == http.MethodGet {
@@ -854,12 +859,12 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 		return
 	}
 	if !s.validCSRF(r) {
@@ -876,11 +881,11 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		if authErr != nil {
 			logUnlessCancelled("password change authentication", authErr)
 		}
-		s.renderChangePassword(w, "Current password is incorrect.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
+		s.renderChangePassword(w, translate(requestLanguage(r), "Current password is incorrect."), csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	if next != confirm {
-		s.renderChangePassword(w, "New passwords do not match.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
+		s.renderChangePassword(w, translate(requestLanguage(r), "New passwords do not match."), csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	// The current password just verified, so a byte-equal replacement is the
@@ -888,19 +893,19 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// the administrator who issued the temporary password must not keep
 	// knowing the live one.
 	if subtle.ConstantTimeCompare([]byte(next), []byte(current)) == 1 {
-		s.renderChangePassword(w, "New password must be different from the current password.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
+		s.renderChangePassword(w, translate(requestLanguage(r), "New password must be different from the current password."), csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	// Policy first, with what we know about this user and deployment, so a
 	// password built from the email or the organisation's name is refused
 	// before any Argon2 work. Hash re-runs the static checks without context.
 	if err := passwordauth.Validate(next, s.passwordContext(identity.Account.Email)...); err != nil {
-		s.renderChangePassword(w, passwordauth.UserMessage(err), csrf, s.resolveReturnTo(r.FormValue("return_to")))
+		s.renderChangePassword(w, translate(requestLanguage(r), passwordauth.UserMessage(err)), csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	encoded, err := s.hashPassword(r.Context(), next)
 	if err != nil {
-		s.renderChangePassword(w, passwordauth.UserMessage(err), csrf, s.resolveReturnTo(r.FormValue("return_to")))
+		s.renderChangePassword(w, translate(requestLanguage(r), passwordauth.UserMessage(err)), csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	// Compare-and-swap against the hash that just verified: if an
@@ -914,12 +919,12 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// token rotates with it.
 	rawSession, err := randomSecret(32)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	newCSRF, err := randomSecret(32)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	err = s.store.ReplacePasswordRotatingSession(r.Context(), account.ID, account.PasswordHash, encoded, identity.Session.TokenHash, hashSecret(rawSession), now.Unix())
@@ -930,7 +935,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		log.Printf("replace password: %v", err)
-		s.renderChangePassword(w, "Something went wrong. Try again.", csrf, s.resolveReturnTo(r.FormValue("return_to")))
+		s.renderChangePassword(w, translate(requestLanguage(r), "Something went wrong. Try again."), csrf, s.resolveReturnTo(r.FormValue("return_to")))
 		return
 	}
 	s.setSessionCookies(w, rawSession, newCSRF, identity.Session.AbsoluteExpiresAt)
@@ -957,7 +962,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -976,7 +981,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		q.Get("response_type") != "code" || !validAuthorizationScope(q.Get("scope")) ||
 		q.Get("code_challenge_method") != "S256" || !validCodeChallenge(challenge) ||
 		!validProtocolValue(state, 512) || !validProtocolValue(nonce, 512) || (prompt != "" && prompt != "none") {
-		http.Error(w, "invalid authorization request", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "invalid authorization request"), http.StatusBadRequest)
 		return
 	}
 	identity := s.currentPasswordSession(r)
@@ -996,7 +1001,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		ok, err := s.store.HasApplicationAccess(r.Context(), identity.Account.ID, clientID)
 		if err != nil {
 			logUnlessCancelled("authorize access check", err)
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
 		hasAccess = ok
@@ -1043,7 +1048,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if !hasAccess {
 		csrf, err := s.ensureCSRFCookie(w, r)
 		if err != nil {
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
 		if err := s.renderStatus(w, http.StatusForbidden, "no-access.html", s.withAccountMenu(map[string]any{
@@ -1055,7 +1060,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	rawCode, err := randomSecret(32)
 	if err != nil {
-		http.Error(w, "authorization failed", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "authorization failed"), http.StatusInternalServerError)
 		return
 	}
 	now := time.Now()
@@ -1070,7 +1075,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.IssueAuthorizationCode(r.Context(), hashSecret(rawCode), grant, now.Unix(), now.Add(codeTTL).Unix()); err != nil {
 		log.Printf("issue authorization code: %v", err)
-		http.Error(w, "authorization failed", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "authorization failed"), http.StatusInternalServerError)
 		return
 	}
 	dest, _ := url.Parse(redirectURI)
@@ -1091,7 +1096,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 func (s *Server) redirectAuthorizeError(w http.ResponseWriter, r *http.Request, redirectURI, state, code string) {
 	dest, err := url.Parse(redirectURI)
 	if err != nil {
-		http.Error(w, "invalid authorization request", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "invalid authorization request"), http.StatusBadRequest)
 		return
 	}
 	callbackQuery := dest.Query()
@@ -1238,7 +1243,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	issuer := s.issuerURL()
@@ -1259,7 +1264,7 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	publicKeys := append([]ed25519.PublicKey{s.cfg.PublicKey}, s.cfg.PreviousPublicKeys...)
@@ -1354,7 +1359,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	identity := s.assuredIdentity(w, r, false)
@@ -1363,7 +1368,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	// The quick links are a convenience on a page whose job is the account
@@ -1508,7 +1513,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		if sess, err := token.VerifySession(s.cfg.PublicKey, c.Value); err == nil {
 			if err := s.store.RevokeSessionToken(r.Context(), hashSecret(c.Value), sess.Exp, time.Now().Unix()); err != nil {
 				log.Printf("magic logout revoke: %v", err)
-				http.Error(w, "sign-out failed, please try again", http.StatusInternalServerError)
+				http.Error(w, translate(requestLanguage(r), "sign-out failed, please try again"), http.StatusInternalServerError)
 				return
 			}
 		}
@@ -1550,7 +1555,7 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
+			http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 			return
 		}
 		if !s.validCSRF(r) {
@@ -1567,16 +1572,16 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 		// 500, never folded into "unknown client".
 		if _, err := s.store.ApplicationByID(r.Context(), r.URL.Query().Get("client_id")); err != nil {
 			if errors.Is(err, store.ErrApplicationNotFound) {
-				http.Error(w, "invalid logout request", http.StatusBadRequest)
+				http.Error(w, translate(requestLanguage(r), "invalid logout request"), http.StatusBadRequest)
 				return
 			}
 			log.Printf("logout client lookup: %v", err)
-			http.Error(w, "sign-out failed, please try again", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "sign-out failed, please try again"), http.StatusInternalServerError)
 			return
 		}
 		redirectTo = "/?notice=signed_out"
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	now := time.Now()
@@ -1588,7 +1593,7 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 			// this session would otherwise stay valid while the user believes
 			// it is gone.
 			log.Printf("logout revoke: %v", err)
-			http.Error(w, "sign-out failed, please try again", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "sign-out failed, please try again"), http.StatusInternalServerError)
 			return
 		}
 		if userID != "" {
@@ -2107,11 +2112,18 @@ func (s *Server) renderStatus(w http.ResponseWriter, status int, name string, da
 	// callback. A same-origin form action alone does not make it safe.
 	w.Header().Set("Content-Security-Policy", pageCSP+", script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+"'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Language", languageOf(w))
 	if status != 0 {
 		w.WriteHeader(status)
 	}
 	data["Nonce"] = nonce
-	return s.tmpl.ExecuteTemplate(w, name, data)
+	lang := languageOf(w)
+	data["LanguageCanChange"] = false
+	if localized, ok := w.(*languageWriter); ok {
+		data["LanguageCanChange"] = localized.canChange
+		data["LanguageQuery"] = localized.query
+	}
+	return s.tmpl[lang].ExecuteTemplate(w, name, data)
 }
 
 // pageCSP is the first of the two page policies (see render).
@@ -2157,7 +2169,7 @@ func BrandName(cfg *config.Config) string {
 // opens it directly rather than as an <img>.
 func (s *Server) handleBrandLogo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	b := s.cfg.Brand

@@ -127,7 +127,7 @@ a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   margin: 0; font-size: var(--font-size-overline); line-height: var(--line-height-overline);
   letter-spacing: 0.14em; text-transform: uppercase; color: var(--color-accent);
 }
-.tile h3 { margin: 0; font-family: var(--font-heading); font-weight: var(--font-weight-bold); font-size: var(--font-size-body); color: var(--color-text-primary); }
+.tile h2 { margin: 0; font-family: var(--font-heading); font-weight: var(--font-weight-bold); font-size: var(--font-size-body); color: var(--color-text-primary); }
 .tile p { margin: 0; font-size: var(--font-size-caption); line-height: var(--line-height-caption); color: var(--color-text-secondary); }
 .tile-off { cursor: default; background: transparent; border-style: dashed; }
 .tile-off::before { background: var(--color-border-strong); opacity: 1; }
@@ -596,3 +596,43 @@ table.list tr.manage:last-child td { border-bottom: 0; }
 form + .help-link { margin-top: var(--space-4); }
 .shots { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); align-items: start; }
 @media (max-width: 40rem) { .shots { grid-template-columns: 1fr; } }
+
+/* A normal GET form remains usable when JavaScript or storage is blocked. */
+.language-choice {
+  position: fixed;
+  top: var(--space-4);
+  left: var(--space-4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  z-index: 1;
+  font-size: var(--font-size-caption);
+}
+.language-choice label { margin: 0; }
+.language-choice select {
+  width: auto;
+  margin: 0;
+  min-height: 2.25rem;
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  color: var(--color-text-primary);
+  background: var(--color-overlay-soft);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+}
+.language-choice select:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
+}
+@media (max-width: 600px) {
+  body { flex-direction: column; }
+  .language-choice {
+    position: relative;
+    top: auto;
+    left: auto;
+    justify-content: center;
+    margin: var(--space-4) 0;
+    flex-wrap: wrap;
+  }
+}

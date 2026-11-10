@@ -1,39 +1,40 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{language}}" data-language-sync="{{.LanguageCanChange}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{.Wordmark}} — Set up your authenticator</title>
+<title>{{tr "{0} — Set up your authenticator" .Wordmark}}</title>
 {{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
 {{template "assets" .}}
 </head>
 <body>
+  {{template "language-choice" .}}
   {{template "theme-toggle"}}
   <main class="card">
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
-    <h1>{{if .Replace}}Replace your authenticator{{else}}Set up your authenticator{{end}}</h1>
-    <p class="muted">{{if .Required}}Your account requires a second step at sign-in. {{end}}Open your authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others all work), tap + and scan this code from inside the app, not with your phone's camera. Then enter the six-digit code it shows.</p>
-    {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
-    <p class="muted">Added {{.Issuer}} to an app before? Add this code as a new entry, and once it works, delete the older {{.Issuer}} entries: only this one will work.</p>
-    <p class="help-link">New to authenticator apps? <a href="/help/authenticator" target="_blank" rel="noopener">Step-by-step guide<span class="sr-only"> (opens in a new tab)</span></a></p>
-    <img class="qr" src="{{.QR}}" alt="QR code for {{.Issuer}}: {{.Email}}" width="264" height="264">
+    <h1>{{if .Replace}}{{tr "Replace your authenticator"}}{{else}}{{tr "Set up your authenticator"}}{{end}}</h1>
+    <p class="muted">{{if .Required}}{{tr "Your account requires a second step at sign-in."}} {{end}}{{tr "Open your authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others all work), tap + and scan this code from inside the app, not with your phone's camera. Then enter the six-digit code it shows."}}</p>
+    {{if .Error}}<div class="err" role="alert">{{tr .Error}}</div>{{end}}
+    <p class="muted">{{tr "Added {0} to an app before? Add this code as a new entry, and once it works, delete the older {1} entries: only this one will work." .Issuer .Issuer}}</p>
+    <p class="help-link">{{tr "New to authenticator apps?"}} <a href="/help/authenticator" target="_blank" rel="noopener">{{tr "Step-by-step guide"}}<span class="sr-only"> {{tr "(opens in a new tab)"}}</span></a></p>
+    <img class="qr" src="{{.QR}}" alt="{{tr "QR code for {0}: {1}" .Issuer .Email}}" width="264" height="264">
     <div class="secret">
-      <p class="muted">On this phone, or cannot scan? In your authenticator app, choose to enter a setup key and type this one (time-based). It goes in the app, not in the box below.</p>
+      <p class="muted">{{tr "On this phone, or cannot scan? In your authenticator app, choose to enter a setup key and type this one (time-based). It goes in the app, not in the box below."}}</p>
       <code id="manual-key">{{.ManualKey}}</code>
-      <p class="muted">Account: {{.Email}} · Issuer: {{.Issuer}}</p>
+      <p class="muted">{{tr "Account: {0} · Issuer: {1}" .Email .Issuer}}</p>
     </div>
     <form method="post" action="{{.Action}}" autocomplete="off">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <input type="hidden" name="action" value="confirm">
       {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
-      <label for="code">Code from the app</label>
+      <label for="code">{{tr "Code from the app"}}</label>
       <input id="code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000">
-      <button class="btn" type="submit">{{if .Replace}}Replace authenticator{{else}}Turn on two-factor sign-in{{end}}</button>
+      <button class="btn" type="submit">{{if .Replace}}{{tr "Replace authenticator"}}{{else}}{{tr "Turn on two-factor sign-in"}}{{end}}</button>
     </form>
-    {{if eq .Action "/login/enroll"}}<div class="link-row"><span></span><form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="linkish" type="submit">Cancel sign-in</button></form></div>
-    {{else}}<div class="link-row"><a href="/account/security">Back to security settings</a><span></span></div>{{end}}
+    {{if eq .Action "/login/enroll"}}<div class="link-row"><span></span><form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="linkish" type="submit">{{tr "Cancel sign-in"}}</button></form></div>
+    {{else}}<div class="link-row"><a href="/account/security">{{tr "Back to security settings"}}</a><span></span></div>{{end}}
   </main>
 </body>
 </html>

@@ -1,4 +1,5 @@
 (function () {
+  var labels = document.getElementById("admin-translations").dataset;
   var alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_.!@*=~";
   var all = document.querySelector("[data-select-all]");
   var boxes = Array.prototype.slice.call(document.querySelectorAll("[data-select]"));
@@ -14,7 +15,7 @@
   function refresh() {
     var visible = visibleBoxes();
     var n = visible.filter(function (b) { return b.checked; }).length;
-    if (count) { count.textContent = n + " selected"; }
+    if (count) { count.textContent = count.getAttribute("data-selected-label").replace("{0}", n.toLocaleString(document.documentElement.lang)); }
     if (bar) { bar.classList.toggle("on", n > 0); }
     if (all) { all.checked = n > 0 && n === visible.length; all.indeterminate = n > 0 && n < visible.length; all.disabled = visible.length === 0; }
   }
@@ -48,12 +49,12 @@
   }
   function fleetSummary(form) {
     var fa = form.querySelector('input[name="fleet_admin"]');
-    if (fa && fa.checked) return "Fleet Admin";
+    if (fa && fa.checked) return labels.fleetAdmin;
     var chat = form.querySelector('input[name="fleet_chat_role"]:checked');
     var ops = form.querySelector('input[name="fleet_ops_role"]:checked');
-    var chatLabel = chat && chat.value === "viewer" ? "Viewer" : "Contributor";
-    var opsLabel = !ops || ops.value === "none" ? "None" : ops.value === "readonly" ? "Viewer" : "Contributor";
-    return "Chat " + chatLabel + " \u00b7 Ops " + opsLabel;
+    var chatLabel = chat && chat.value === "viewer" ? labels.viewer : labels.contributor;
+    var opsLabel = !ops || ops.value === "none" ? labels.none : ops.value === "readonly" ? labels.viewer : labels.contributor;
+    return labels.fleetSummaryLabel.replace("{0}", chatLabel).replace("{1}", opsLabel);
   }
   document.querySelectorAll("form").forEach(function (form) {
     var toggle = form.querySelector('[data-fleet-toggle]');
@@ -198,8 +199,8 @@
     button.hidden = false;
     button.addEventListener("click", function () {
       navigator.clipboard.writeText(source.textContent).then(
-        function () { button.textContent = "Copied"; },
-        function () { button.textContent = "Copy failed: select it instead"; });
+        function () { button.textContent = labels.copied; },
+        function () { button.textContent = labels.copyFailed; });
     });
   });
   // A reopened dialog is rendered open (non-modal) so it shows without

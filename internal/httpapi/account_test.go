@@ -47,7 +47,7 @@ func TestAccountPageLinksRegisteredAppsAndGreysOutTheRest(t *testing.T) {
 		`href="/admin"`,
 		`href="https://fleet.client.example/"`,
 		`href="https://explorer.client.example/"`,
-		`<h3>Lens</h3>`,
+		`<h2>Lens</h2>`,
 		`aria-disabled="true"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -58,7 +58,7 @@ func TestAccountPageLinksRegisteredAppsAndGreysOutTheRest(t *testing.T) {
 		t.Fatalf("disabled lens application is linked:\n%s", body)
 	}
 	// Tiles keep the catalogue order regardless of registration order.
-	order := regexp.MustCompile(`<h3>(Admin|Fleet|Explorer|Lens|Pages)</h3>`).FindAllStringSubmatch(body, -1)
+	order := regexp.MustCompile(`<h2>(Admin|Fleet|Explorer|Lens|Pages)</h2>`).FindAllStringSubmatch(body, -1)
 	var names []string
 	for _, m := range order {
 		names = append(names, m[1])

@@ -8,7 +8,8 @@
 <link rel="stylesheet" nonce="{{.Nonce}}" href="{{asset "flag/tokens/design-tokens.css"}}">
 <link rel="stylesheet" nonce="{{.Nonce}}" href="{{asset "auth.css"}}">
 {{if .BrandCSSURL}}<link rel="stylesheet" nonce="{{.Nonce}}" href="{{.BrandCSSURL}}">
-{{end}}<script nonce="{{.Nonce}}" src="{{asset "flag/theme/theme-controller.js"}}"></script>{{end}}
+{{end}}<script nonce="{{.Nonce}}" src="{{asset "language.js"}}"></script>
+<script nonce="{{.Nonce}}" src="{{asset "flag/theme/theme-controller.js"}}"></script>{{end}}
 
 {{/* Icons are glyphs of Flag's core-icons sprite (vendored, flag.lock), used
      by reference so the sprite's own licence header travels with them:
@@ -17,7 +18,7 @@
 
 {{/* The shared sun/moon control. The Flag theme controller wires every
      [data-flag-theme-toggle]; auth.css swaps the glyph per data-theme. */}}
-{{define "theme-toggle"}}<button type="button" class="theme-toggle" data-flag-theme-toggle aria-label="Toggle color theme">
+{{define "theme-toggle"}}<button type="button" class="theme-toggle" data-flag-theme-toggle aria-label="{{tr "Toggle color theme"}}">
   {{template "icon" "sun"}}
   {{template "icon" "moon"}}
 </button>{{end}}
@@ -33,34 +34,34 @@
      Signing out ends every session of the account, in every application
      (handlePasswordLogout); it asks first, in the Sign out popup below.
      closedby lets a click outside close it where no page script does. */}}
-{{define "account-button"}}<button class="icon-btn" type="button" commandfor="me" command="show-modal" aria-label="Your account" title="Your account">{{template "icon" "persona"}}</button>{{end}}
+{{define "account-button"}}<button class="icon-btn" type="button" commandfor="me" command="show-modal" aria-label="{{tr "Your account"}}" title="{{tr "Your account"}}">{{template "icon" "persona"}}</button>{{end}}
 
 {{define "account-menu"}}<dialog id="me" class="modal account-menu" aria-labelledby="me-title" closedby="any">
-    <div class="modal-head"><h3 id="me-title">Your account</h3><button class="icon-btn close" type="button" commandfor="me" command="close" aria-label="Close">{{template "icon" "close"}}</button></div>
+    <div class="modal-head"><h3 id="me-title">{{tr "Your account"}}</h3><button class="icon-btn close" type="button" commandfor="me" command="close" aria-label="{{tr "Close"}}">{{template "icon" "close"}}</button></div>
     <p class="who">{{.Email}}</p>
     <div class="setting">
-      <div><strong>Team</strong></div>
-      {{if .ActorTeam}}<span class="tag">{{.ActorTeam}}</span>{{else}}<span class="chip off">none</span>{{end}}
+      <div><strong>{{tr "Team"}}</strong></div>
+      {{if .ActorTeam}}<span class="tag">{{.ActorTeam}}</span>{{else}}<span class="chip off">{{tr "none"}}</span>{{end}}
     </div>
     <div class="setting" data-theme-choice hidden>
-      <div><strong>Theme</strong><p class="muted">Auto follows your device.</p></div>
-      <div class="seg" role="group" aria-label="Theme">
-        <button class="seg-option" type="button" data-theme-option="light" aria-pressed="false">Light</button>
-        <button class="seg-option" type="button" data-theme-option="dark" aria-pressed="false">Dark</button>
-        <button class="seg-option" type="button" data-theme-option="system" aria-pressed="false">Auto</button>
+      <div><strong>{{tr "Theme"}}</strong><p class="muted">{{tr "Auto follows your device."}}</p></div>
+      <div class="seg" role="group" aria-label="{{tr "Theme"}}">
+        <button class="seg-option" type="button" data-theme-option="light" aria-pressed="false">{{tr "Light"}}</button>
+        <button class="seg-option" type="button" data-theme-option="dark" aria-pressed="false">{{tr "Dark"}}</button>
+        <button class="seg-option" type="button" data-theme-option="system" aria-pressed="false">{{tr "Auto"}}</button>
       </div>
     </div>
     <div class="setting">
-      <div><strong>Your authenticator</strong><p class="muted">{{if not .MFAAvailable}}Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up.{{else if not .ActorAdmin}}{{if .ActorEnrolled}}Set up. Signing in asks for a code from it.{{else}}Not set up. With one, signing in also asks for a code from your phone.{{end}}{{else if .ActorEnrolled}}Set up. Sensitive changes here need a code from it entered less than five minutes ago.{{else}}Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one, so set it up before you need it.{{end}}</p></div>
-      {{if .MFAAvailable}}<a class="{{if .ActorEnrolled}}btn-ghost{{else}}btn inline{{end}}" href="{{.SecurityURL}}" aria-label="{{if .ActorEnrolled}}Manage your authenticator{{else}}Set up your authenticator{{end}}">{{if .ActorEnrolled}}Manage{{else}}Set up{{end}}</a>{{end}}
+      <div><strong>{{tr "Your authenticator"}}</strong><p class="muted">{{if not .MFAAvailable}}{{tr "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY), so there is nothing to set up."}}{{else if not .ActorAdmin}}{{if .ActorEnrolled}}{{tr "Set up. Signing in asks for a code from it."}}{{else}}{{tr "Not set up. With one, signing in also asks for a code from your phone."}}{{end}}{{else if .ActorEnrolled}}{{tr "Set up. Sensitive changes here need a code from it entered less than five minutes ago."}}{{else}}{{tr "Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one, so set it up before you need it."}}{{end}}</p></div>
+      {{if .MFAAvailable}}<a class="{{if .ActorEnrolled}}btn-ghost{{else}}btn inline{{end}}" href="{{.SecurityURL}}" aria-label="{{if .ActorEnrolled}}{{tr "Manage your authenticator"}}{{else}}{{tr "Set up your authenticator"}}{{end}}">{{if .ActorEnrolled}}{{tr "Manage"}}{{else}}{{tr "Set up"}}{{end}}</a>{{end}}
     </div>
     {{if .ActorAdmin}}<div class="setting">
-      <div><strong>Reset password</strong><p class="muted">Your own password: change it with your current one. Every other device and app is signed out; this browser stays signed in.</p></div>
-      <a class="btn-ghost" href="{{.PasswordURL}}">Change</a>
+      <div><strong>{{tr "Reset password"}}</strong><p class="muted">{{tr "Your own password: change it with your current one. Every other device and app is signed out; this browser stays signed in."}}</p></div>
+      <a class="btn-ghost" href="{{.PasswordURL}}">{{tr "Change"}}</a>
     </div>{{end}}
     <div class="setting">
-      <div><strong>Sign out everywhere</strong><p class="muted">Ends every one of your sessions, in every application, on every device, this one included.</p></div>
-      <button class="btn-ghost danger" type="button" commandfor="sign-out" command="show-modal" aria-label="Sign out everywhere: {{.Email}}">Sign out</button>
+      <div><strong>{{tr "Sign out everywhere"}}</strong><p class="muted">{{tr "Ends every one of your sessions, in every application, on every device, this one included."}}</p></div>
+      <button class="btn-ghost danger" type="button" commandfor="sign-out" command="show-modal" aria-label="{{tr "Sign out everywhere: {0}" .Email}}">{{tr "Sign out"}}</button>
     </div>
   </dialog>
   {{template "sign-out" .}}
@@ -73,12 +74,25 @@
      still signs out directly. Close and Cancel are method="dialog" forms, so
      they work wherever the popup can open. Only its Sign out posts /logout. */}}
 {{define "sign-out"}}<dialog id="sign-out" class="modal confirm-change" aria-labelledby="sign-out-title" aria-describedby="sign-out-detail" closedby="any">
-    <div class="modal-head"><h3 id="sign-out-title">Sign out everywhere?</h3><form method="dialog"><button class="icon-btn close" type="submit" aria-label="Close">{{template "icon" "close"}}</button></form></div>
-    <p class="hint" id="sign-out-detail">This ends every one of your sessions, in every application, on every device, this one included. You return to the sign-in page.</p>
+    <div class="modal-head"><h3 id="sign-out-title">{{tr "Sign out everywhere?"}}</h3><form method="dialog"><button class="icon-btn close" type="submit" aria-label="{{tr "Close"}}">{{template "icon" "close"}}</button></form></div>
+    <p class="hint" id="sign-out-detail">{{tr "This ends every one of your sessions, in every application, on every device, this one included. You return to the sign-in page."}}</p>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="redirect_to" value="/?notice=signed_out">
-      <button class="btn" type="submit">Sign out</button>
+      <button class="btn" type="submit">{{tr "Sign out"}}</button>
     </form>
-    <form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>
+    <form method="dialog"><button class="btn-ghost cancel" type="submit">{{tr "Cancel"}}</button></form>
   </dialog>
   <script nonce="{{.Nonce}}" src="{{asset "sign-out.js"}}" defer></script>{{end}}
+
+{{/* Changing language uses only a safe GET. POST responses may contain
+     one-time recovery codes or passwords and must never be replayed. */}}
+{{define "language-choice"}}{{if .LanguageCanChange}}<form class="language-choice" method="get" data-language-choice aria-label="{{tr "Language"}}">
+  {{range $key, $values := .LanguageQuery}}{{if and (ne $key "lang") (ne $key "ui_locales")}}{{range $values}}<input type="hidden" name="{{$key}}" value="{{.}}">{{end}}{{end}}{{end}}
+  <label for="page-language">{{tr "Language"}}</label>
+  <select id="page-language" name="lang" aria-label="{{tr "Language"}}">
+    <option value="en" lang="en"{{if eq language "en"}} selected{{end}}>English</option>
+    <option value="es" lang="es"{{if eq language "es"}} selected{{end}}>Español</option>
+    <option value="pt" lang="pt"{{if eq language "pt"}} selected{{end}}>Português</option>
+  </select>
+  <button class="btn-ghost" type="submit">{{tr "Apply"}}</button>
+</form>{{end}}{{end}}
