@@ -47,8 +47,12 @@ func loadLanguageCatalogs() map[string]map[string]string {
 
 func normalizeLanguage(raw string) string {
 	switch lang := strings.SplitN(strings.ToLower(strings.TrimSpace(raw)), "-", 2)[0]; lang {
-	case "en", "es", "pt":
-		return lang
+	case "en":
+		return "en"
+	case "es":
+		return "es"
+	case "pt":
+		return "pt"
 	default:
 		return ""
 	}
@@ -130,7 +134,7 @@ func (s *Server) withLanguage(next http.Handler) http.Handler {
 			explicit = explicit || normalizeLanguage(locale) != ""
 		}
 		if explicit && !strings.HasPrefix(r.URL.Path, "/assets/") && !strings.HasPrefix(r.URL.Path, "/brand/") {
-			http.SetCookie(w, &http.Cookie{Name: "elcano_language", Value: lang, Path: "/", MaxAge: 31536000, Secure: s.cfg.CookieSecure, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+			http.SetCookie(w, &http.Cookie{Name: "elcano_language", Value: lang, Path: "/", MaxAge: 31536000, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 		}
 		next.ServeHTTP(&languageWriter{ResponseWriter: w, language: lang, query: s.languageQuery(r), canChange: r.Method == http.MethodGet}, r)
 	})
@@ -196,6 +200,13 @@ func (s *Server) languageQuery(r *http.Request) url.Values {
 		out.Set("email", query.Get("email"))
 	case "/admin":
 		out.Set("tab", query.Get("tab"))
+	case "/account/security", "/account/security/verify":
+		if action := query.Get("action"); securityActions[action] {
+			out.Set("action", action)
+		}
+		if r.URL.Path == "/account/security" && query.Get("verified") == "1" {
+			out.Set("verified", "1")
+		}
 	case "/login/verify":
 		if query.Get("mode") == "recovery" {
 			out.Set("mode", "recovery")

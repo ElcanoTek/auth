@@ -113,7 +113,7 @@ func TestLocalizedSignInAccountAdminAndRecovery(t *testing.T) {
 				t.Fatalf("wrong page language: %s", page)
 			}
 			cookie := b.cookies["elcano_language"]
-			if cookie == nil || cookie.Domain != "" || cookie.Path != "/" || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
+			if cookie == nil || cookie.Domain != "" || cookie.Path != "/" || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
 				t.Fatalf("language cookie not host-only and protected: %#v", cookie)
 			}
 			if !strings.Contains(page, translate(lang, "Enter your work email and password.")) {
@@ -277,6 +277,32 @@ func TestLocalizedDatesAndCountsLeaveOpaqueValuesUntouched(t *testing.T) {
 	} {
 		if got := displayNumber(test.value, test.language); got != test.want {
 			t.Fatalf("%v %s: %q", test.value, test.language, got)
+		}
+	}
+}
+
+func TestChangingLanguagePreservesPendingSecurityAction(t *testing.T) {
+	ts, _, _, plain := newPasswordTestServer(t, false)
+	b := newBrowser(t, ts)
+	b.login("alice@example.com", plain)
+	for _, action := range []string{"start", "regenerate", "disable"} {
+		_, page := b.get("/account/security/verify?action=" + action + "&return_to=%2Fadmin&lang=es")
+		form := regexp.MustCompile(`(?s)<form class="language-choice".*?</form>`).FindString(page)
+		query := url.Values{"lang": {"pt"}}
+		for _, field := range regexp.MustCompile(`<input type="hidden" name="([^"]+)" value="([^"]*)">`).FindAllStringSubmatch(form, -1) {
+			query.Add(html.UnescapeString(field[1]), html.UnescapeString(field[2]))
+		}
+		if query.Get("action") != action || query.Get("return_to") != "/admin" {
+			t.Fatalf("language form lost pending action: %s", form)
+		}
+		resp, page := b.get("/account/security/verify?" + query.Encode())
+		if resp.StatusCode != http.StatusOK || !strings.Contains(page, `name="action" value="`+action+`"`) {
+			t.Fatal("reauth lost pending action after language change")
+		}
+		resp, _ = b.post("/account/security/verify", url.Values{"action": {action}, "return_to": {"/admin"}, "password": {plain}})
+		destination, _ := url.Parse(resp.Header.Get("Location"))
+		if destination.Path != "/account/security" || destination.Query().Get("action") != action {
+			t.Fatalf("pending action abandoned: %s", destination)
 		}
 	}
 }

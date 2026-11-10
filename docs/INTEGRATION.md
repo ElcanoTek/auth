@@ -117,7 +117,7 @@ also works without JavaScript.
 
 Browser preference uses `localStorage["elcano.language"]`. Auth also keeps an
 HttpOnly, SameSite=Lax, host-only `elcano_language` cookie so POST responses and
-server-rendered navigation retain that choice. It is Secure in HTTPS deployments;
+server-rendered navigation retain that choice. It always uses Secure, including on localhost;
 it is never a parent-domain cookie and carries no identity or authorization.
 Local storage takes precedence over an older cookie on GET pages. POST responses
 with one-time passwords or recovery codes are never reloaded to change language.
