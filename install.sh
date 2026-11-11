@@ -38,7 +38,7 @@ EOF
   # Clone beside the final path and rename only after success. An interrupted
   # download therefore cannot leave a half-checkout that blocks the next run.
   INSTALL_PARTIAL="${src}.partial.$$"
-  git -c core.hooksPath=/dev/null clone --branch main --single-branch \
+  git -c core.hooksPath=/dev/null -c maintenance.autoDetach=false -c gc.autoDetach=false clone --branch main --single-branch \
     https://github.com/ElcanoTek/auth.git "$INSTALL_PARTIAL"
   mv -T -- "$INSTALL_PARTIAL" "$src"
   INSTALL_PARTIAL=""
