@@ -456,6 +456,9 @@ func userCmd(dataDir string, args []string) {
 			fatalf("show policy: %v", err)
 		}
 		twoFactor := string(mfa.StatusFor(mfa.Required(policy.Mode, a.IsAdmin, a.MFARequired), a.MFAEnrolled))
+		if a.MFAKind == store.AuthenticatorEmail {
+			twoFactor += " (email)"
+		}
 		if a.MFARequired {
 			twoFactor += " (required for this account)"
 		}
@@ -479,14 +482,12 @@ func userCmd(dataDir string, args []string) {
 			if err != nil {
 				fatalf("admin on: read two-factor policy: %v", err)
 			}
-			if policy.Mode == mfa.ModeAdmins {
-				a, err := st.PasswordAccountByEmail(ctx, email)
-				if err != nil {
-					fatalf("admin on: %v", err)
-				}
-				if !a.MFAEnrolled {
-					requireMFAKeyConfigured("promoting an account that must then enroll")
-				}
+			a, err := st.PasswordAccountByEmail(ctx, email)
+			if err != nil {
+				fatalf("admin on: %v", err)
+			}
+			if (policy.Mode == mfa.ModeAdmins && !a.MFAEnrolled) || a.MFAKind == store.AuthenticatorEmail {
+				requireMFAKeyConfigured("promoting an account that must then enroll")
 			}
 		}
 		if err := st.SetAccountAdmin(ctx, email, grant, time.Now().Unix()); err != nil {

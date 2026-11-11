@@ -335,7 +335,7 @@ func (s *Store) CountNewlyRequiredWithoutFactor(ctx context.Context, mode mfa.Mo
 		SELECT COUNT(*) FROM accounts a
 		JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.disabled_at IS NULL AND a.mfa_required = 0
-		  AND NOT EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
+		  AND NOT `+activeFactorExistsExpr+`
 		  AND (? = 'everyone' OR (? = 'admins' AND a.is_admin = 1))
 		  AND NOT (? = 'everyone' OR (? = 'admins' AND a.is_admin = 1))`,
 		string(mode), string(mode), string(current.Mode), string(current.Mode)).Scan(&n)
@@ -474,7 +474,7 @@ func signOutUnenrolledRequiredTx(ctx context.Context, tx *sql.Tx, mode mfa.Mode,
 		WHERE a.disabled_at IS NULL
 		  AND (? = '' OR a.id = ?)
 		  AND (a.mfa_required = 1 OR ? = 'everyone' OR (? = 'admins' AND a.is_admin = 1))
-		  AND NOT EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)`,
+		  AND NOT `+activeFactorExistsExpr,
 		onlyUser, onlyUser, string(mode), string(mode))
 	if err != nil {
 		return 0, err
@@ -601,14 +601,14 @@ func nullTime(v sql.NullInt64) *time.Time {
 	return &t
 }
 
-// ActiveAuthenticator returns the account's verified, enabled TOTP factor.
+// ActiveAuthenticator returns the account's verified, enabled factor.
 func (s *Store) ActiveAuthenticator(ctx context.Context, userID string) (Authenticator, error) {
 	return activeAuthenticatorQ(ctx, s.db, userID)
 }
 
 func activeAuthenticatorQ(ctx context.Context, q querier, userID string) (Authenticator, error) {
 	f, err := scanAuthenticator(q.QueryRowContext(ctx, `SELECT `+authenticatorColumns+`
-		FROM authenticators WHERE user_id = ? AND kind = 'totp' AND verified_at IS NOT NULL AND disabled_at IS NULL`, userID))
+		FROM authenticators WHERE user_id = ? AND kind IN ('totp', 'email') AND verified_at IS NOT NULL AND disabled_at IS NULL`, userID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Authenticator{}, ErrNoAuthenticator
 	}
@@ -717,7 +717,7 @@ func (s *Store) ActivateAuthenticator(ctx context.Context, pendingID, userID str
 		}
 	}
 	var previous int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM authenticators WHERE user_id = ? AND kind = 'totp' AND verified_at IS NOT NULL AND disabled_at IS NULL`, userID).Scan(&previous); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM authenticators WHERE user_id = ? AND kind IN ('totp', 'email') AND verified_at IS NOT NULL AND disabled_at IS NULL`, userID).Scan(&previous); err != nil {
 		return 0, err
 	}
 	// A sign-in-time enrollment proves the password and the new secret, not
@@ -726,8 +726,13 @@ func (s *Store) ActivateAuthenticator(ctx context.Context, pendingID, userID str
 	if completion != nil && previous > 0 {
 		return 0, ErrStaleTransaction
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE authenticators SET disabled_at = ? WHERE user_id = ? AND kind = 'totp' AND verified_at IS NOT NULL AND disabled_at IS NULL`, now, userID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE authenticators SET disabled_at = ? WHERE user_id = ? AND kind IN ('totp', 'email') AND verified_at IS NOT NULL AND disabled_at IS NULL`, now, userID); err != nil {
 		return 0, err
+	}
+	if hasTableQ(ctx, tx, "mfa_email_challenges") {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM mfa_email_challenges WHERE user_id = ?`, userID); err != nil {
+			return 0, err
+		}
 	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE authenticators SET verified_at = ?, pending_expires_at = NULL, last_accepted_step = ?
@@ -862,7 +867,7 @@ func (s *Store) DisableAuthenticator(ctx context.Context, userID, keepSessionHas
 	if mfa.Required(policy.Mode, isAdmin != 0, required != 0) {
 		return ErrFactorRequired
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE authenticators SET disabled_at = ? WHERE user_id = ? AND kind = 'totp' AND verified_at IS NOT NULL AND disabled_at IS NULL`, now, userID)
+	res, err := tx.ExecContext(ctx, `UPDATE authenticators SET disabled_at = ? WHERE user_id = ? AND kind IN ('totp', 'email') AND verified_at IS NOT NULL AND disabled_at IS NULL`, now, userID)
 	if err != nil {
 		return err
 	}
@@ -966,6 +971,11 @@ func clearFactorStateTx(ctx context.Context, tx *sql.Tx, userID string) error {
 			return err
 		}
 	}
+	if hasTableQ(ctx, tx, "mfa_email_challenges") {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM mfa_email_challenges WHERE user_id = ?`, userID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1032,8 +1042,12 @@ func (s *Store) ReplaceRecoveryCodes(ctx context.Context, userID, sessionHash st
 	if live != 1 {
 		return ErrInvalidSession
 	}
-	if _, err := activeAuthenticatorQ(ctx, tx, userID); err != nil {
+	f, err := activeAuthenticatorQ(ctx, tx, userID)
+	if err != nil {
 		return err
+	}
+	if f.Kind != AuthenticatorTOTP {
+		return ErrNoAuthenticator
 	}
 	if err := replaceRecoveryCodesTx(ctx, tx, userID, hashes, setID, now); err != nil {
 		return err
@@ -1260,13 +1274,16 @@ type SessionEvidence struct {
 // LoginProof is what the browser presented at the factor step of an
 // incomplete login, or ProofNone when the flow claims no factor is needed.
 type LoginProof struct {
-	Kind string // ProofNone | ProofTOTP | ProofRecovery
+	Kind string // ProofNone | ProofTOTP | ProofEmail | ProofRecovery
 	// ProofTOTP: the account's active authenticator, the step Verify matched,
 	// and optionally the secret re-sealed under the active key.
 	AuthenticatorID string
 	Step            int64
 	Rewrapped       []byte
 	KeyID           string
+	// ProofEmail: computes the keyed MAC of the typed code for the
+	// challenge's nonce.
+	EmailCodeMAC func(nonce string) string
 	// ProofRecovery: the hash of the normalized recovery code.
 	RecoveryCodeHash string
 }
@@ -1301,22 +1318,35 @@ func (s *Store) CompleteLogin(ctx context.Context, transactionID, expectedStage,
 		return SessionEvidence{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if proof.Kind == ProofEmail {
+		var txUser string
+		if err := tx.QueryRowContext(ctx, `SELECT user_id FROM authentication_transactions WHERE id = ? AND stage = ? AND consumed_at IS NULL AND expires_at > ?`,
+			transactionID, expectedStage, now).Scan(&txUser); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return SessionEvidence{}, ErrTransactionNotFound
+			}
+			return SessionEvidence{}, err
+		}
+		if err := consumeEmailChallengeTx(ctx, tx, txUser, EmailPurposeLogin, transactionID, proof.EmailCodeMAC, now); err != nil {
+			return SessionEvidence{}, err
+		}
+	}
 	userID, err := consumeTransactionTx(ctx, tx, transactionID, expectedStage, "", now)
 	if err != nil {
 		return SessionEvidence{}, err
 	}
 	// Live account state and policy, inside the transaction.
-	var isAdmin, required, enrolled, mustChange int
+	var isAdmin, required, mustChange int
 	var version, txVersion int64
 	var disabled, factorAt sql.NullInt64
-	var credential, txCredential, factorMethod string
+	var credential, txCredential, factorMethod, activeKind string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT a.is_admin, a.mfa_required, a.must_change_password, a.security_version, a.disabled_at, p.password_hash,
-		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL),
+		       `+activeFactorKindExpr+`,
 		       t.credential_hash, t.security_version, t.factor_method, t.factor_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		JOIN authentication_transactions t ON t.id = ?
-		WHERE a.id = ?`, transactionID, userID).Scan(&isAdmin, &required, &mustChange, &version, &disabled, &credential, &enrolled, &txCredential, &txVersion, &factorMethod, &factorAt); err != nil {
+		WHERE a.id = ?`, transactionID, userID).Scan(&isAdmin, &required, &mustChange, &version, &disabled, &credential, &activeKind, &txCredential, &txVersion, &factorMethod, &factorAt); err != nil {
 		return SessionEvidence{}, err
 	}
 	if disabled.Valid || mustChange != 0 || credential != txCredential || version != txVersion {
@@ -1326,7 +1356,8 @@ func (s *Store) CompleteLogin(ctx context.Context, transactionID, expectedStage,
 	if err != nil {
 		return SessionEvidence{}, err
 	}
-	needFactor := enrolled != 0 || mfa.Required(policy.Mode, isAdmin != 0, required != 0)
+	enrolled := activeKind != ""
+	needFactor := enrolled || mfa.Required(policy.Mode, isAdmin != 0, required != 0)
 	evidence := SessionEvidence{AMR: []string{"pwd"}, SecurityVersion: version}
 	switch proof.Kind {
 	case ProofNone:
@@ -1334,7 +1365,7 @@ func (s *Store) CompleteLogin(ctx context.Context, transactionID, expectedStage,
 			return SessionEvidence{}, ErrFactorRequired
 		}
 	case ProofTOTP:
-		if enrolled == 0 {
+		if activeKind != AuthenticatorTOTP {
 			return SessionEvidence{}, ErrInvalidProof
 		}
 		ok, err := recordAcceptedStepTx(ctx, tx, proof.AuthenticatorID, userID, proof.Step, proof.Rewrapped, proof.KeyID)
@@ -1345,8 +1376,13 @@ func (s *Store) CompleteLogin(ctx context.Context, transactionID, expectedStage,
 			return SessionEvidence{}, ErrInvalidProof
 		}
 		evidence.AMR, evidence.MFAVerifiedAt = []string{"pwd", "otp"}, now
+	case ProofEmail:
+		if activeKind != AuthenticatorEmail {
+			return SessionEvidence{}, ErrInvalidProof
+		}
+		evidence.AMR, evidence.MFAVerifiedAt = []string{"pwd", "otp"}, now
 	case ProofRecovery:
-		if enrolled == 0 {
+		if activeKind != AuthenticatorTOTP {
 			return SessionEvidence{}, ErrInvalidProof
 		}
 		ok, err := consumeRecoveryCodeTx(ctx, tx, userID, proof.RecoveryCodeHash, now)
@@ -1358,7 +1394,7 @@ func (s *Store) CompleteLogin(ctx context.Context, transactionID, expectedStage,
 		}
 		evidence.AMR, evidence.MFAVerifiedAt = []string{"pwd", "mfa"}, now
 	case ProofRecorded:
-		if enrolled == 0 || (factorMethod != "otp" && factorMethod != "mfa") || !factorAt.Valid {
+		if !enrolled || (factorMethod != "otp" && factorMethod != "mfa") || !factorAt.Valid {
 			if needFactor {
 				return SessionEvidence{}, ErrFactorRequired
 			}
@@ -1561,20 +1597,20 @@ func hasSecondFactorMethod(amr []string) bool {
 func assuranceTx(ctx context.Context, tx *sql.Tx, userID, sessionHash string) (Assurance, error) {
 	var a Account
 	var sess AuthSession
-	var mustChange, isAdmin, required, enrolled int
+	var mustChange, isAdmin, required int
 	var mfaAt sql.NullInt64
 	var amr string
 	err := tx.QueryRowContext(ctx, `
 		SELECT a.must_change_password, a.is_admin, a.mfa_required, a.security_version,
-		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL),
+		       `+activeFactorKindExpr+`,
 		       s.mfa_verified_at, s.security_version, s.amr
 		FROM accounts a JOIN auth_sessions s ON s.user_id = a.id
 		WHERE a.id = ? AND s.token_hash = ?`, userID, sessionHash).Scan(
-		&mustChange, &isAdmin, &required, &a.SecurityVersion, &enrolled, &mfaAt, &sess.SecurityVersion, &amr)
+		&mustChange, &isAdmin, &required, &a.SecurityVersion, &a.MFAKind, &mfaAt, &sess.SecurityVersion, &amr)
 	if err != nil {
 		return AssuranceFactorUnverified, err
 	}
-	a.MustChangePassword, a.IsAdmin, a.MFARequired, a.MFAEnrolled = mustChange != 0, isAdmin != 0, required != 0, enrolled != 0
+	a.MustChangePassword, a.IsAdmin, a.MFARequired, a.MFAEnrolled = mustChange != 0, isAdmin != 0, required != 0, a.MFAKind != ""
 	sess.MFAVerifiedAt = nullTime(mfaAt)
 	sess.AMR = strings.Fields(amr)
 	policy, err := mfaPolicyQ(ctx, tx)
@@ -1584,13 +1620,13 @@ func assuranceTx(ctx context.Context, tx *sql.Tx, userID, sessionHash string) (A
 	return Assess(a, sess, policy.Mode), nil
 }
 
-// HasAuthenticators reports whether any account holds a TOTP factor (active
+// HasAuthenticators reports whether any account holds a factor (active
 // or pending). Startup uses it: a deployment with factors and no encryption
 // key must refuse to run rather than silently lock everyone out or, worse,
 // let a password alone through.
 func (s *Store) HasAuthenticators(ctx context.Context) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM authenticators WHERE kind = 'totp' AND disabled_at IS NULL`).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM authenticators WHERE kind IN ('totp', 'email') AND disabled_at IS NULL`).Scan(&n)
 	return n > 0, err
 }
 
@@ -1640,7 +1676,7 @@ func (s *Store) MFAKeyRequiredReason(ctx context.Context) (string, error) {
 // toStage with the attempt counter reset. CompleteLogin later reads them
 // through ProofRecorded.
 func (s *Store) RecordFactorForTransaction(ctx context.Context, transactionID, fromStage, toStage string, proof LoginProof, now, expiresAt int64) error {
-	if proof.Kind != ProofTOTP && proof.Kind != ProofRecovery {
+	if proof.Kind != ProofTOTP && proof.Kind != ProofEmail && proof.Kind != ProofRecovery {
 		return errors.New("a factor proof is required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1648,18 +1684,17 @@ func (s *Store) RecordFactorForTransaction(ctx context.Context, transactionID, f
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var userID, credential, txCredential string
+	var userID, credential, txCredential, activeKind string
 	var version, txVersion int64
 	var disabled sql.NullInt64
-	var enrolled int
 	err = tx.QueryRowContext(ctx, `
 		SELECT t.user_id, t.credential_hash, t.security_version, p.password_hash, a.security_version, a.disabled_at,
-		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
+		       `+activeFactorKindExpr+`
 		FROM authentication_transactions t
 		JOIN accounts a ON a.id = t.user_id
 		JOIN password_credentials p ON p.user_id = a.id
 		WHERE t.id = ? AND t.stage = ? AND t.consumed_at IS NULL AND t.expires_at > ?`, transactionID, fromStage, now).
-		Scan(&userID, &txCredential, &txVersion, &credential, &version, &disabled, &enrolled)
+		Scan(&userID, &txCredential, &txVersion, &credential, &version, &disabled, &activeKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrTransactionNotFound
 	}
@@ -1669,12 +1704,15 @@ func (s *Store) RecordFactorForTransaction(ctx context.Context, transactionID, f
 	if disabled.Valid || credential != txCredential || version != txVersion {
 		return ErrStaleTransaction
 	}
-	if enrolled == 0 {
+	if activeKind == "" {
 		return ErrInvalidProof
 	}
 	method := "otp"
 	switch proof.Kind {
 	case ProofTOTP:
+		if activeKind != AuthenticatorTOTP {
+			return ErrInvalidProof
+		}
 		ok, err := recordAcceptedStepTx(ctx, tx, proof.AuthenticatorID, userID, proof.Step, proof.Rewrapped, proof.KeyID)
 		if err != nil {
 			return err
@@ -1682,7 +1720,17 @@ func (s *Store) RecordFactorForTransaction(ctx context.Context, transactionID, f
 		if !ok {
 			return ErrInvalidProof
 		}
+	case ProofEmail:
+		if activeKind != AuthenticatorEmail {
+			return ErrInvalidProof
+		}
+		if err := consumeEmailChallengeTx(ctx, tx, userID, EmailPurposeLogin, transactionID, proof.EmailCodeMAC, now); err != nil {
+			return err
+		}
 	case ProofRecovery:
+		if activeKind != AuthenticatorTOTP {
+			return ErrInvalidProof
+		}
 		ok, err := consumeRecoveryCodeTx(ctx, tx, userID, proof.RecoveryCodeHash, now)
 		if err != nil {
 			return err
@@ -1826,7 +1874,7 @@ func (s *Store) SaveAccountAccess(ctx context.Context, email string, save Access
 			return AccessSaveResult{}, err
 		}
 		out.AdminChanged = true
-		if *save.Admin && !a.MFAEnrolled && policy.Mode == mfa.ModeAdmins {
+		if *save.Admin && (a.MFAKind == AuthenticatorEmail || (!a.MFAEnrolled && policy.Mode == mfa.ModeAdmins)) {
 			out.SignedOut = true
 		}
 		a.IsAdmin = *save.Admin
@@ -1866,6 +1914,11 @@ func (s *Store) SaveAccountAccess(ctx context.Context, email string, save Access
 // AbandonPendingAuthenticator deletes an account's unconfirmed enrollment
 // (a cancelled sign-in, or a person leaving the set-up page).
 func (s *Store) AbandonPendingAuthenticator(ctx context.Context, userID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM authenticators WHERE user_id = ? AND kind = 'totp' AND verified_at IS NULL`, userID)
-	return err
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM authenticators WHERE user_id = ? AND kind = 'totp' AND verified_at IS NULL`, userID); err != nil {
+		return err
+	}
+	if s.hasMigration(ctx, 17) {
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM mfa_email_challenges WHERE user_id = ? AND purpose IN ('enroll', 'login')`, userID)
+	}
+	return nil
 }

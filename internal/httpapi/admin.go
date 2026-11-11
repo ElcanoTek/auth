@@ -447,7 +447,13 @@ func (s *Server) describeAccess(r *http.Request, email string, v url.Values) str
 // without an authenticator is signed out to set one up.
 func (s *Server) promotionSignOut(r *http.Request, email string) string {
 	target, err := s.store.PasswordAccountByEmail(r.Context(), email)
-	if err != nil || target.IsAdmin || target.MFAEnrolled || s.mfaPolicy(r).Mode != mfa.ModeAdmins {
+	if err != nil || target.IsAdmin {
+		return ""
+	}
+	if target.MFAKind == store.AuthenticatorEmail {
+		return translate(requestLanguage(r), " Administrators must use an authenticator app, so their email two-factor is replaced and they are signed out now to set up an app at their next sign-in.")
+	}
+	if target.MFAEnrolled || s.mfaPolicy(r).Mode != mfa.ModeAdmins {
 		return ""
 	}
 	return translate(requestLanguage(r), " The policy requires two-factor sign-in of administrators and they have no authenticator, so they are signed out now and set one up at their next sign-in.")
@@ -1272,7 +1278,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		wantAdmin := r.FormValue("admin") == "on"
 		adminChange := wantAdmin != target.IsAdmin
 		policy := s.mfaPolicy(r)
-		promotionNeedsFactor := adminChange && wantAdmin && !target.MFAEnrolled && policy.Mode == mfa.ModeAdmins
+		promotionNeedsFactor := adminChange && wantAdmin && (target.MFAKind == store.AuthenticatorEmail || (!target.MFAEnrolled && policy.Mode == mfa.ModeAdmins))
 		if adminChange && self && !wantAdmin {
 			res.Error = translate(requestLanguage(r), "You cannot remove your own administrator access.")
 			return res
