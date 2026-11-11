@@ -58,8 +58,8 @@ env -i \
   bash "$REPO/deploy/auth-cli" rebuild --from-source
 assert_args $'env\nAUTH_UPDATE_NO_PULL=1\nAUTH_UPDATE_YES=1\nAUTH_FROM_SOURCE=1\nbash\n/opt/auth/scripts/update.sh\n--from-source'
 
-# layout_bundle_git must disable hooks, fsmonitor, and background auto
-# maintenance/gc so transient .git lock files cannot race layout_bundle's
+# layout_bundle_git must disable hooks and fsmonitor and keep auto-maintenance
+# in the foreground so transient .git lock files cannot race layout_bundle's
 # recursive chown/chmod immediately after a pull.
 GIT_CAPTURE="$T/git.args"
 cat > "$T/bin/git" <<'STUB'
@@ -79,7 +79,7 @@ chmod 0755 "$T/bin/git"
 )
 
 got_git="$(cat "$GIT_CAPTURE")"
-want_git=$'-c\nsafe.directory='"$T/auth-client"$'\n-c\ncore.hooksPath=/dev/null\n-c\ncore.fsmonitor=false\n-c\nmaintenance.auto=false\n-c\ngc.auto=0\n-C\n'"$T/auth-client"$'\npull\n--ff-only\n--quiet'
+want_git=$'-c\nsafe.directory='"$T/auth-client"$'\n-c\ncore.hooksPath=/dev/null\n-c\ncore.fsmonitor=false\n-c\nmaintenance.autoDetach=false\n-c\ngc.autoDetach=false\n-C\n'"$T/auth-client"$'\npull\n--ff-only\n--quiet'
 if [[ "$got_git" != "$want_git" ]]; then
   printf 'layout_bundle_git args mismatch\nwant:\n%s\ngot:\n%s\n' "$want_git" "$got_git" >&2
   exit 1

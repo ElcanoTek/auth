@@ -366,7 +366,7 @@ elif [[ "$NO_PULL" == "1" ]]; then
   fi
   say
 else
-  git -c maintenance.auto=false -c gc.auto=0 fetch --quiet --tags origin
+  git -c maintenance.autoDetach=false -c gc.autoDetach=false fetch --quiet --tags origin
 
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
   if [[ -n "$BRANCH_OVERRIDE" ]]; then
@@ -401,7 +401,7 @@ else
         || die "could not query the latest release from GitHub — retry, or name one: sudo auth update --tag vYYYY.MM.DD.N"
     fi
     _tag_sha="$(git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null)" \
-      || { git -c maintenance.auto=false -c gc.auto=0 fetch --quiet --tags origin; _tag_sha="$(git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null)"; } \
+      || { git -c maintenance.autoDetach=false -c gc.autoDetach=false fetch --quiet --tags origin; _tag_sha="$(git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null)"; } \
       || die "release ${RELEASE_TAG} is not a tag in ${SRC_DIR} even after fetching tags — is origin ElcanoTek/auth?"
     git merge-base --is-ancestor "$_tag_sha" "$target_ref" \
       || die "release ${RELEASE_TAG} is not on ${target_ref} — refusing to move the checkout off its branch"
@@ -511,7 +511,7 @@ else
     git checkout --quiet -B "$target_branch" "$after_sha"
   elif git show-ref --quiet --verify "refs/heads/$target_branch"; then
     git checkout --quiet "$target_branch"
-    git -c maintenance.auto=false -c gc.auto=0 merge --ff-only "$after_sha" || die "$target_branch diverged from ${after_sha:0:12} — resolve manually"
+    git -c maintenance.autoDetach=false -c gc.autoDetach=false merge --ff-only "$after_sha" || die "$target_branch diverged from ${after_sha:0:12} — resolve manually"
   else
     git checkout --quiet -b "$target_branch" "$after_sha"
   fi

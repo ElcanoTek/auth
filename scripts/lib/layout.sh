@@ -296,14 +296,14 @@ layout_apply() {
   layout_build_cache || return 1
 }
 
-# layout_bundle_git DIR ARGS runs git in a bundle checkout with hooks and
-# background auto-maintenance off: hooks are never versioned, so a remote
-# cannot need them (and a previously service-writable checkout could carry
-# one), and detached git maintenance/gc would create transient .git lock files
-# that race layout_bundle's recursive chown and chmod right after a pull.
+# layout_bundle_git DIR ARGS runs git in a bundle checkout with hooks off and
+# auto-maintenance kept in the foreground: hooks are never versioned, so a
+# remote cannot need them (and a previously service-writable checkout could
+# carry one), and detached git maintenance/gc would leave transient .git lock
+# files racing layout_bundle's recursive chown and chmod right after a pull.
 layout_bundle_git() {
   local dir="$1"; shift
-  git -c safe.directory="$dir" -c core.hooksPath=/dev/null -c core.fsmonitor=false -c maintenance.auto=false -c gc.auto=0 -C "$dir" "$@"
+  git -c safe.directory="$dir" -c core.hooksPath=/dev/null -c core.fsmonitor=false -c maintenance.autoDetach=false -c gc.autoDetach=false -C "$dir" "$@"
 }
 
 # layout_bundle_restore DIR COMMIT puts a bundle checkout back on COMMIT
@@ -373,7 +373,7 @@ layout_bundle_migrate() {
   [[ -n "$old_head" ]] || { layout_die "cannot read the commit the client bundle at $dir is on; re-clone it by hand into a root-owned directory at the commit the service should serve"; return 1; }
   [[ -n "$old_branch" ]] || { layout_die "the client bundle at $dir is a detached checkout (commit ${old_head:0:12}); re-clone it by hand into a root-owned directory at that commit"; return 1; }
   fresh="$(mktemp -d "${dir}.fresh.XXXXXX")" || return 1
-  git -c core.hooksPath=/dev/null -c maintenance.auto=false -c gc.auto=0 clone --quiet "$url" "$fresh/checkout" || { rm -rf "$fresh"; layout_die "could not re-clone the client bundle from its remote (does the box's git credential cover it?)"; return 1; }
+  git -c core.hooksPath=/dev/null -c maintenance.autoDetach=false -c gc.autoDetach=false clone --quiet "$url" "$fresh/checkout" || { rm -rf "$fresh"; layout_die "could not re-clone the client bundle from its remote (does the box's git credential cover it?)"; return 1; }
   # The same branch as before, tracking the remote, so the pulls that follow
   # fast-forward the branch the operator chose. The remote ref is named in
   # full: the shorthand "origin/NAME" would also match a tag of that name.
