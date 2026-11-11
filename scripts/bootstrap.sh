@@ -415,7 +415,7 @@ if [[ -n "$CLIENT_CONFIG_ANSWER" ]]; then
           BUNDLE_DIR_FOR_RESTORE="$CLIENT_CONFIG_DIR"
           layout_bundle_git "$CLIENT_CONFIG_DIR" pull --ff-only --quiet || die "could not fast-forward $CLIENT_CONFIG_DIR"
         else
-          git -c core.hooksPath=/dev/null clone --quiet "$CLIENT_CONFIG_ANSWER" "$CLIENT_CONFIG_DIR" || die "could not clone the bundle (does the box's git credential cover that repository?)"
+          git -c core.hooksPath=/dev/null -c maintenance.auto=false -c gc.auto=0 clone --quiet "$CLIENT_CONFIG_ANSWER" "$CLIENT_CONFIG_DIR" || die "could not clone the bundle (does the box's git credential cover that repository?)"
         fi
         layout_bundle "$CLIENT_CONFIG_DIR"
       fi
@@ -803,7 +803,7 @@ else
       || die "could not query the latest release from GitHub — retry, name one with --tag vYYYY.MM.DD.N, or pass --from-source"
   fi
   if [[ "${AUTH_BOOTSTRAP_NO_PULL:-0}" != "1" ]]; then
-    git -C "$SRC_DIR" fetch --quiet --tags origin || true
+    git -C "$SRC_DIR" -c maintenance.auto=false -c gc.auto=0 fetch --quiet --tags origin || true
   fi
   release_sha="$(git -C "$SRC_DIR" rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null)" \
     || die "release ${RELEASE_TAG} is not a tag in ${SRC_DIR}"

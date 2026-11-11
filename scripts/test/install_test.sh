@@ -55,6 +55,8 @@ run_installer "$src"
 [[ -d "$src/." ]]
 grep -qx -- 'install' "$T/dnf.args"
 grep -qx -- 'ca-certificates' "$T/dnf.args"
+grep -qx -- 'maintenance.auto=false' "$T/git.args"
+grep -qx -- 'gc.auto=0' "$T/git.args"
 grep -qx -- 'https://github.com/ElcanoTek/auth.git' "$T/git.args"
 [[ "$(cat "$T/bootstrap.args")" == "$src/scripts/bootstrap.sh" ]]
 
