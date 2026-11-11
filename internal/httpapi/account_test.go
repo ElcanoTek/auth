@@ -120,7 +120,7 @@ func TestAccountPageWithNoApplicationsGreysEveryTile(t *testing.T) {
 	if n := strings.Count(body, `class="tile tile-off"`); n != 5 {
 		t.Fatalf("greyed tiles = %d, want 5\n%s", n, body)
 	}
-	if strings.Contains(body, `<a class="tile"`) || !strings.Contains(body, `action="/logout"`) {
+	if strings.Contains(body, `<a class="tile"`) || !strings.Contains(body, `action="/logout?lang=en"`) {
 		t.Fatalf("unexpected link or missing sign-out form:\n%s", body)
 	}
 }

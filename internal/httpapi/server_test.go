@@ -1590,7 +1590,7 @@ func TestAccountPageOffersFormLogoutThatRevokes(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "Alice@Example.com") ||
-		!strings.Contains(string(body), `action="/logout"`) || !strings.Contains(string(body), csrf.Value) {
+		!strings.Contains(string(body), `action="/logout?lang=en"`) || !strings.Contains(string(body), csrf.Value) {
 		t.Fatalf("account page: status=%d body=%s", resp.StatusCode, body)
 	}
 

@@ -1524,7 +1524,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, logoutLocation(r, "/"), http.StatusSeeOther)
 }
 
 // handlePasswordLogout is "sign out of every application". Two entry points
@@ -1561,7 +1561,7 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 		if !s.validCSRF(r) {
 			// Stale /account page: nothing is revoked; a fresh copy of the
 			// page carries the live token and its Sign out button works.
-			http.Redirect(w, r, "/account", http.StatusSeeOther)
+			http.Redirect(w, r, logoutLocation(r, "/account"), http.StatusSeeOther)
 			return
 		}
 		redirectTo = r.FormValue("redirect_to")
@@ -1610,9 +1610,11 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	dest := s.resolveReturnTo(redirectTo)
+	// Keep redirect validation at the final boundary after decorating only
+	// Auth-owned logout landings with their display preference.
+	dest := s.resolveReturnTo(logoutLocation(r, redirectTo))
 	if dest == "" {
-		dest = "/"
+		dest = logoutLocation(r, "/")
 	}
 	http.Redirect(w, r, dest, http.StatusSeeOther)
 }

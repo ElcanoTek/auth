@@ -33,7 +33,7 @@
         {{end}}
       </div>
     </section>
-    <form method="post" action="/logout">
+    <form method="post" action="/logout?lang={{language}}">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <input type="hidden" name="redirect_to" value="/?notice=signed_out">
       <button class="btn" type="submit" data-sign-out>{{tr "Sign out"}}</button>

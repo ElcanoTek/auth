@@ -1212,7 +1212,7 @@ func TestSignOutAsksFirstInAPopup(t *testing.T) {
 	for name, body := range map[string]string{"console": admin, "apps page": apps} {
 		mine := accountPopup(t, body)
 		if !strings.Contains(mine, `<button class="btn-ghost danger" type="button" commandfor="sign-out" command="show-modal" aria-label="Sign out everywhere: Alice@Example.com">Sign out</button>`) ||
-			strings.Contains(mine, `action="/logout"`) || strings.Contains(mine, "<details") {
+			strings.Contains(mine, `action="/logout?lang=en"`) || strings.Contains(mine, "<details") {
 			t.Errorf("%s: Your account signs out without the popup:\n%s", name, mine)
 		}
 		popup := signOutPopup(t, body)
@@ -1220,7 +1220,7 @@ func TestSignOutAsksFirstInAPopup(t *testing.T) {
 			`<dialog id="sign-out" class="modal confirm-change" aria-labelledby="sign-out-title" aria-describedby="sign-out-detail" closedby="any">`,
 			`<h3 id="sign-out-title">Sign out everywhere?</h3>`,
 			`<form method="dialog"><button class="icon-btn close" type="submit" aria-label="Close">`,
-			`<form method="post" action="/logout">`, `name="redirect_to" value="/?notice=signed_out"`,
+			`<form method="post" action="/logout?lang=en">`, `name="redirect_to" value="/?notice=signed_out"`,
 			`<button class="btn" type="submit">Sign out</button>`,
 			`<form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>`,
 		} {
@@ -1322,7 +1322,7 @@ func TestYourAccountSitsBottomLeft(t *testing.T) {
 			t.Errorf("%s: the person icon is still at the top right", path)
 		}
 		outside := strings.Replace(strings.Replace(body, accountPopup(t, body), "", 1), signOutPopup(t, body), "", 1)
-		if strings.Contains(outside, `action="/logout"`) && path == "/admin" {
+		if strings.Contains(outside, `action="/logout?lang=en"`) && path == "/admin" {
 			t.Errorf("%s: the console still has a sign-out form outside Your account", path)
 		}
 	}
