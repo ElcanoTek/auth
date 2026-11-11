@@ -212,6 +212,9 @@ func (s *Server) beginLoginTransaction(w http.ResponseWriter, r *http.Request, a
 	if err := s.store.CreateAuthTransaction(r.Context(), tr, now.Unix()); err != nil {
 		return err
 	}
+	if stage == stageFactor && account.MFAKind == store.AuthenticatorEmail {
+		_ = s.sendMFAEmailChallenge(r, account, store.EmailPurposeLogin, tr.ID, challengeTTL, false, now)
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name: s.loginTxCookieName(), Value: raw, Path: "/", MaxAge: int(enrollTTL.Seconds()),
 		Secure: s.cfg.CookieSecure, HttpOnly: true, SameSite: http.SameSiteLaxMode,
@@ -447,18 +450,26 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
-	remaining, _ := s.store.RecoveryCodesRemaining(r.Context(), account.ID)
-	render := func(errText string) {
+	emailFactor := account.MFAKind == store.AuthenticatorEmail
+	remaining := 0
+	if !emailFactor {
+		remaining, _ = s.store.RecoveryCodesRemaining(r.Context(), account.ID)
+	}
+	render := func(errText, notice string) {
 		if err := s.render(w, "mfa-verify.html", map[string]any{
-			"Brand": s.cfg.BrandName, "Email": account.Email, "CSRF": csrf, "Error": errText,
-			"HasRecovery": remaining > 0, "Recovery": r.URL.Query().Get("mode") == "recovery" || r.FormValue("mode") == "recovery",
+			"Brand": s.cfg.BrandName, "Email": account.Email, "CSRF": csrf, "Error": errText, "Notice": notice,
+			"EmailFactor": emailFactor,
+			"HasRecovery": remaining > 0, "Recovery": !emailFactor && (r.URL.Query().Get("mode") == "recovery" || r.FormValue("mode") == "recovery"),
 		}); err != nil {
 			log.Printf("render mfa verify: %v", err)
 		}
 	}
 	switch r.Method {
 	case http.MethodGet:
-		render("")
+		if emailFactor {
+			_ = s.sendMFAEmailChallenge(r, account, store.EmailPurposeLogin, tr.ID, challengeTTL, false, time.Now())
+		}
+		render("", "")
 		return
 	case http.MethodPost:
 	default:
@@ -471,7 +482,7 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.validCSRF(r) {
-		render(staleFormMessage)
+		render(staleFormMessage, "")
 		return
 	}
 	if r.FormValue("cancel") != "" {
@@ -479,6 +490,22 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
+	if emailFactor && r.FormValue("action") == "resend" {
+		err := s.sendMFAEmailChallenge(r, account, store.EmailPurposeLogin, tr.ID, challengeTTL, true, now)
+		switch {
+		case errors.Is(err, store.ErrEmailCooldown):
+			render(translate(requestLanguage(r), "A verification code was just sent. Check your email or wait a minute before requesting another."), "")
+		case errors.Is(err, errEnrollLimited):
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "login.mfa_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
+			render(translate(requestLanguage(r), "Too many verification emails sent. Wait a few minutes and try again."), "")
+		case err != nil:
+			logUnlessCancelled("mfa email resend", err)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
+		default:
+			render("", translate(requestLanguage(r), "We sent a new six-digit code to your email."))
+		}
+		return
+	}
 	left, err := s.store.RecordTransactionAttempt(r.Context(), tr.ID)
 	if errors.Is(err, store.ErrTooManyAttempts) {
 		_ = s.store.RecordAudit(r.Context(), "login.mfa_locked", account.ID, s.rateKey("ip", clientIP(r)), now.Unix())
@@ -498,10 +525,24 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	if limited {
 		_, _ = s.store.RecordAuditIfAbsent(r.Context(), "login.mfa_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
-		render(translate(requestLanguage(r), "Too many attempts. Wait a few minutes and try again."))
+		render(translate(requestLanguage(r), "Too many attempts. Wait a few minutes and try again."), "")
 		return
 	}
-	proof, verified := s.factorProof(r, account, r.FormValue("code"), r.FormValue("recovery_code"), now)
+	var proof store.LoginProof
+	var verified bool
+	if emailFactor {
+		if normalized := mfa.NormalizeCode(r.FormValue("code")); normalized != "" {
+			proof = store.LoginProof{
+				Kind: store.ProofEmail,
+				EmailCodeMAC: func(nonce string) string {
+					return s.mfaEmailCodeMAC(nonce, account.ID, store.EmailPurposeLogin, tr.ID, normalized)
+				},
+			}
+			verified = true
+		}
+	} else {
+		proof, verified = s.factorProof(r, account, r.FormValue("code"), r.FormValue("recovery_code"), now)
+	}
 	fail := func() {
 		_ = s.store.RecordAudit(r.Context(), "login.mfa_failed", account.ID, ipKey, now.Unix())
 		if left <= 0 {
@@ -510,18 +551,26 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 			s.restartLogin(w, r, store.AuthTransaction{}, errMFALocked)
 			return
 		}
+		if emailFactor {
+			if mfa.NormalizeCode(r.FormValue("code")) == "" {
+				render(translate(requestLanguage(r), emailCodeFormatMessage), "")
+				return
+			}
+			render(translate(requestLanguage(r), emailCodeMismatchNotice), "")
+			return
+		}
 		if r.FormValue("mode") == "recovery" || r.FormValue("recovery_code") != "" {
-			render(translate(requestLanguage(r), "That code did not work. Check the time on your phone and try the current code."))
+			render(translate(requestLanguage(r), "That code did not work. Check the time on your phone and try the current code."), "")
 			return
 		}
 		if mfa.NormalizeCode(r.FormValue("code")) == "" {
-			render(codeFormatMessage)
+			render(codeFormatMessage, "")
 			return
 		}
 		// An app set up more than once lists identical entries and only one
 		// secret is live. Which one is not knowable here: a replacement that
 		// was scanned but never confirmed leaves the older entry the live one.
-		render(translate(requestLanguage(r), "That code did not work. Check the time on your phone and try the current code. If your app lists ") + s.cfg.MFAIssuer + translate(requestLanguage(r), " more than once, only one of those entries works: try another."))
+		render(translate(requestLanguage(r), "That code did not work. Check the time on your phone and try the current code. If your app lists ")+s.cfg.MFAIssuer+translate(requestLanguage(r), " more than once, only one of those entries works: try another."), "")
 	}
 	if !verified {
 		fail()
@@ -537,6 +586,11 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, store.ErrInvalidProof):
 		fail()
+		return
+	case errors.Is(err, store.ErrTooManyAttempts):
+		_ = s.store.AbandonAuthTransaction(r.Context(), tr.ID)
+		_ = s.store.RecordAudit(r.Context(), "login.mfa_locked", account.ID, ipKey, now.Unix())
+		s.restartLogin(w, r, store.AuthTransaction{}, errMFALocked)
 		return
 	case errors.Is(err, store.ErrTransactionNotFound), errors.Is(err, store.ErrStaleTransaction), errors.Is(err, store.ErrInvalidSession):
 		s.restartLogin(w, r, store.AuthTransaction{}, errMFAExpired)
@@ -732,6 +786,16 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
+	canEmail := s.emailMFAAvailable(account)
+	renderEmail := func(errText, notice string) {
+		view := map[string]any{
+			"Brand": s.cfg.BrandName, "Email": account.Email, "CSRF": csrf, "Error": errText, "Notice": notice,
+			"Action": "/login/enroll", "Required": true, "EmailMode": true, "EmailAvailable": canEmail,
+		}
+		if err := s.render(w, "mfa-enroll.html", view); err != nil {
+			log.Printf("render mfa email enroll: %v", err)
+		}
+	}
 	render := func(errText string) {
 		view, err := s.enrollmentView(r, account, now)
 		if errors.Is(err, errEnrollLimited) {
@@ -744,13 +808,28 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
-		view["Brand"], view["CSRF"], view["Error"], view["Action"], view["Required"] = s.cfg.BrandName, csrf, errText, "/login/enroll", true
+		view["Brand"], view["CSRF"], view["Error"], view["Action"], view["Required"], view["EmailAvailable"] = s.cfg.BrandName, csrf, errText, "/login/enroll", true, canEmail
 		if err := s.render(w, "mfa-enroll.html", view); err != nil {
 			log.Printf("render mfa enroll: %v", err)
 		}
 	}
 	switch r.Method {
 	case http.MethodGet:
+		if canEmail && r.URL.Query().Get("method") == "email" {
+			err := s.sendMFAEmailChallenge(r, account, store.EmailPurposeEnroll, tr.ID, enrollTTL, false, now)
+			if errors.Is(err, errEnrollLimited) {
+				_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enroll_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
+				s.restartLogin(w, r, tr, errMFALocked)
+				return
+			}
+			if err != nil && !errors.Is(err, store.ErrEmailCooldown) {
+				logUnlessCancelled("mfa email enroll", err)
+				http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
+				return
+			}
+			renderEmail("", "")
+			return
+		}
 		render("")
 		return
 	case http.MethodPost:
@@ -763,12 +842,36 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 		return
 	}
+	action := r.FormValue("action")
+	emailAction := canEmail && (action == "start_email" || action == "resend_email" || action == "confirm_email" || r.FormValue("method") == "email")
 	if !s.validCSRF(r) {
-		render(staleFormMessage)
+		if emailAction {
+			renderEmail(staleFormMessage, "")
+		} else {
+			render(staleFormMessage)
+		}
 		return
 	}
 	if r.FormValue("cancel") != "" {
 		s.restartLogin(w, r, tr, "")
+		return
+	}
+	if canEmail && (action == "start_email" || action == "resend_email") {
+		err := s.sendMFAEmailChallenge(r, account, store.EmailPurposeEnroll, tr.ID, enrollTTL, action == "resend_email", now)
+		switch {
+		case errors.Is(err, store.ErrEmailCooldown):
+			renderEmail(translate(requestLanguage(r), "A verification code was just sent. Check your email or wait a minute before requesting another."), "")
+		case errors.Is(err, errEnrollLimited):
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enroll_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
+			s.restartLogin(w, r, tr, errMFALocked)
+		case err != nil:
+			logUnlessCancelled("mfa email enroll send", err)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
+		case action == "resend_email":
+			renderEmail("", translate(requestLanguage(r), "We sent a new six-digit code to your email."))
+		default:
+			renderEmail("", "")
+		}
 		return
 	}
 	left, err := s.store.RecordTransactionAttempt(r.Context(), tr.ID)
@@ -787,7 +890,74 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	if limited {
 		_, _ = s.store.RecordAuditIfAbsent(r.Context(), "login.mfa_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
-		render(translate(requestLanguage(r), "Too many attempts. Wait a few minutes and try again."))
+		if emailAction {
+			renderEmail(translate(requestLanguage(r), "Too many attempts. Wait a few minutes and try again."), "")
+		} else {
+			render(translate(requestLanguage(r), "Too many attempts. Wait a few minutes and try again."))
+		}
+		return
+	}
+	if emailAction {
+		normalized := mfa.NormalizeCode(r.FormValue("code"))
+		if normalized == "" {
+			_ = s.store.RecordAudit(r.Context(), "login.mfa_failed", account.ID, ipKey, now.Unix())
+			if left <= 0 {
+				_ = s.store.AbandonAuthTransaction(r.Context(), tr.ID)
+				s.restartLogin(w, r, store.AuthTransaction{}, errMFALocked)
+				return
+			}
+			renderEmail(translate(requestLanguage(r), emailCodeFormatMessage), "")
+			return
+		}
+		raw, err := randomSecret(32)
+		if err != nil {
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
+			return
+		}
+		csrfNew, err := randomSecret(32)
+		if err != nil {
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
+			return
+		}
+		idle, absolute := s.sessionWindow(now)
+		completion := &store.LoginCompletion{TransactionID: tr.ID, Stage: stageEnroll, TokenHash: hashSecret(raw), IdleExpiresAt: idle.Unix(), AbsoluteAt: absolute.Unix()}
+		_, err = s.store.ActivateEmailAuthenticator(r.Context(), account.ID, tr.ID, func(nonce string) string {
+			return s.mfaEmailCodeMAC(nonce, account.ID, store.EmailPurposeEnroll, tr.ID, normalized)
+		}, "", completion, now.Unix())
+		switch {
+		case errors.Is(err, store.ErrInvalidProof):
+			_ = s.store.RecordAudit(r.Context(), "login.mfa_failed", account.ID, ipKey, now.Unix())
+			if left <= 0 {
+				_ = s.store.AbandonAuthTransaction(r.Context(), tr.ID)
+				s.restartLogin(w, r, store.AuthTransaction{}, errMFALocked)
+				return
+			}
+			renderEmail(translate(requestLanguage(r), emailCodeMismatchNotice), "")
+			return
+		case errors.Is(err, store.ErrPendingNotFound), errors.Is(err, store.ErrTooManyAttempts):
+			_ = s.store.RecordAudit(r.Context(), "login.mfa_failed", account.ID, ipKey, now.Unix())
+			if left <= 0 || errors.Is(err, store.ErrTooManyAttempts) {
+				_ = s.store.AbandonAuthTransaction(r.Context(), tr.ID)
+				s.restartLogin(w, r, store.AuthTransaction{}, errMFALocked)
+				return
+			}
+			_ = s.sendMFAEmailChallenge(r, account, store.EmailPurposeEnroll, tr.ID, enrollTTL, false, now)
+			renderEmail(translate(requestLanguage(r), "That code expired, so we sent a new six-digit code to your email."), "")
+			return
+		case errors.Is(err, store.ErrTransactionNotFound), errors.Is(err, store.ErrStaleTransaction):
+			s.restartLogin(w, r, store.AuthTransaction{}, errMFAExpired)
+			return
+		case err != nil:
+			logUnlessCancelled("activate email authenticator", err)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
+			return
+		}
+		_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
+		s.setSessionCookies(w, raw, csrfNew, absolute)
+		s.clearLoginTxCookie(w)
+		_ = s.store.RecordAudit(r.Context(), "login.succeeded", account.ID, s.rateKey("ip", clientIP(r)), now.Unix())
+		s.notify(account.Email, translate(requestLanguage(r), "Two-factor sign-in turned on"), translate(requestLanguage(r), "Email verification codes were turned on for your ")+s.cfg.BrandName+translate(requestLanguage(r), " account and every other session was signed out. If this was not you, contact your administrator."))
+		http.Redirect(w, r, s.loginTxDest(tr), http.StatusSeeOther)
 		return
 	}
 	pending, step, refused := s.confirmEnrollment(r, account, r.FormValue("code"), now)
@@ -980,7 +1150,7 @@ func (s *Server) notify(to, subject, body string) {
 	}(to, subject, body)
 }
 
-var securityActions = map[string]bool{"start": true, "confirm": true, "regenerate": true, "disable": true}
+var securityActions = map[string]bool{"start": true, "confirm": true, "start_email": true, "confirm_email": true, "resend_email": true, "regenerate": true, "disable": true}
 
 func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 	if !s.passwordMode() {
@@ -1015,11 +1185,16 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 	if returnTo == "" {
 		returnTo = s.resolveReturnTo(r.FormValue("return_to"))
 	}
+	canEmail := s.emailMFAAvailable(account)
 	renderPage := func(notice, errText string) {
-		remaining, _ := s.store.RecoveryCodesRemaining(r.Context(), account.ID)
+		remaining := 0
+		if account.MFAKind == store.AuthenticatorTOTP {
+			remaining, _ = s.store.RecoveryCodesRemaining(r.Context(), account.ID)
+		}
 		data := map[string]any{
 			"Brand": s.cfg.BrandName, "Email": account.Email, "CSRF": csrf, "Notice": notice, "Error": errText,
-			"Enrolled": account.MFAEnrolled, "Required": required, "Available": s.mfaAvailable(),
+			"Enrolled": account.MFAEnrolled, "MFAKind": account.MFAKind, "EmailAvailable": canEmail,
+			"Required": required, "Available": s.mfaAvailable(),
 			"Status": string(mfa.StatusFor(required, account.MFAEnrolled)), "Remaining": remaining,
 			"UsedRecovery": hasMethod(identity.Session.AMR, "mfa"), "ReturnTo": returnTo, "IsAdmin": account.IsAdmin,
 		}
@@ -1031,6 +1206,8 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 		notice := ""
 		if r.URL.Query().Get("verified") == "1" {
 			notice = translate(requestLanguage(r), "Verified. You can make changes for the next five minutes.")
+		} else if r.URL.Query().Get("email_on") == "1" {
+			notice = translate(requestLanguage(r), "Email verification codes are now on for your account.")
 		}
 		renderPage(notice, "")
 		return
@@ -1061,6 +1238,16 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account/security/verify?"+q.Encode(), http.StatusSeeOther)
 		return
 	}
+	renderEmailEnroll := func(errText, notice string) {
+		view := map[string]any{
+			"Brand": s.cfg.BrandName, "Email": account.Email, "CSRF": csrf, "Error": errText, "Notice": notice,
+			"Action": "/account/security", "Required": required, "ReturnTo": returnTo, "Replace": account.MFAEnrolled,
+			"EmailMode": true, "EmailAvailable": canEmail,
+		}
+		if err := s.render(w, "mfa-enroll.html", view); err != nil {
+			log.Printf("render mfa email enroll: %v", err)
+		}
+	}
 	switch action {
 	case "start":
 		view, err := s.enrollmentView(r, account, now)
@@ -1074,11 +1261,86 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
-		view["Brand"], view["CSRF"], view["Action"], view["Required"], view["ReturnTo"] = s.cfg.BrandName, csrf, "/account/security", required, returnTo
+		view["Brand"], view["CSRF"], view["Action"], view["Required"], view["ReturnTo"], view["EmailAvailable"] = s.cfg.BrandName, csrf, "/account/security", required, returnTo, canEmail
 		view["Replace"] = account.MFAEnrolled
 		if err := s.render(w, "mfa-enroll.html", view); err != nil {
 			log.Printf("render mfa enroll: %v", err)
 		}
+	case "start_email", "resend_email":
+		if !canEmail {
+			renderPage("", translate(requestLanguage(r), "Email verification codes are not available for this account."))
+			return
+		}
+		err := s.sendMFAEmailChallenge(r, account, store.EmailPurposeEnroll, identity.Session.TokenHash, enrollTTL, action == "resend_email", now)
+		switch {
+		case errors.Is(err, store.ErrEmailCooldown):
+			renderEmailEnroll(translate(requestLanguage(r), "A verification code was just sent. Check your email or wait a minute before requesting another."), "")
+		case errors.Is(err, errEnrollLimited):
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enroll_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
+			renderPage("", translate(requestLanguage(r), "Too many set-up attempts. Wait a few minutes and try again."))
+		case err != nil:
+			logUnlessCancelled("mfa email enroll", err)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
+		case action == "resend_email":
+			renderEmailEnroll("", translate(requestLanguage(r), "We sent a new six-digit code to your email."))
+		default:
+			renderEmailEnroll("", "")
+		}
+	case "confirm_email":
+		if !canEmail {
+			renderPage("", translate(requestLanguage(r), "Email verification codes are not available for this account."))
+			return
+		}
+		ids, ipKey, limited, err := s.mfaAttempt(r, account.ID, now)
+		if err != nil {
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
+			return
+		}
+		if limited {
+			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enroll_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
+			renderPage("", translate(requestLanguage(r), "Too many attempts. Wait a few minutes and try again."))
+			return
+		}
+		normalized := mfa.NormalizeCode(r.FormValue("code"))
+		if normalized == "" {
+			_ = s.store.RecordAudit(r.Context(), "mfa.enroll_failed", account.ID, ipKey, now.Unix())
+			renderEmailEnroll(translate(requestLanguage(r), emailCodeFormatMessage), "")
+			return
+		}
+		scopeID := identity.Session.TokenHash
+		_, err = s.store.ActivateEmailAuthenticator(r.Context(), account.ID, scopeID, func(nonce string) string {
+			return s.mfaEmailCodeMAC(nonce, account.ID, store.EmailPurposeEnroll, scopeID, normalized)
+		}, scopeID, nil, now.Unix())
+		switch {
+		case errors.Is(err, store.ErrInvalidProof):
+			_ = s.store.RecordAudit(r.Context(), "mfa.enroll_failed", account.ID, ipKey, now.Unix())
+			renderEmailEnroll(translate(requestLanguage(r), emailCodeMismatchNotice), "")
+			return
+		case errors.Is(err, store.ErrPendingNotFound), errors.Is(err, store.ErrTooManyAttempts):
+			_ = s.store.RecordAudit(r.Context(), "mfa.enroll_failed", account.ID, ipKey, now.Unix())
+			_ = s.sendMFAEmailChallenge(r, account, store.EmailPurposeEnroll, scopeID, enrollTTL, false, now)
+			renderEmailEnroll(translate(requestLanguage(r), "That code expired, so we sent a new six-digit code to your email."), "")
+			return
+		case errors.Is(err, store.ErrInvalidSession):
+			s.clearPasswordCookies(w)
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		case err != nil:
+			logUnlessCancelled("activate email authenticator", err)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
+			return
+		}
+		_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
+		if account.MFAEnrolled {
+			s.notify(account.Email, translate(requestLanguage(r), "Authenticator replaced"), translate(requestLanguage(r), "Email verification codes replaced the previous two-factor method on your ")+s.cfg.BrandName+translate(requestLanguage(r), " account and every other session was signed out. If this was not you, contact your administrator."))
+		} else {
+			s.notify(account.Email, translate(requestLanguage(r), "Two-factor sign-in turned on"), translate(requestLanguage(r), "Email verification codes were turned on for your ")+s.cfg.BrandName+translate(requestLanguage(r), " account and every other session was signed out. If this was not you, contact your administrator."))
+		}
+		dest := returnTo
+		if dest == "" {
+			dest = "/account/security?email_on=1"
+		}
+		http.Redirect(w, r, dest, http.StatusSeeOther)
 	case "confirm":
 		// The pending secret is a TOTP oracle like any other: the attempt is
 		// reserved (account, address, deployment) before the code is checked.
@@ -1100,7 +1362,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 				return
 			}
-			view["Brand"], view["CSRF"], view["Action"], view["Required"], view["ReturnTo"] = s.cfg.BrandName, csrf, "/account/security", required, returnTo
+			view["Brand"], view["CSRF"], view["Action"], view["Required"], view["ReturnTo"], view["EmailAvailable"] = s.cfg.BrandName, csrf, "/account/security", required, returnTo, canEmail
 			view["Replace"], view["Error"] = account.MFAEnrolled, enrollFailureText(refused, translate(requestLanguage(r), "That code did not match. Enter the current code from your authenticator app."))
 			if err := s.render(w, "mfa-enroll.html", view); err != nil {
 				log.Printf("render mfa enroll: %v", err)
@@ -1225,16 +1487,20 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 	if returnTo == "" {
 		returnTo = s.resolveReturnTo(r.FormValue("return_to"))
 	}
-	render := func(errText string) {
+	emailFactor := account.MFAEnrolled && account.MFAKind == store.AuthenticatorEmail
+	render := func(errText, notice string) {
 		if err := s.render(w, "reauth.html", map[string]any{
-			"Brand": s.cfg.BrandName, "Email": account.Email, "CSRF": csrf, "Error": errText,
-			"Enrolled": account.MFAEnrolled, "Action": action, "ReturnTo": returnTo,
+			"Brand": s.cfg.BrandName, "Email": account.Email, "CSRF": csrf, "Error": errText, "Notice": notice,
+			"Enrolled": account.MFAEnrolled, "EmailFactor": emailFactor, "Action": action, "ReturnTo": returnTo,
 		}); err != nil {
 			log.Printf("render reauth: %v", err)
 		}
 	}
 	if r.Method == http.MethodGet {
-		render("")
+		if emailFactor {
+			_ = s.sendMFAEmailChallenge(r, account, store.EmailPurposeStepUp, identity.Session.TokenHash, challengeTTL, false, time.Now())
+		}
+		render("", "")
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -1242,23 +1508,44 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !s.validCSRF(r) {
-		render(staleFormMessage)
+		render(staleFormMessage, "")
 		return
 	}
 	now := time.Now()
+	if emailFactor && r.FormValue("step_action") == "resend" {
+		err := s.sendMFAEmailChallenge(r, account, store.EmailPurposeStepUp, identity.Session.TokenHash, challengeTTL, true, now)
+		switch {
+		case errors.Is(err, store.ErrEmailCooldown):
+			render(translate(requestLanguage(r), "A verification code was just sent. Check your email or wait a minute before requesting another."), "")
+		case errors.Is(err, errEnrollLimited):
+			render(translate(requestLanguage(r), "Too many verification emails sent. Wait a few minutes and try again."), "")
+		case err != nil:
+			logUnlessCancelled("reauth email resend", err)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
+		default:
+			render("", translate(requestLanguage(r), "We sent a new six-digit code to your email."))
+		}
+		return
+	}
 	ipKey := s.rateKey("ip", clientIP(r))
 	verified, valid, err := s.authenticatePassword(r.Context(), account.NormalizedEmail, r.FormValue("password"), ipKey, now, "reauth", false)
 	if err != nil || !valid || verified.ID != account.ID {
 		if err != nil {
 			logUnlessCancelled("reauth password", err)
 		}
-		render(translate(requestLanguage(r), "Password is incorrect."))
+		render(translate(requestLanguage(r), "Password is incorrect."), "")
 		return
 	}
 	if account.MFAEnrolled {
 		// The password was just checked, so this step-up may also stamp the
 		// session as password-verified.
-		refusal, err := s.verifySessionCode(r, identity, r.FormValue("code"), now, true)
+		var refusal string
+		var err error
+		if emailFactor {
+			refusal, err = s.verifySessionEmailCode(r, identity, r.FormValue("code"), now)
+		} else {
+			refusal, err = s.verifySessionCode(r, identity, r.FormValue("code"), now, true)
+		}
 		switch {
 		case errors.Is(err, store.ErrInvalidSession):
 			s.clearPasswordCookies(w)
@@ -1269,7 +1556,7 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		case refusal != "":
-			render(refusal)
+			render(refusal, "")
 			return
 		}
 	} else if err := s.store.StampSessionReauth(r.Context(), identity.Session.TokenHash, now.Unix()); err != nil {

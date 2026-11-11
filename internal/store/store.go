@@ -484,7 +484,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateAccountDelete(ctx); err != nil {
 		return err
 	}
-	return s.migratePasswordLinks(ctx)
+	if err := s.migratePasswordLinks(ctx); err != nil {
+		return err
+	}
+	return s.migrateEmailMFA(ctx)
 }
 
 // migrateAccessProvisioning is schema v8. It snapshots every existing grant
@@ -908,7 +911,8 @@ type Account struct {
 	IsAdmin            bool
 	Team               string // free-text tag set in the admin console; "" = none
 	MFARequired        bool   // per-user "Require 2FA" set in the console
-	MFAEnrolled        bool   // has an active TOTP factor
+	MFAEnrolled        bool   // has an active second factor (totp, or email for non-admins)
+	MFAKind            string // active factor kind: "totp", "email", or ""
 	SecurityVersion    int64  // bumped by every factor-affecting change
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
@@ -1089,7 +1093,7 @@ func passwordAccountByEmailQ(ctx context.Context, q querier, email string) (Acco
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
 		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
 		       a.mfa_required, a.security_version,
-		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
+		       `+activeFactorKindExpr+`
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.normalized_email = ? AND a.deleted_at IS NULL`, normalizeAccountEmail(email)))
 }
@@ -1106,7 +1110,7 @@ func passwordAccountByIDQ(ctx context.Context, q querier, id string) (Account, e
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
 		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
 		       a.mfa_required, a.security_version,
-		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
+		       `+activeFactorKindExpr+`
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.id = ? AND a.deleted_at IS NULL`, id))
 }
@@ -1124,10 +1128,10 @@ func (s scanWithExtra) Scan(dest ...any) error { return s.row.Scan(append(dest, 
 func scanAccount(row rowScanner) (Account, error) {
 	var a Account
 	var disabled sql.NullInt64
-	var mustChange, isAdmin, mfaRequired, enrolled int
+	var mustChange, isAdmin, mfaRequired int
 	var created, updated int64
 	if err := row.Scan(&a.ID, &a.Email, &a.NormalizedEmail, &a.PasswordHash, &disabled,
-		&mustChange, &isAdmin, &a.Team, &created, &updated, &mfaRequired, &a.SecurityVersion, &enrolled); err != nil {
+		&mustChange, &isAdmin, &a.Team, &created, &updated, &mfaRequired, &a.SecurityVersion, &a.MFAKind); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Account{}, ErrAccountNotFound
 		}
@@ -1135,7 +1139,7 @@ func scanAccount(row rowScanner) (Account, error) {
 	}
 	a.MustChangePassword = mustChange != 0
 	a.IsAdmin = isAdmin != 0
-	a.MFARequired, a.MFAEnrolled = mfaRequired != 0, enrolled != 0
+	a.MFARequired, a.MFAEnrolled = mfaRequired != 0, a.MFAKind != ""
 	a.CreatedAt = time.Unix(created, 0)
 	a.UpdatedAt = time.Unix(updated, 0)
 	if disabled.Valid {
@@ -1383,7 +1387,7 @@ func (s *Store) ListPasswordAccounts(ctx context.Context) ([]Account, error) {
 		SELECT a.id, a.email, a.normalized_email, p.password_hash, a.disabled_at,
 		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
 		       a.mfa_required, a.security_version,
-		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL),
+		       `+activeFactorKindExpr+`,
 		       a.password_reset_at
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.deleted_at IS NULL
@@ -1464,8 +1468,25 @@ func setAccountAdminTx(ctx context.Context, tx *sql.Tx, a Account, admin bool, n
 	// Promotion is a policy-tightening path: under "Required for
 	// administrators" the new administrator must have a factor, so an
 	// unenrolled one is signed out now and enrolls at the next sign-in,
-	// exactly as if the policy had just been set.
+	// exactly as if the policy had just been set. Administrators must use
+	// an authenticator app, so an active email factor is disabled and the
+	// account marked mfa_required = 1 before signing out.
 	if admin {
+		resEmail, err := tx.ExecContext(ctx, `UPDATE authenticators SET disabled_at = ? WHERE user_id = ? AND kind = 'email' AND verified_at IS NOT NULL AND disabled_at IS NULL`, now, a.ID)
+		if err != nil {
+			return err
+		}
+		if n, _ := resEmail.RowsAffected(); n > 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE accounts SET mfa_required = 1, updated_at = ? WHERE id = ?`, now, a.ID); err != nil {
+				return err
+			}
+			if _, err := bumpSecurityVersionTx(ctx, tx, a.ID, now); err != nil {
+				return err
+			}
+			if err := clearFactorStateTx(ctx, tx, a.ID); err != nil {
+				return err
+			}
+		}
 		policy, err := mfaPolicyQ(ctx, tx)
 		if err != nil {
 			return err
@@ -2015,7 +2036,7 @@ func (s *Store) CreateAuthSession(ctx context.Context, tokenHash, userID, verifi
 		SELECT ?, a.id, ?, ?, ?, ?, 'pwd', a.security_version
 		FROM accounts a JOIN password_credentials p ON p.user_id = a.id
 		WHERE a.id = ? AND a.disabled_at IS NULL AND p.password_hash = ?
-		  AND NOT EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)`,
+		  AND NOT `+activeFactorExistsExpr,
 		tokenHash, createdAt, createdAt, idleExpiresAt, absoluteExpiresAt, userID, verifiedHash)
 	if err != nil {
 		return err
@@ -2035,14 +2056,14 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 	var sess AuthSession
 	var a Account
 	var disabled, revoked, mfaAt, reauthAt sql.NullInt64
-	var mustChange, isAdmin, mfaRequired, enrolled int
+	var mustChange, isAdmin, mfaRequired int
 	var created, updated, sessionCreated, lastSeen, idleExpires, absoluteExpires int64
 	var amr string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT a.id, a.email, a.normalized_email, a.disabled_at,
 		       a.must_change_password, a.is_admin, a.team, a.created_at, a.updated_at,
 		       a.mfa_required, a.security_version,
-		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL),
+		       `+activeFactorKindExpr+`,
 		       s.token_hash, s.created_at, s.last_seen_at, s.idle_expires_at,
 		       s.absolute_expires_at, s.revoked_at, COALESCE(s.revocation_reason, ''),
 		       s.amr, s.mfa_verified_at, s.security_version, s.reauth_at
@@ -2051,7 +2072,7 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 		JOIN password_credentials p ON p.user_id = a.id
 		WHERE s.token_hash = ?`, tokenHash).Scan(
 		&a.ID, &a.Email, &a.NormalizedEmail, &disabled,
-		&mustChange, &isAdmin, &a.Team, &created, &updated, &mfaRequired, &a.SecurityVersion, &enrolled,
+		&mustChange, &isAdmin, &a.Team, &created, &updated, &mfaRequired, &a.SecurityVersion, &a.MFAKind,
 		&sess.TokenHash, &sessionCreated,
 		&lastSeen, &idleExpires, &absoluteExpires, &revoked, &sess.RevocationReason,
 		&amr, &mfaAt, &sess.SecurityVersion, &reauthAt)
@@ -2066,7 +2087,7 @@ func (s *Store) ValidateAuthSession(ctx context.Context, tokenHash string, now i
 	}
 	a.MustChangePassword = mustChange != 0
 	a.IsAdmin = isAdmin != 0
-	a.MFARequired, a.MFAEnrolled = mfaRequired != 0, enrolled != 0
+	a.MFARequired, a.MFAEnrolled = mfaRequired != 0, a.MFAKind != ""
 	a.CreatedAt, a.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
 	sess.UserID = a.ID
 	sess.AMR = strings.Fields(amr)
@@ -2878,7 +2899,11 @@ func (s *Store) SweepPasswordState(ctx context.Context, now int64, attemptRetent
 	if err != nil {
 		return 0, err
 	}
-	attempts += transactions + pending + links
+	emailChallenges, err := sweepEmailMFAChallengesTx(ctx, tx, now)
+	if err != nil {
+		return 0, err
+	}
+	attempts += transactions + pending + links + emailChallenges
 	var audits int64
 	if auditRetention > 0 {
 		res, err = tx.ExecContext(ctx, `DELETE FROM audit_events WHERE occurred_at < ?`, now-int64(auditRetention.Seconds()))

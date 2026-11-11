@@ -45,3 +45,26 @@ func renderHTMLEmail(_, link, code string, ttl time.Duration, languages ...strin
 		html.EscapeString(translate(lang, "Or paste this link: {0}", link)),
 		html.EscapeString(translate(lang, "Never share this code. If you didn't request this, you can ignore this email.")))
 }
+
+func renderMFAEmailText(brand, code string, ttl time.Duration, languages ...string) string {
+	lang := selectedLanguage(languages)
+	return fmt.Sprintf("%s %s\n\n%s\n\n%s\n",
+		translate(lang, "Your verification code:"), code,
+		translate(lang, "Enter this code on the {0} verification page. It expires in {1} minutes.", brand, int(ttl.Minutes())),
+		translate(lang, "Never share this code. If you did not request this, someone may have entered your password; change it or contact your administrator."))
+}
+
+func renderMFAEmailHTML(brand, code string, ttl time.Duration, languages ...string) string {
+	lang := selectedLanguage(languages)
+	return fmt.Sprintf(`<!doctype html>
+<html lang="%s"><body style="font:16px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#1a1a1a;padding:24px">
+  <p>%s</p>
+  <p style="font:600 28px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.2em;margin:8px 0 16px">%s</p>
+  <p>%s</p>
+  <p style="color:#888;font-size:.85em;margin-top:24px">%s</p>
+</body></html>`, lang,
+		html.EscapeString(translate(lang, "Your verification code:")),
+		html.EscapeString(code),
+		html.EscapeString(translate(lang, "Enter this code on the {0} verification page. It expires in {1} minutes.", brand, int(ttl.Minutes()))),
+		html.EscapeString(translate(lang, "Never share this code. If you did not request this, someone may have entered your password; change it or contact your administrator.")))
+}
