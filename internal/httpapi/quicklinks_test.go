@@ -35,15 +35,51 @@ func TestQuickLinksResolveAgainstRegisteredApplications(t *testing.T) {
 		{Kicker: "Administration", Name: "Admin", Description: "Accounts, access, and applications on this sign-in.", URL: "/admin", Available: true},
 		{Kicker: "Agents", Name: "Fleet", Description: "Work with your AI agents and their tasks.", URL: "https://fleet.client.example/", Available: true},
 		{Kicker: "Reporting", Name: "Explorer", Description: "Explore reporting on your programmatic activity.", URL: "https://explorer.client.example/", Available: true},
-		{Kicker: "Classification", Name: "Lens", Description: "Classify supply quality with AI signals."},
-		{Kicker: "Dashboards", Name: "Pages", Description: "Publish and share versioned dashboards."},
 	}
 	if len(links) != len(want) {
-		t.Fatalf("got %d links, want %d", len(links), len(want))
+		t.Fatalf("got %d links (%+v), want %d (%+v)", len(links), links, len(want), want)
 	}
 	for i := range want {
 		if links[i] != want[i] {
 			t.Errorf("link %d = %+v, want %+v", i, links[i], want[i])
+		}
+	}
+}
+
+func TestQuickLinksElcanoAllNineAppsShownWhenEnabled(t *testing.T) {
+	apps := []store.Application{
+		{ID: "voice", Name: "Voice", RedirectURI: "https://voice.elcanotek.com/auth/callback"},
+		{ID: "fleetdev", Name: "Fleet Dev", RedirectURI: "https://fleetdev.elcanotek.com/api/auth/oidc/callback"},
+		{ID: "home", Name: "Home", RedirectURI: "https://home.elcanotek.com/auth/callback"},
+		{ID: "manifest", Name: "Manifest", RedirectURI: "https://manifest.elcanotek.com/auth/callback"},
+		{ID: "keel", Name: "Keel", RedirectURI: "https://keel.elcanotek.com/auth/callback"},
+		{ID: "pages", Name: "Pages", RedirectURI: "https://pages.elcanotek.com/auth/callback"},
+		{ID: "lens", Name: "Lens", RedirectURI: "https://lens.elcanotek.com/auth/callback"},
+		{ID: "explorer", Name: "Explorer", RedirectURI: "https://explorer.elcanotek.com/auth/callback"},
+		{ID: "fleet", Name: "Fleet", RedirectURI: "https://fleet.elcanotek.com/api/auth/oidc/callback"},
+	}
+	links := quickLinksFor(apps, allAccess(apps), true)
+	want := []struct {
+		name string
+		url  string
+	}{
+		{"Admin", "/admin"},
+		{"Home", "https://home.elcanotek.com/internal"},
+		{"Fleet", "https://fleet.elcanotek.com/"},
+		{"Fleet Dev", "https://fleetdev.elcanotek.com/"},
+		{"Pages", "https://pages.elcanotek.com/"},
+		{"Keel", "https://keel.elcanotek.com/"},
+		{"Manifest", "https://manifest.elcanotek.com/"},
+		{"Voice", "https://voice.elcanotek.com/"},
+		{"Explorer", "https://explorer.elcanotek.com/"},
+		{"Lens", "https://lens.elcanotek.com/"},
+	}
+	if len(links) != len(want) {
+		t.Fatalf("got %d links (%+v), want %d", len(links), links, len(want))
+	}
+	for i, w := range want {
+		if links[i].Name != w.name || links[i].URL != w.url || !links[i].Available {
+			t.Errorf("link %d = %+v, want Name=%q URL=%q Available=true", i, links[i], w.name, w.url)
 		}
 	}
 }
@@ -70,10 +106,10 @@ func TestQuickLinksPagesTile(t *testing.T) {
 	}
 }
 
-// Nothing usable means a greyed tile, never a guess: no rows, a disabled
-// row, an unknown family, a display name that only *looks* like a family,
-// and every redirect shape validApplicationRedirect refuses.
-func TestQuickLinksGreyOutWhatTheClientDoesNotHave(t *testing.T) {
+// Nothing usable means the application tile is omitted (only Admin remains):
+// no rows, a disabled row, an unknown family, a display name that only *looks*
+// like a family, and every redirect shape validApplicationRedirect refuses.
+func TestQuickLinksOmitWhatTheClientDoesNotHaveEnabled(t *testing.T) {
 	disabled := time.Now()
 	cases := []struct {
 		name string
@@ -96,10 +132,9 @@ func TestQuickLinksGreyOutWhatTheClientDoesNotHave(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, link := range quickLinksFor(tc.apps, allAccess(tc.apps), false) {
-				if link.Available || link.URL != "" {
-					t.Fatalf("%s: tile %q is linked to %q, want greyed out", tc.name, link.Name, link.URL)
-				}
+			links := quickLinksFor(tc.apps, allAccess(tc.apps), false)
+			if len(links) != 1 || links[0].Name != "Admin" || links[0].Available || links[0].URL != "" {
+				t.Fatalf("%s: links = %+v, want only greyed Admin tile", tc.name, links)
 			}
 		})
 	}

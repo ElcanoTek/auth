@@ -8,10 +8,13 @@ import (
 	"github.com/elcanotek/auth/internal/store"
 )
 
-// quickLink is one tile on the signed-in page: a fixed catalogue entry
-// (name, blurb) resolved against the applications this deployment has
-// registered. Available is false when no enabled application of that kind
-// exists, and the tile renders greyed out instead of as a link.
+// quickLink is one tile on the signed-in page: a catalogue entry (name,
+// blurb) resolved against the applications this deployment has registered and
+// enabled. Available is false when the deployment has the application enabled
+// but the signed-in account has not been granted access to it (or for Admin,
+// when the account is not an administrator), and the tile renders greyed out
+// instead of as a link. Applications that this deployment does not have
+// enabled are omitted entirely.
 type quickLink struct {
 	Kicker      string
 	Name        string
@@ -35,46 +38,46 @@ const adminKind = "admin"
 // quickLinkCatalog is the fixed tile order.
 var quickLinkCatalog = []quickLinkSpec{
 	{Kicker: "Administration", Name: "Admin", Description: "Accounts, access, and applications on this sign-in.", Kind: adminKind, Path: "/admin"},
+	{Kicker: "Directory", Name: "Home", Description: "Internal launchpad and tool directory.", Kind: "home", Path: "/internal"},
 	{Kicker: "Agents", Name: "Fleet", Description: "Work with your AI agents and their tasks.", Kind: "fleet", Path: "/"},
+	{Kicker: "Staging", Name: "Fleet Dev", Description: "Staging workspace for AI agents and their tasks.", Kind: "fleetdev", Path: "/"},
+	{Kicker: "Dashboards", Name: "Pages", Description: "Publish and share versioned dashboards.", Kind: "pages", Path: "/"},
+	{Kicker: "Data Collection", Name: "Keel", Description: "Collect, normalize, and reconcile partner reporting across seats.", Kind: "keel", Path: "/"},
+	{Kicker: "Deal Creation", Name: "Manifest", Description: "AI-powered deal creation with smart auditing.", Kind: "manifest", Path: "/"},
+	{Kicker: "Call Logs", Name: "Voice", Description: "Open voice history and call records.", Kind: "voice", Path: "/"},
 	{Kicker: "Reporting", Name: "Explorer", Description: "Explore reporting on your programmatic activity.", Kind: "explorer", Path: "/"},
 	{Kicker: "Classification", Name: "Lens", Description: "Classify supply quality with AI signals.", Kind: "lens", Path: "/"},
-	{Kicker: "Dashboards", Name: "Pages", Description: "Publish and share versioned dashboards.", Kind: "pages", Path: "/"},
 }
 
-// quickLinkKinds are the application families the catalogue knows.
-var quickLinkKinds = []string{"fleet", "explorer", "lens", "pages"}
-
-// quickLinksFor resolves the catalogue for one signed-in account: a tile is
-// live when an enabled application of that kind is registered with a usable
-// origin AND the account has been granted access to it (access is keyed by
-// application ID). The Admin tile is live for administrators only. It never
-// fails: anything unusable leaves its tile greyed out.
+// quickLinksFor resolves the catalogue for one signed-in account: an
+// application tile is shown only when an enabled application of that kind is
+// registered with a usable origin on this deployment, and is live when the
+// signed-in account has been granted access to it (access is keyed by
+// application ID). The Admin tile is always shown and is live for
+// administrators only.
 func quickLinksFor(apps []store.Application, access map[string]bool, isAdmin bool) []quickLink {
-	origins := map[string]*url.URL{}
-	for _, kind := range quickLinkKinds {
-		app, ok := selectApplication(apps, kind)
-		if !ok || !access[app.ID] {
-			continue
-		}
-		if origin, ok := appOrigin(app.RedirectURI); ok {
-			origins[kind] = origin
-		} else {
-			log.Printf("quick links: application %q has no https origin to link to; %s tile greyed out", app.ID, kind)
-		}
-	}
 	out := make([]quickLink, 0, len(quickLinkCatalog))
 	for _, spec := range quickLinkCatalog {
 		link := quickLink{Kicker: spec.Kicker, Name: spec.Name, Description: spec.Description}
-		switch spec.Kind {
-		case adminKind:
+		if spec.Kind == adminKind {
 			if isAdmin {
 				link.URL, link.Available = spec.Path, true
 			}
-		default:
-			if origin, ok := origins[spec.Kind]; ok {
-				link.URL = (&url.URL{Scheme: origin.Scheme, Host: origin.Host, Path: spec.Path}).String()
-				link.Available = true
-			}
+			out = append(out, link)
+			continue
+		}
+		app, ok := selectApplication(apps, spec.Kind)
+		if !ok {
+			continue
+		}
+		origin, ok := appOrigin(app.RedirectURI)
+		if !ok {
+			log.Printf("quick links: application %q has no https origin to link to; %s tile omitted", app.ID, spec.Kind)
+			continue
+		}
+		if access[app.ID] {
+			link.URL = (&url.URL{Scheme: origin.Scheme, Host: origin.Host, Path: spec.Path}).String()
+			link.Available = true
 		}
 		out = append(out, link)
 	}

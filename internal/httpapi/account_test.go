@@ -16,11 +16,9 @@ import (
 	passwordauth "github.com/elcanotek/auth/internal/password"
 )
 
-// The signed-in page links to the applications this deployment registered
-// and greys out the rest. Availability is the applications table, nothing
-// else: registering explorer + fleet lights Admin (Fleet's console), Fleet and
-// Explorer; Lens stays a non-link.
-func TestAccountPageLinksRegisteredAppsAndGreysOutTheRest(t *testing.T) {
+// The signed-in page links to the enabled applications this deployment
+// registered and omits any application that is disabled or not registered.
+func TestAccountPageShowsOnlyEnabledApps(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
 	now := time.Now().Unix()
 	if _, err := st.CreateApplication(context.Background(), "explorer", "Explorer", "https://explorer.client.example/auth/callback", "https://explorer.client.example/signed-out", hashSecret("s1"), now); err != nil {
@@ -47,38 +45,39 @@ func TestAccountPageLinksRegisteredAppsAndGreysOutTheRest(t *testing.T) {
 		`href="/admin"`,
 		`href="https://fleet.client.example/"`,
 		`href="https://explorer.client.example/"`,
-		`<h2>Lens</h2>`,
-		`aria-disabled="true"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("account page lacks %s\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "lens.client.example") {
-		t.Fatalf("disabled lens application is linked:\n%s", body)
+	for _, unwanted := range []string{
+		"lens.client.example",
+		`<h2>Lens</h2>`,
+		`<h2>Pages</h2>`,
+		`<h2>Keel</h2>`,
+		`<h2>Manifest</h2>`,
+		`<h2>Voice</h2>`,
+		`<h2>Home</h2>`,
+		`<h2>Fleet Dev</h2>`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("disabled or unregistered app shown on account page (%s):\n%s", unwanted, body)
+		}
 	}
 	// Tiles keep the catalogue order regardless of registration order.
-	order := regexp.MustCompile(`<h2>(Admin|Fleet|Explorer|Lens|Pages)</h2>`).FindAllStringSubmatch(body, -1)
+	order := regexp.MustCompile(`<h2>([^<]+)</h2>`).FindAllStringSubmatch(body, -1)
 	var names []string
 	for _, m := range order {
 		names = append(names, m[1])
 	}
-	if strings.Join(names, ",") != "Admin,Fleet,Explorer,Lens,Pages" {
-		t.Fatalf("tile order = %v", names)
+	if strings.Join(names, ",") != "Admin,Fleet,Explorer" {
+		t.Fatalf("tile order = %v, want Admin,Fleet,Explorer", names)
 	}
-	// Exactly two greyed tiles (Lens and Pages are not registered here), and
-	// neither is an anchor.
-	if n := strings.Count(body, `class="tile tile-off"`); n != 2 {
-		t.Fatalf("greyed tiles = %d, want 2", n)
+	if n := strings.Count(body, `class="tile tile-off"`); n != 0 {
+		t.Fatalf("greyed tiles = %d, want 0", n)
 	}
 	if n := strings.Count(body, `<a class="tile"`); n != 3 {
 		t.Fatalf("linked tiles = %d, want 3", n)
-	}
-	// The greyed tile is inert: no href, not focusable, no leftover URL.
-	off := body[strings.Index(body, `class="tile tile-off"`):]
-	off = off[:strings.Index(off, "</div>")]
-	if strings.Contains(off, "href=") || strings.Contains(off, "tabindex") || strings.Contains(off, "http") {
-		t.Fatalf("greyed tile is not inert:\n%s", off)
 	}
 	if strings.Contains(body, "ZgotmplZ") {
 		t.Fatalf("template refused a URL:\n%s", body)
@@ -112,13 +111,13 @@ func TestAccountPageIsUncachedAndReferrerFree(t *testing.T) {
 	}
 }
 
-// With nothing registered every tile is greyed and nothing links anywhere;
-// the page still renders (it is where people sign out).
-func TestAccountPageWithNoApplicationsGreysEveryTile(t *testing.T) {
+// With no applications registered, only the Admin tile renders (greyed out for
+// a non-admin); the page still renders (it is where people sign out).
+func TestAccountPageWithNoApplicationsShowsOnlyAdminTile(t *testing.T) {
 	ts, _, cfg, plain := newPasswordTestServer(t, false)
 	body := accountPage(t, ts, cfg, plain)
-	if n := strings.Count(body, `class="tile tile-off"`); n != 5 {
-		t.Fatalf("greyed tiles = %d, want 5\n%s", n, body)
+	if n := strings.Count(body, `class="tile tile-off"`); n != 1 {
+		t.Fatalf("greyed tiles = %d, want 1 (Admin)\n%s", n, body)
 	}
 	if strings.Contains(body, `<a class="tile"`) || !strings.Contains(body, `action="/logout?lang=en"`) {
 		t.Fatalf("unexpected link or missing sign-out form:\n%s", body)
@@ -146,8 +145,8 @@ func accountPage(t *testing.T, ts *httptest.Server, cfg *config.Config, plain st
 	return string(body)
 }
 
-// Registered but not granted: the tile is greyed for this account, and the
-// page says so with the same inert markup.
+// Registered and enabled, but not granted: the tile is greyed for this
+// account with inert markup, while unregistered apps do not appear at all.
 func TestAccountPageGreysAppsTheAccountCannotOpen(t *testing.T) {
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
 	now := time.Now().Unix()
@@ -162,8 +161,14 @@ func TestAccountPageGreysAppsTheAccountCannotOpen(t *testing.T) {
 	if strings.Contains(body, "fleet.client.example") || !strings.Contains(body, `href="https://explorer.client.example/"`) {
 		t.Fatalf("access not reflected:\n%s", body)
 	}
-	if n := strings.Count(body, `class="tile tile-off"`); n != 4 {
-		t.Fatalf("greyed tiles = %d, want 4 (Admin, Fleet, Lens, Pages)", n)
+	if n := strings.Count(body, `class="tile tile-off"`); n != 2 {
+		t.Fatalf("greyed tiles = %d, want 2 (Admin, Fleet)", n)
+	}
+	// The greyed tile is inert: no href, not focusable, no leftover URL.
+	off := body[strings.Index(body, `class="tile tile-off"`):]
+	off = off[:strings.Index(off, "</div>")]
+	if strings.Contains(off, "href=") || strings.Contains(off, "tabindex") || strings.Contains(off, "http") {
+		t.Fatalf("greyed tile is not inert:\n%s", off)
 	}
 }
 

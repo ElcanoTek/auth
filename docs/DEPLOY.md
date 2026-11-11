@@ -267,16 +267,17 @@ one edit; nothing here is optional for the first sign-in to work.
    mode the magic-mode `home.<cookie-domain>` landing is not derived, so only
    an explicit `AUTH_DEFAULT_RETURN_TO` changes where a direct visit lands.
 
-   The signed-in page at `/account` shows a quick-link tile per application
-   family (Admin, Fleet, Explorer, Lens, Pages). A tile is live when an enabled
-   application of that family is registered **and the signed-in account has
-   access to it**; otherwise it is greyed out. It links to the **origin** of
-   the registered callback (applications are assumed origin-rooted; a
-   callback under a sub-path such as `/apps/fleet/...` would link to the
-   wrong place). The family is read from the ID only: the exact ID (`fleet`,
-   `explorer`, `lens`, `pages`) wins; otherwise exactly one `<family>-<suffix>` ID
+   The signed-in page at `/account` shows the Admin tile plus a quick-link tile
+   for each known application family (`home`, `fleet`, `fleetdev`, `pages`,
+   `keel`, `manifest`, `voice`, `explorer`, `lens`) that is registered and
+   enabled on this deployment. Applications that are not registered or are
+   disabled do not appear on `/account`. For an enabled application, its tile
+   is live when **the signed-in account has access to it** and greyed out
+   otherwise. Each tile links to the **origin** of the registered callback
+   (`/` for most families, `/internal` for `home`). The family is read from the
+   ID only: the exact ID wins; otherwise exactly one `<family>-<suffix>` ID
    (`explorer-northwind`) stands in. Two suffixed IDs and no exact one is
-   ambiguous, so that tile stays greyed and the server log says why. The
+   ambiguous, so that tile is omitted and the server log says why. The
    Admin tile opens Auth's own console and is live for administrators only.
 
 **On each application host**

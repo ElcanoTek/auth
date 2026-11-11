@@ -77,7 +77,7 @@ make smoke        # real binaries: magic link, password, app handoff (needed for
 make stack-check  # frontend standard only (scripts/stack-check.sh; offline)
 go test -race ./...                      # CI runs this, not plain go test
 go mod verify && go mod tidy -diff       # CI dependency gate
-GOTOOLCHAIN=go1.27.3 go run golang.org/x/vuln/cmd/govulncheck@latest ./...  # Go = go.mod's
+GOTOOLCHAIN=go1.27.4 go run golang.org/x/vuln/cmd/govulncheck@latest ./...  # Go = go.mod's
 shellcheck install.sh scripts/*.sh scripts/lib/*.sh scripts/test/*.sh deploy/auth-cli  # v0.11.0, as CI
 ```
 
