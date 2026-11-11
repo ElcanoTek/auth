@@ -122,10 +122,17 @@ it is never a parent-domain cookie and carries no identity or authorization.
 Local storage takes precedence over an older cookie on GET pages. POST responses
 with one-time passwords or recovery codes are never reloaded to change language.
 
+Pass `lang=en`, `lang=es` or `lang=pt` when handing the browser to
+`GET /logout?client_id=<your id>`. Auth retains the normalized preference in
+its local `/?notice=signed_out&lang=…` landing, so the notice keeps its language
+even when browser storage is unavailable. Auth's own sign-out forms do the same.
+RP-initiated logout still lands on Auth; this does not select an application's
+registered logout URI or accept a caller-supplied return URL.
+
 Language changes leave `redirect_uri`, `state`, `nonce`, PKCE values, authorization
 codes and callback parameters unchanged. Applications retain their own language
 preference after the callback; Auth does not add language data to identity claims
-or redirect destinations. Existing callback and `return_to` validation still
+or application redirect destinations. Existing callback and `return_to` validation still
 applies. User names, email addresses, application names and branding copy remain
 as configured; the interface translates only Auth-owned messages.
 

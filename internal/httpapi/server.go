@@ -1524,7 +1524,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, logoutLocation(r, "/"), http.StatusSeeOther)
 }
 
 // handlePasswordLogout is "sign out of every application". Two entry points
@@ -1561,7 +1561,7 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 		if !s.validCSRF(r) {
 			// Stale /account page: nothing is revoked; a fresh copy of the
 			// page carries the live token and its Sign out button works.
-			http.Redirect(w, r, "/account", http.StatusSeeOther)
+			http.Redirect(w, r, logoutLocation(r, "/account"), http.StatusSeeOther)
 			return
 		}
 		redirectTo = r.FormValue("redirect_to")
@@ -1614,7 +1614,7 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 	if dest == "" {
 		dest = "/"
 	}
-	http.Redirect(w, r, dest, http.StatusSeeOther)
+	http.Redirect(w, r, logoutLocation(r, dest), http.StatusSeeOther)
 }
 
 // ── /verify — Caddy forward_auth target ──────────────────────────────

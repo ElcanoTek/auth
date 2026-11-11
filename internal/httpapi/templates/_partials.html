@@ -76,7 +76,7 @@
 {{define "sign-out"}}<dialog id="sign-out" class="modal confirm-change" aria-labelledby="sign-out-title" aria-describedby="sign-out-detail" closedby="any">
     <div class="modal-head"><h3 id="sign-out-title">{{tr "Sign out everywhere?"}}</h3><form method="dialog"><button class="icon-btn close" type="submit" aria-label="{{tr "Close"}}">{{template "icon" "close"}}</button></form></div>
     <p class="hint" id="sign-out-detail">{{tr "This ends every one of your sessions, in every application, on every device, this one included. You return to the sign-in page."}}</p>
-    <form method="post" action="/logout">
+    <form method="post" action="/logout?lang={{language}}">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="redirect_to" value="/?notice=signed_out">
       <button class="btn" type="submit">{{tr "Sign out"}}</button>
     </form>

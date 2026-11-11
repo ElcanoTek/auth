@@ -141,7 +141,7 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 		`— Admin Portal</title>`, `<h1>Admin Portal</h1>`,
 		`class="tab active" href="/admin"`, `href="/admin?tab=fleet"`, `href="/admin?tab=explorer"`,
 		"Alice@Example.com", "bob@example.com", `<span class="badge admin">Admin</span>`, `<span class="chip">Fleet</span>`,
-		`name="action" value="create"`, `action="/logout"`,
+		`name="action" value="create"`, `action="/logout?lang=en"`,
 		`id="account-search" type="search" placeholder="Search accounts"`, `id="account-filter" data-account-filter`,
 		`data-account-row data-account-search-value="bob@example.com`, `data-account-empty hidden`,
 		// alice has registered apps but no grants: the cell says so.
@@ -591,7 +591,7 @@ func TestAuthorizeRefusesAccountsWithoutAccess(t *testing.T) {
 	// them switch), not in the page text.
 	if strings.Contains(string(body), "signed in as") || !strings.Contains(accountPopup(t, string(body)), "bob@example.com") ||
 		!strings.Contains(accountPopup(t, string(body)), `commandfor="sign-out" command="show-modal"`) ||
-		!strings.Contains(signOutPopup(t, string(body)), `<form method="post" action="/logout">`) {
+		!strings.Contains(signOutPopup(t, string(body)), `<form method="post" action="/logout?lang=en">`) {
 		t.Fatalf("no-access page should name the account only in Your account:\n%s", body)
 	}
 	// The 403 is a real page: HTML content type and the nonce policy that
@@ -679,7 +679,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		`commandfor="access-0" command="show-modal"`, `<dialog id="access-0" class="modal"`,
 		`commandfor="settings-0" command="show-modal"`, `<dialog id="settings-0" class="modal"`,
 		`<a class="icon-btn close" href="/account" aria-label="Back to your apps"`,
-		`<div class="corner-bottom">`, `action="/logout"`, `<a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>`,
+		`<div class="corner-bottom">`, `action="/logout?lang=en"`, `<a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>`,
 		`data-generate="new-password"`, `name="password" type="text"`, `name="team" type="text" list="teams"`, `<datalist id="teams">`,
 	} {
 		if !strings.Contains(body, want) {

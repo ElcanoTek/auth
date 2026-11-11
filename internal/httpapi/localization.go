@@ -72,7 +72,7 @@ func translate(lang, source string, values ...any) string {
 	})
 }
 
-func requestLanguage(r *http.Request) string {
+func queryLanguage(r *http.Request) string {
 	if lang := normalizeLanguage(r.URL.Query().Get("lang")); lang != "" {
 		return lang
 	}
@@ -83,11 +83,39 @@ func requestLanguage(r *http.Request) string {
 			return lang
 		}
 	}
+	return ""
+}
+
+// logoutLocation preserves an explicit display preference on Auth's own
+// logout landings even when browser storage is unavailable. Other validated
+// destinations, including application callbacks, keep their exact URL.
+func logoutLocation(r *http.Request, destination string) string {
+	switch destination {
+	case "/", "/account", "/?notice=signed_out":
+	default:
+		return destination
+	}
+	lang := queryLanguage(r)
+	if lang == "" {
+		return destination
+	}
+	separator := "?"
+	if strings.Contains(destination, "?") {
+		separator = "&"
+	}
+	return destination + separator + "lang=" + lang
+}
+
+func requestLanguage(r *http.Request) string {
+	if lang := queryLanguage(r); lang != "" {
+		return lang
+	}
 	if saved, err := r.Cookie("elcano_language"); err == nil {
 		if lang := normalizeLanguage(saved.Value); lang != "" {
 			return lang
 		}
 	}
+
 	type preference struct {
 		lang    string
 		quality float64
@@ -129,10 +157,7 @@ func (w *languageWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter 
 func (s *Server) withLanguage(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		lang := requestLanguage(r)
-		explicit := normalizeLanguage(r.URL.Query().Get("lang")) != ""
-		for _, locale := range strings.Fields(r.URL.Query().Get("ui_locales")) {
-			explicit = explicit || normalizeLanguage(locale) != ""
-		}
+		explicit := queryLanguage(r) != ""
 		if explicit && !strings.HasPrefix(r.URL.Path, "/assets/") && !strings.HasPrefix(r.URL.Path, "/brand/") {
 			http.SetCookie(w, &http.Cookie{Name: "elcano_language", Value: lang, Path: "/", MaxAge: 31536000, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 		}
