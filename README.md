@@ -40,8 +40,10 @@ It runs in one of two modes, chosen per deployment:
   signed, versioned desired membership whenever an administrator grants or
   revokes access, plus a signed logout when a sign-out, password change or
   disablement revokes the person's sessions. Two-factor sign-in with an
-  authenticator app (TOTP) can be turned on by each person or required by
-  policy. A web admin console at
+  authenticator app (TOTP) or, for standard accounts when outbound email is
+  configured, a six-digit email verification code can be turned on by each
+  person or required by policy (administrators always use an authenticator
+  app). A web admin console at
   `/admin` manages accounts, per-application access, two-factor policy and
   sign-outs. See
   [`docs/AUTH_V2_IMPLEMENTATION.md`](docs/AUTH_V2_IMPLEMENTATION.md) for the
