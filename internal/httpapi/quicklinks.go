@@ -38,15 +38,15 @@ const adminKind = "admin"
 // quickLinkCatalog is the fixed tile order.
 var quickLinkCatalog = []quickLinkSpec{
 	{Kicker: "Administration", Name: "Admin", Description: "Accounts, access, and applications on this sign-in.", Kind: adminKind, Path: "/admin"},
+	{Kicker: "Directory", Name: "Home", Description: "Internal launchpad and tool directory.", Kind: "home", Path: "/internal"},
 	{Kicker: "Agents", Name: "Fleet", Description: "Work with your AI agents and their tasks.", Kind: "fleet", Path: "/"},
-	{Kicker: "Reporting", Name: "Explorer", Description: "Explore reporting on your programmatic activity.", Kind: "explorer", Path: "/"},
-	{Kicker: "Classification", Name: "Lens", Description: "Classify supply quality with AI signals.", Kind: "lens", Path: "/"},
+	{Kicker: "Staging", Name: "Fleet Dev", Description: "Staging workspace for AI agents and their tasks.", Kind: "fleetdev", Path: "/"},
 	{Kicker: "Dashboards", Name: "Pages", Description: "Publish and share versioned dashboards.", Kind: "pages", Path: "/"},
 	{Kicker: "Data Collection", Name: "Keel", Description: "Collect, normalize, and reconcile partner reporting across seats.", Kind: "keel", Path: "/"},
 	{Kicker: "Deal Creation", Name: "Manifest", Description: "AI-powered deal creation with smart auditing.", Kind: "manifest", Path: "/"},
 	{Kicker: "Call Logs", Name: "Voice", Description: "Open voice history and call records.", Kind: "voice", Path: "/"},
-	{Kicker: "Directory", Name: "Home", Description: "Internal launchpad and tool directory.", Kind: "home", Path: "/internal"},
-	{Kicker: "Staging", Name: "Fleet Dev", Description: "Staging workspace for AI agents and their tasks.", Kind: "fleetdev", Path: "/"},
+	{Kicker: "Reporting", Name: "Explorer", Description: "Explore reporting on your programmatic activity.", Kind: "explorer", Path: "/"},
+	{Kicker: "Classification", Name: "Lens", Description: "Classify supply quality with AI signals.", Kind: "lens", Path: "/"},
 }
 
 // quickLinksFor resolves the catalogue for one signed-in account: an

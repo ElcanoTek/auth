@@ -268,8 +268,8 @@ one edit; nothing here is optional for the first sign-in to work.
    an explicit `AUTH_DEFAULT_RETURN_TO` changes where a direct visit lands.
 
    The signed-in page at `/account` shows the Admin tile plus a quick-link tile
-   for each known application family (`fleet`, `explorer`, `lens`, `pages`,
-   `keel`, `manifest`, `voice`, `home`, `fleetdev`) that is registered and
+   for each known application family (`home`, `fleet`, `fleetdev`, `pages`,
+   `keel`, `manifest`, `voice`, `explorer`, `lens`) that is registered and
    enabled on this deployment. Applications that are not registered or are
    disabled do not appear on `/account`. For an enabled application, its tile
    is live when **the signed-in account has access to it** and greyed out

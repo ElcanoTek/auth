@@ -64,15 +64,15 @@ func TestQuickLinksElcanoAllNineAppsShownWhenEnabled(t *testing.T) {
 		url  string
 	}{
 		{"Admin", "/admin"},
+		{"Home", "https://home.elcanotek.com/internal"},
 		{"Fleet", "https://fleet.elcanotek.com/"},
-		{"Explorer", "https://explorer.elcanotek.com/"},
-		{"Lens", "https://lens.elcanotek.com/"},
+		{"Fleet Dev", "https://fleetdev.elcanotek.com/"},
 		{"Pages", "https://pages.elcanotek.com/"},
 		{"Keel", "https://keel.elcanotek.com/"},
 		{"Manifest", "https://manifest.elcanotek.com/"},
 		{"Voice", "https://voice.elcanotek.com/"},
-		{"Home", "https://home.elcanotek.com/internal"},
-		{"Fleet Dev", "https://fleetdev.elcanotek.com/"},
+		{"Explorer", "https://explorer.elcanotek.com/"},
+		{"Lens", "https://lens.elcanotek.com/"},
 	}
 	if len(links) != len(want) {
 		t.Fatalf("got %d links (%+v), want %d", len(links), links, len(want))
