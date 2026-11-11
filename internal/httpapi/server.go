@@ -1610,11 +1610,13 @@ func (s *Server) handlePasswordLogout(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	dest := s.resolveReturnTo(redirectTo)
+	// Keep redirect validation at the final boundary after decorating only
+	// Auth-owned logout landings with their display preference.
+	dest := s.resolveReturnTo(logoutLocation(r, redirectTo))
 	if dest == "" {
-		dest = "/"
+		dest = logoutLocation(r, "/")
 	}
-	http.Redirect(w, r, logoutLocation(r, dest), http.StatusSeeOther)
+	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
 // ── /verify — Caddy forward_auth target ──────────────────────────────
