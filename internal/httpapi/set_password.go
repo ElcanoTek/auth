@@ -38,7 +38,7 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	page := map[string]any{"Stage": setPasswordOpen, "CSRF": csrf}
@@ -47,18 +47,18 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 		return
 	}
 	if !s.validCSRF(r) {
 		// A stale copy of the page; nothing is read from it. Opening the
 		// link again starts over with a live token.
-		page["Error"] = "That page had expired, so nothing was saved. Open the link from your email again."
+		page["Error"] = translate(requestLanguage(r), "That page had expired, so nothing was saved. Open the link from your email again.")
 		s.renderSetPassword(w, 0, page)
 		return
 	}
@@ -69,7 +69,7 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	attempt, limited, err := s.reserveLinkAttempt(ctx, ipRateKey, now)
 	if err != nil {
 		logUnlessCancelled("reserve link attempt", err)
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	if limited {
@@ -92,7 +92,7 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		logUnlessCancelled("password link lookup", err)
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	// A valid link is not a failed attempt, so its provisional failure goes;
@@ -109,18 +109,18 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	next, confirm := r.PostFormValue("new_password"), r.PostFormValue("confirm_password")
 	if next != confirm {
-		page["Error"] = "The passwords do not match."
+		page["Error"] = translate(requestLanguage(r), "The passwords do not match.")
 		s.renderSetPassword(w, 0, page)
 		return
 	}
 	if err := passwordauth.Validate(next, s.passwordContext(account.Email)...); err != nil {
-		page["Error"] = passwordauth.UserMessage(err)
+		page["Error"] = translate(requestLanguage(r), passwordauth.UserMessage(err))
 		s.renderSetPassword(w, 0, page)
 		return
 	}
 	encoded, err := s.hashPassword(ctx, next)
 	if err != nil {
-		page["Error"] = passwordauth.UserMessage(err)
+		page["Error"] = translate(requestLanguage(r), passwordauth.UserMessage(err))
 		s.renderSetPassword(w, 0, page)
 		return
 	}
@@ -145,7 +145,7 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		logUnlessCancelled("use password link", err)
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/?notice=password_set", http.StatusSeeOther)

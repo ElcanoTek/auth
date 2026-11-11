@@ -444,7 +444,7 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	remaining, _ := s.store.RecoveryCodesRemaining(r.Context(), account.ID)
@@ -462,12 +462,12 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	case http.MethodPost:
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 		return
 	}
 	if !s.validCSRF(r) {
@@ -487,18 +487,18 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		logUnlessCancelled("mfa attempt", err)
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	ids, ipKey, limited, err := s.mfaAttempt(r, account.ID, now)
 	if err != nil {
 		logUnlessCancelled("mfa rate limit", err)
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	if limited {
 		_, _ = s.store.RecordAuditIfAbsent(r.Context(), "login.mfa_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
-		render("Too many attempts. Wait a few minutes and try again.")
+		render(translate(requestLanguage(r), "Too many attempts. Wait a few minutes and try again."))
 		return
 	}
 	proof, verified := s.factorProof(r, account, r.FormValue("code"), r.FormValue("recovery_code"), now)
@@ -511,7 +511,7 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.FormValue("mode") == "recovery" || r.FormValue("recovery_code") != "" {
-			render("That code did not work. Check the time on your phone and try the current code.")
+			render(translate(requestLanguage(r), "That code did not work. Check the time on your phone and try the current code."))
 			return
 		}
 		if mfa.NormalizeCode(r.FormValue("code")) == "" {
@@ -521,7 +521,7 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 		// An app set up more than once lists identical entries and only one
 		// secret is live. Which one is not knowable here: a replacement that
 		// was scanned but never confirmed leaves the older entry the live one.
-		render("That code did not work. Check the time on your phone and try the current code. If your app lists " + s.cfg.MFAIssuer + " more than once, only one of those entries works: try another.")
+		render(translate(requestLanguage(r), "That code did not work. Check the time on your phone and try the current code. If your app lists ") + s.cfg.MFAIssuer + translate(requestLanguage(r), " more than once, only one of those entries works: try another."))
 	}
 	if !verified {
 		fail()
@@ -543,13 +543,13 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		logUnlessCancelled("mfa completion", err)
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
 	if proof.Kind == store.ProofRecovery {
 		_ = s.store.RecordAudit(r.Context(), "login.recovery_code_used", account.ID, ipKey, now.Unix())
-		s.notify(account.Email, "A recovery code was used to sign in", "A recovery code signed in to your "+s.cfg.BrandName+" account. If this was not you, contact your administrator; if you lost your authenticator, set up a new one from Security.")
+		s.notify(account.Email, translate(requestLanguage(r), "A recovery code was used to sign in"), translate(requestLanguage(r), "A recovery code signed in to your ")+s.cfg.BrandName+translate(requestLanguage(r), " account. If this was not you, contact your administrator; if you lost your authenticator, set up a new one from Security."))
 	}
 	if next != "" {
 		http.Redirect(w, r, stagePath(next), http.StatusSeeOther)
@@ -719,8 +719,8 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.AbandonAuthTransaction(r.Context(), tr.ID)
 		s.clearLoginTxCookie(w)
 		if err := s.renderStatus(w, http.StatusServiceUnavailable, "status.html", map[string]any{
-			"Brand": s.cfg.BrandName, "Title": "Two-factor sign-in is not set up on this server",
-			"Message": "Your account requires an authenticator app, but this server has no key configured to store one. Ask your administrator to configure AUTH_MFA_KEY.",
+			"Brand": s.cfg.BrandName, "Title": translate(requestLanguage(r), "Two-factor sign-in is not set up on this server"),
+			"Message": translate(requestLanguage(r), "Your account requires an authenticator app, but this server has no key configured to store one. Ask your administrator to configure AUTH_MFA_KEY."),
 		}); err != nil {
 			log.Printf("render mfa unavailable: %v", err)
 		}
@@ -728,7 +728,7 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	now := time.Now()
@@ -741,7 +741,7 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("mfa enrollment view: %v", err)
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
 		view["Brand"], view["CSRF"], view["Error"], view["Action"], view["Required"] = s.cfg.BrandName, csrf, errText, "/login/enroll", true
@@ -755,12 +755,12 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	case http.MethodPost:
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 		return
 	}
 	if !s.validCSRF(r) {
@@ -777,17 +777,17 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 			s.restartLogin(w, r, tr, errMFALocked)
 			return
 		}
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	ids, ipKey, limited, err := s.mfaAttempt(r, account.ID, now)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	if limited {
 		_, _ = s.store.RecordAuditIfAbsent(r.Context(), "login.mfa_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
-		render("Too many attempts. Wait a few minutes and try again.")
+		render(translate(requestLanguage(r), "Too many attempts. Wait a few minutes and try again."))
 		return
 	}
 	pending, step, refused := s.confirmEnrollment(r, account, r.FormValue("code"), now)
@@ -798,23 +798,23 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 			s.restartLogin(w, r, store.AuthTransaction{}, errMFALocked)
 			return
 		}
-		render(enrollFailureText(refused, "That code did not match. Scan the QR code again if you need to, then enter the current code."))
+		render(enrollFailureText(refused, translate(requestLanguage(r), "That code did not match. Scan the QR code again if you need to, then enter the current code.")))
 		return
 	}
 	_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
 	codes, hashes, setID, err := newRecoverySet()
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	raw, err := randomSecret(32)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	csrfNew, err := randomSecret(32)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	idle, absolute := s.sessionWindow(now)
@@ -825,14 +825,14 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		logUnlessCancelled("activate authenticator", err)
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	s.setSessionCookies(w, raw, csrfNew, absolute)
 	s.clearLoginTxCookie(w)
 	_ = s.store.RecordAudit(r.Context(), "login.succeeded", account.ID, s.rateKey("ip", clientIP(r)), now.Unix())
-	s.notify(account.Email, "Two-factor sign-in turned on", "An authenticator app was set up on your "+s.cfg.BrandName+" account and every other session was signed out. If this was not you, contact your administrator.")
-	s.renderRecoveryCodes(w, codes, s.loginTxDest(tr), "Authenticator set up")
+	s.notify(account.Email, translate(requestLanguage(r), "Two-factor sign-in turned on"), translate(requestLanguage(r), "An authenticator app was set up on your ")+s.cfg.BrandName+translate(requestLanguage(r), " account and every other session was signed out. If this was not you, contact your administrator."))
+	s.renderRecoveryCodes(w, codes, s.loginTxDest(tr), translate(requestLanguage(r), "Authenticator set up"))
 }
 
 // handleLoginCancel lets a person abandon an incomplete login.
@@ -925,7 +925,7 @@ func (s *Server) verifySessionCode(r *http.Request, identity *passwordIdentity, 
 	}
 	if limited {
 		_, _ = s.store.RecordAuditIfAbsent(r.Context(), "reauth.mfa_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
-		return "Too many attempts. Wait a few minutes and try again.", nil
+		return translate(requestLanguage(r), "Too many attempts. Wait a few minutes and try again."), nil
 	}
 	proof, ok := s.factorProof(r, account, code, "", now)
 	if !ok || proof.Kind != store.ProofTOTP {
@@ -933,7 +933,7 @@ func (s *Server) verifySessionCode(r *http.Request, identity *passwordIdentity, 
 		if mfa.NormalizeCode(code) == "" {
 			return codeFormatMessage, nil
 		}
-		return "That code did not work. Enter the current code from your authenticator app.", nil
+		return translate(requestLanguage(r), "That code did not work. Enter the current code from your authenticator app."), nil
 	}
 	verify := s.store.VerifyFactorOnSession
 	if stampReauth {
@@ -941,7 +941,7 @@ func (s *Server) verifySessionCode(r *http.Request, identity *passwordIdentity, 
 	}
 	err = verify(r.Context(), identity.Session.TokenHash, proof.AuthenticatorID, proof.Step, proof.Rewrapped, proof.KeyID, now.Unix())
 	if errors.Is(err, store.ErrInvalidProof) {
-		return "That code was already used. Wait for the next one.", nil
+		return translate(requestLanguage(r), "That code was already used. Wait for the next one."), nil
 	}
 	if err != nil {
 		return "", err
@@ -998,7 +998,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 	required := mfa.Required(policy.Mode, account.IsAdmin, account.MFARequired)
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	now := time.Now()
@@ -1007,7 +1007,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 		// 10 MB ceiling and this cap is moot.
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
+			http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 			return
 		}
 	}
@@ -1030,13 +1030,13 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		notice := ""
 		if r.URL.Query().Get("verified") == "1" {
-			notice = "Verified. You can make changes for the next five minutes."
+			notice = translate(requestLanguage(r), "Verified. You can make changes for the next five minutes.")
 		}
 		renderPage(notice, "")
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.validCSRF(r) {
@@ -1045,11 +1045,11 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 	}
 	action := r.FormValue("action")
 	if !securityActions[action] {
-		http.Error(w, "unknown action", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "unknown action"), http.StatusBadRequest)
 		return
 	}
 	if !s.mfaAvailable() {
-		renderPage("", "Two-factor sign-in is not set up on this server. Ask your administrator to configure AUTH_MFA_KEY.")
+		renderPage("", translate(requestLanguage(r), "Two-factor sign-in is not set up on this server. Ask your administrator to configure AUTH_MFA_KEY."))
 		return
 	}
 	// Every action is sensitive: it needs a fresh password (and factor).
@@ -1066,12 +1066,12 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 		view, err := s.enrollmentView(r, account, now)
 		if errors.Is(err, errEnrollLimited) {
 			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enroll_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
-			renderPage("", "Too many set-up attempts. Wait a few minutes and try again.")
+			renderPage("", translate(requestLanguage(r), "Too many set-up attempts. Wait a few minutes and try again."))
 			return
 		}
 		if err != nil {
 			log.Printf("mfa enrollment view: %v", err)
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
 		view["Brand"], view["CSRF"], view["Action"], view["Required"], view["ReturnTo"] = s.cfg.BrandName, csrf, "/account/security", required, returnTo
@@ -1084,12 +1084,12 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 		// reserved (account, address, deployment) before the code is checked.
 		ids, ipKey, limited, err := s.mfaAttempt(r, account.ID, now)
 		if err != nil {
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
 		if limited {
 			_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enroll_rate_limited", account.ID, ipKey, now.Unix(), now.Add(-passwordRateWindow).Unix())
-			renderPage("", "Too many attempts. Wait a few minutes and try again.")
+			renderPage("", translate(requestLanguage(r), "Too many attempts. Wait a few minutes and try again."))
 			return
 		}
 		pending, step, refused := s.confirmEnrollment(r, account, r.FormValue("code"), now)
@@ -1097,11 +1097,11 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 			_ = s.store.RecordAudit(r.Context(), "mfa.enroll_failed", account.ID, ipKey, now.Unix())
 			view, err := s.enrollmentView(r, account, now)
 			if err != nil {
-				http.Error(w, "something went wrong", http.StatusInternalServerError)
+				http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 				return
 			}
 			view["Brand"], view["CSRF"], view["Action"], view["Required"], view["ReturnTo"] = s.cfg.BrandName, csrf, "/account/security", required, returnTo
-			view["Replace"], view["Error"] = account.MFAEnrolled, enrollFailureText(refused, "That code did not match. Enter the current code from your authenticator app.")
+			view["Replace"], view["Error"] = account.MFAEnrolled, enrollFailureText(refused, translate(requestLanguage(r), "That code did not match. Enter the current code from your authenticator app."))
 			if err := s.render(w, "mfa-enroll.html", view); err != nil {
 				log.Printf("render mfa enroll: %v", err)
 			}
@@ -1110,7 +1110,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.SettleLoginAttemptSuccess(r.Context(), ids[0], ids[1])
 		codes, hashes, setID, err := newRecoverySet()
 		if err != nil {
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
 		if _, err := s.store.ActivateAuthenticator(r.Context(), pending.ID, account.ID, step, hashes, setID, identity.Session.TokenHash, nil, now.Unix()); err != nil {
@@ -1120,30 +1120,30 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			logUnlessCancelled("activate authenticator", err)
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
 		dest := returnTo
 		if dest == "" {
 			dest = "/account/security"
 		}
-		title := "Authenticator set up"
+		title := translate(requestLanguage(r), "Authenticator set up")
 		if account.MFAEnrolled {
-			title = "Authenticator replaced"
-			s.notify(account.Email, "Authenticator replaced", "The authenticator app on your "+s.cfg.BrandName+" account was replaced and every other session was signed out. If this was not you, contact your administrator.")
+			title = translate(requestLanguage(r), "Authenticator replaced")
+			s.notify(account.Email, translate(requestLanguage(r), "Authenticator replaced"), translate(requestLanguage(r), "The authenticator app on your ")+s.cfg.BrandName+translate(requestLanguage(r), " account was replaced and every other session was signed out. If this was not you, contact your administrator."))
 		} else {
-			s.notify(account.Email, "Two-factor sign-in turned on", "An authenticator app was set up on your "+s.cfg.BrandName+" account and every other session was signed out. If this was not you, contact your administrator.")
+			s.notify(account.Email, translate(requestLanguage(r), "Two-factor sign-in turned on"), translate(requestLanguage(r), "An authenticator app was set up on your ")+s.cfg.BrandName+translate(requestLanguage(r), " account and every other session was signed out. If this was not you, contact your administrator."))
 		}
 		s.renderRecoveryCodes(w, codes, dest, title)
 	case "regenerate":
 		codes, hashes, setID, err := newRecoverySet()
 		if err != nil {
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
 		if err := s.store.ReplaceRecoveryCodes(r.Context(), account.ID, identity.Session.TokenHash, hashes, setID, now.Unix()); err != nil {
 			if errors.Is(err, store.ErrNoAuthenticator) {
-				renderPage("", "Set up an authenticator first.")
+				renderPage("", translate(requestLanguage(r), "Set up an authenticator first."))
 				return
 			}
 			if errors.Is(err, store.ErrInvalidSession) {
@@ -1154,26 +1154,26 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			logUnlessCancelled("regenerate recovery codes", err)
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		}
-		s.notify(account.Email, "New recovery codes", "New recovery codes were generated for your "+s.cfg.BrandName+" account; the old ones no longer work. If this was not you, contact your administrator.")
-		s.renderRecoveryCodes(w, codes, "/account/security", "New recovery codes")
+		s.notify(account.Email, translate(requestLanguage(r), "New recovery codes"), translate(requestLanguage(r), "New recovery codes were generated for your ")+s.cfg.BrandName+translate(requestLanguage(r), " account; the old ones no longer work. If this was not you, contact your administrator."))
+		s.renderRecoveryCodes(w, codes, "/account/security", translate(requestLanguage(r), "New recovery codes"))
 	case "disable":
 		err := s.store.DisableAuthenticator(r.Context(), account.ID, identity.Session.TokenHash, now.Unix())
 		switch {
 		case errors.Is(err, store.ErrFactorRequired):
-			renderPage("", "Your account is required to keep two-factor sign-in on. You can replace the authenticator instead.")
+			renderPage("", translate(requestLanguage(r), "Your account is required to keep two-factor sign-in on. You can replace the authenticator instead."))
 		case errors.Is(err, store.ErrNoAuthenticator):
-			renderPage("", "There is no authenticator to turn off.")
+			renderPage("", translate(requestLanguage(r), "There is no authenticator to turn off."))
 		case errors.Is(err, store.ErrInvalidSession):
 			s.clearPasswordCookies(w)
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 		case err != nil:
 			logUnlessCancelled("disable authenticator", err)
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		default:
-			s.notify(account.Email, "Two-factor sign-in turned off", "Two-factor sign-in was turned off on your "+s.cfg.BrandName+" account and every other session was signed out. If this was not you, contact your administrator.")
+			s.notify(account.Email, translate(requestLanguage(r), "Two-factor sign-in turned off"), translate(requestLanguage(r), "Two-factor sign-in was turned off on your ")+s.cfg.BrandName+translate(requestLanguage(r), " account and every other session was signed out. If this was not you, contact your administrator."))
 			http.Redirect(w, r, "/account/security?off=1", http.StatusSeeOther)
 		}
 	}
@@ -1204,13 +1204,13 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 	account := identity.Account
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
+			http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 			return
 		}
 	}
@@ -1238,7 +1238,7 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.validCSRF(r) {
@@ -1252,7 +1252,7 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			logUnlessCancelled("reauth password", err)
 		}
-		render("Password is incorrect.")
+		render(translate(requestLanguage(r), "Password is incorrect."))
 		return
 	}
 	if account.MFAEnrolled {
@@ -1266,7 +1266,7 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 			return
 		case err != nil:
 			logUnlessCancelled("step-up", err)
-			http.Error(w, "something went wrong", http.StatusInternalServerError)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 			return
 		case refusal != "":
 			render(refusal)
@@ -1324,7 +1324,7 @@ func (s *Server) changePasswordUnderTransaction(w http.ResponseWriter, r *http.R
 	w.Header().Set("Cache-Control", "no-store")
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	dest := s.loginTxDest(tr)
@@ -1333,12 +1333,12 @@ func (s *Server) changePasswordUnderTransaction(w http.ResponseWriter, r *http.R
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 		return
 	}
 	if !s.validCSRF(r) {
@@ -1353,24 +1353,24 @@ func (s *Server) changePasswordUnderTransaction(w http.ResponseWriter, r *http.R
 		if authErr != nil {
 			logUnlessCancelled("password change authentication", authErr)
 		}
-		s.renderChangePassword(w, "Current password is incorrect.", csrf, dest)
+		s.renderChangePassword(w, translate(requestLanguage(r), "Current password is incorrect."), csrf, dest)
 		return
 	}
 	if next != confirm {
-		s.renderChangePassword(w, "New passwords do not match.", csrf, dest)
+		s.renderChangePassword(w, translate(requestLanguage(r), "New passwords do not match."), csrf, dest)
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(next), []byte(current)) == 1 {
-		s.renderChangePassword(w, "New password must be different from the current password.", csrf, dest)
+		s.renderChangePassword(w, translate(requestLanguage(r), "New password must be different from the current password."), csrf, dest)
 		return
 	}
 	if err := passwordauth.Validate(next, s.passwordContext(account.Email)...); err != nil {
-		s.renderChangePassword(w, passwordauth.UserMessage(err), csrf, dest)
+		s.renderChangePassword(w, translate(requestLanguage(r), passwordauth.UserMessage(err)), csrf, dest)
 		return
 	}
 	encoded, err := s.hashPassword(r.Context(), next)
 	if err != nil {
-		s.renderChangePassword(w, passwordauth.UserMessage(err), csrf, dest)
+		s.renderChangePassword(w, translate(requestLanguage(r), passwordauth.UserMessage(err)), csrf, dest)
 		return
 	}
 	// What follows the change: enrollment when policy requires a factor the
@@ -1391,7 +1391,7 @@ func (s *Server) changePasswordUnderTransaction(w http.ResponseWriter, r *http.R
 		return
 	case err != nil:
 		log.Printf("replace password under transaction: %v", err)
-		s.renderChangePassword(w, "Something went wrong. Try again.", csrf, dest)
+		s.renderChangePassword(w, translate(requestLanguage(r), "Something went wrong. Try again."), csrf, dest)
 		return
 	}
 	if following != "" {
@@ -1405,6 +1405,6 @@ func (s *Server) changePasswordUnderTransaction(w http.ResponseWriter, r *http.R
 			return
 		}
 		logUnlessCancelled("complete login after password change", err)
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 	}
 }

@@ -106,6 +106,29 @@ should too.
      object whose keys and values are application-defined and strictly
      validated by that application.
 
+### Display language
+
+Auth serves English (`en`), Spanish (`es`) and Portuguese (`pt`). Pass the
+application's current language as `ui_locales=es` on `/authorize`; space-separated
+OIDC preferences and regional tags such as `es-MX` and `pt-BR` are accepted.
+`?lang=pt` is the explicit override, followed by `ui_locales`, a saved choice,
+`Accept-Language`, then English. The language selector offers native names and
+also works without JavaScript.
+
+Browser preference uses `localStorage["elcano.language"]`. Auth also keeps an
+HttpOnly, SameSite=Lax, host-only `elcano_language` cookie so POST responses and
+server-rendered navigation retain that choice. It always uses Secure, including on localhost;
+it is never a parent-domain cookie and carries no identity or authorization.
+Local storage takes precedence over an older cookie on GET pages. POST responses
+with one-time passwords or recovery codes are never reloaded to change language.
+
+Language changes leave `redirect_uri`, `state`, `nonce`, PKCE values, authorization
+codes and callback parameters unchanged. Applications retain their own language
+preference after the callback; Auth does not add language data to identity claims
+or redirect destinations. Existing callback and `return_to` validation still
+applies. User names, email addresses, application names and branding copy remain
+as configured; the interface translates only Auth-owned messages.
+
 ### One way: Auth to the application
 
 Membership flows one way. Auth is the source of truth for who may use an

@@ -196,16 +196,16 @@ func (s *Server) handleMagicCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	if !sameOriginPost(r) {
-		http.Error(w, "cross-origin sign-in code refused", http.StatusForbidden)
+		http.Error(w, translate(requestLanguage(r), "cross-origin sign-in code refused"), http.StatusForbidden)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 		return
 	}
 	// The address only re-labels the "sent" page on failure, and return_to

@@ -97,7 +97,7 @@ func assetURL(name string) (string, error) {
 }
 
 func parseTemplates() *template.Template {
-	return template.Must(template.New("").Funcs(template.FuncMap{"asset": assetURL}).ParseFS(templateFS, "templates/*.html"))
+	return localizedTemplates("en")
 }
 
 // handleAsset serves GET/HEAD /assets/{version}/{path...} from the embedded
@@ -128,7 +128,7 @@ func handleAsset(w http.ResponseWriter, r *http.Request) {
 func serveImmutable(w http.ResponseWriter, r *http.Request, ctype string, b []byte) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	w.Header().Set("Content-Type", ctype)

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"html"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -30,7 +31,8 @@ func TestAuthenticatorHelpPage(t *testing.T) {
 			t.Errorf("help page lacks %q", want)
 		}
 	}
-	if strings.Contains(page, "<form") || strings.Contains(page, "<input") {
+	guideOnly := regexp.MustCompile(`(?s)<form class="language-choice".*?</form>`).ReplaceAllString(page, "")
+	if strings.Contains(guideOnly, "<form") || strings.Contains(guideOnly, "<input") {
 		t.Error("the guide must not have form fields: nothing to type a code into, nothing to autofill")
 	}
 
@@ -104,7 +106,7 @@ func TestPagesLinkTheAuthenticatorGuide(t *testing.T) {
 	_, page := alice.post("/account/security", url.Values{"action": {"start"}})
 	guide := strings.Index(page, `href="/help/authenticator" target="_blank" rel="noopener"`)
 	qr := strings.Index(page, `class="qr"`)
-	if guide < 0 || qr < 0 || guide > qr || !strings.Contains(page, "(opens in a new tab)") || !strings.Contains(page, "from inside the app, not with your phone's camera") {
+	if guide < 0 || qr < 0 || guide > qr || !strings.Contains(page, "(opens in a new tab)") || !strings.Contains(html.UnescapeString(page), "from inside the app, not with your phone's camera") {
 		t.Errorf("set-up page must link the guide, in a new tab, just above the QR code:\n%s", page)
 	}
 	secret := extractSecret(t, page)

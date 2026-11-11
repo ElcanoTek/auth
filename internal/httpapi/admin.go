@@ -262,7 +262,7 @@ func newPendingChange(r *http.Request, action string) (*pendingChange, bool) {
 		}
 	}
 	query := r.URL.Query()
-	p := &pendingChange{Action: action, Why: strings.ToUpper(what[:1]) + what[1:]}
+	p := &pendingChange{Action: action, Why: translate(requestLanguage(r), strings.ToUpper(what[:1])+what[1:])}
 	for _, name := range names {
 		if _, inQuery := query[name]; inQuery {
 			return nil, false
@@ -295,55 +295,59 @@ func (s *Server) describeChange(r *http.Request, p *pendingChange) {
 		current := s.mfaPolicy(r)
 		mode, err := mfa.ParseMode(v.Get("mode"))
 		if err != nil {
-			p.Question = "Change the two-factor policy?"
+			p.Question = translate(requestLanguage(r), "Change the two-factor policy?")
 			return
 		}
 		if mode == current.Mode {
-			p.Question = fmt.Sprintf("Keep the two-factor policy at %s?", mode.Label())
-			p.Detail = "It is already set to that, so nothing changes."
+			p.Question = fmt.Sprintf(translate(requestLanguage(r), "Keep the two-factor policy at %s?"), translate(requestLanguage(r), mode.Label()))
+			p.Detail = translate(requestLanguage(r), "It is already set to that, so nothing changes.")
 			return
 		}
-		p.Question = fmt.Sprintf("Change the two-factor policy from %s to %s?", current.Mode.Label(), mode.Label())
+		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Change the two-factor policy from %s to %s?"), translate(requestLanguage(r), current.Mode.Label()), translate(requestLanguage(r), mode.Label()))
 		if n, err := s.store.CountNewlyRequiredWithoutFactor(ctx, mode); err == nil && n > 0 {
-			p.Detail = fmt.Sprintf("By the current count, %s without an authenticator %s signed out now and set one up at their next sign-in.", plural(int(n), "account"), map[bool]string{true: "is", false: "are"}[n == 1])
+			if n == 1 {
+				p.Detail = translate(requestLanguage(r), "By the current count, 1 account without an authenticator is signed out now and sets one up at their next sign-in.")
+			} else {
+				p.Detail = translate(requestLanguage(r), "By the current count, {0} accounts without an authenticator are signed out now and set one up at their next sign-in.", n)
+			}
 		}
 	case "set-mfa-required":
 		if v.Get("required") != "on" {
-			p.Question = fmt.Sprintf("Stop requiring two-factor sign-in for %s?", email)
-			p.Detail = "They keep their authenticator but may turn it off."
+			p.Question = fmt.Sprintf(translate(requestLanguage(r), "Stop requiring two-factor sign-in for %s?"), email)
+			p.Detail = translate(requestLanguage(r), "They keep their authenticator but may turn it off.")
 			if target, err := s.store.PasswordAccountByEmail(ctx, email); err == nil && mfa.Required(s.mfaPolicy(r).Mode, target.IsAdmin, false) {
-				p.Detail = "Only this account's own requirement is removed: the deployment policy still requires two-factor sign-in of them."
+				p.Detail = translate(requestLanguage(r), "Only this account's own requirement is removed: the deployment policy still requires two-factor sign-in of them.")
 			}
 			return
 		}
-		p.Question = fmt.Sprintf("Require two-factor sign-in for %s?", email)
+		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Require two-factor sign-in for %s?"), email)
 		if target, err := s.store.PasswordAccountByEmail(ctx, email); err == nil && !target.MFAEnrolled {
-			p.Detail = "They have no authenticator yet, so they are signed out now and set one up at their next sign-in."
+			p.Detail = translate(requestLanguage(r), "They have no authenticator yet, so they are signed out now and set one up at their next sign-in.")
 		}
 	case "disable":
-		p.Question = fmt.Sprintf("Disable %s?", email)
-		p.Detail = "They are signed out of every app and device and cannot sign in until the account is enabled again."
+		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Disable %s?"), email)
+		p.Detail = translate(requestLanguage(r), "They are signed out of every app and device and cannot sign in until the account is enabled again.")
 	case "enable":
-		p.Question = fmt.Sprintf("Enable %s?", email)
-		p.Detail = "They can sign in again with their current password."
+		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Enable %s?"), email)
+		p.Detail = translate(requestLanguage(r), "They can sign in again with their current password.")
 	case "reset-password":
-		p.Question = fmt.Sprintf("Reset the password for %s?", email)
-		p.Detail = "They are signed out everywhere, and you get a new temporary password to give them."
+		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Reset the password for %s?"), email)
+		p.Detail = translate(requestLanguage(r), "They are signed out everywhere, and you get a new temporary password to give them.")
 		if s.emailsResetLink(v.Get("delivery")) {
-			p.Detail = fmt.Sprintf("Their current password stops working, they are signed out everywhere, and they are emailed a link to choose a new one (it works for %s).", linkLifetime(store.LinkReset))
+			p.Detail = fmt.Sprintf(translate(requestLanguage(r), "Their current password stops working, they are signed out everywhere, and they are emailed a link to choose a new one (it works for %s)."), linkLifetime(store.LinkReset, requestLanguage(r)))
 		}
 	case "revoke-sessions":
-		p.Question = fmt.Sprintf("Sign %s out of every app and device?", email)
+		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Sign %s out of every app and device?"), email)
 	case "grant-admin":
-		p.Question = fmt.Sprintf("Make %s an administrator?", email)
-		p.Detail = "They can open this console and manage every account." + s.promotionSignOut(r, email)
+		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Make %s an administrator?"), email)
+		p.Detail = translate(requestLanguage(r), "They can open this console and manage every account.") + s.promotionSignOut(r, email)
 	case "revoke-admin":
-		p.Question = fmt.Sprintf("Remove administrator access from %s?", email)
+		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Remove administrator access from %s?"), email)
 	case "reset-mfa":
-		p.Question = fmt.Sprintf("Reset two-factor sign-in for %s?", email)
-		p.Detail = fmt.Sprintf("Their authenticator is removed and they are signed out everywhere; they set up a new one at their next sign-in. Reason recorded: %q.", v.Get("reason"))
+		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Reset two-factor sign-in for %s?"), email)
+		p.Detail = fmt.Sprintf(translate(requestLanguage(r), "Their authenticator is removed and they are signed out everywhere; they set up a new one at their next sign-in. Reason recorded: %q."), v.Get("reason"))
 	case "set-access":
-		p.Question = fmt.Sprintf("Save access for %s?", email)
+		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Save access for %s?"), email)
 		p.Detail = s.describeAccess(r, email, v)
 	case "disable-app", "enable-app":
 		name := v.Get("app")
@@ -351,11 +355,11 @@ func (s *Server) describeChange(r *http.Request, p *pendingChange) {
 			name = app.Name
 		}
 		if p.Action == "disable-app" {
-			p.Question = fmt.Sprintf("Disable %s for everyone?", name)
-			p.Detail = "Nobody can sign in to it until it is enabled again."
+			p.Question = fmt.Sprintf(translate(requestLanguage(r), "Disable %s for everyone?"), name)
+			p.Detail = translate(requestLanguage(r), "Nobody can sign in to it until it is enabled again.")
 		} else {
-			p.Question = fmt.Sprintf("Enable %s?", name)
-			p.Detail = "Everyone granted it can sign in to it again."
+			p.Question = fmt.Sprintf(translate(requestLanguage(r), "Enable %s?"), name)
+			p.Detail = translate(requestLanguage(r), "Everyone granted it can sign in to it again.")
 		}
 	case "rename-team":
 		var preview *store.TeamRenamePreview
@@ -370,22 +374,22 @@ func (s *Server) describeChange(r *http.Request, p *pendingChange) {
 		emails := v["emails"]
 		list := strings.Join(emails, ", ")
 		if len(emails) > 5 {
-			list = fmt.Sprintf("%s and %d more", strings.Join(emails[:5], ", "), len(emails)-5)
+			list = translate(requestLanguage(r), "{0} and {1} more", strings.Join(emails[:5], ", "), len(emails)-5)
 		}
 		switch v.Get("op") {
 		case "signout":
-			p.Question = fmt.Sprintf("Sign %s out of every app and device?", plural(len(emails), "account"))
+			p.Question = fmt.Sprintf(translate(requestLanguage(r), "Sign %s out of every app and device?"), plural(len(emails), "account", requestLanguage(r)))
 			p.Detail = list + "."
 		case "require-mfa":
-			p.Question = fmt.Sprintf("Require two-factor sign-in for %s?", plural(len(emails), "account"))
-			p.Detail = list + ". Those without an authenticator are signed out now and set one up at their next sign-in."
+			p.Question = fmt.Sprintf(translate(requestLanguage(r), "Require two-factor sign-in for %s?"), plural(len(emails), "account", requestLanguage(r)))
+			p.Detail = list + translate(requestLanguage(r), ". Those without an authenticator are signed out now and set one up at their next sign-in.")
 		case "unrequire-mfa":
-			p.Question = fmt.Sprintf("Stop requiring two-factor sign-in for %s?", plural(len(emails), "account"))
+			p.Question = fmt.Sprintf(translate(requestLanguage(r), "Stop requiring two-factor sign-in for %s?"), plural(len(emails), "account", requestLanguage(r)))
 			p.Detail = list + "."
 		}
 	}
 	if p.Question == "" {
-		p.Question = "Make this change?"
+		p.Question = translate(requestLanguage(r), "Make this change?")
 	}
 }
 
@@ -415,11 +419,11 @@ func (s *Server) describeAccess(r *http.Request, email string, v url.Values) str
 		want[id] = true
 		label := name(id)
 		if id == store.FleetApplicationID {
-			label += " (" + fleetRoleSummary(v) + ")"
+			label += " (" + fleetRoleSummary(v, requestLanguage(r)) + ")"
 		}
 		after = append(after, label)
 	}
-	parts := []string{"Applications: " + orNone(after) + "."}
+	parts := []string{translate(requestLanguage(r), "Applications: ") + orNone(after, requestLanguage(r)) + "."}
 	if target, err := s.store.PasswordAccountByEmail(ctx, email); err == nil {
 		if have, err := s.store.ApplicationAccess(ctx, target.ID); err == nil {
 			var removed []string
@@ -429,12 +433,12 @@ func (s *Server) describeAccess(r *http.Request, email string, v url.Values) str
 				}
 			}
 			if len(removed) > 0 {
-				parts = append(parts, "Removed, which signs them out of it now: "+strings.Join(removed, ", ")+".")
+				parts = append(parts, translate(requestLanguage(r), "Removed, which signs them out of it now: ")+strings.Join(removed, ", ")+".")
 			}
 		}
 	}
 	admin := v.Get("admin") == "on"
-	parts = append(parts, "Auth Admin: "+map[bool]string{true: "yes", false: "no"}[admin]+"."+map[bool]string{true: s.promotionSignOut(r, email), false: ""}[admin])
+	parts = append(parts, translate(requestLanguage(r), "Auth Admin: ")+translate(requestLanguage(r), map[bool]string{true: "yes", false: "no"}[admin])+"."+map[bool]string{true: s.promotionSignOut(r, email), false: ""}[admin])
 	return strings.Join(parts, " ")
 }
 
@@ -446,14 +450,14 @@ func (s *Server) promotionSignOut(r *http.Request, email string) string {
 	if err != nil || target.IsAdmin || target.MFAEnrolled || s.mfaPolicy(r).Mode != mfa.ModeAdmins {
 		return ""
 	}
-	return " The policy requires two-factor sign-in of administrators and they have no authenticator, so they are signed out now and set one up at their next sign-in."
+	return translate(requestLanguage(r), " The policy requires two-factor sign-in of administrators and they have no authenticator, so they are signed out now and set one up at their next sign-in.")
 }
 
 // fleetRoleSummary is the Fleet permissions an Access form chose, worded
 // like the console's Fleet button.
-func fleetRoleSummary(v url.Values) string {
+func fleetRoleSummary(v url.Values, languages ...string) string {
 	if v.Get("fleet_admin") == "on" {
-		return "Fleet Admin"
+		return translate(selectedLanguage(languages), "Fleet Admin")
 	}
 	chat := map[string]string{"viewer": "Viewer"}[v.Get("fleet_chat_role")]
 	if chat == "" {
@@ -463,14 +467,14 @@ func fleetRoleSummary(v url.Values) string {
 	if ops == "" {
 		ops = "None"
 	}
-	return "Chat " + chat + " \u00b7 Ops " + ops
+	return translate(selectedLanguage(languages), "Chat {0} · Ops {1}", translate(selectedLanguage(languages), chat), translate(selectedLanguage(languages), ops))
 }
 
-func plural(n int, noun string) string {
+func plural(n int, noun string, languages ...string) string {
 	if n == 1 {
-		return "1 " + noun
+		return "1 " + translate(selectedLanguage(languages), noun)
 	}
-	return fmt.Sprintf("%d %ss", n, noun)
+	return displayNumber(n, selectedLanguage(languages)) + " " + translate(selectedLanguage(languages), noun+"s")
 }
 
 // addUserDraft is the Add user form as submitted. It is echoed back only
@@ -542,32 +546,32 @@ func (s *Server) adminRenameTeam(r *http.Request, res adminResult, actorID strin
 	case errors.Is(err, store.ErrActorNotFresh):
 		return needVerify()
 	case errors.Is(err, store.ErrInvalidTeam):
-		res.Error = "A team name must be 1 to 64 bytes (64 plain letters) with no control characters."
+		res.Error = translate(requestLanguage(r), "A team name must be 1 to 64 bytes (64 plain letters) with no control characters.")
 		return res
 	case errors.Is(err, store.ErrTeamNotFound):
-		res.Error = fmt.Sprintf("No account is on team %s any more.", from)
+		res.Error = fmt.Sprintf(translate(requestLanguage(r), "No account is on team %s any more."), from)
 		return res
 	case errors.Is(err, store.ErrTeamRenameNoChange):
-		res.Error = fmt.Sprintf("%s is already the team's name.", result.To)
+		res.Error = fmt.Sprintf(translate(requestLanguage(r), "%s is already the team's name."), result.To)
 		return res
 	case errors.Is(err, store.ErrTeamRenameChanged):
-		res.Error = "The teams changed after this rename was shown, so nothing was renamed. Check the Teams list and rename again."
+		res.Error = translate(requestLanguage(r), "The teams changed after this rename was shown, so nothing was renamed. Check the Teams list and rename again.")
 		return res
 	case err != nil:
 		return res.failed("rename team", err)
 	}
 	audit("admin.team_renamed", "", "")
-	res.Notice = fmt.Sprintf("Renamed team %s to %s (%s).", result.From, result.To, plural(int(result.Accounts), "account"))
+	res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Renamed team %s to %s (%s)."), result.From, result.To, plural(int(result.Accounts), "account", requestLanguage(r)))
 	if result.Merged {
-		res.Notice = fmt.Sprintf("Merged team %s into %s (%s moved).", result.From, result.To, plural(int(result.Accounts), "account"))
+		res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Merged team %s into %s (%s moved)."), result.From, result.To, plural(int(result.Accounts), "account", requestLanguage(r)))
 	}
 	switch {
 	case result.Paused:
-		res.Notice += " Fleet's team sync is off, so Fleet gets the rename when it is switched back on."
+		res.Notice += translate(requestLanguage(r), " Fleet's team sync is off, so Fleet gets the rename when it is switched back on.")
 	case result.AwaitingEndpoint:
-		res.Notice += " Fleet has no back-channel endpoint, so it gets the rename, and its other access updates, once one is set."
+		res.Notice += translate(requestLanguage(r), " Fleet has no back-channel endpoint, so it gets the rename, and its other access updates, once one is set.")
 	case result.Sent:
-		res.Notice += " Fleet is updated in the background."
+		res.Notice += translate(requestLanguage(r), " Fleet is updated in the background.")
 	}
 	return res
 }
@@ -600,27 +604,27 @@ func (s *Server) confirmTeamRename(r *http.Request) (p *pendingChange, refused b
 // keeps.
 func (s *Server) describeTeamRename(r *http.Request, from, to string) (question, detail string, preview *store.TeamRenamePreview) {
 	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
-	question = fmt.Sprintf("Rename team %s to %s?", from, to)
+	question = fmt.Sprintf(translate(requestLanguage(r), "Rename team %s to %s?"), from, to)
 	p, err := s.store.PreviewTeamRename(r.Context(), from, to)
 	if err != nil {
 		return question, "", nil
 	}
 	synced, _ := s.store.ApplicationTeamSync(r.Context(), store.FleetApplicationID)
 	if p.Merged {
-		question = fmt.Sprintf("Merge team %s (%s) into %s?", from, plural(p.Members, "account"), p.To)
-		detail = fmt.Sprintf("%s already has %s: the two become one team.", p.To, plural(p.MergeMembers, "account"))
+		question = fmt.Sprintf(translate(requestLanguage(r), "Merge team %s (%s) into %s?"), from, plural(p.Members, "account", requestLanguage(r)), p.To)
+		detail = fmt.Sprintf(translate(requestLanguage(r), "%s already has %s: the two become one team."), p.To, plural(p.MergeMembers, "account", requestLanguage(r)))
 		if synced {
-			detail += " In Fleet, each side then sees what the other shared with its team."
+			detail += translate(requestLanguage(r), " In Fleet, each side then sees what the other shared with its team.")
 		}
 		return question, detail, &p
 	}
-	question = fmt.Sprintf("Rename team %s (%s) to %s?", from, plural(p.Members, "account"), p.To)
+	question = fmt.Sprintf(translate(requestLanguage(r), "Rename team %s (%s) to %s?"), from, plural(p.Members, "account", requestLanguage(r)), p.To)
 	if synced {
 		// Auth sees only its own labels (membership flows one way), so it
 		// cannot know whether Fleet still files projects under the new name
 		// from an earlier team. Fleet treats such a name as a live team and
 		// joins it (a name nothing carries is retired first), so say so.
-		detail = fmt.Sprintf("Fleet gets the rename too: everything shared with %s there stays shared with %s. If Fleet still has projects under %s from an earlier team, this team gets those too.", from, p.To, p.To)
+		detail = fmt.Sprintf(translate(requestLanguage(r), "Fleet gets the rename too: everything shared with %s there stays shared with %s. If Fleet still has projects under %s from an earlier team, this team gets those too."), from, p.To, p.To)
 	}
 	return question, detail, &p
 }
@@ -642,7 +646,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
+			http.Error(w, translate(requestLanguage(r), "bad form"), http.StatusBadRequest)
 			return
 		}
 	}
@@ -659,7 +663,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	csrf, err := s.ensureCSRFCookie(w, r)
 	if err != nil {
-		http.Error(w, "something went wrong", http.StatusInternalServerError)
+		http.Error(w, translate(requestLanguage(r), "something went wrong"), http.StatusInternalServerError)
 		return
 	}
 	var result adminResult
@@ -685,14 +689,14 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		switch result.Status {
 		case 0:
 		case http.StatusBadRequest:
-			http.Error(w, "bad request", http.StatusBadRequest)
+			http.Error(w, translate(requestLanguage(r), "bad request"), http.StatusBadRequest)
 			return
 		default:
-			http.Error(w, "something went wrong", result.Status)
+			http.Error(w, translate(requestLanguage(r), "something went wrong"), result.Status)
 			return
 		}
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, translate(requestLanguage(r), "method not allowed"), http.StatusMethodNotAllowed)
 		return
 	}
 	s.renderAdmin(w, r, identity, csrf, result)
@@ -749,15 +753,16 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	// gate returns the page to show instead of performing a sensitive
 	// action, or ok=true when the administrator may proceed.
 	gate := func(what string) (adminResult, bool) {
+		what = translate(requestLanguage(r), what)
 		if !s.mfaAvailable() {
 			res.Tab = adminAccountsTab
-			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset), so " + what + " is not possible from the console; use the auth CLI on the server."
+			res.Error = translate(requestLanguage(r), "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset), so ") + what + translate(requestLanguage(r), " is not possible from the console; use the auth CLI on the server.")
 			return res, false
 		}
 		if !actor.MFAEnrolled {
 			res.Tab = adminAccountsTab
 			res.NeedEnroll = true
-			res.Error = "Set up two-factor sign-in on your own account before " + what + "."
+			res.Error = translate(requestLanguage(r), "Set up two-factor sign-in on your own account before ") + what + "."
 			return res, false
 		}
 		if !fresh {
@@ -819,7 +824,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		appID := strings.TrimSpace(r.FormValue("app"))
 		app, err := s.store.ApplicationByID(ctx, appID)
 		if errors.Is(err, store.ErrApplicationNotFound) {
-			res.Error = "No application with that ID."
+			res.Error = translate(requestLanguage(r), "No application with that ID.")
 			return res
 		}
 		if err != nil {
@@ -836,10 +841,10 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		}
 		if disable {
 			audit("admin.application_disabled", "", app.ID)
-			res.Notice = fmt.Sprintf("%s is disabled. Nobody can sign in to it until it is enabled again.", app.Name)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s is disabled. Nobody can sign in to it until it is enabled again."), app.Name)
 		} else {
 			audit("admin.application_enabled", "", app.ID)
-			res.Notice = fmt.Sprintf("%s is enabled.", app.Name)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s is enabled."), app.Name)
 		}
 		return res
 	}
@@ -879,7 +884,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return needVerify()
 		}
 		if errors.Is(err, store.ErrStalePolicy) {
-			res.Error = "The two-factor policy was changed by someone else meanwhile. Review it and try again."
+			res.Error = translate(requestLanguage(r), "The two-factor policy was changed by someone else meanwhile. Review it and try again.")
 			return res
 		}
 		if err != nil {
@@ -896,11 +901,11 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		}
 		switch signedOut {
 		case 0:
-			res.Notice = fmt.Sprintf("Two-factor policy is now %s.", strings.ToLower(policy.Mode.Label()))
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Two-factor policy is now %s."), strings.ToLower(translate(requestLanguage(r), policy.Mode.Label())))
 		case 1:
-			res.Notice = fmt.Sprintf("Two-factor policy is now %s. One account without an authenticator was signed out and will enroll at its next sign-in.", strings.ToLower(policy.Mode.Label()))
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Two-factor policy is now %s. One account without an authenticator was signed out and will enroll at its next sign-in."), strings.ToLower(translate(requestLanguage(r), policy.Mode.Label())))
 		default:
-			res.Notice = fmt.Sprintf("Two-factor policy is now %s. %d accounts without an authenticator were signed out and will enroll at their next sign-in.", strings.ToLower(policy.Mode.Label()), signedOut)
+			res.Notice = translate(requestLanguage(r), "Two-factor policy is now {0}. {1} accounts without an authenticator were signed out and will enroll at their next sign-in.", strings.ToLower(translate(requestLanguage(r), policy.Mode.Label())), signedOut)
 		}
 		return res
 	}
@@ -916,7 +921,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	}
 	email, ok := validAdminEmail(r.FormValue("email"))
 	if !ok {
-		res.Error = "Enter a valid email address."
+		res.Error = translate(requestLanguage(r), "Enter a valid email address.")
 		return res
 	}
 	res.ForEmail = email
@@ -924,12 +929,12 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	if action == "create" {
 		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
-			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
+			res.Error = translate(requestLanguage(r), "Team must be at most 64 bytes (64 plain letters) with no control characters.")
 			return res
 		}
 		appSettings, settingsErr := fleetSettingsFromForm(r, r.Form["apps"])
 		if settingsErr != nil {
-			res.Error = "Choose valid Fleet permissions."
+			res.Error = translate(requestLanguage(r), "Choose valid Fleet permissions.")
 			return res
 		}
 		// The administrator may type the temporary password or leave it blank
@@ -941,13 +946,13 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		plain, typed := r.FormValue("password"), false
 		invite := s.cfg.PasswordLinksEnabled() && r.FormValue("delivery") != "password"
 		if invite && plain != "" {
-			res.Error = "Clear the temporary password, or choose Set a temporary password to use the one you typed."
+			res.Error = translate(requestLanguage(r), "Clear the temporary password, or choose Set a temporary password to use the one you typed.")
 			return res
 		}
 		if plain != "" {
 			typed = true
 			if err := passwordauth.Validate(plain, s.passwordContext(email)...); err != nil {
-				res.Error = "Temporary password: " + passwordauth.UserMessage(err)
+				res.Error = translate(requestLanguage(r), "Temporary password: ") + translate(requestLanguage(r), passwordauth.UserMessage(err))
 				return res
 			}
 		} else {
@@ -972,10 +977,10 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		case errors.Is(err, store.ErrActorNotFresh):
 			return askForCode()
 		case errors.Is(err, store.ErrAccountExists):
-			res.Error = "An account with that email already exists."
+			res.Error = translate(requestLanguage(r), "An account with that email already exists.")
 			return res
 		case errors.Is(err, store.ErrApplicationNotFound):
-			res.Error = "One of the chosen applications no longer exists. Choose the applications again."
+			res.Error = translate(requestLanguage(r), "One of the chosen applications no longer exists. Choose the applications again.")
 			return res
 		case err != nil:
 			return res.failed("create account", err)
@@ -988,30 +993,30 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		for _, id := range granted {
 			audit("admin.access_granted", account.ID, id)
 		}
-		created, with := "Created "+account.Email, " with"
+		created, with := translate(requestLanguage(r), "Created ")+account.Email, translate(requestLanguage(r), " with")
 		if account.Restored {
 			// A deleted account with this email came back with its history
 			// and team; its old authenticator and access did not.
-			created, with = "Restored "+account.Email+" (deleted earlier) with its history and team", ", and"
+			created, with = translate(requestLanguage(r), "Restored ")+account.Email+translate(requestLanguage(r), " (deleted earlier) with its history and team"), translate(requestLanguage(r), ", and")
 		}
 		switch {
 		case invite:
 			// The generated password was never shown and is not kept:
 			// nobody can sign in until they choose one through the link.
 			audit("admin.password_link_queued", account.ID, "")
-			res.Notice = fmt.Sprintf("%s. An invite email is on its way to them; its link works for %s.", created, linkLifetime(store.LinkInvite))
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s. An invite email is on its way to them; its link works for %s."), created, linkLifetime(store.LinkInvite, requestLanguage(r)))
 		case typed:
-			res.Notice = fmt.Sprintf("%s%s the password you entered; they must change it at first sign-in.", created, with)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s%s the password you entered; they must change it at first sign-in."), created, with)
 		default:
-			res.Notice = fmt.Sprintf("%s. Share the temporary password with them; they must change it at first sign-in.", created)
-			res.Secret, res.SecretTitle, res.Reopen = plain, "Account created", reopenTempPassword
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s. Share the temporary password with them; they must change it at first sign-in."), created)
+			res.Secret, res.SecretTitle, res.Reopen = plain, translate(requestLanguage(r), "Account created"), reopenTempPassword
 		}
 		return res
 	}
 
 	target, err := s.store.PasswordAccountByEmail(ctx, email)
 	if errors.Is(err, store.ErrAccountNotFound) {
-		res.Error = "No account with that email."
+		res.Error = translate(requestLanguage(r), "No account with that email.")
 		return res
 	}
 	if err != nil {
@@ -1021,12 +1026,12 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	switch action {
 	case "reset-password":
 		if self {
-			res.Error = "Use Change password for your own account."
+			res.Error = translate(requestLanguage(r), "Use Change password for your own account.")
 			return res
 		}
 		if s.emailsResetLink(r.FormValue("delivery")) {
 			if target.DisabledAt != nil {
-				res.Error = fmt.Sprintf("%s is disabled. Enable the account first; a disabled account's link would not work.", target.Email)
+				res.Error = fmt.Sprintf(translate(requestLanguage(r), "%s is disabled. Enable the account first; a disabled account's link would not work."), target.Email)
 				return res
 			}
 			// A random password nobody sees replaces the current one, so
@@ -1044,13 +1049,13 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			case errors.Is(err, store.ErrActorNotFresh):
 				return needVerify()
 			case errors.Is(err, store.ErrAccountDisabled):
-				res.Error = fmt.Sprintf("%s is disabled. Enable the account first; a disabled account's link would not work.", target.Email)
+				res.Error = fmt.Sprintf(translate(requestLanguage(r), "%s is disabled. Enable the account first; a disabled account's link would not work."), target.Email)
 				return res
 			case err != nil:
 				return res.failed("reset password", err)
 			}
 			audit("admin.password_reset", target.ID, "")
-			res.Notice = fmt.Sprintf("Reset the password for %s and signed them out everywhere. A link to choose a new one is on its way to them; it works for %s.", target.Email, linkLifetime(store.LinkReset))
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Reset the password for %s and signed them out everywhere. A link to choose a new one is on its way to them; it works for %s."), target.Email, linkLifetime(store.LinkReset, requestLanguage(r)))
 			break
 		}
 		plain, err := passwordauth.Generate(s.passwordContext(target.Email)...)
@@ -1070,8 +1075,8 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return res.failed("reset password", err)
 		}
 		audit("admin.password_reset", target.ID, "")
-		res.Notice = fmt.Sprintf("Reset the password for %s and signed them out everywhere. Share the temporary password with them.", target.Email)
-		res.Secret, res.SecretTitle, res.Reopen = plain, "Password reset", reopenTempPassword
+		res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Reset the password for %s and signed them out everywhere. Share the temporary password with them."), target.Email)
+		res.Secret, res.SecretTitle, res.Reopen = plain, translate(requestLanguage(r), "Password reset"), reopenTempPassword
 	case "send-link":
 		// Not gated: it emails the account's own address a new link and
 		// changes no password; the earlier link stops working.
@@ -1082,13 +1087,13 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		purpose, err := s.store.ResendPasswordLinkBy(ctx, target.Email, actor.ID, nil, now.Unix())
 		switch {
 		case errors.Is(err, store.ErrNoPendingLink):
-			res.Error = fmt.Sprintf("%s has already chosen their own password. Use Reset password to send them a reset link.", target.Email)
+			res.Error = fmt.Sprintf(translate(requestLanguage(r), "%s has already chosen their own password. Use Reset password to send them a reset link."), target.Email)
 			return res
 		case errors.Is(err, store.ErrLinkTooSoon):
-			res.Error = fmt.Sprintf("A link went to %s under a minute ago. Wait a moment before sending another.", target.Email)
+			res.Error = fmt.Sprintf(translate(requestLanguage(r), "A link went to %s under a minute ago. Wait a moment before sending another."), target.Email)
 			return res
 		case errors.Is(err, store.ErrAccountDisabled):
-			res.Error = fmt.Sprintf("%s is disabled. Enable the account first.", target.Email)
+			res.Error = fmt.Sprintf(translate(requestLanguage(r), "%s is disabled. Enable the account first."), target.Email)
 			return res
 		case err != nil:
 			return res.failed("send link", err)
@@ -1098,7 +1103,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		if purpose == store.LinkReset {
 			kind = "reset"
 		}
-		res.Notice = fmt.Sprintf("A new %s link is on its way to %s; the earlier one no longer works.", kind, target.Email)
+		res.Notice = fmt.Sprintf(translate(requestLanguage(r), "A new %s link is on its way to %s; the earlier one no longer works."), translate(requestLanguage(r), kind), target.Email)
 	case "revoke-sessions":
 		// Allowed on one's own row too: it is "sign out everywhere", which
 		// ends this session as well, so the browser goes to the sign-in page.
@@ -1122,11 +1127,15 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Redirect = "/?notice=signed_out"
 			return res
 		}
-		res.Notice = fmt.Sprintf("Signed %s out of %d session(s) and every application.", target.Email, n)
+		if n == 1 {
+			res.Notice = translate(requestLanguage(r), "Signed {0} out of 1 session and every application.", target.Email)
+		} else {
+			res.Notice = translate(requestLanguage(r), "Signed {0} out of {1} sessions and every application.", target.Email, n)
+		}
 	case "disable", "enable":
 		disable := action == "disable"
 		if self && disable {
-			res.Error = "You cannot disable your own account."
+			res.Error = translate(requestLanguage(r), "You cannot disable your own account.")
 			return res
 		}
 		err := s.store.SetAccountDisabledBy(ctx, target.Email, disable, actor.ID, proof, now.Unix())
@@ -1134,7 +1143,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return needVerify()
 		}
 		if errors.Is(err, store.ErrLastAdmin) {
-			res.Error = "That is the last enabled administrator. Make someone else an admin first."
+			res.Error = translate(requestLanguage(r), "That is the last enabled administrator. Make someone else an admin first.")
 			return res
 		}
 		if err != nil {
@@ -1142,15 +1151,15 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		}
 		if disable {
 			audit("admin.account_disabled", target.ID, "")
-			res.Notice = fmt.Sprintf("Disabled %s and signed them out everywhere.", target.Email)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Disabled %s and signed them out everywhere."), target.Email)
 		} else {
 			audit("admin.account_enabled", target.ID, "")
-			res.Notice = fmt.Sprintf("Enabled %s.", target.Email)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Enabled %s."), target.Email)
 		}
 	case "grant-admin", "revoke-admin":
 		grant := action == "grant-admin"
 		if self && !grant {
-			res.Error = "You cannot remove your own administrator access."
+			res.Error = translate(requestLanguage(r), "You cannot remove your own administrator access.")
 			return res
 		}
 		err := s.store.SetAccountAdminBy(ctx, target.Email, grant, actor.ID, proof, now.Unix())
@@ -1158,7 +1167,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return needVerify()
 		}
 		if errors.Is(err, store.ErrLastAdmin) {
-			res.Error = "That is the last enabled administrator. Make someone else an admin first."
+			res.Error = translate(requestLanguage(r), "That is the last enabled administrator. Make someone else an admin first.")
 			return res
 		}
 		if err != nil {
@@ -1166,10 +1175,10 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		}
 		if grant {
 			audit("admin.admin_granted", target.ID, "")
-			res.Notice = fmt.Sprintf("%s can now open this console.", target.Email)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s can now open this console."), target.Email)
 		} else {
 			audit("admin.admin_revoked", target.ID, "")
-			res.Notice = fmt.Sprintf("%s is no longer an administrator.", target.Email)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s is no longer an administrator."), target.Email)
 		}
 	case "reset-mfa":
 		// A lost authenticator. The issue's rules: not for one's own row
@@ -1177,19 +1186,19 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		// factor freshly, a reason is recorded, and the account lands in
 		// "enrollment required" rather than back at password-only.
 		if self {
-			res.Error = "Replace your own authenticator from Security."
+			res.Error = translate(requestLanguage(r), "Replace your own authenticator from Security.")
 			return res
 		}
 		reason, err := store.NormalizeReason(r.FormValue("reason"))
 		if err != nil {
-			res.Error = "Give a short reason for the reset (how you verified it was them), up to 200 characters."
+			res.Error = translate(requestLanguage(r), "Give a short reason for the reset (how you verified it was them), up to 200 characters.")
 			return res
 		}
 		if limited, err := s.reserveCounted(ctx, s.rateKey("mfa-reset", actor.ID), mfaResetLimit, now); err != nil {
 			return res.failed("reset limiter", err)
 		} else if limited {
 			_, _ = s.store.RecordAuditIfAbsent(ctx, "admin.mfa_reset_rate_limited", actor.ID, ipHash, now.Unix(), now.Add(-passwordRateWindow).Unix())
-			res.Error = "Too many resets in a short time. Wait a few minutes and try again."
+			res.Error = translate(requestLanguage(r), "Too many resets in a short time. Wait a few minutes and try again.")
 			return res
 		}
 		err = s.store.ResetMFABy(ctx, target.ID, actor.ID, reason, proof, now.Unix())
@@ -1197,20 +1206,20 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return needVerify()
 		}
 		if errors.Is(err, store.ErrNoAuthenticator) {
-			res.Error = fmt.Sprintf("%s has no authenticator to reset. Use Require two-factor in Settings if they should set one up.", target.Email)
+			res.Error = fmt.Sprintf(translate(requestLanguage(r), "%s has no authenticator to reset. Use Require two-factor in Settings if they should set one up."), target.Email)
 			return res
 		}
 		if err != nil {
 			return res.failed("reset mfa", err)
 		}
 		audit("admin.mfa_reset", target.ID, "")
-		s.notify(target.Email, "Two-factor sign-in was reset on your account",
-			"An administrator reset the authenticator on your "+s.cfg.BrandName+" account. You were signed out everywhere and will set up a new authenticator at your next sign-in. If you did not expect this, contact your administrator.")
-		res.Notice = fmt.Sprintf("Reset two-factor for %s and signed them out everywhere. They set up a new authenticator at their next sign-in.", target.Email)
+		s.notify(target.Email, translate(requestLanguage(r), "Two-factor sign-in was reset on your account"),
+			translate(requestLanguage(r), "An administrator reset the authenticator on your ")+s.cfg.BrandName+translate(requestLanguage(r), " account. You were signed out everywhere and will set up a new authenticator at your next sign-in. If you did not expect this, contact your administrator."))
+		res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Reset two-factor for %s and signed them out everywhere. They set up a new authenticator at their next sign-in."), target.Email)
 	case "set-team":
 		team, err := store.NormalizeTeam(r.FormValue("team"))
 		if err != nil {
-			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
+			res.Error = translate(requestLanguage(r), "Team must be at most 64 bytes (64 plain letters) with no control characters.")
 			return res
 		}
 		before, after, err := s.store.ChangeAccountTeam(ctx, target.Email, team, now.Unix())
@@ -1218,18 +1227,18 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return res.failed("set team", err)
 		}
 		audit("admin.team_set", target.ID, "")
-		res.Notice = teamChangeNotice(target.Email, before, after)
+		res.Notice = teamChangeNotice(target.Email, before, after, requestLanguage(r))
 	case "set-mfa-required":
 		// Settings: require (or stop requiring) two-factor sign-in of one
 		// account. The store re-checks the actor proof in its transaction.
 		want := r.FormValue("required") == "on"
 		policy := s.mfaPolicy(r)
 		if want && mfa.Required(policy.Mode, target.IsAdmin, false) {
-			res.Error = fmt.Sprintf("The deployment policy already requires two-factor sign-in of %s.", target.Email)
+			res.Error = fmt.Sprintf(translate(requestLanguage(r), "The deployment policy already requires two-factor sign-in of %s."), target.Email)
 			return res
 		}
 		if want == target.MFARequired {
-			res.Notice = fmt.Sprintf("No change: two-factor sign-in is %s for %s.", map[bool]string{true: "already required", false: "not required"}[want], target.Email)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "No change: two-factor sign-in is %s for %s."), map[bool]string{true: translate(requestLanguage(r), "already required"), false: translate(requestLanguage(r), "not required")}[want], target.Email)
 			return res
 		}
 		if _, err := s.store.SetAccountMFARequiredBy(ctx, target.Email, want, actor.ID, proof, now.Unix()); err != nil {
@@ -1245,13 +1254,13 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 				return res
 			}
 			if target.MFAEnrolled {
-				res.Notice = fmt.Sprintf("Two-factor sign-in is now required for %s; they can no longer turn it off.", target.Email)
+				res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Two-factor sign-in is now required for %s; they can no longer turn it off."), target.Email)
 			} else {
-				res.Notice = fmt.Sprintf("Two-factor sign-in is now required for %s. They were signed out and set up an authenticator at their next sign-in.", target.Email)
+				res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Two-factor sign-in is now required for %s. They were signed out and set up an authenticator at their next sign-in."), target.Email)
 			}
 		} else {
 			audit("admin.mfa_required_cleared", target.ID, "")
-			res.Notice = fmt.Sprintf("Two-factor sign-in is no longer required for %s.", target.Email)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Two-factor sign-in is no longer required for %s."), target.Email)
 		}
 	case "set-access":
 		// The Access popup saves applications and the Admin flag in one store
@@ -1265,11 +1274,11 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		policy := s.mfaPolicy(r)
 		promotionNeedsFactor := adminChange && wantAdmin && !target.MFAEnrolled && policy.Mode == mfa.ModeAdmins
 		if adminChange && self && !wantAdmin {
-			res.Error = "You cannot remove your own administrator access."
+			res.Error = translate(requestLanguage(r), "You cannot remove your own administrator access.")
 			return res
 		}
 		if promotionNeedsFactor && !s.mfaAvailable() {
-			res.Error = "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset), so nothing can be required of anyone yet."
+			res.Error = translate(requestLanguage(r), "Two-factor sign-in is not set up on this server (AUTH_MFA_KEY is unset), so nothing can be required of anyone yet.")
 			return res
 		}
 		// An empty selection is a real instruction ("no applications"), not
@@ -1280,7 +1289,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		}
 		appSettings, err := fleetSettingsFromForm(r, apps)
 		if err != nil {
-			res.Error = "Choose valid Fleet permissions."
+			res.Error = translate(requestLanguage(r), "Choose valid Fleet permissions.")
 			return res
 		}
 		save := store.AccessSave{Applications: apps, ApplicationSettings: appSettings}
@@ -1292,10 +1301,10 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		outcome, err := s.store.SaveAccountAccess(ctx, target.Email, save, actor.ID, proof, now.Unix())
 		switch {
 		case errors.Is(err, store.ErrApplicationNotFound):
-			res.Error = "One of those applications is not registered."
+			res.Error = translate(requestLanguage(r), "One of those applications is not registered.")
 			return res
 		case errors.Is(err, store.ErrLastAdmin):
-			res.Error = "That is the last enabled administrator. Make someone else an admin first."
+			res.Error = translate(requestLanguage(r), "That is the last enabled administrator. Make someone else an admin first.")
 			return res
 		case errors.Is(err, store.ErrActorNotFresh):
 			return needVerify()
@@ -1315,25 +1324,25 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		if outcome.AdminChanged {
 			if wantAdmin {
 				audit("admin.admin_granted", target.ID, "")
-				adminNote = " Admin console granted."
+				adminNote = translate(requestLanguage(r), " Admin console granted.")
 			} else {
 				audit("admin.admin_revoked", target.ID, "")
-				adminNote = " Admin console removed."
+				adminNote = translate(requestLanguage(r), " Admin console removed.")
 			}
 			if promotionNeedsFactor {
-				mfaNote = " Administrators must use two-factor sign-in here, so they were signed out and set up an authenticator at their next sign-in."
+				mfaNote = translate(requestLanguage(r), " Administrators must use two-factor sign-in here, so they were signed out and set up an authenticator at their next sign-in.")
 			}
 		}
 		added, removed := outcome.Added, outcome.Removed
 		switch {
 		case len(added) == 0 && len(removed) == 0:
-			res.Notice = fmt.Sprintf("No change to %s's applications.%s%s", target.Email, adminNote, mfaNote)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "No change to %s's applications.%s%s"), target.Email, adminNote, mfaNote)
 		case len(removed) == 0:
-			res.Notice = fmt.Sprintf("%s can now sign in to %s.%s%s", target.Email, strings.Join(added, ", "), adminNote, mfaNote)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s can now sign in to %s.%s%s"), target.Email, strings.Join(added, ", "), adminNote, mfaNote)
 		case len(added) == 0:
-			res.Notice = fmt.Sprintf("%s was signed out of and can no longer sign in to %s.%s%s", target.Email, strings.Join(removed, ", "), adminNote, mfaNote)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s was signed out of and can no longer sign in to %s.%s%s"), target.Email, strings.Join(removed, ", "), adminNote, mfaNote)
 		default:
-			res.Notice = fmt.Sprintf("%s: added %s; removed %s (and signed out of it).%s%s", target.Email, strings.Join(added, ", "), strings.Join(removed, ", "), adminNote, mfaNote)
+			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s: added %s; removed %s (and signed out of it).%s%s"), target.Email, strings.Join(added, ", "), strings.Join(removed, ", "), adminNote, mfaNote)
 		}
 	default:
 		res.Status = http.StatusBadRequest
@@ -1375,7 +1384,7 @@ func (s *Server) adminStepUp(r *http.Request, identity *passwordIdentity, res ad
 		return res
 	}
 	res.Reopen = reopenAddUser
-	res.Notice = "Code accepted. Check the details and choose Create account."
+	res.Notice = translate(requestLanguage(r), "Code accepted. Check the details and choose Create account.")
 	return res
 }
 
@@ -1389,7 +1398,7 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 	res.Tab = adminAccountsTab
 	emails := r.Form["emails"]
 	if len(emails) == 0 {
-		res.Error = "Select at least one account first (the boxes on the left)."
+		res.Error = translate(requestLanguage(r), "Select at least one account first (the boxes on the left).")
 		return res
 	}
 	if len(emails) > 200 {
@@ -1402,7 +1411,7 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 	case "team":
 		var err error
 		if team, err = store.NormalizeTeam(r.FormValue("team")); err != nil {
-			res.Error = "Team must be at most 64 bytes (64 plain letters) with no control characters."
+			res.Error = translate(requestLanguage(r), "Team must be at most 64 bytes (64 plain letters) with no control characters.")
 			return res
 		}
 	case "signout", "require-mfa", "unrequire-mfa":
@@ -1421,14 +1430,14 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 	// administrator must not repeat sign-outs and audits blindly.
 	stopped := func(email, what string, err error) adminResult {
 		logUnlessCancelled("batch "+what, err)
-		res.Error = fmt.Sprintf("Stopped at %s: something went wrong. Already done before that: %s. Skipped: %s. Review the table before repeating.", email, orNone(done), orNone(skipped))
+		res.Error = fmt.Sprintf(translate(requestLanguage(r), "Stopped at %s: something went wrong. Already done before that: %s. Skipped: %s. Review the table before repeating."), email, orNone(done, requestLanguage(r)), orNone(skipped, requestLanguage(r)))
 		return res
 	}
 	// expired: the store refused the administrator's proof part-way. Not
 	// offered for repeating: part of the selection is already done, and
 	// repeating all of it could undo what someone changed since.
 	expired := func() adminResult {
-		res.Error = fmt.Sprintf("Your authenticator code expired partway through. Already done: %s. Select the accounts that remain and repeat the change.", orNone(done))
+		res.Error = fmt.Sprintf(translate(requestLanguage(r), "Your authenticator code expired partway through. Already done: %s. Select the accounts that remain and repeat the change."), orNone(done, requestLanguage(r)))
 		return res
 	}
 	for _, raw := range emails {
@@ -1438,7 +1447,7 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 		}
 		target, err := s.store.PasswordAccountByEmail(ctx, email)
 		if errors.Is(err, store.ErrAccountNotFound) {
-			skip(email, "no such account")
+			skip(email, translate(requestLanguage(r), "no such account"))
 			continue
 		}
 		if err != nil {
@@ -1453,9 +1462,9 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 			audit("admin.team_set", target.ID, "")
 			switch {
 			case before == after && after == "":
-				skip(target.Email, "no team")
+				skip(target.Email, translate(requestLanguage(r), "no team"))
 			case before == after:
-				skip(target.Email, "already on team "+after)
+				skip(target.Email, translate(requestLanguage(r), "already on team ")+after)
 			default:
 				// The stored spelling: a case-only match takes the existing team's.
 				team = after
@@ -1463,7 +1472,7 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 			}
 		case "signout":
 			if target.ID == actor.ID {
-				skip(target.Email, "you; use your own row to sign yourself out")
+				skip(target.Email, translate(requestLanguage(r), "you; use your own row to sign yourself out"))
 				continue
 			}
 			if _, err := s.store.RevokeAllAuthSessionsBy(ctx, target.ID, actor.ID, proof, now.Unix(), "admin_revoked"); err != nil {
@@ -1477,15 +1486,15 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 		case "require-mfa", "unrequire-mfa":
 			want := op == "require-mfa"
 			if target.ID == actor.ID {
-				skip(target.Email, "you; set yours up from Security")
+				skip(target.Email, translate(requestLanguage(r), "you; set yours up from Security"))
 				continue
 			}
 			if want && mfa.Required(policy.Mode, target.IsAdmin, false) {
-				skip(target.Email, "already required by the policy")
+				skip(target.Email, translate(requestLanguage(r), "already required by the policy"))
 				continue
 			}
 			if want == target.MFARequired {
-				skip(target.Email, "no change")
+				skip(target.Email, translate(requestLanguage(r), "no change"))
 				continue
 			}
 			if _, err := s.store.SetAccountMFARequiredBy(ctx, target.Email, want, actor.ID, proof, now.Unix()); err != nil {
@@ -1506,24 +1515,24 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 	switch op {
 	case "team":
 		if team == "" {
-			what = "Removed from their team:"
+			what = translate(requestLanguage(r), "Removed from their team:")
 		} else {
-			what = "Added to team " + team + ":"
+			what = translate(requestLanguage(r), "Added to team ") + team + ":"
 		}
 	case "signout":
-		what = "Signed out everywhere:"
+		what = translate(requestLanguage(r), "Signed out everywhere:")
 	case "require-mfa":
-		what = "Two-factor sign-in now required (unenrolled accounts were signed out and set up an authenticator at their next sign-in):"
+		what = translate(requestLanguage(r), "Two-factor sign-in now required (unenrolled accounts were signed out and set up an authenticator at their next sign-in):")
 	case "unrequire-mfa":
-		what = "Two-factor sign-in no longer required:"
+		what = translate(requestLanguage(r), "Two-factor sign-in no longer required:")
 	}
 	switch {
 	case len(done) == 0:
-		res.Error = "Nothing changed. Skipped: " + strings.Join(skipped, "; ") + "."
+		res.Error = translate(requestLanguage(r), "Nothing changed. Skipped: ") + strings.Join(skipped, "; ") + "."
 	default:
-		res.Notice = fmt.Sprintf("%s %s (%d).", what, strings.Join(done, ", "), len(done))
+		res.Notice = translate(requestLanguage(r), "{0} {1} ({2}).", what, strings.Join(done, ", "), len(done))
 		if len(skipped) > 0 {
-			res.Notice += " Skipped: " + strings.Join(skipped, "; ") + "."
+			res.Notice += translate(requestLanguage(r), " Skipped: ") + strings.Join(skipped, "; ") + "."
 		}
 	}
 	return res
@@ -1531,18 +1540,18 @@ func (s *Server) adminBatch(r *http.Request, actor store.Account, res adminResul
 
 // teamChangeNotice says what a team change did to email: added, moved,
 // removed, or nothing (before and after are the stored teams).
-func teamChangeNotice(email, before, after string) string {
+func teamChangeNotice(email, before, after string, languages ...string) string {
 	switch {
 	case before == after && after == "":
-		return fmt.Sprintf("%s has no team.", email)
+		return fmt.Sprintf(translate(selectedLanguage(languages), "%s has no team."), email)
 	case before == after:
-		return fmt.Sprintf("%s is already on team %s.", email, after)
+		return fmt.Sprintf(translate(selectedLanguage(languages), "%s is already on team %s."), email, after)
 	case before == "":
-		return fmt.Sprintf("%s was added to team %s.", email, after)
+		return fmt.Sprintf(translate(selectedLanguage(languages), "%s was added to team %s."), email, after)
 	case after == "":
-		return fmt.Sprintf("%s was removed from team %s.", email, before)
+		return fmt.Sprintf(translate(selectedLanguage(languages), "%s was removed from team %s."), email, before)
 	default:
-		return fmt.Sprintf("%s was moved from team %s to team %s.", email, before, after)
+		return fmt.Sprintf(translate(selectedLanguage(languages), "%s was moved from team %s to team %s."), email, before, after)
 	}
 }
 
@@ -1565,10 +1574,10 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 	apps, err := s.store.ListApplications(ctx)
 	if err != nil {
 		logUnlessCancelled("admin list applications", err)
-		result.Error = joinMessages(result.Error, "Applications could not be loaded.")
+		result.Error = joinMessages(result.Error, translate(requestLanguage(r), "Applications could not be loaded."))
 	}
 	appByID := map[string]store.Application{}
-	tabs := []adminTab{{ID: adminAccountsTab, Label: "Accounts", URL: "/admin"}}
+	tabs := []adminTab{{ID: adminAccountsTab, Label: translate(requestLanguage(r), "Accounts"), URL: "/admin"}}
 	for _, app := range apps {
 		appByID[app.ID] = app
 		tabs = append(tabs, adminTab{ID: app.ID, Label: app.Name, URL: "/admin?tab=" + url.QueryEscape(app.ID)})
@@ -1587,24 +1596,24 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		"Secret": result.Secret, "SecretTitle": result.SecretTitle, "SecretFor": result.ForEmail, "Reopen": result.Reopen, "Draft": result.Draft,
 		"Pending": result.Pending, "NeedEnroll": result.NeedEnroll,
 		"ActorFresh": actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
-		"MFAPolicy":  policy.Mode.Label(), "MFARevision": policy.Revision,
+		"MFAPolicy":  translate(requestLanguage(r), policy.Mode.Label()), "MFARevision": policy.Revision,
 	}, actor, csrf, "/admin")
 
 	if tab == adminAccountsTab {
 		accounts, err := s.store.ListPasswordAccounts(ctx)
 		if err != nil {
 			logUnlessCancelled("admin list accounts", err)
-			data["Error"] = joinMessages(result.Error, "Accounts could not be loaded.")
+			data["Error"] = joinMessages(result.Error, translate(requestLanguage(r), "Accounts could not be loaded."))
 		}
 		access, err := s.store.AllApplicationAccess(ctx)
 		if err != nil {
 			logUnlessCancelled("admin list access", err)
-			data["Error"] = joinMessages(result.Error, "Application access could not be loaded.")
+			data["Error"] = joinMessages(result.Error, translate(requestLanguage(r), "Application access could not be loaded."))
 		}
 		accessSettings, err := s.store.AllApplicationAccessSettings(ctx)
 		if err != nil {
 			logUnlessCancelled("admin list access settings", err)
-			data["Error"] = joinMessages(result.Error, "Application permissions could not be loaded.")
+			data["Error"] = joinMessages(result.Error, translate(requestLanguage(r), "Application permissions could not be loaded."))
 		}
 		enabledAdmins := 0
 		for _, a := range accounts {
@@ -1615,37 +1624,37 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		sessions, err := s.store.ActiveSessionCounts(ctx, now.Unix())
 		if err != nil {
 			logUnlessCancelled("admin count sessions", err)
-			data["Error"] = joinMessages(result.Error, "Session counts could not be loaded.")
+			data["Error"] = joinMessages(result.Error, translate(requestLanguage(r), "Session counts could not be loaded."))
 		}
 		var links map[string]store.PasswordLink
 		if s.cfg.PasswordLinksEnabled() {
 			if links, err = s.store.PasswordLinks(ctx); err != nil {
 				logUnlessCancelled("admin list password links", err)
-				data["Error"] = joinMessages(result.Error, "Emailed links could not be loaded.")
+				data["Error"] = joinMessages(result.Error, translate(requestLanguage(r), "Emailed links could not be loaded."))
 			}
 		}
 		rows := make([]adminAccountRow, 0, len(accounts))
 		for _, a := range accounts {
 			row := adminAccountRow{
-				Email: a.Email, IsAdmin: a.IsAdmin, Team: a.Team, Created: a.CreatedAt.UTC().Format("2006-01-02"),
+				Email: a.Email, IsAdmin: a.IsAdmin, Team: a.Team, Created: displayDate(a.CreatedAt, requestLanguage(r), false),
 				Sessions: sessions[a.ID], Self: a.ID == actor.ID,
 			}
 			switch {
 			case a.DisabledAt != nil:
 				row.Status, row.StatusClass = "Disabled", "off"
 			case a.PasswordResetPending():
-				row.Status, row.StatusClass = "Reset pending", "warn"
-				row.StatusTitle = "Password reset " + a.PasswordResetAt.UTC().Format("2006-01-02 15:04") + " UTC; they have not set a new one yet."
+				row.Status, row.StatusClass = translate(requestLanguage(r), "Reset pending"), "warn"
+				row.StatusTitle = translate(requestLanguage(r), "Password reset ") + displayDate(*a.PasswordResetAt, requestLanguage(r), true) + translate(requestLanguage(r), " UTC; they have not set a new one yet.")
 			case a.MustChangePassword:
 				// A new account still on the temporary password it was created with.
 				row.Status, row.StatusClass = "Invited", "warn"
-				row.StatusTitle = "Created " + a.CreatedAt.UTC().Format("2006-01-02 15:04") + " UTC; they have not signed in and chosen a password yet."
+				row.StatusTitle = translate(requestLanguage(r), "Created ") + displayDate(a.CreatedAt, requestLanguage(r), true) + translate(requestLanguage(r), " UTC; they have not signed in and chosen a password yet.")
 			default:
 				row.Status, row.StatusClass = "Active", "ok"
 			}
 			if links != nil {
 				l, ok := links[a.ID]
-				row.Link, row.LinkChip, row.CanSendLink = describeLink(a, l, ok, row.Self, now)
+				row.Link, row.LinkChip, row.CanSendLink = describeLink(a, l, ok, row.Self, now, requestLanguage(r))
 			}
 			lastAdmin := a.IsAdmin && a.DisabledAt == nil && enabledAdmins == 1
 			row.CanDisable = !row.Self && !lastAdmin
@@ -1692,7 +1701,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		sort.Strings(teams)
 		data["Accounts"] = rows
 		data["EmailLinks"] = s.cfg.PasswordLinksEnabled()
-		data["InviteLifetime"], data["ResetLifetime"] = linkLifetime(store.LinkInvite), linkLifetime(store.LinkReset)
+		data["InviteLifetime"], data["ResetLifetime"] = linkLifetime(store.LinkInvite, requestLanguage(r)), linkLifetime(store.LinkReset, requestLanguage(r))
 		data["AppChoices"] = choices
 		data["Teams"] = teams
 		if counts, err := s.store.TeamCounts(ctx); err != nil {
@@ -1712,22 +1721,22 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 				// the popup says so and withholds Save.
 				data["MFACountError"] = true
 			}
-			options = append(options, adminMFAOption{Mode: string(mode), Label: mode.Label(), Describe: mfaModeDescription(mode), Current: mode == policy.Mode, ToEnroll: n})
+			options = append(options, adminMFAOption{Mode: string(mode), Label: translate(requestLanguage(r), mode.Label()), Describe: mfaModeDescription(mode), Current: mode == policy.Mode, ToEnroll: n})
 		}
 		data["MFAOptions"] = options
 	} else {
 		app := appByID[tab]
 		view := adminAppView{
 			ID: app.ID, Name: app.Name, Disabled: app.DisabledAt != nil,
-			Created: app.CreatedAt.UTC().Format("2006-01-02"),
+			Created: displayDate(app.CreatedAt, requestLanguage(r), false),
 		}
 		signIns, err := s.store.ApplicationSignIns(ctx, app.ID, 200)
 		if err != nil {
 			logUnlessCancelled("admin sign-ins", err)
-			data["Error"] = joinMessages(result.Error, "Sign-in history could not be loaded.")
+			data["Error"] = joinMessages(result.Error, translate(requestLanguage(r), "Sign-in history could not be loaded."))
 		}
 		for _, si := range signIns {
-			view.SignIns = append(view.SignIns, adminSignInRow{Email: si.Email, Count: si.Count, Last: si.LastAt.UTC().Format("2006-01-02 15:04 UTC"), Disabled: si.Disabled})
+			view.SignIns = append(view.SignIns, adminSignInRow{Email: si.Email, Count: si.Count, Last: displayDate(si.LastAt, requestLanguage(r), true) + " UTC", Disabled: si.Disabled})
 		}
 		access, err := s.store.AllApplicationAccess(ctx)
 		if err == nil {
@@ -1747,9 +1756,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 }
 
 // orNone joins a list for a notice, or says "none".
-func orNone(items []string) string {
+func orNone(items []string, languages ...string) string {
 	if len(items) == 0 {
-		return "none"
+		return translate(selectedLanguage(languages), "none")
 	}
 	return strings.Join(items, ", ")
 }
@@ -1799,23 +1808,23 @@ func (s *Server) emailsResetLink(delivery string) bool {
 }
 
 // linkLifetime is how long a link of purpose works, in words.
-func linkLifetime(purpose string) string {
+func linkLifetime(purpose string, languages ...string) string {
 	d := store.LinkTTL(purpose)
 	if d >= 48*time.Hour {
-		return plural(int(d/(24*time.Hour)), "day")
+		return plural(int(d/(24*time.Hour)), "day", selectedLanguage(languages))
 	}
-	return plural(int(d/time.Hour), "hour")
+	return plural(int(d/time.Hour), "hour", selectedLanguage(languages))
 }
 
 // describeLink is an account's emailed link as Settings states it, the chip
 // the table shows when it needs attention, and whether a new one may be
 // sent: to an enabled account (not the administrator's own) that is still
 // waiting to choose its own password.
-func describeLink(a store.Account, l store.PasswordLink, has, self bool, now time.Time) (text, chip string, canSend bool) {
+func describeLink(a store.Account, l store.PasswordLink, has, self bool, now time.Time, languages ...string) (text, chip string, canSend bool) {
 	canSend = !self && a.DisabledAt == nil && (has || a.MustChangePassword)
 	if !has {
 		if canSend {
-			text = "No link has been emailed. Send one to let them choose their own password instead of a temporary one."
+			text = translate(selectedLanguage(languages), "No link has been emailed. Send one to let them choose their own password instead of a temporary one.")
 		}
 		return text, "", canSend
 	}
@@ -1823,20 +1832,24 @@ func describeLink(a store.Account, l store.PasswordLink, has, self bool, now tim
 	if l.Purpose == store.LinkReset {
 		kind = "reset"
 	}
-	stamp := func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04") + " UTC" }
+	stamp := func(t time.Time) string { return displayDate(t, selectedLanguage(languages), true) + " UTC" }
 	switch {
 	case l.FailedAt != nil:
-		text = fmt.Sprintf("The %s email could not be sent: %s", kind, l.LastError)
-		chip = "Email failed"
+		text = fmt.Sprintf(translate(selectedLanguage(languages), "The %s email could not be sent: %s"), translate(selectedLanguage(languages), kind), l.LastError)
+		chip = translate(selectedLanguage(languages), "Email failed")
 	case l.SentAt == nil && l.Attempts > 0:
-		text = fmt.Sprintf("Sending the %s email again after an error: %s", kind, l.LastError)
+		text = fmt.Sprintf(translate(selectedLanguage(languages), "Sending the %s email again after an error: %s"), translate(selectedLanguage(languages), kind), l.LastError)
 	case l.SentAt == nil:
-		text = fmt.Sprintf("Sending the %s email.", kind)
+		text = fmt.Sprintf(translate(selectedLanguage(languages), "Sending the %s email."), translate(selectedLanguage(languages), kind))
 	case l.Expired(now):
-		text = fmt.Sprintf("The %s link expired %s.", kind, stamp(*l.ExpiresAt))
-		chip = "Link expired"
+		text = fmt.Sprintf(translate(selectedLanguage(languages), "The %s link expired %s."), translate(selectedLanguage(languages), kind), stamp(*l.ExpiresAt))
+		chip = translate(selectedLanguage(languages), "Link expired")
 	default:
-		text = fmt.Sprintf("%s link emailed %s; it works until %s.", strings.ToUpper(kind[:1])+kind[1:], stamp(*l.SentAt), stamp(*l.ExpiresAt))
+		label := translate(selectedLanguage(languages), kind)
+		if selectedLanguage(languages) == "en" {
+			label = strings.ToUpper(kind[:1]) + kind[1:]
+		}
+		text = fmt.Sprintf(translate(selectedLanguage(languages), "%s link emailed %s; it works until %s."), label, stamp(*l.SentAt), stamp(*l.ExpiresAt))
 	}
 	return text, chip, canSend
 }

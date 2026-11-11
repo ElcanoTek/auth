@@ -345,7 +345,7 @@ func TestAdminResetRevokeDisableEnableBob(t *testing.T) {
 
 	// Sign out: bob's session dies, his password still works.
 	_, body := alice.post(url.Values{"action": {"revoke-sessions"}, "email": {"bob@example.com"}})
-	if !strings.Contains(body, "Signed bob@example.com out of 1 session(s)") {
+	if !strings.Contains(body, "Signed bob@example.com out of 1 session") {
 		t.Fatalf("revoke:\n%s", body)
 	}
 	if resp, _ := bobSession.get("/account"); resp.StatusCode != http.StatusSeeOther {
