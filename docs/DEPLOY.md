@@ -634,8 +634,13 @@ password. What people see:
 - **Required accounts.** When the deployment policy or a per-user
   requirement (both set in the console, or with `auth mfa policy` and
   `auth user mfa-required` on the box) requires a factor the account lacks,
-  sign-in continues straight into enrollment; a forced first-login password change happens after an existing
-  factor is proven and before enrollment. Existing sessions of an account that
+  sign-in continues straight into enrollment (`/login/enroll`); a forced first-login password change happens after an existing
+  factor is proven and before enrollment. When email codes are available
+  (an email driver is configured), enrollment first asks the person to
+  choose a method, Authenticator app (recommended) or Email code, and
+  Continue opens that set-up (`?method=app` or `?method=email`), with a link
+  back to the choice; nothing is created or sent until then. Without email
+  it opens the authenticator set-up directly. Existing sessions of an account that
   becomes required, and has no factor, are signed out immediately.
 - **Turning it off.** Under the Optional policy a person may turn their own
   factor off from the Security page (a sign-in or step-up less than five

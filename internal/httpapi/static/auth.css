@@ -502,3 +502,26 @@ form + .help-link { margin-top: var(--space-4); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* ── Sign-in enrollment: choosing a two-factor method ── */
+.methods { display: grid; gap: var(--space-3); min-width: 0; margin: var(--space-5) 0 0; padding: 0; border: 0; }
+.method {
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: var(--space-3); align-items: start;
+  margin: 0; padding: var(--space-4); cursor: pointer;
+  border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-1);
+  color: var(--color-text-secondary); font-size: var(--font-size-caption);
+}
+.method input { margin: 0.2rem 0 0; accent-color: var(--color-primary); }
+.method:has(input:checked) {
+  border: 1px solid transparent;
+  background: linear-gradient(var(--color-surface-2), var(--color-surface-2)) padding-box, var(--gradient-action-primary) border-box;
+  color: var(--color-text-primary);
+}
+.method:has(input:focus-visible) { box-shadow: var(--focus-ring); }
+.method__icon { display: inline-flex; color: var(--color-text-muted); }
+.method__icon .icon { width: 1.25rem; height: 1.25rem; }
+.method:has(input:checked) .method__icon { color: var(--color-primary); }
+.method__title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); }
+.method__title strong { color: var(--color-text-primary); font-size: var(--font-size-body); }
+.method__text { min-width: 0; overflow-wrap: anywhere; }
+.method__text small { display: block; margin-top: var(--space-1); color: var(--color-text-muted); line-height: 1.45; }

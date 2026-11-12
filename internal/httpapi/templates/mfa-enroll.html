@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{tr "{0} — Set up your authenticator" .Wordmark}}</title>
+<title>{{if .Choose}}{{tr "{0} — Set up two-factor sign-in" .Wordmark}}{{else}}{{tr "{0} — Set up your authenticator" .Wordmark}}{{end}}</title>
 {{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
 {{template "assets" .}}
 </head>
@@ -14,7 +14,34 @@
   <main class="card">
     {{if .LogoURL}}<img class="mark" src="{{.LogoURL}}" alt="">{{end}}
     <div class="brand">{{.Wordmark}}</div>
-    {{if .EmailMode}}
+    {{if .Choose}}
+    {{/* Sign-in enrollment, step 1: choose where the second code comes from.
+         A plain GET form: Continue opens step 2 for the chosen method
+         (?method=app or ?method=email), so Back works and nothing is sent
+         until a method is chosen. */}}
+    <h1>{{tr "Set up two-factor sign-in"}}</h1>
+    <p class="muted">{{if .Required}}{{tr "Your account requires a second step at sign-in."}} {{end}}{{tr "After your password, you will also enter a six-digit code. Choose where that code comes from."}}</p>
+    {{if .Error}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
+    <form method="get" action="/login/enroll">
+      <fieldset class="methods">
+        <legend class="sr-only">{{tr "Two-factor method"}}</legend>
+        <label class="method">
+          <input type="radio" name="method" value="app" checked>
+          <span class="method__icon">{{template "icon" "shield"}}</span>
+          <span class="method__text"><span class="method__title"><strong>{{tr "Authenticator app"}}</strong><span class="badge badge-secondary">{{tr "Recommended"}}</span></span>
+            <small>{{tr "An app on your phone (Google Authenticator, Microsoft Authenticator, 1Password and others) shows a new code every 30 seconds. Works without signal."}}</small></span>
+        </label>
+        <label class="method">
+          <input type="radio" name="method" value="email">
+          <span class="method__icon">{{template "icon" "mail"}}</span>
+          <span class="method__text"><span class="method__title"><strong>{{tr "Email code"}}</strong></span>
+            <small>{{tr "We email a code to {0} each time you sign in." .Email}}</small></span>
+        </label>
+      </fieldset>
+      <button class="btn btn-primary" type="submit">{{tr "Continue"}}</button>
+    </form>
+    <p class="help-link">{{tr "New to authenticator apps?"}} <a href="/help/authenticator" target="_blank" rel="noopener">{{tr "Step-by-step guide"}}<span class="sr-only"> {{tr "(opens in a new tab)"}}</span></a></p>
+    {{else if .EmailMode}}
     <h1>{{if .Replace}}{{tr "Use email verification codes"}}{{else}}{{tr "Set up email verification"}}{{end}}</h1>
     <p class="muted">{{if .Required}}{{tr "Your account requires a second step at sign-in."}} {{end}}{{tr "We sent a six-digit verification code to"}} <strong>{{.Email}}</strong>. {{tr "Enter it below to turn on email two-factor sign-in."}}</p>
     {{if .Notice}}<div class="alert alert--success" role="status"><div class="alert__description"><strong>{{tr "Done."}}</strong> {{tr .Notice}}</div></div>{{end}}
@@ -31,14 +58,14 @@
     </form>
     <div class="link-row">
       <form method="post" action="{{.Action}}"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="resend_email">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}<button class="btn btn-link" type="submit">{{tr "Send a new code"}}</button></form>
-      {{if eq .Action "/login/enroll"}}<a href="/login/enroll">{{tr "Use an authenticator app instead"}}</a>
+      {{if eq .Action "/login/enroll"}}<a href="/login/enroll">{{tr "Choose a different method"}}</a>
       {{else}}<form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="start">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}<button class="btn btn-link" type="submit">{{tr "Use an authenticator app instead"}}</button></form>{{end}}
     </div>
     {{else}}
     <h1>{{if .Replace}}{{tr "Replace your authenticator"}}{{else}}{{tr "Set up your authenticator"}}{{end}}</h1>
     <p class="muted">{{if .Required}}{{tr "Your account requires a second step at sign-in."}} {{end}}{{tr "Open your authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others all work), tap + and scan this code from inside the app, not with your phone's camera. Then enter the six-digit code it shows."}}</p>
     {{if .Error}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
-    {{if .EmailAvailable}}
+    {{if and .EmailAvailable (ne .Action "/login/enroll")}}
     <form method="post" action="{{.Action}}" class="actions">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <input type="hidden" name="action" value="start_email">
@@ -65,7 +92,7 @@
       <button class="btn btn-primary" type="submit">{{if .Replace}}{{tr "Replace authenticator"}}{{else}}{{tr "Turn on two-factor sign-in"}}{{end}}</button>
     </form>
     {{end}}
-    {{if eq .Action "/login/enroll"}}<div class="link-row"><span></span><form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-link" type="submit">{{tr "Cancel sign-in"}}</button></form></div>
+    {{if eq .Action "/login/enroll"}}<div class="link-row">{{if and .EmailAvailable (not .Choose) (not .EmailMode)}}<a href="/login/enroll">{{tr "Choose a different method"}}</a>{{else}}<span></span>{{end}}<form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-link" type="submit">{{tr "Cancel sign-in"}}</button></form></div>
     {{else}}<div class="link-row"><a href="/account/security">{{tr "Back to security settings"}}</a><span></span></div>{{end}}
   </main>
 </body>

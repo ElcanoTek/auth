@@ -464,14 +464,14 @@ func TestRequiredPolicyForcesEnrollmentDuringLogin(t *testing.T) {
 	if !strings.Contains(silent.Header.Get("Location"), "error=login_required") {
 		t.Fatalf("prompt=none mid-enrollment: %q", silent.Header.Get("Location"))
 	}
-	resp, page := alice.get("/login/enroll")
+	resp, page := alice.get("/login/enroll?method=app")
 	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Your account requires a second step") {
 		t.Fatalf("enroll page: %d\n%s", resp.StatusCode, page)
 	}
 	secret := extractSecret(t, page)
 	// Reloading keeps the same pending secret (the QR does not change under
 	// the person's feet).
-	if _, again := alice.get("/login/enroll"); string(extractSecret(t, again)) != string(secret) {
+	if _, again := alice.get("/login/enroll?method=app"); string(extractSecret(t, again)) != string(secret) {
 		t.Fatal("pending secret changed on reload")
 	}
 	resp, page = alice.post("/login/enroll", url.Values{"code": {codeFor(t, secret, time.Now())}})
@@ -646,7 +646,7 @@ func TestEnrollmentAttemptCapCancelCSRFAndLogoutClearTheTransaction(t *testing.T
 	}
 	alice := newBrowser(t, ts)
 	alice.login("alice@example.com", plain)
-	alice.get("/login/enroll")
+	alice.get("/login/enroll?method=app")
 	for i := 1; i <= 4; i++ {
 		if resp, page := alice.post("/login/enroll", url.Values{"code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not match") {
 			t.Fatalf("enroll attempt %d: %d", i, resp.StatusCode)
