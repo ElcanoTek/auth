@@ -94,7 +94,8 @@ func nextEmailCode(t *testing.T, sender *captureSender, to string, after int) st
 }
 
 // lastEmailCode returns the code in the newest email to `to`, waiting for the
-// first one because codes are sent in the background.
+// first one because codes are sent in the background. Once `to` has mail, use
+// nextEmailCode so an older code is never mistaken for the new one.
 func lastEmailCode(t *testing.T, sender *captureSender, to string) string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -165,6 +166,7 @@ func TestEmailMFALoginEnrollmentAndSignInFlow(t *testing.T) {
 
 	// A second browser signing in as Bob receives a 6-digit email code and lands on /login/verify.
 	laptop := newBrowser(t, ts)
+	beforeLogin := sentCount(sender)
 	resp, _ = laptop.login("bob@example.com", plain)
 	if resp.Header.Get("Location") != "/login/verify" || laptop.has(cfg.PasswordCookieName) {
 		t.Fatalf("second login location=%q hasSession=%v", resp.Header.Get("Location"), laptop.has(cfg.PasswordCookieName))
@@ -173,7 +175,7 @@ func TestEmailMFALoginEnrollmentAndSignInFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Enter the six-digit code we sent to your email.") || strings.Contains(page, "Use a recovery code") {
 		t.Fatalf("GET /login/verify for email factor:\n%s", page)
 	}
-	loginCode := lastEmailCode(t, sender, "bob@example.com")
+	loginCode := nextEmailCode(t, sender, "bob@example.com", beforeLogin)
 
 	// Immediate resend within 60 seconds hits the cooldown notice.
 	resp, page = laptop.post("/login/verify", url.Values{"action": {"resend"}})
