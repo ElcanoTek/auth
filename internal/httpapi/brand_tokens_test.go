@@ -194,3 +194,154 @@ func TestPageGradientIsOneFixedLayerBehindAGrowingPage(t *testing.T) {
 		}
 	}
 }
+
+// cssSpecificity computes (classes+attrs+pseudos, elements) for a simple CSS
+// selector used in components.css / auth.css (no IDs, :where(...) contributes
+// zero).
+func cssSpecificity(sel string) [2]int {
+	for {
+		idx := strings.Index(sel, ":where(")
+		if idx < 0 {
+			break
+		}
+		depth := 0
+		end := -1
+		for i := idx + len(":where"); i < len(sel); i++ {
+			switch sel[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					end = i
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
+			break
+		}
+		sel = sel[:idx] + sel[end+1:]
+	}
+	b := len(regexp.MustCompile(`\[[^\]]+\]|\.[A-Za-z0-9_-]+|:[A-Za-z0-9_-]+`).FindAllString(sel, -1))
+	clean := regexp.MustCompile(`\[[^\]]+\]|\.[A-Za-z0-9_-]+|:[A-Za-z0-9_-]+`).ReplaceAllString(sel, " ")
+	c := len(regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9-]*\b`).FindAllString(clean, -1))
+	return [2]int{b, c}
+}
+
+func splitSelectors(list string) []string {
+	var out []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(list); i++ {
+		switch list[i] {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				out = append(out, strings.TrimSpace(list[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	return append(out, strings.TrimSpace(list[start:]))
+}
+
+func beatsSpecificity(got, floor [2]int) bool {
+	return got[0] > floor[0] || (got[0] == floor[0] && got[1] > floor[1])
+}
+
+// Flag's components.css gives [data-theme="light"] a:hover / body.theme-light
+// a:focus-visible specificity up to (0,2,2). Every anchor button (<a class="btn
+// ...">), icon action and tab in auth.css must beat (0,2,2) in light mode so
+// button labels never collapse onto --color-primary-hover over the primary
+// fill, and .icon-action must zero UA <button> padding.
+func TestLightThemeAnchorControlsAndIconActions(t *testing.T) {
+	noComments := regexp.MustCompile(`(?s)/\*.*?\*/`)
+	flagCSS := noComments.ReplaceAllString(mustStatic("flag/components/components.css"), "")
+	authCSS := noComments.ReplaceAllString(componentCSS, "")
+
+	maxFlagLink := [2]int{0, 0}
+	for _, m := range regexp.MustCompile(`(?m)^([^{}@]+)\{([^}]*)\}`).FindAllStringSubmatch(flagCSS, -1) {
+		if !strings.Contains(m[2], "color:") {
+			continue
+		}
+		for _, s := range splitSelectors(m[1]) {
+			if strings.HasPrefix(s, `[data-theme="light"] a`) || strings.HasPrefix(s, "body.theme-light a") {
+				if sp := cssSpecificity(s); beatsSpecificity(sp, maxFlagLink) {
+					maxFlagLink = sp
+				}
+			}
+		}
+	}
+	if maxFlagLink != ([2]int{2, 2}) {
+		t.Fatalf("expected Flag light-mode link specificity ceiling (2,2), got %v", maxFlagLink)
+	}
+
+	rules := map[string]string{}
+	for _, m := range regexp.MustCompile(`(?s)(?:^|\n)\s*([^{}@]+?)\s*\{([^}]*)\}`).FindAllStringSubmatch(authCSS, -1) {
+		body := strings.TrimSpace(m[2])
+		for _, raw := range splitSelectors(m[1]) {
+			s := strings.Join(strings.Fields(raw), " ")
+			rules[s] += ";" + body
+		}
+	}
+
+	for _, sel := range []string{"a.btn", "a.btn:hover", "a.btn:focus-visible"} {
+		if !strings.Contains(rules[sel], "text-decoration: none") {
+			t.Errorf("auth.css selector %q lacks text-decoration: none (got %q)", sel, rules[sel])
+		}
+	}
+
+	if !strings.Contains(rules[".icon-action"], "padding: 0") {
+		t.Errorf(".icon-action lacks padding: 0 (got %q)", rules[".icon-action"])
+	}
+	if !strings.Contains(rules[".modal__close > .icon-action:hover"], "color: var(--color-status-error-fg)") {
+		t.Errorf(".modal__close > .icon-action:hover lacks error hover treatment (got %q)", rules[".modal__close > .icon-action:hover"])
+	}
+
+	variants := []struct {
+		cls   string
+		rest  string
+		hover string
+	}{
+		{"btn-primary", "color: var(--color-on-primary-fill)", "color: var(--color-on-primary-fill)"},
+		{"btn-secondary", "color: var(--color-text-primary)", "color: var(--color-text-primary)"},
+		{"btn-outline", "color: var(--color-text-primary)", "color: var(--color-text-primary)"},
+		{"btn-ghost", "color: var(--color-text-secondary)", "color: var(--color-text-primary)"},
+		{"btn-danger", "color: var(--color-status-error-fg)", "color: var(--color-status-error-fg)"},
+	}
+	for _, v := range variants {
+		for _, prefix := range []struct {
+			theme string
+			base  string
+		}{
+			{`:root[data-theme="light"]`, "a." + v.cls},
+			{`[data-theme="light"]`, "a.btn." + v.cls},
+			{`body.theme-light`, "a.btn." + v.cls},
+		} {
+			for _, state := range []struct {
+				suffix string
+				want   string
+			}{
+				{"", v.rest},
+				{":hover", v.hover},
+				{":focus-visible", v.hover},
+			} {
+				sel := prefix.theme + " " + prefix.base + state.suffix
+				if sp := cssSpecificity(sel); !beatsSpecificity(sp, maxFlagLink) {
+					t.Errorf("selector %q specificity %v does not beat Flag link ceiling %v", sel, sp, maxFlagLink)
+				}
+				if !strings.Contains(rules[sel], state.want) {
+					t.Errorf("selector %q = %q, want %q", sel, rules[sel], state.want)
+				}
+			}
+		}
+	}
+}
