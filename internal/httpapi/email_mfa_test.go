@@ -358,7 +358,7 @@ func TestEnrollmentStartsWithAMethodChoice(t *testing.T) {
 	before := sentCount(sender)
 	_, page := bob.get("/login/enroll")
 	for _, want := range []string{
-		"<h1>Set up two-factor sign-in</h1>", `<form method="get" action="/login/enroll">`,
+		"<h1>Set up two-factor authentication</h1>", `<form method="get" action="/login/enroll">`,
 		`name="method" value="app" checked`, `name="method" value="email"`,
 		"Authenticator app", "Recommended", "Email code", "We email a code to bob@example.com each time you sign in.",
 		`<button class="btn btn-primary" type="submit">Continue</button>`, "Cancel sign-in",
@@ -397,7 +397,7 @@ func TestEnrollmentStartsWithAMethodChoice(t *testing.T) {
 		t.Fatal("no code emailed")
 	}
 	// An unknown method is just the choice again.
-	if _, page = bob.get("/login/enroll?method=sms"); !strings.Contains(page, "<h1>Set up two-factor sign-in</h1>") {
+	if _, page = bob.get("/login/enroll?method=sms"); !strings.Contains(page, "<h1>Set up two-factor authentication</h1>") {
 		t.Fatalf("unknown method:\n%s", page)
 	}
 }

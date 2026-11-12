@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{if .Choose}}{{tr "{0} — Set up two-factor sign-in" .Wordmark}}{{else}}{{tr "{0} — Set up your authenticator" .Wordmark}}{{end}}</title>
+<title>{{if .Choose}}{{tr "{0} — Set up two-factor authentication" .Wordmark}}{{else}}{{tr "{0} — Set up your authenticator" .Wordmark}}{{end}}</title>
 {{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
 {{template "assets" .}}
 </head>
@@ -19,7 +19,7 @@
          A plain GET form: Continue opens step 2 for the chosen method
          (?method=app or ?method=email), so Back works and nothing is sent
          until a method is chosen. */}}
-    <h1>{{tr "Set up two-factor sign-in"}}</h1>
+    <h1>{{tr "Set up two-factor authentication"}}</h1>
     <p class="muted">{{if .Required}}{{tr "Your account requires a second step at sign-in."}} {{end}}{{tr "After your password, you will also enter a six-digit code. Choose where that code comes from."}}</p>
     {{if .Error}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
     <form method="get" action="/login/enroll">
