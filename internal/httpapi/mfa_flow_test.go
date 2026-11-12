@@ -464,9 +464,14 @@ func TestRequiredPolicyForcesEnrollmentDuringLogin(t *testing.T) {
 	if !strings.Contains(silent.Header.Get("Location"), "error=login_required") {
 		t.Fatalf("prompt=none mid-enrollment: %q", silent.Header.Get("Location"))
 	}
-	resp, page := alice.get("/login/enroll?method=app")
-	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Your account requires a second step") {
+	// The first set-up page says why: the method choice when email codes are
+	// available (the app step that follows stays short).
+	if resp, page := alice.get("/login/enroll"); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Your account requires a second step") {
 		t.Fatalf("enroll page: %d\n%s", resp.StatusCode, page)
+	}
+	resp, page := alice.get("/login/enroll?method=app")
+	if resp.StatusCode != http.StatusOK || strings.Contains(page, "Your account requires a second step") {
+		t.Fatalf("app set-up page: %d\n%s", resp.StatusCode, page)
 	}
 	secret := extractSecret(t, page)
 	// Reloading keeps the same pending secret (the QR does not change under

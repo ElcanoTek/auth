@@ -106,7 +106,7 @@ func TestPagesLinkTheAuthenticatorGuide(t *testing.T) {
 	_, page := alice.post("/account/security", url.Values{"action": {"start"}})
 	guide := strings.Index(page, `href="/help/authenticator" target="_blank" rel="noopener"`)
 	qr := strings.Index(page, `class="qr"`)
-	if guide < 0 || qr < 0 || guide > qr || !strings.Contains(page, "(opens in a new tab)") || !strings.Contains(html.UnescapeString(page), "from inside the app, not with your phone's camera") {
+	if guide < 0 || qr < 0 || guide > qr || !strings.Contains(page, "(opens in a new tab)") || !strings.Contains(html.UnescapeString(page), `from inside the app, <strong class="caution">not with your phone's camera</strong>`) {
 		t.Errorf("set-up page must link the guide, in a new tab, just above the QR code:\n%s", page)
 	}
 	secret := extractSecret(t, page)

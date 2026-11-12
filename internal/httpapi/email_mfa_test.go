@@ -388,6 +388,11 @@ func TestEnrollmentStartsWithAMethodChoice(t *testing.T) {
 	if !strings.Contains(page, `class="qr"`) || !strings.Contains(page, `<a href="/login/enroll">Choose a different method</a>`) || strings.Contains(page, "Use email verification codes instead") {
 		t.Fatalf("app set-up:\n%s", page)
 	}
+	// Sign-in set-up keeps the instructions short, with the two common
+	// mistakes (camera scan, key typed into the code box) called out.
+	if strings.Contains(page, "Authy") || strings.Contains(page, "to an app before?") || strings.Count(page, `class="caution"`) != 3 {
+		t.Fatalf("app set-up instructions:\n%s", page)
+	}
 	// Email: a code is sent, and the way back is there too.
 	_, page = bob.get("/login/enroll?method=email")
 	if !strings.Contains(page, "Set up email verification") || !strings.Contains(page, `<a href="/login/enroll">Choose a different method</a>`) {
@@ -413,7 +418,7 @@ func TestEnrollmentWithoutEmailSkipsTheChoice(t *testing.T) {
 	bob := newBrowser(t, ts)
 	bob.login("bob@example.com", plain)
 	_, page := bob.get("/login/enroll")
-	if !strings.Contains(page, `class="qr"`) || strings.Contains(page, `name="method"`) || strings.Contains(page, "Choose a different method") {
+	if !strings.Contains(page, `class="qr"`) || strings.Contains(page, `name="method"`) || strings.Contains(page, "Choose a different method") || !strings.Contains(page, "Your account requires a second step") {
 		t.Fatalf("enrollment without email:\n%s", page)
 	}
 }
