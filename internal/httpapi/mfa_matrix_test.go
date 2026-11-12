@@ -124,7 +124,7 @@ func TestEnrollmentSecretGenerationIsCapped(t *testing.T) {
 		if resp, _ := alice.login("alice@example.com", plain); resp.Header.Get("Location") != "/login/enroll" {
 			t.Fatalf("login %d: %q", i, resp.Header.Get("Location"))
 		}
-		resp, page := alice.get("/login/enroll")
+		resp, page := alice.get("/login/enroll?method=app")
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("enroll page %d: %d", i, resp.StatusCode)
 		}
@@ -139,7 +139,7 @@ func TestEnrollmentSecretGenerationIsCapped(t *testing.T) {
 	}
 	sixth := newBrowser(t, ts)
 	sixth.login("alice@example.com", plain)
-	if resp, _ := sixth.get("/login/enroll"); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?err=mfa_locked" {
+	if resp, _ := sixth.get("/login/enroll?method=app"); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/?err=mfa_locked" {
 		t.Fatalf("sixth secret: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	_ = cfg

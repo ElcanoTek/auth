@@ -93,21 +93,30 @@ func nextEmailCode(t *testing.T, sender *captureSender, to string, after int) st
 	}
 }
 
+// lastEmailCode returns the code in the newest email to `to`, waiting for the
+// first one because codes are sent in the background.
 func lastEmailCode(t *testing.T, sender *captureSender, to string) string {
 	t.Helper()
-	sender.mu.Lock()
-	defer sender.mu.Unlock()
-	for i := len(sender.sent) - 1; i >= 0; i-- {
-		if strings.EqualFold(sender.sent[i].to, to) {
-			m := emailCodeRE.FindStringSubmatch(sender.sent[i].text)
-			if m == nil {
-				t.Fatalf("no 6-digit code in email to %s:\n%s", to, sender.sent[i].text)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sender.mu.Lock()
+		for i := len(sender.sent) - 1; i >= 0; i-- {
+			if strings.EqualFold(sender.sent[i].to, to) {
+				text := sender.sent[i].text
+				sender.mu.Unlock()
+				m := emailCodeRE.FindStringSubmatch(text)
+				if m == nil {
+					t.Fatalf("no 6-digit code in email to %s:\n%s", to, text)
+				}
+				return m[1]
 			}
-			return m[1]
 		}
+		sender.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatalf("no email sent to %s", to)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("no email sent to %s", to)
-	return ""
 }
 
 func TestEmailMFALoginEnrollmentAndSignInFlow(t *testing.T) {
