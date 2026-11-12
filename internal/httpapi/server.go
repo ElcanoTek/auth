@@ -552,11 +552,11 @@ const staleFormMessage = "That page had expired, so nothing was submitted. Pleas
 func noticeClass(code string) string {
 	switch code {
 	case "signed_out":
-		return "alert"
+		return "alert--destructive"
 	case "stale_form", "mfa_required":
-		return "warn"
+		return "alert--warning"
 	}
-	return ""
+	return "alert--info"
 }
 
 func noticeTitle(code string) string {

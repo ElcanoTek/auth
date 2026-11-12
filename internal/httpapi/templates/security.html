@@ -16,26 +16,26 @@
     <div class="brand">{{.Wordmark}}</div>
     <h1>{{tr "Security"}}</h1>
     <p class="muted">{{tr "Two-factor sign-in for"}} <strong>{{.Email}}</strong>.</p>
-    {{if .Notice}}<div class="banner" role="status"><strong>{{tr "Done."}}</strong> {{tr .Notice}}</div>{{end}}
-    {{if .UsedRecovery}}<div class="banner warn" role="status"><strong>{{tr "Recovery code used."}}</strong> {{tr "You signed in with a recovery code. If you lost your authenticator, replace it now."}}</div>{{end}}
-    {{if .Error}}<div class="err" role="alert">{{tr .Error}}</div>{{end}}
-    <div class="status-line"><span class="tag {{if .Enrolled}}on{{else if .Required}}need{{end}}">{{tr .Status}}</span>{{if .Enrolled}}{{if eq .MFAKind "email"}}<span class="muted">{{tr "Codes sent to {0}" .Email}}</span>{{else}}<span class="muted">{{if eq .Remaining 1}}{{tr "1 recovery code left"}}{{else}}{{tr "{0} recovery codes left" .Remaining}}{{end}}</span>{{end}}{{else if .Required}}<span class="muted">{{tr "Set up an authenticator to continue."}}</span>{{end}}</div>
-    {{if not .Available}}<div class="err">{{tr "Two-factor sign-in is not set up on this server. Ask your administrator to configure AUTH_MFA_KEY."}}</div>{{else}}
+    {{if .Notice}}<div class="alert alert--success" role="status"><div class="alert__description"><strong>{{tr "Done."}}</strong> {{tr .Notice}}</div></div>{{end}}
+    {{if .UsedRecovery}}<div class="alert alert--warning" role="status"><div class="alert__description"><strong>{{tr "Recovery code used."}}</strong> {{tr "You signed in with a recovery code. If you lost your authenticator, replace it now."}}</div></div>{{end}}
+    {{if .Error}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
+    <div class="status-line"><span class="badge {{if .Enrolled}}badge-success{{else if .Required}}badge-warning{{else}}badge-secondary{{end}}">{{tr .Status}}</span>{{if .Enrolled}}{{if eq .MFAKind "email"}}<span class="muted">{{tr "Codes sent to {0}" .Email}}</span>{{else}}<span class="muted">{{if eq .Remaining 1}}{{tr "1 recovery code left"}}{{else}}{{tr "{0} recovery codes left" .Remaining}}{{end}}</span>{{end}}{{else if .Required}}<span class="muted">{{tr "Set up an authenticator to continue."}}</span>{{end}}</div>
+    {{if not .Available}}<div class="alert alert--destructive">{{tr "Two-factor sign-in is not set up on this server. Ask your administrator to configure AUTH_MFA_KEY."}}</div>{{else}}
     <div class="actions">
       <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="start">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
-        <button class="btn" type="submit">{{if .Enrolled}}{{if eq .MFAKind "email"}}{{tr "Switch to authenticator app"}}{{else}}{{tr "Replace authenticator"}}{{end}}{{else}}{{tr "Set up authenticator"}}{{end}}</button></form>
+        <button class="btn btn-primary" type="submit">{{if .Enrolled}}{{if eq .MFAKind "email"}}{{tr "Switch to authenticator app"}}{{else}}{{tr "Replace authenticator"}}{{end}}{{else}}{{tr "Set up authenticator"}}{{end}}</button></form>
       {{if and .EmailAvailable (ne .MFAKind "email")}}
       <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="start_email">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
-        <button class="btn-ghost" type="submit">{{if .Enrolled}}{{tr "Switch to email codes"}}{{else}}{{tr "Use email codes"}}{{end}}</button></form>
+        <button class="btn btn-ghost" type="submit">{{if .Enrolled}}{{tr "Switch to email codes"}}{{else}}{{tr "Use email codes"}}{{end}}</button></form>
       {{end}}
       {{if .Enrolled}}
       {{if ne .MFAKind "email"}}
       <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="regenerate">
-        <button class="btn-ghost" type="submit">{{tr "New recovery codes"}}</button></form>
+        <button class="btn btn-ghost" type="submit">{{tr "New recovery codes"}}</button></form>
       {{end}}
       {{if not .Required}}
       <form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="disable">
-        <button class="btn-ghost" type="submit">{{tr "Turn off two-factor sign-in"}}</button></form>
+        <button class="btn btn-ghost" type="submit">{{tr "Turn off two-factor sign-in"}}</button></form>
       {{end}}
       {{end}}
     </div>

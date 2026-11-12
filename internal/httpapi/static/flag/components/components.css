@@ -1,0 +1,2402 @@
+/* Flag components — the vendorable Tier A component layer (ElcanoTek/flag,
+ * design-system/components/components.css; MIT, see LICENSE in Flag's
+ * design-system/).
+ *
+ * Plain CSS for the classes Flag's design-system/COMPONENTS.md specifies:
+ * buttons, links, form fields, select, number stepper, date picker (themed
+ * flatpickr classes), upload dropzone and file list, checkbox, file radio
+ * list, icon buttons and icon sizing, theme toggle, app header, cards and
+ * featured action cards, accordion and link tiles, email chips, badges,
+ * tables, spinner, logs code display and task tracker, connection picker
+ * pieces, and the segmented control.
+ *
+ * Load after fonts/fonts.css and tokens/design-tokens.css. Every color,
+ * radius, shadow and transition reads a token; the theme switches through
+ * html[data-theme]. It sets `* { box-sizing: border-box }` and inherits fonts
+ * on form controls, and styles bare `a`, `label`, `input`, `select` and
+ * `table` elements; page layout (body background, containers, headings) is
+ * left to the product. Never edit a vendored copy: ask Flag for the change.
+ *
+ * Flag's own preview loads a byte-identical copy (preview/components.css,
+ * refreshed by design-system/sync-preview.sh; CI fails on drift).
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+[data-theme="light"] .btn-primary,
+body.theme-light .btn-primary {
+  background: var(--color-primary-fill);
+  border-color: var(--color-primary-fill);
+  color: var(--color-on-primary-fill);
+}
+
+[data-theme="light"] .btn-primary:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+body.theme-light .btn-primary:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+  filter: none;
+}
+
+[data-theme="light"] .btn-primary:disabled,
+body.theme-light .btn-primary:disabled {
+  background: var(--gradient-action-disabled);
+  border-color: var(--color-border-strong);
+  color: var(--color-text-disabled);
+}
+
+/* Links: --color-link (dark) is 6:1+ on every surface; --color-secondary,
+   the long-standing light link color, is 4.5:1+ there but only 2.7-3.6:1
+   in dark, so it is light-only. See TOKENS.md "Links". */
+
+a {
+  color: var(--color-link);
+}
+
+[data-theme="light"] a,
+body.theme-light a {
+  color: var(--color-secondary);
+}
+
+[data-theme="light"] a:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+[data-theme="light"] a:focus-visible,
+body.theme-light a:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+body.theme-light a:focus-visible {
+  color: var(--color-primary-hover);
+}
+
+[data-theme="light"] .link-title,
+[data-theme="light"] .featured-link h4,
+body.theme-light .link-title,
+body.theme-light .featured-link h4 {
+  color: var(--color-secondary);
+}
+
+[data-theme="light"] .featured-link:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover h4,
+[data-theme="light"] .featured-link:focus-visible h4,
+body.theme-light .featured-link:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover h4,
+body.theme-light .featured-link:focus-visible h4 {
+  color: var(--color-primary-hover);
+}
+
+[data-theme="light"] .featured-link,
+body.theme-light .featured-link {
+  background: var(--gradient-surface-card);
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+[data-theme="light"] .featured-link:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+[data-theme="light"] .featured-link:focus-visible,
+body.theme-light .featured-link:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+body.theme-light .featured-link:focus-visible {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-md);
+}
+
+[data-theme="light"] .featured-link.is-selected,
+[data-theme="light"] .featured-link[aria-current="true"],
+body.theme-light .featured-link.is-selected,
+body.theme-light .featured-link[aria-current="true"] {
+  border-color: var(--color-primary);
+  background: var(--gradient-surface-panel);
+  box-shadow: var(--focus-ring), var(--shadow-md);
+}
+
+[data-theme="light"] .featured-link.is-disabled,
+[data-theme="light"] .featured-link[aria-disabled="true"],
+body.theme-light .featured-link.is-disabled,
+body.theme-light .featured-link[aria-disabled="true"] {
+  opacity: 1;
+  background: var(--gradient-action-disabled);
+  border-color: var(--color-border);
+  box-shadow: none;
+  filter: grayscale(0.2);
+}
+
+[data-theme="light"] .featured-link.is-disabled::before,
+[data-theme="light"] .featured-link[aria-disabled="true"]::before,
+body.theme-light .featured-link.is-disabled::before,
+body.theme-light .featured-link[aria-disabled="true"]::before {
+  opacity: 0.35;
+}
+
+[data-theme="light"] .featured-link.is-disabled .featured-kicker,
+[data-theme="light"] .featured-link[aria-disabled="true"] .featured-kicker,
+[data-theme="light"] .featured-link.is-disabled h4,
+[data-theme="light"] .featured-link[aria-disabled="true"] h4,
+[data-theme="light"] .featured-link.is-disabled .description,
+[data-theme="light"] .featured-link[aria-disabled="true"] .description,
+body.theme-light .featured-link.is-disabled .featured-kicker,
+body.theme-light .featured-link[aria-disabled="true"] .featured-kicker,
+body.theme-light .featured-link.is-disabled h4,
+body.theme-light .featured-link[aria-disabled="true"] h4,
+body.theme-light .featured-link.is-disabled .description,
+body.theme-light .featured-link[aria-disabled="true"] .description {
+  color: var(--color-text-muted);
+}
+
+[data-theme="light"] .chip-email,
+body.theme-light .chip-email {
+  border-color: var(--color-status-assigned-border);
+  background: var(--color-status-assigned-bg);
+  color: var(--color-status-assigned-fg);
+}
+
+[data-theme="light"] .chip-email:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+body.theme-light .chip-email:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  background: var(--color-status-running-bg);
+  box-shadow: var(--shadow-sm);
+}
+
+[data-theme="light"] .chip.selected,
+body.theme-light .chip.selected {
+  background: var(--color-primary-fill);
+  color: var(--color-on-primary-fill);
+}
+
+[data-theme="light"] .chip.selected:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+body.theme-light .chip.selected:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  background: var(--color-secondary);
+}
+
+[data-theme="light"] .chip-delete,
+body.theme-light .chip-delete {
+  color: currentColor;
+}
+
+[data-theme="light"] .chip.selected .chip-delete,
+body.theme-light .chip.selected .chip-delete {
+  color: var(--color-white);
+  background: var(--color-overlay-strong);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.theme-toggle {
+  min-width: 8.25rem;
+  justify-content: center;
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+}
+
+.theme-toggle__icon-wrap {
+  position: relative;
+  width: 1rem;
+  height: 1rem;
+}
+
+.theme-toggle__icon {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transform: scale(0.86) rotate(-12deg);
+  transition: opacity var(--transition-base), transform var(--transition-base);
+}
+
+.theme-toggle__icon--moon {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+.theme-toggle__text {
+  min-width: 4.5rem;
+}
+
+[data-theme="light"] .theme-toggle__icon--sun,
+body.theme-light .theme-toggle__icon--sun {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+[data-theme="light"] .theme-toggle__icon--moon,
+body.theme-light .theme-toggle__icon--moon {
+  opacity: 0;
+  transform: scale(0.86) rotate(12deg);
+}
+
+@media (max-width: 640px) {
+  .theme-toggle {
+    min-width: 2.5rem;
+  }
+
+  .theme-toggle__text {
+    display: none;
+  }
+}
+
+.card,
+.table-wrap,
+.chips-container,
+.file-item,
+.number-input,
+.dropzone-browse-btn,
+.file-upload-dropzone,
+.ds-accordion details,
+.link-tile,
+.btn,
+input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="submit"], [type="button"], [type="reset"], [type="image"], [type="hidden"])),
+select,
+textarea {
+  transition:
+    color var(--transition-base),
+    background-color var(--transition-base),
+    background var(--transition-base),
+    border-color var(--transition-base),
+    box-shadow var(--transition-base);
+}
+
+.ds-app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.ds-app-header__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.ds-app-header__mark {
+  width: 2.5rem;
+  height: 2.5rem;
+  flex: 0 0 auto;
+}
+
+.ds-app-header__text {
+  min-width: 0;
+}
+
+.ds-app-header__eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: var(--font-size-overline);
+  line-height: var(--line-height-overline);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-bold);
+}
+
+.ds-app-header__title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-weight: var(--font-weight-bold);
+  font-size: var(--font-size-subtitle);
+  line-height: var(--line-height-subtitle);
+  color: var(--color-text-primary);
+}
+
+.ds-app-header__actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  /* One non-wrapping row, top right, at every width (COMPONENTS.md "App
+     Header"): the brand text wraps instead. */
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+}
+
+/* Form controls take the page font. Safe for any control, Flag's or not. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.btn {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  min-height: 2.5rem;
+  padding: 0 var(--space-3);
+  cursor: pointer;
+  transition: transform var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast), opacity var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.btn:focus-visible,
+input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="submit"], [type="button"], [type="reset"], [type="image"], [type="hidden"])):focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.btn-primary {
+  background: var(--gradient-action-fill);
+  color: var(--color-on-primary-fill);
+}
+
+.btn-primary:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  border-color: var(--color-accent);
+  background: var(--gradient-action-fill-hover);
+}
+
+.btn-secondary {
+  background: var(--color-surface-2);
+  color: var(--color-text-primary);
+}
+
+.btn-secondary:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  border-color: var(--color-accent);
+  background: var(--color-surface-1);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.btn-ghost:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  border-color: var(--color-accent);
+  background: var(--color-overlay-soft);
+  color: var(--color-text-primary);
+}
+
+.btn-danger {
+  background: var(--color-status-error-bg);
+  border-color: var(--color-status-error-border);
+  color: var(--color-status-error-fg);
+}
+
+.btn-danger:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  border-color: var(--color-danger);
+  background: var(--color-status-error-bg);
+}
+
+.btn:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  transform: translateY(-0.0625rem);
+}
+
+.btn:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active {
+  transform: translateY(0) scale(0.98);
+  transition: transform var(--transition-fast);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.field {
+  display: grid;
+  gap: var(--space-control-stack);
+  align-content: start;
+}
+
+/* Field labels: inside a .field, plus the label-based Flag controls that
+   read this caption size. A third-party label elsewhere is left alone.
+   :where() keeps the specificity of the old bare `label` rule. */
+:where(.field) label,
+:where(.field-label, .ds-checkbox, .input-file-select, .search-compact) {
+  display: block;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+/* The text-field shell: text-like inputs, single selects and textareas
+   only. Checkboxes, radios, ranges, colors, files, buttons and hidden inputs
+   keep their native rendering unless a Flag class redraws them
+   (.ds-checkbox-input, .input-file-select input). :where() keeps the
+   specificity of a bare element selector. */
+input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="submit"], [type="button"], [type="reset"], [type="image"], [type="hidden"])),
+select:where(:not([multiple])),
+textarea {
+  display: block;
+  width: 100%;
+  margin: 0;
+  min-height: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-overlay-soft);
+  color: var(--color-text-primary);
+  padding: 0 var(--space-control-inline);
+  line-height: normal;
+  box-sizing: border-box;
+}
+
+textarea {
+  height: auto;
+  min-height: 5.5rem;
+  padding: var(--space-2) var(--space-control-inline);
+  line-height: var(--line-height-body);
+  resize: vertical;
+}
+
+/* Field states: validation (aria-invalid / .is-warning) and disabled. Helper
+   and validation text sits below the control. */
+input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="submit"], [type="button"], [type="reset"], [type="image"], [type="hidden"]))[aria-invalid="true"],
+select:where(:not([multiple]))[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
+
+input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="submit"], [type="button"], [type="reset"], [type="image"], [type="hidden"])).is-warning,
+select:where(:not([multiple])).is-warning,
+textarea.is-warning {
+  border-color: var(--color-warning);
+}
+
+input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="submit"], [type="button"], [type="reset"], [type="image"], [type="hidden"])):disabled,
+select:where(:not([multiple])):disabled,
+textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field-hint,
+.field-error,
+.field-warning {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+  color: var(--color-text-secondary);
+}
+
+.field-error {
+  color: var(--color-danger);
+}
+
+.field-warning {
+  color: var(--color-warning);
+}
+
+/* Native appearance is removed only where Flag draws the field itself:
+   the text-like types below (and its own custom controls, by class). */
+input:where(:not([type]), [type="text"], [type="search"], [type="email"], [type="password"], [type="tel"], [type="url"], [type="number"]) {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+input::placeholder,
+textarea::placeholder,
+select:where(:not([multiple])) {
+  color: var(--color-text-secondary);
+}
+
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-results-button,
+input[type="search"]::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+}
+
+.select-wrap {
+  position: relative;
+}
+
+.select-wrap select {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background: var(--color-overlay-soft);
+  border-color: var(--color-border-strong);
+  min-height: 2.5rem;
+  height: 2.5rem;
+  padding-right: 2rem;
+}
+
+.select-wrap select:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  border-color: var(--color-accent);
+}
+
+.select-wrap select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.select-icon {
+  position: absolute;
+  right: 0.625rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+
+.icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.icon-inline {
+  width: 1rem;
+  height: 1rem;
+}
+
+.card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  background: var(--color-overlay-soft);
+}
+
+.card h3 {
+  margin-bottom: var(--space-2);
+}
+
+.card-copy {
+  margin-bottom: var(--space-3);
+}
+
+.featured-link {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  text-decoration: none;
+  background: var(--gradient-surface-card);
+  border-color: var(--color-border);
+  position: relative;
+  overflow: hidden;
+}
+
+.featured-link::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--gradient-featured-top-accent);
+  opacity: 0.78;
+}
+
+.featured-link:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+.featured-link:focus-visible {
+  text-decoration: none;
+  transform: translateY(-0.0625rem);
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.featured-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring), var(--shadow-md);
+}
+
+.featured-link.is-selected,
+.featured-link[aria-current="true"] {
+  border-color: var(--color-accent);
+  box-shadow: var(--focus-ring), var(--shadow-sm);
+}
+
+.featured-link.is-selected::before,
+.featured-link[aria-current="true"]::before {
+  background: var(--gradient-featured-top-accent-selected);
+  opacity: 1;
+}
+
+.featured-link.is-disabled,
+.featured-link[aria-disabled="true"] {
+  opacity: 0.55;
+  pointer-events: none;
+  box-shadow: none;
+}
+
+.featured-head {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: var(--space-2);
+}
+
+.featured-kicker {
+  margin: 0;
+  color: var(--color-accent);
+  font-size: var(--font-size-overline);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: var(--font-weight-bold);
+}
+
+.featured-link h4 {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: var(--font-size-subtitle);
+  line-height: var(--line-height-subtitle);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.featured-link:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover h4,
+.featured-link:focus-visible h4 {
+  color: var(--color-text-primary);
+}
+
+.description {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body-lg);
+  line-height: var(--line-height-body-lg);
+}
+
+.field-label {
+  display: inline-block;
+  margin-bottom: var(--space-2);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+/* Accordion pattern (Home baseline) */
+
+.ds-accordion {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.ds-accordion details {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.ds-accordion summary {
+  cursor: pointer;
+  list-style: none;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.875rem 1rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  font-size: 0.98rem;
+  position: relative;
+  color: var(--color-text-primary);
+  transition: color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.ds-accordion summary::-webkit-details-marker {
+  display: none;
+}
+
+.ds-accordion summary::after {
+  content: "+";
+  position: absolute;
+  right: 1rem;
+  color: var(--color-accent);
+  font-weight: 700;
+}
+
+.ds-accordion details[open] summary::after {
+  content: "-";
+}
+
+.ds-accordion summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.ds-accordion summary:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  color: var(--color-accent);
+}
+
+.ds-accordion summary:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active {
+  transform: scale(0.995);
+}
+
+.links {
+  display: grid;
+  gap: 0.625rem;
+}
+
+.ds-accordion .links {
+  display: grid;
+  gap: 0.625rem;
+  padding: 0 0.875rem 0.875rem;
+}
+
+/* Link tiles stand alone (launchpads, modal action grids) or sit inside an
+   accordion's .links grid. */
+.link-tile {
+  display: block;
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.6875rem 0.8125rem;
+  text-decoration: none;
+  transition: border-color var(--transition-base), background-color var(--transition-base), transform var(--transition-fast);
+}
+
+.link-tile:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  border-color: var(--color-accent);
+  background: var(--color-surface-2);
+  transform: translateY(-1px);
+}
+
+.link-tile:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.link-tile:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active {
+  transform: translateY(0);
+}
+
+.link-title {
+  display: block;
+  color: var(--color-text-primary);
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.link-meta {
+  display: block;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+/* Icon-bearing tile: the icon spans the title and meta rows. */
+.link-has-app-icon {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--space-3);
+  align-items: center;
+}
+
+.link-has-app-icon .link-app-icon {
+  grid-row: 1 / span 2;
+}
+
+.link-has-app-icon .link-title,
+.link-has-app-icon .link-meta {
+  grid-column: 2;
+}
+
+.link-app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0.375rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  flex: none;
+}
+
+.link-app-icon__img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Lens custom file radio select */
+
+.input-files-list {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-top: 0.4rem;
+  gap: 0.45rem;
+}
+
+.input-files-list .input-file-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.5rem 0.55rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 0.5625rem;
+  background: var(--color-overlay-soft);
+}
+
+.input-file-select {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+}
+
+.input-file-select input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 1rem;
+  height: 1rem;
+  min-width: 1rem;
+  min-height: 1rem;
+  flex: 0 0 1rem;
+  margin: 0;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-control-border);
+  background: var(--color-surface-1);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+}
+
+.input-file-select input:checked {
+  border-color: var(--color-secondary);
+  background:
+    radial-gradient(circle, var(--color-secondary) 0 38%, transparent 42%),
+    var(--color-surface-1);
+  box-shadow: var(--shadow-control-selected);
+}
+
+.input-file-select input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.input-file-name {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.input-file-select input:checked + .input-file-name {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.selectable-input-list .selectable-item {
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.selectable-input-list .selectable-item:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  border-color: var(--color-accent);
+  background: var(--color-status-running-bg);
+}
+
+.selectable-input-list .selectable-item:focus-within {
+  border-color: var(--color-accent);
+  background: var(--color-status-running-bg);
+  box-shadow: var(--focus-ring);
+}
+
+/* Disabled radio and its row: muted ring and dot, disabled text, no hover.
+   Mark the row .is-disabled; browsers with :has() also catch a row whose
+   radio is disabled without the class. */
+.input-file-select input:disabled {
+  border-color: var(--color-border);
+  background: var(--color-overlay-soft);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.input-file-select input:disabled:checked {
+  background:
+    radial-gradient(circle, var(--color-text-disabled) 0 38%, transparent 42%),
+    var(--color-overlay-soft);
+}
+
+.input-file-select input:disabled + .input-file-name {
+  color: var(--color-text-disabled);
+}
+
+.selectable-input-list .selectable-item.is-disabled,
+.selectable-input-list .selectable-item.is-disabled .input-file-select {
+  cursor: not-allowed;
+}
+
+@supports selector(:has(*)) {
+  .input-file-select:has(input:disabled) {
+    cursor: not-allowed;
+  }
+
+  .selectable-input-list .selectable-item:has(.input-file-select input:disabled):hover {
+    border-color: var(--color-border-subtle);
+    background: var(--color-overlay-soft);
+  }
+}
+
+.input-file-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  justify-self: end;
+}
+
+.icon-action {
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 2rem;
+  min-width: 2rem;
+  min-height: 2rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-2);
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  transition: transform var(--transition-fast), opacity var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+  cursor: pointer;
+}
+
+.icon-action svg {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+
+.icon-action:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  transform: translateY(-1px);
+  border-color: var(--color-accent);
+  background: var(--color-surface-1);
+}
+
+.icon-action:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.icon-action.danger {
+  border-color: var(--color-status-error-border);
+  background: var(--color-status-error-bg);
+  color: var(--color-status-error-fg);
+}
+
+/* Common checkbox */
+
+.ds-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.ds-checkbox-input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.ds-checkbox__box {
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 0.25rem;
+  border: 1.5px solid var(--color-control-border);
+  background: var(--color-overlay-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.ds-checkbox__box svg {
+  width: 0.78rem;
+  height: 0.78rem;
+  opacity: 0;
+  transform: scale(0.86);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.ds-checkbox-input:checked + .ds-checkbox .ds-checkbox__box {
+  border-color: var(--color-accent);
+  background: var(--color-status-running-bg);
+}
+
+.ds-checkbox-input:checked + .ds-checkbox .ds-checkbox__box svg {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.ds-checkbox-input:focus-visible + .ds-checkbox .ds-checkbox__box {
+  box-shadow: var(--focus-ring);
+}
+
+.ds-checkbox__label {
+  color: var(--color-text-primary);
+}
+
+/* The input is visually hidden, so the disabled state is drawn on the label. */
+.ds-checkbox-input:disabled + .ds-checkbox {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+}
+
+.ds-checkbox-input:disabled + .ds-checkbox .ds-checkbox__box {
+  opacity: 0.5;
+}
+
+.ds-checkbox-input:disabled + .ds-checkbox .ds-checkbox__label {
+  color: var(--color-text-disabled);
+}
+
+/* Email selection pills (MOC baseline) */
+
+.chips-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  min-height: 2.75rem;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.75rem;
+  border-radius: 2rem;
+  font-size: 0.75rem;
+  transition: background-color var(--transition-base), box-shadow var(--transition-base), color var(--transition-base), transform var(--transition-fast);
+  user-select: none;
+  cursor: pointer;
+}
+
+.chip-toggle {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 2rem;
+}
+
+.chip-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* With :has(), the ring moves from the toggle to the whole pill. A browser
+   without :has() skips this block and keeps the toggle's own ring above. */
+@supports selector(:has(*)) {
+  .chip-toggle:focus-visible {
+    box-shadow: none;
+  }
+
+  .chip:has(.chip-toggle:focus-visible) {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+}
+
+.chip:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active {
+  transform: scale(0.98);
+}
+
+.chip-email {
+  border: 1px solid var(--color-status-assigned-border);
+  background: var(--color-status-assigned-bg);
+  color: var(--color-status-assigned-fg);
+}
+
+.chip-email:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  background: var(--color-status-running-bg);
+  box-shadow: var(--shadow-sm);
+}
+
+.chip.selected {
+  background: var(--color-accent);
+  color: var(--color-bg);
+  font-weight: 600;
+}
+
+.chip.selected:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  background: var(--color-accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.chip-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: currentColor;
+  margin-left: 0.25rem;
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 999rem;
+  font-size: 0.72rem;
+  line-height: 1;
+  /* No opacity fade: the x is text and must stay at 4.5:1. */
+  transition: background-color var(--transition-base), box-shadow var(--transition-fast);
+}
+
+.chip-delete:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  background: var(--color-overlay-strong);
+}
+
+.chip-delete:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active {
+  transform: scale(0.92);
+}
+
+.chip-delete:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.chip.selected .chip-delete {
+  background: var(--color-overlay-soft);
+}
+
+.custom-email-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.custom-email-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.custom-email-row .btn {
+  white-space: nowrap;
+}
+
+.chip-help {
+  margin-top: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+/* Dropzone pattern (Lens + MOC baseline) */
+
+.file-upload-area {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.file-upload-dropzone {
+  border: 2px dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-overlay-soft);
+  padding: 1rem 0.8rem;
+  transition: border-color var(--transition-base), background-color var(--transition-base), box-shadow var(--transition-base);
+  cursor: pointer;
+  position: relative;
+}
+
+/* An upload area that cannot take files (quota reached, form locked). */
+.file-upload-dropzone.is-disabled,
+.file-upload-dropzone[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.file-upload-dropzone:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover,
+.file-upload-dropzone.is-dragover {
+  border-color: var(--color-primary);
+  background: var(--color-status-running-bg);
+}
+
+.dropzone-content {
+  display: grid;
+  justify-items: center;
+  gap: 0.35rem;
+  text-align: center;
+}
+
+.dropzone-icon {
+  width: 1.9rem;
+  height: 1.9rem;
+  color: var(--color-text-primary);
+}
+
+.dropzone-text {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.dropzone-subtext {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--color-text-secondary);
+}
+
+.dropzone-browse-btn {
+  min-height: 2rem;
+  min-width: 9rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text-primary);
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+}
+
+.dropzone-browse-btn:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  border-color: var(--color-accent);
+  background: var(--color-surface-1);
+}
+
+.dropzone-browse-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.dropzone-limit {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.file-input-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  font-size: 0.8rem;
+}
+
+.file-item.uploading {
+  border-color: var(--color-status-running-border);
+}
+
+.file-item.uploaded {
+  border-color: var(--color-status-success-border);
+}
+
+.file-item.error {
+  border-color: var(--color-status-error-border);
+  background: var(--color-status-error-bg);
+}
+
+/* Short status text in the row ("Uploaded", "Too large"). */
+.file-item-status {
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+.file-item.uploaded .file-item-status {
+  color: var(--color-status-success-fg);
+}
+
+.file-item.error .file-item-status,
+.file-item.error .file-item-size {
+  color: var(--color-status-error-fg);
+}
+
+.file-item-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  width: 1.5rem;
+  text-align: center;
+  color: var(--color-text-primary);
+}
+
+.file-item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.file-item-name {
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-item-size {
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+}
+
+.file-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-shrink: 0;
+}
+
+.file-item-progress {
+  width: 3.75rem;
+  height: 0.375rem;
+  background: var(--color-overlay-strong);
+  border-radius: 0.1875rem;
+  overflow: hidden;
+}
+
+.file-item-progress-fill {
+  height: 100%;
+  /* --color-primary was 2.77:1 on the light track; link is 3.65:1+. */
+  background: var(--color-link);
+  border-radius: 0.1875rem;
+}
+
+.file-item-percent {
+  font-size: 0.7rem;
+  color: var(--color-link);
+  min-width: 2rem;
+  text-align: right;
+}
+
+/* Number stepper (Explorer baseline) */
+
+.number-input {
+  display: inline-grid;
+  grid-template-columns: 2rem minmax(4.5rem, 5.75rem) 2rem;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid var(--color-border);
+  border-radius: 0.625rem;
+  background: var(--color-surface-1);
+  overflow: hidden;
+}
+
+.number-input:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: var(--focus-ring);
+}
+
+.number-input__field {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  text-align: center;
+  padding: 0.5rem 0.35rem;
+  min-height: 2.25rem;
+}
+
+.number-input__field:focus-visible {
+  box-shadow: none;
+}
+
+.number-input__field::-webkit-outer-spin-button,
+.number-input__field::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.number-input__btn {
+  height: 100%;
+  min-height: 2.25rem;
+  border: none;
+  background: var(--color-surface-2);
+  color: var(--color-text-primary);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.number-input__btn:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  background: var(--color-status-running-bg);
+}
+
+.number-input__btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Date picker (Explorer baseline) */
+
+.date-input-wrap {
+  position: relative;
+}
+
+input.custom-datepicker {
+  text-align: left;
+  padding-right: 2rem;
+  max-width: 100%;
+  touch-action: manipulation;
+}
+
+.date-input-icon {
+  width: 1rem;
+  height: 1rem;
+  position: absolute;
+  right: 0.625rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.flatpickr-calendar {
+  max-width: calc(100vw - 1rem);
+  background: var(--gradient-surface-elevated) !important;
+  border: 1px solid var(--color-border) !important;
+  box-shadow: var(--shadow-md) !important;
+  backdrop-filter: blur(10px) !important;
+  color: var(--color-text-primary) !important;
+}
+
+.flatpickr-months .flatpickr-month,
+.flatpickr-current-month,
+.flatpickr-current-month .flatpickr-monthDropdown-months,
+.flatpickr-current-month input.cur-year,
+.flatpickr-months .flatpickr-prev-month,
+.flatpickr-months .flatpickr-next-month {
+  color: var(--color-text-primary) !important;
+  fill: var(--color-text-primary) !important;
+}
+
+.flatpickr-monthDropdown-months,
+.numInputWrapper span,
+.flatpickr-current-month .flatpickr-monthDropdown-months:hover,
+.flatpickr-current-month .flatpickr-monthDropdown-month {
+  color: var(--color-text-primary) !important;
+  background: transparent !important;
+}
+
+.flatpickr-weekdays,
+span.flatpickr-weekday {
+  background: transparent !important;
+  color: var(--color-text-secondary) !important;
+}
+
+.flatpickr-day {
+  color: var(--color-text-primary) !important;
+  border: none !important;
+}
+
+.flatpickr-day:hover,
+.flatpickr-day:focus {
+  background: var(--color-status-running-bg) !important;
+  border-radius: 0.375rem !important;
+}
+
+/* Days of the neighbouring months are selectable, so they stay readable
+   (muted, not the disabled color). These modifier rules come BEFORE today,
+   range and selected below: at equal specificity the later rule wins, so a
+   selected or in-range day keeps its on-fill colors whatever month it is in
+   (check_refs.py simulates every combination). */
+.flatpickr-day.prevMonthDay,
+.flatpickr-day.nextMonthDay {
+  color: var(--color-text-muted) !important;
+}
+
+.flatpickr-day.flatpickr-disabled,
+.flatpickr-day.notAllowed,
+.flatpickr-day.notAllowed.prevMonthDay,
+.flatpickr-day.notAllowed.nextMonthDay {
+  color: var(--color-text-disabled) !important;
+}
+
+.flatpickr-day.flatpickr-disabled:hover,
+.flatpickr-day.notAllowed:hover {
+  background: transparent !important;
+  cursor: not-allowed;
+}
+
+/* Today: the vendor border is removed above, so mark it with an inset ring. */
+.flatpickr-day.today {
+  box-shadow: inset 0 0 0 1px var(--color-accent) !important;
+}
+
+/* Days between a range's ends (the vendor paints #e6e6e6 under white text).
+   The fill marks the range, so it holds 3:1 against the calendar and its
+   label 4.5:1 on it. */
+.flatpickr-day.inRange,
+.flatpickr-day.inRange:hover,
+.flatpickr-day.inRange:focus {
+  background: var(--color-accent-strong) !important;
+  box-shadow: none !important;
+  color: var(--color-on-accent-strong) !important;
+  border-radius: 0 !important;
+}
+
+.flatpickr-day.selected,
+.flatpickr-day.startRange,
+.flatpickr-day.endRange,
+.flatpickr-day.selected:hover,
+.flatpickr-day.startRange:hover,
+.flatpickr-day.endRange:hover,
+.flatpickr-day.selected:focus,
+.flatpickr-day.startRange:focus,
+.flatpickr-day.endRange:focus {
+  background: var(--gradient-action-fill) !important;
+  color: var(--color-on-primary-fill) !important;
+  border: none !important;
+  border-radius: 0.375rem !important;
+  box-shadow: none !important;
+}
+
+/* Light theme: selected days are the solid fill, like every selected control. */
+[data-theme="light"] .flatpickr-day.selected,
+[data-theme="light"] .flatpickr-day.startRange,
+[data-theme="light"] .flatpickr-day.endRange,
+[data-theme="light"] .flatpickr-day.selected:hover,
+[data-theme="light"] .flatpickr-day.startRange:hover,
+[data-theme="light"] .flatpickr-day.endRange:hover,
+[data-theme="light"] .flatpickr-day.selected:focus,
+[data-theme="light"] .flatpickr-day.startRange:focus,
+[data-theme="light"] .flatpickr-day.endRange:focus,
+body.theme-light .flatpickr-day.selected,
+body.theme-light .flatpickr-day.startRange,
+body.theme-light .flatpickr-day.endRange,
+body.theme-light .flatpickr-day.selected:hover,
+body.theme-light .flatpickr-day.startRange:hover,
+body.theme-light .flatpickr-day.endRange:hover,
+body.theme-light .flatpickr-day.selected:focus,
+body.theme-light .flatpickr-day.startRange:focus,
+body.theme-light .flatpickr-day.endRange:focus {
+  background: var(--color-primary-fill) !important;
+}
+
+/* Keyboard focus: a distinct inset ring on every day state, after all of the
+   state rules above so it wins at equal specificity. Order matters: today,
+   then in-range, then selected / range ends (a day can be several at once,
+   and the ring must suit the fill that day ends up with). check_tokens.py
+   measures each ring against its fill; check_refs.py simulates the cascade. */
+.flatpickr-day:focus-visible,
+.flatpickr-day.today:focus-visible {
+  outline: none !important;
+  box-shadow: var(--focus-ring-day) !important;
+}
+
+.flatpickr-day.inRange:focus-visible {
+  box-shadow: var(--focus-ring-day-on-range) !important;
+}
+
+.flatpickr-day.selected:focus-visible,
+.flatpickr-day.startRange:focus-visible,
+.flatpickr-day.endRange:focus-visible {
+  box-shadow: var(--focus-ring-day-on-fill) !important;
+}
+
+/* Week numbers (weekNumbers: true). */
+.flatpickr-weekwrapper .flatpickr-weeks {
+  box-shadow: 1px 0 0 var(--color-border) !important;
+}
+
+.flatpickr-weekwrapper span.flatpickr-day,
+.flatpickr-weekwrapper span.flatpickr-day:hover {
+  background: transparent !important;
+  color: var(--color-text-muted) !important;
+}
+
+/* Multi-month separator. */
+.dayContainer + .dayContainer {
+  box-shadow: -1px 0 0 var(--color-border) !important;
+}
+
+/* The pointer triangle: border color outside, panel color inside. */
+.flatpickr-calendar.arrowTop:before {
+  border-bottom-color: var(--color-border) !important;
+}
+
+.flatpickr-calendar.arrowTop:after {
+  border-bottom-color: var(--color-surface-1) !important;
+}
+
+.flatpickr-calendar.arrowBottom:before {
+  border-top-color: var(--color-border) !important;
+}
+
+.flatpickr-calendar.arrowBottom:after {
+  border-top-color: var(--color-surface-1) !important;
+}
+
+.flatpickr-current-month span.cur-month:hover {
+  background: var(--color-overlay-soft) !important;
+}
+
+.flatpickr-current-month input.cur-year[disabled],
+.flatpickr-current-month input.cur-year[disabled]:hover {
+  color: var(--color-text-disabled) !important;
+  background: transparent !important;
+}
+
+/* Year and time steppers. */
+.numInputWrapper span {
+  border-color: var(--color-border) !important;
+}
+
+.numInputWrapper span svg path {
+  fill: var(--color-text-secondary) !important;
+}
+
+.numInputWrapper span.arrowUp:after {
+  border-bottom-color: var(--color-text-secondary) !important;
+}
+
+.numInputWrapper span.arrowDown:after {
+  border-top-color: var(--color-text-secondary) !important;
+}
+
+.numInputWrapper:hover,
+.numInputWrapper span:hover {
+  background: var(--color-overlay-soft) !important;
+}
+
+.numInputWrapper span:active {
+  background: var(--color-overlay-strong) !important;
+}
+
+/* Time picker (enableTime): hour, minute, separator and AM/PM. */
+.flatpickr-time {
+  border-top-color: var(--color-border) !important;
+}
+
+.flatpickr-calendar.hasTime .flatpickr-time {
+  border-top: 1px solid var(--color-border) !important;
+}
+
+.flatpickr-time input,
+.flatpickr-time .flatpickr-time-separator,
+.flatpickr-time .flatpickr-am-pm {
+  color: var(--color-text-primary) !important;
+  background: transparent !important;
+}
+
+.flatpickr-time input:hover,
+.flatpickr-time input:focus,
+.flatpickr-time .flatpickr-am-pm:hover,
+.flatpickr-time .flatpickr-am-pm:focus {
+  background: var(--color-overlay-soft) !important;
+}
+
+.flatpickr-months .flatpickr-prev-month svg,
+.flatpickr-months .flatpickr-next-month svg {
+  fill: var(--color-text-primary) !important;
+}
+
+.flatpickr-months .flatpickr-prev-month:hover svg,
+.flatpickr-months .flatpickr-next-month:hover svg {
+  fill: var(--color-primary) !important;
+}
+
+.tool-call-item {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.tool-call-name {
+  color: var(--color-link);
+  margin-bottom: var(--space-2);
+  font-family: var(--font-code);
+  font-size: var(--font-size-body-lg);
+}
+
+.tool-call-id {
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-3);
+  font-family: var(--font-code);
+  font-size: var(--font-size-caption);
+}
+
+.tool-call-id code,
+.tool-call-other-args code {
+  display: inline-block;
+  background: var(--color-overlay-soft);
+  color: var(--color-link);
+  border-radius: var(--radius-sm);
+  padding: 0.125rem 0.5rem;
+  font-family: var(--font-code);
+}
+
+.tool-call-code {
+  margin: 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.tool-call-code code {
+  display: block;
+  margin: 0;
+  padding: var(--space-3);
+  white-space: pre;
+  font-family: var(--font-code);
+  font-size: var(--font-size-body);
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-inset);
+}
+
+/* Syntax highlighting: one class per --color-syntax-* token. */
+
+.tok-keyword { color: var(--color-syntax-keyword); }
+
+.tok-string { color: var(--color-syntax-string); }
+
+.tok-number { color: var(--color-syntax-number); }
+
+.tok-comment { color: var(--color-syntax-comment); font-style: italic; }
+
+.tok-function { color: var(--color-syntax-function); }
+
+.tok-builtin { color: var(--color-syntax-builtin); }
+
+.tok-operator { color: var(--color-syntax-operator); }
+
+.tok-punctuation { color: var(--color-syntax-punctuation); }
+
+.tool-call-other-args {
+  margin-top: var(--space-2);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.task-tracker-container {
+  margin-top: var(--space-3);
+  background: rgba(0, 0, 0, 0.3);
+  background: color-mix(in srgb, var(--color-black) 30%, transparent);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.task-tracker-cmd {
+  padding: var(--space-2) var(--space-3);
+  background: rgba(114, 114, 171, 0.14);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-link);
+  font-family: var(--font-code-ui);
+  font-size: var(--font-size-caption);
+}
+
+.task-tracker-list {
+  padding: var(--space-2);
+}
+
+.task-tracker-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 0.375rem 0.5rem;
+  margin-bottom: 0.125rem;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-code);
+  font-size: var(--font-size-body);
+}
+
+.task-tracker-item:last-child {
+  margin-bottom: 0;
+}
+
+.tt-icon {
+  width: 1rem;
+  text-align: center;
+  font-weight: var(--font-weight-bold);
+}
+
+.tt-id {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.tt-title {
+  color: var(--color-text-secondary);
+  flex: 1;
+}
+
+.task-tracker-item.status-done .tt-icon {
+  color: var(--color-success);
+}
+
+.task-tracker-item.status-done .tt-title {
+  color: var(--color-text-secondary);
+  color: color-mix(in srgb, var(--color-text-secondary) 72%, var(--color-white) 28%);
+  text-decoration: line-through;
+}
+
+.task-tracker-item.status-inprogress {
+  background: rgba(255, 136, 71, 0.16);
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+}
+
+.task-tracker-item.status-inprogress .tt-icon {
+  color: var(--color-warning);
+  animation: spin 2s linear infinite;
+  display: inline-block;
+}
+
+.task-tracker-item.status-inprogress .tt-title {
+  color: var(--color-warning);
+}
+
+/* The muted id falls to 3.8:1 on the in-progress tint in light. */
+
+.task-tracker-item.status-inprogress .tt-id {
+  color: var(--color-text-secondary);
+}
+
+/* Mixing toward white lightens the struck-through title in dark, but drops
+   it to 4.1:1 in light; the muted text token holds AA there. */
+
+[data-theme="light"] .task-tracker-item.status-done .tt-title,
+body.theme-light .task-tracker-item.status-done .tt-title {
+  color: var(--color-text-muted);
+}
+
+.task-tracker-item.status-todo .tt-icon,
+.task-tracker-item.status-todo .tt-title {
+  color: var(--color-text-muted);
+}
+
+[data-theme="light"] .tool-call-item,
+body.theme-light .tool-call-item {
+  background: var(--color-surface-2);
+}
+
+/* The well keeps var(--color-surface-inset) (set in .tool-call-code code),
+   the background check_tokens.py measures the syntax colors against. */
+[data-theme="light"] .tool-call-code code,
+body.theme-light .tool-call-code code {
+  color: var(--color-text-primary);
+}
+
+[data-theme="light"] .task-tracker-container,
+body.theme-light .task-tracker-container {
+  background: #f2f3f5;
+  background: color-mix(in srgb, var(--color-secondary) 8%, var(--color-white) 92%);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-pill);
+  padding: 0.125rem 0.5625rem;
+  font-size: var(--font-size-caption);
+  border: 1px solid var(--color-border);
+}
+
+.badge-pending {
+  color: var(--color-status-pending-fg);
+  border-color: var(--color-status-pending-border);
+  background: var(--color-status-pending-bg);
+}
+
+.badge-scheduled {
+  color: var(--color-status-scheduled-fg);
+  border-color: var(--color-status-scheduled-border);
+  background: var(--color-status-scheduled-bg);
+}
+
+.badge-assigned {
+  color: var(--color-status-assigned-fg);
+  border-color: var(--color-status-assigned-border);
+  background: var(--color-status-assigned-bg);
+}
+
+.badge-leased {
+  color: var(--color-status-leased-fg);
+  border-color: var(--color-status-leased-border);
+  background: var(--color-status-leased-bg);
+}
+
+.badge-running {
+  color: var(--color-status-running-fg);
+  border-color: var(--color-status-running-border);
+  background: var(--color-status-running-bg);
+}
+
+.badge-analyzing {
+  color: var(--color-status-analyzing-fg);
+  border-color: var(--color-status-analyzing-border);
+  background: var(--color-status-analyzing-bg);
+}
+
+.badge-success {
+  color: var(--color-status-success-fg);
+  border-color: var(--color-status-success-border);
+  background: var(--color-status-success-bg);
+}
+
+.badge-warning {
+  color: var(--color-status-warning-fg);
+  border-color: var(--color-status-warning-border);
+  background: var(--color-status-warning-bg);
+}
+
+.badge-danger {
+  color: var(--color-status-error-fg);
+  border-color: var(--color-status-error-border);
+  background: var(--color-status-error-bg);
+}
+
+.badge-cancelled {
+  color: var(--color-status-cancelled-fg);
+  border-color: var(--color-status-cancelled-border);
+  background: var(--color-status-cancelled-bg);
+}
+
+.table-wrap {
+  margin-top: var(--space-4);
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+/* Tabular figures for every table (FONTS.md); the table component's sizing,
+   collapse, padding and borders apply inside .table-wrap only, so a
+   third-party table keeps its own layout. */
+table {
+  font-variant-numeric: tabular-nums;
+}
+
+:where(.table-wrap) table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 32.5rem;
+  /* Nebula Sans has proportional figures by default (digit `1` is 407 units
+   * against `8` at 625), so a column of numbers wanders without this. Set on
+   * the base rule rather than per-column so a new numeric column cannot land
+   * ragged by omission. See Flag's design-system/FONTS.md. */
+  font-variant-numeric: tabular-nums;
+}
+
+:where(.table-wrap) th,
+:where(.table-wrap) td {
+  padding: 0.625rem;
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+}
+
+:where(.table-wrap) th {
+  font-size: var(--font-size-caption);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+
+/* Two painted parts: the arc must hold 3:1 against the track it turns on
+   (and the surface), not just the surface. --color-primary on the
+   --color-border-strong track was 1.67-2.42:1; --color-link on the faint
+   --color-overlay-soft track is 4.6:1+ in both themes (check_tokens.py). */
+.spinner {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  border: 2px solid var(--color-overlay-soft);
+  border-top-color: var(--color-link);
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* On a primary fill the default arc (--color-primary) all but vanishes
+   (1.01:1): the arc takes the label color, the track the deeper fill. */
+.btn-primary .spinner {
+  border-color: var(--color-primary-fill-hover);
+  border-top-color: var(--color-on-primary-fill);
+}
+
+.danger-text {
+  color: var(--color-status-error-fg);
+}
+
+/* Pressed and disabled states for controls that had only hover and focus
+   (INTERACTION_ACCESSIBILITY.md: every interactive control defines hover,
+   focus-visible, active and disabled where applicable). */
+.icon-action:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active,
+.number-input__btn:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active,
+.dropzone-browse-btn:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active,
+.seg-option:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active,
+.featured-link:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active {
+  transform: translateY(0) scale(0.98);
+}
+
+.icon-action:disabled,
+.icon-action[aria-disabled="true"],
+.number-input__btn:disabled,
+.dropzone-browse-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Switches: a row that cannot be switched shows a status icon instead
+   (COMPONENTS.md), but a disabled switch still reads as disabled. */
+.switch:disabled,
+.switch[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Number stepper with a disabled field: mark the wrapper .is-disabled (or
+   rely on :has() where supported). */
+.number-input.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@supports selector(:has(*)) {
+  .number-input:has(.number-input__field:disabled) {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .number-input:has(.number-input__field:disabled) .number-input__field {
+    opacity: 1;
+  }
+}
+
+/* The shared page header band that wraps .ds-app-header. */
+.page-header {
+  margin-bottom: var(--space-6);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Continuous motion stops for prefers-reduced-motion: the spinner stays as a
+   static ring with its colored arc, the in-progress tracker glyph stays as
+   its static mark. scripts/check_refs.py requires an entry here for every
+   infinite animation in this file. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .task-tracker-item.status-inprogress .tt-icon {
+    animation: none;
+  }
+}
+
+@media (max-width: 47.9375rem) {
+  .ds-app-header {
+    align-items: flex-start;
+  }
+
+  .custom-email-row {
+    flex-direction: column;
+  }
+
+  .custom-email-row .btn {
+    width: 100%;
+  }
+}
+
+.picker-popover {
+  width: 21.75rem; max-width: 100%; display: flex; flex-direction: column;
+  background: var(--color-surface-2); border: 1px solid var(--color-selected-border);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-popover); overflow: hidden;
+}
+
+.picker-popover__search { display: flex; gap: 6px; padding: 8px 8px 6px; }
+
+.picker-popover__meta {
+  display: flex; align-items: center; gap: 6px; padding: 2px 10px 6px 12px;
+  border-bottom: 1px solid var(--color-divider); font-size: 0.75rem; color: var(--color-text-subtle);
+}
+
+.picker-popover__meta span { flex: 1; }
+
+.picker-popover__foot { display: flex; justify-content: flex-end; padding: 6px 12px; border-top: 1px solid var(--color-divider); font-size: 0.75rem; }
+
+.picker-popover__foot a { color: var(--color-link); text-decoration: none; display: inline-flex; gap: 5px; align-items: center; }
+
+.picker-modal {
+  width: 100%; max-width: 35rem; max-height: 100dvh; display: flex; flex-direction: column;
+  background: var(--color-surface-1); color: var(--color-text-primary);
+  border: 1px solid var(--color-selected-border); border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-popover); overflow: hidden;
+}
+
+.scrim:has(> .picker-modal) {
+  position: fixed; inset: 0; z-index: 1200;
+  display: flex; align-items: stretch; justify-content: center; padding: 0;
+}
+
+@media (max-width: 39.999rem) {
+  .scrim > .picker-modal {
+    max-width: 100%; height: 100dvh; border: 0; border-radius: 0; box-shadow: none;
+  }
+}
+
+@media (min-width: 40rem) {
+  .scrim:has(> .picker-modal) {
+    align-items: center; padding: 1rem;
+  }
+
+  .scrim > .picker-modal {
+    max-height: min(39rem, calc(100dvh - 4rem));
+  }
+}
+
+.picker-modal__head {
+  display: flex; align-items: center; gap: 0.625rem;
+  padding: max(0.875rem, env(safe-area-inset-top)) 1rem 0.75rem;
+}
+
+.picker-modal__title {
+  flex: 1; min-width: 0; margin: 0; font-family: var(--font-heading); font-size: var(--font-size-subtitle);
+  line-height: var(--line-height-subtitle); font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.picker-modal__head > .picker-icon-btn:last-child {
+  margin-left: auto;
+}
+
+.picker-modal__rail {
+  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.625rem 1rem;
+  background: var(--color-rail-bg);
+  border-top: 1px solid var(--color-divider); border-bottom: 1px solid var(--color-divider);
+}
+
+.picker-modal__body {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 0.75rem 1rem;
+}
+
+.picker-modal__foot {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem;
+  padding: 0.625rem 1rem max(0.75rem, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--color-divider); font-size: 0.75rem; color: var(--color-text-subtle);
+}
+
+.picker-modal__foot a { color: var(--color-link); text-decoration: none; display: inline-flex; gap: 5px; align-items: center; }
+
+.search-compact { position: relative; flex: 1; display: flex; align-items: center; }
+
+.search-compact__icon { position: absolute; left: 10px; width: 15px; height: 15px; color: var(--color-text-subtle); pointer-events: none; }
+
+.search-compact input {
+  width: 100%; height: 34px; box-sizing: border-box; padding: 0 10px 0 32px; min-height: 0;
+  background: var(--color-bg); border: 1px solid var(--color-selected-border); border-radius: var(--radius-sm);
+  color: var(--color-text-primary); font: inherit; font-size: 0.875rem; outline: none;
+}
+
+.search-compact input:focus { border-color: var(--color-accent); }
+
+.search-compact input:focus-visible { box-shadow: var(--focus-ring-picker); }
+
+.picker-icon-btn {
+  width: 34px; height: 34px; flex: none; display: grid; place-items: center; padding: 0;
+  border: 1px solid var(--color-pill-border); background: transparent; color: var(--color-text-subtle);
+  border-radius: var(--radius-sm); cursor: pointer;
+}
+
+.picker-icon-btn:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover { color: var(--color-text-primary); background: var(--color-pill-hover-bg); border-color: var(--color-selected-border); }
+
+.pill-btn {
+  height: 22px; padding: 0 9px; border-radius: var(--radius-pill); border: 1px solid var(--color-pill-border);
+  background: transparent; color: var(--color-text-secondary); font: inherit; font-size: 0.75rem; cursor: pointer; white-space: nowrap;
+}
+
+.pill-btn:not([aria-disabled="true"], [aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]):where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover { background: var(--color-pill-hover-bg); color: var(--color-text-primary); }
+
+.pill-btn:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]) {
+  background: var(--color-selected-bg); border-color: var(--color-row-active-border);
+  color: var(--color-text-primary); font-weight: var(--font-weight-semibold);
+}
+
+.pill-btn:not([aria-disabled="true"]):where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active, .picker-icon-btn:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active { background: var(--color-selected-bg); border-color: var(--color-selected-border); color: var(--color-text-primary); }
+
+.switch:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover:not(:focus-visible) { box-shadow: 0 0 0 3px var(--color-pill-hover-bg); }
+
+.switch:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):active { filter: brightness(0.92); }
+
+.pill-btn:focus-visible, .switch:focus-visible, .picker-icon-btn:focus-visible { outline: none; box-shadow: var(--focus-ring-picker); }
+
+/* Dim the colors, not the element: opacity would fade the focus ring too. */
+
+.pill-btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+  color: color-mix(in srgb, var(--color-text-secondary) 40%, transparent);
+  border-color: var(--color-border-subtle);
+  border-color: color-mix(in srgb, var(--color-pill-border) 40%, transparent);
+}
+
+.group-header {
+  display: flex; align-items: center; gap: 6px; padding: 8px 12px 4px; min-height: 24px;
+  font-family: var(--font-code); font-size: 0.6875rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-text-subtle);
+}
+
+.group-header__count { margin-left: auto; font-family: var(--font-body); letter-spacing: 0; text-transform: none; font-size: 0.75rem; }
+
+.picker-row { display: flex; align-items: flex-start; gap: 10px; margin: 0 4px 1px 6px; padding: 7px 8px 7px 10px; border-radius: var(--radius-sm); }
+
+.picker-row--active { background: var(--color-selected-bg); box-shadow: inset 0 0 0 1px var(--color-row-active-border); }
+
+/* Dimmed (unavailable) rows: the status icon and kicker carry the state, so
+   the text stays readable (an opacity fade put it at 2.1-2.5:1). The name
+   steps down to secondary text as the visual cue. */
+
+.picker-row--dimmed .picker-row__name { color: var(--color-text-secondary); font-weight: 500; }
+
+/* text-subtle on the active row's tint is 4.2:1 in dark. */
+
+.picker-row--active .picker-row__desc, .picker-row--active .picker-row__meta { color: var(--color-text-muted); }
+
+.picker-row__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+
+.picker-row__name { font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); display: flex; gap: 8px; align-items: baseline; }
+
+.picker-row__desc { font-size: 0.78rem; line-height: 1.4; color: var(--color-text-subtle); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.picker-row__meta { font-family: var(--font-code); font-size: 0.6875rem; color: var(--color-text-subtle); }
+
+.picker-row__status { width: 30px; height: 18px; display: grid; place-items: center; color: var(--color-text-subtle); }
+
+.picker-row__status--warn { color: var(--color-state-warn); }
+
+.picker-row__status--deny { color: var(--color-state-deny); }
+
+.picker-row__link { display: inline-flex; align-items: center; gap: 2px; font-size: 0.75rem; color: var(--color-link); text-decoration: none; white-space: nowrap; }
+
+.switch { position: relative; flex: none; width: 30px; height: 18px; padding: 0; border: none; border-radius: var(--radius-pill); background: var(--color-switch-track-off); cursor: pointer; transition: background var(--transition-fast); }
+
+.switch[aria-checked="true"] { background: var(--color-switch-track-on); }
+
+.switch__knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--color-switch-knob); box-shadow: var(--shadow-switch-knob); transition: transform var(--transition-base); }
+
+.switch[aria-checked="true"] .switch__knob { transform: translateX(12px); }
+
+.switch--lg { width: 38px; height: 22px; }
+
+.switch--lg .switch__knob { top: 3px; left: 3px; width: 16px; height: 16px; }
+
+.switch--lg[aria-checked="true"] .switch__knob { transform: translateX(16px); }
+
+.kicker { font-family: var(--font-code); font-size: 0.625rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+
+.kicker--ok { color: var(--color-state-ok); }
+
+.kicker--warn { color: var(--color-state-warn); }
+
+.kicker--deny { color: var(--color-state-deny); }
+
+mark.match { background: var(--color-match-bg); color: var(--color-text-primary); border-radius: 3px; padding: 0; }
+
+.state-panel { border: 1px solid; border-radius: var(--radius-md); padding: 0.625rem 0.875rem; font-size: 0.8125rem; line-height: 1.5; color: var(--color-text-secondary); }
+
+.state-panel a { color: var(--color-link); text-decoration: underline; text-underline-offset: 2px; display: inline-flex; gap: 4px; align-items: center; }
+
+/* Keep the link color on hover/focus; the light theme's global a:hover swaps
+   in --color-primary, which is under 4.5:1 on picker surfaces. */
+
+:is(.picker-popover__foot a, .picker-modal__foot a, .picker-row__link, .state-panel a):where(:not(:disabled, [aria-disabled="true"], .is-disabled)):is(:hover, :focus-visible) { color: var(--color-link); text-decoration: underline; }
+
+.state-panel--ok { background: var(--color-panel-ok-bg); border-color: var(--color-panel-ok-border); }
+
+.state-panel--warn { background: var(--color-panel-warn-bg); border-color: var(--color-panel-warn-border); }
+
+.state-panel--deny { background: var(--color-panel-deny-bg); border-color: var(--color-panel-deny-border); }
+
+.picker-icon-tile { width: 32px; height: 32px; border-radius: var(--radius-sm); background: var(--color-icon-tile); color: var(--color-accent); display: grid; place-items: center; }
+
+.picker-badge { position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px; padding: 0 3px; box-sizing: border-box; border-radius: var(--radius-pill); background: var(--color-accent-strong); color: var(--color-on-accent-strong); font-size: 0.6rem; font-weight: 600; display: grid; place-items: center; }
+
+.scrim { background: var(--color-scrim); backdrop-filter: blur(3px); }
+
+/* Segmented control (COMPONENTS.md "Segmented Control"): a pill track, the
+   selected option on the measured primary fill. Selection is read from
+   whichever ARIA state the control uses (aria-pressed for a button group,
+   aria-checked for a radiogroup, aria-selected for a tablist). The focus
+   outline sits outside the option, against the page, where 3:1 is measured. */
+
+.seg {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+}
+
+.seg-option {
+  padding: 0.25rem 0.75rem;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--font-size-overline);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.seg > .seg-option:first-child {
+  border-start-start-radius: var(--radius-pill);
+  border-end-start-radius: var(--radius-pill);
+}
+
+.seg > .seg-option:last-child {
+  border-start-end-radius: var(--radius-pill);
+  border-end-end-radius: var(--radius-pill);
+}
+
+/* Unselected only, so a hover never puts body text on the primary fill. */
+
+.seg-option:not([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]):where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover {
+  color: var(--color-text-primary);
+}
+
+.seg-option[aria-pressed="true"],
+.seg-option[aria-checked="true"],
+.seg-option[aria-selected="true"] {
+  background: var(--color-primary-fill);
+  color: var(--color-on-primary-fill);
+}
+
+.seg-option:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  position: relative;
+  z-index: 1;
+}
+
+.seg-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Form-field size, for a segmented control that is the field itself. */
+
+.seg--md .seg-option {
+  padding: 0.375rem 1rem;
+  font-size: var(--font-size-caption);
+}

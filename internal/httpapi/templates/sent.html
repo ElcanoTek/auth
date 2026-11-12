@@ -16,13 +16,15 @@
     <div class="brand">{{.Wordmark}}</div>
     <h1>{{tr "Check your inbox"}}</h1>
     <p class="muted">{{tr "If"}} <b>{{.Email}}</b> {{tr "has an account, a sign-in link and a 6-digit code are on their way. Type the code here, or open the link on this device."}}</p>
-    {{if .Error}}<div class="err" role="alert">{{tr .Error}}</div>{{end}}
+    {{if .Error}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
     <form method="post" action="/magic/code" autocomplete="off">
       <input type="hidden" name="email" value="{{.Email}}">
       {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
-      <label for="code">{{tr "Sign-in code"}}</label>
-      <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 \-]*" maxlength="16" required autofocus autocomplete="one-time-code" placeholder="000000">
-      <button class="btn" type="submit">{{tr "Sign in"}}</button>
+      <div class="field">
+        <label for="code">{{tr "Sign-in code"}}</label>
+        <input id="code" name="code" class="code" type="text" inputmode="numeric" pattern="[0-9 \-]*" maxlength="16" required autofocus autocomplete="one-time-code" placeholder="000000">
+      </div>
+      <button class="btn btn-primary" type="submit">{{tr "Sign in"}}</button>
     </form>
     <p class="hint">{{tr "Using {0} from your Home Screen? Type the code: the link opens in Safari." .Wordmark}}</p>
     <div class="foot">{{tr "The code and link expire in {0} minutes. Didn't get them? Check spam, or" .TTLMinutes}}

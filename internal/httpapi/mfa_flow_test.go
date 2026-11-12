@@ -198,7 +198,7 @@ func TestSecurityPageLayoutRulesMatchItsMarkup(t *testing.T) {
 	// (enrolling ends the other sessions, so this is a fresh sign-in with a
 	// code).
 	enrolled, _ := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
-	if _, page = enrolled.get("/account/security"); !strings.Contains(page, `<div class="status-line"><span class="tag on">Enabled</span><span class="muted">10 recovery codes left</span></div>`) {
+	if _, page = enrolled.get("/account/security"); !strings.Contains(page, `<div class="status-line"><span class="badge badge-success">Enabled</span><span class="muted">10 recovery codes left</span></div>`) {
 		t.Fatalf("status line when enrolled:\n%s", page)
 	}
 }

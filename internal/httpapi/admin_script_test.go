@@ -30,8 +30,8 @@ func TestTemporaryPasswordPopupScript(t *testing.T) {
 			t.Fatalf("admin script lacks %q", want)
 		}
 	}
-	if !strings.Contains(componentCSS, `.temp-password .secret .btn-ghost[hidden] { display: none; }`) {
-		t.Fatal("the Copy button shows without script (btn-ghost overrides [hidden])")
+	if !strings.Contains(componentCSS, `.temp-password .secret .btn[hidden] { display: none; }`) {
+		t.Fatal("the Copy button shows without script (.btn overrides [hidden])")
 	}
 }
 
