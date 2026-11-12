@@ -221,12 +221,17 @@ For anything beyond localhost, also set:
   allowlist; empty means open enrollment, never in production), and
   `AUTH_EMAIL_DRIVER` plus `SENDGRID_API_KEY` or the `AUTH_SMTP_*` settings
   with `AUTH_EMAIL_FROM`.
-- In password mode, email is optional. With `ses`, `sendgrid` or `smtp`
-  configured, Add user and Reset password email a one-time link to choose a
-  password (the console can still show a temporary password instead), and Auth
-  sends best-effort security notices about two-factor and recovery-code
-  changes; with
-  `stdout` or no driver it sends nothing and the audit log is the record.
+- In password mode, email is how the admin console adds people and resets
+  passwords. With `ses`, `sendgrid` or `smtp` configured, Add user and Reset
+  password email a one-time link to choose a password, and Auth sends
+  best-effort security notices about two-factor and recovery-code changes.
+  The console never shows or takes a temporary password, so no
+  administrator ever holds someone else's password; temporary passwords are
+  the operator CLI's alone (`auth user create`, `auth user set-password`).
+  With `stdout` or no driver the console cannot add accounts or reset
+  passwords (it says to use the CLI) and the audit log is the record; the
+  one exception is a loopback development server with
+  `AUTH_ALLOW_INSECURE_DEV=true`, where links are printed to the log.
 - Never set `AUTH_ALLOW_INSECURE_DEV=true` outside loopback development. The
   server rejects it with a public hostname or issuer.
 - Optionally `AUTH_CLIENT_CONFIG_DIR`: a checkout of a client bundle whose

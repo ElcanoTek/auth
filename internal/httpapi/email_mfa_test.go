@@ -259,7 +259,7 @@ func TestEmailAdminConsoleStepUp(t *testing.T) {
 	enrollEmailFromSecurity(t, alice, sender, "alice@example.com")
 
 	// Own password: refused outright, before any code is asked for.
-	_, page := alice.post("/admin", url.Values{"action": {"reset-password"}, "email": {"alice@example.com"}, "delivery": {"password"}})
+	_, page := alice.post("/admin", url.Values{"action": {"reset-password"}, "email": {"alice@example.com"}})
 	if !strings.Contains(page, "Use Change password for your own account.") {
 		t.Fatalf("self reset not refused:\n%s", page)
 	}
@@ -267,7 +267,7 @@ func TestEmailAdminConsoleStepUp(t *testing.T) {
 	cfg.MFAReauthWindow = 2 * time.Second
 	time.Sleep(2100 * time.Millisecond)
 	before := sentCount(sender)
-	_, page = alice.post("/admin", url.Values{"action": {"reset-password"}, "email": {"bob@example.com"}, "delivery": {"password"}})
+	_, page = alice.post("/admin", url.Values{"action": {"reset-password"}, "email": {"bob@example.com"}})
 	popup := dialogForm(t, page, "step-up")
 	if !strings.Contains(popup, "Verification code") || !strings.Contains(popup, `name="resend"`) {
 		t.Fatalf("email admin's code popup:\n%s", popup)
@@ -291,7 +291,9 @@ func TestEmailAdminConsoleStepUp(t *testing.T) {
 	}
 	_, page = alice.post("/admin", withValues(renderedForm(t, page, "step-up"), url.Values{"code": {code}}))
 	_, page = alice.post("/admin", renderedForm(t, page, "confirm-change"))
-	expectTempPasswordPopup(t, page, "Password reset", "bob@example.com")
+	if !strings.Contains(page, "Reset the password for bob@example.com and signed them out everywhere.") {
+		t.Fatalf("reset after the emailed code:\n%s", page)
+	}
 	if b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); !b.MustChangePassword {
 		t.Fatal("bob's password was not reset")
 	}

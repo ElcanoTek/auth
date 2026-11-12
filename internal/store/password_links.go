@@ -479,7 +479,8 @@ func (s *Store) MarkPasswordLinkSent(ctx context.Context, d PasswordLinkDelivery
 // MarkPasswordLinkFailed records a send that did not go out. The minted
 // token is dropped (nobody has it, and a retry mints another). retryAt > 0
 // schedules another attempt; retryAt == 0 gives up, which the console shows
-// so the administrator can resend or fall back to a temporary password.
+// so the administrator can resend (or the operator set a temporary password
+// with the CLI).
 func (s *Store) MarkPasswordLinkFailed(ctx context.Context, d PasswordLinkDelivery, now, retryAt int64, reason string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -18,8 +18,12 @@ func TestConsoleWritesPassTheActorProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	unchecked := map[string]string{
-		"SetPassword": "SetPasswordBy", "SetAccountDisabled": "SetAccountDisabledBy",
-		"SetAccountAdmin": "SetAccountAdminBy", "RevokeAllAuthSessions": "RevokeAllAuthSessionsBy",
+		// The console never sets a password anyone sees: resets go by
+		// emailed link (ResetPasswordWithLinkBy). Temporary passwords are
+		// the operator CLI's alone.
+		"SetPassword": "ResetPasswordWithLinkBy", "SetPasswordBy": "ResetPasswordWithLinkBy",
+		"SetAccountDisabled": "SetAccountDisabledBy",
+		"SetAccountAdmin":    "SetAccountAdminBy", "RevokeAllAuthSessions": "RevokeAllAuthSessionsBy",
 		"CreatePasswordAccount": "CreateAccountBy", "SetApplicationDisabled": "SetApplicationDisabledBy",
 		"SetAccountMFARequired": "SetAccountMFARequiredBy", "ResetMFA": "ResetMFABy",
 		"SetMFAPolicy": "SetMFAPolicyBy", "SetApplicationAccess": "SaveAccountAccess",
@@ -28,7 +32,7 @@ func TestConsoleWritesPassTheActorProof(t *testing.T) {
 	// The proof argument each checked call must receive (revokeProof is nil
 	// only for an administrator signing themself out, which is ungated).
 	proofArg := map[string]int{
-		"SetPasswordBy": 5, "SetAccountDisabledBy": 4, "SetAccountAdminBy": 4, "RevokeAllAuthSessionsBy": 3,
+		"ResetPasswordWithLinkBy": 4, "SetAccountDisabledBy": 4, "SetAccountAdminBy": 4, "RevokeAllAuthSessionsBy": 3,
 		"CreateAccountBy": 3, "SetApplicationDisabledBy": 4, "SetAccountMFARequiredBy": 4, "ResetMFABy": 4,
 		"SetMFAPolicyBy": 4, "SaveAccountAccess": 4,
 	}

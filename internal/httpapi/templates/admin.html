@@ -9,7 +9,7 @@
 {{template "assets" .}}
 </head>
 <body{{if .Reopen}} data-reopen="{{.Reopen}}"{{end}}>
-  <div id="admin-translations" hidden data-fleet-admin="{{tr "Fleet Admin"}}" data-viewer="{{tr "Viewer"}}" data-contributor="{{tr "Contributor"}}" data-none="{{tr "None"}}" data-fleet-summary-label="{{tr "Chat {0} · Ops {1}"}}" data-copied="{{tr "Copied"}}" data-copy-failed="{{tr "Copy failed: select it instead"}}"></div>
+  <div id="admin-translations" hidden data-fleet-admin="{{tr "Fleet Admin"}}" data-viewer="{{tr "Viewer"}}" data-contributor="{{tr "Contributor"}}" data-none="{{tr "None"}}" data-fleet-summary-label="{{tr "Chat {0} · Ops {1}"}}"></div>
   {{template "language-choice" .}}
   <nav class="corner-actions" aria-label="{{tr "Your apps"}}">
     <a class="icon-action close" href="/account" aria-label="{{tr "Back to your apps"}}" title="{{tr "Back to your apps"}}">{{template "icon" "close"}}</a>
@@ -29,24 +29,8 @@
       {{range .Tabs}}<a class="tab" href="{{.URL}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}
     </nav>
     {{if .NeedEnroll}}<div class="alert alert--warning" role="alert"><div class="alert__description"><strong>{{tr "Set up two-factor sign-in first."}}</strong> {{tr "{0} Sensitive changes (disabling accounts, resets, sign-outs, who is an administrator, two-factor settings) need an administrator's own authenticator." (tr .Error)}} <a href="/account/security?return_to=%2Fadmin">{{tr "Set yours up"}}</a> {{tr "and then repeat the change."}}</div></div>
-    {{else if and .Error (or (not .Reopen) .Secret)}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
-    {{if .Secret}}<div class="alert alert--success" role="status"><div class="alert__description">{{tr .Notice}} <button class="btn btn-link" type="button" commandfor="temp-password" command="show-modal">{{tr "Show the temporary password"}}</button></div></div>
-    {{/* The one-time password gets a popup of its own (rendered open, so it shows without script; admin.js makes it modal and keeps a stray click outside from closing it). The notice above reopens it. */}}
-    <dialog id="temp-password" class="modal temp-password" aria-labelledby="temp-password-title" aria-describedby="temp-password-for temp-password-warn" open data-keep-open>
-      <div class="modal__header">
-        <h3 id="temp-password-title" class="modal__title">{{tr .SecretTitle}}</h3>
-        <p class="modal__description" id="temp-password-for">{{tr "Temporary password for"}} <strong>{{.SecretFor}}</strong></p>
-      </div>
-      <button class="icon-action modal__close" type="button" commandfor="temp-password" command="close" aria-label="{{tr "Close"}}">{{template "icon" "close"}}</button>
-      <div class="modal__body">
-        <div class="secret"><code id="temp-password-value">{{.Secret}}</code><button class="btn btn-ghost btn-sm" type="button" data-copy="temp-password-value" hidden>{{tr "Copy"}}</button></div>
-        <div class="alert alert--warning" id="temp-password-warn"><div class="alert__description"><strong>{{tr "Save it now."}}</strong> {{tr "It is shown only this once and is not stored anywhere. If it is lost, reset the password again for a new one."}}</div></div>
-        <p class="hint">{{tr "They sign in with it and must choose their own password before anything else. It does not expire on its own. Reloading this page repeats the action."}}</p>
-        {{/* method="dialog" closes it natively, with no script and no invoker-command support. */}}
-        <form method="dialog"><button class="btn btn-primary" type="submit">{{tr "I have saved it"}}</button></form>
-      </div>
-    </dialog>
-    {{else if and .Notice (not .Reopen)}}<div class="alert alert--success" role="status">{{tr .Notice}}</div>{{end}}
+    {{else if and .Error (not .Reopen)}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
+    {{if and .Notice (not .Reopen)}}<div class="alert alert--success" role="status">{{tr .Notice}}</div>{{end}}
     {{if and .Pending (eq .Reopen "step-up")}}{{with .Pending}}
     {{/* A gated change refused only because the code is not fresh. Its allowlisted fields ride along; after the code, the confirm popup offers to repeat it. */}}
     <dialog id="step-up" class="modal" aria-labelledby="step-up-title" open>
@@ -201,18 +185,14 @@
               </div>
               {{end}}
               <div class="setting">
-                <div><strong>{{tr "Reset password"}}</strong><p class="muted">{{if $.EmailLinks}}{{tr "Their current password stops working and they are signed out of every app and device; they are emailed a link to choose a new one."}}{{else}}{{tr "Signs them out of every app and device; shows a new temporary password they must change."}}{{end}}</p></div>
+                <div><strong>{{tr "Reset password"}}</strong><p class="muted">{{if $.EmailLinks}}{{tr "Their current password stops working and they are signed out of every app and device; they are emailed a link to choose a new one."}}{{else}}{{tr "Email is not set up on this server, so passwords are reset with the auth CLI on the server."}}{{end}}</p></div>{{if $.EmailLinks}}
                 <details class="confirm danger"><summary class="btn btn-ghost btn-sm" aria-label="{{tr "Reset password: {0}" $row.Email}}">{{tr "Reset"}}</summary>
                   <form class="popover pane" method="post" action="/admin">
                     <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="email" value="{{$row.Email}}">
-                    {{if $.EmailLinks}}{{/* One form: the submit button pressed says how the new password reaches them (email first, so Enter emails). */}}
                     <p class="muted">{{tr "{0} is signed out everywhere and emailed a link to choose a new password; it works for" $row.Email}} {{$.ResetLifetime}}.</p>
-                    <button class="btn btn-primary btn-sm" type="submit" name="delivery" value="email">{{tr "Email a reset link"}}</button>
-                    <button class="btn btn-link" type="submit" name="delivery" value="password">{{tr "Show a temporary password instead"}}</button>
-                    {{else}}<p class="muted">{{tr "{0} is signed out everywhere and gets a new temporary password." $row.Email}}</p>
-                    <button class="btn btn-danger btn-sm" type="submit">{{tr "Confirm reset"}}</button>{{end}}
+                    <button class="btn btn-primary btn-sm" type="submit">{{tr "Email a reset link"}}</button>
                   </form>
-                </details>
+                </details>{{end}}
               </div>
               <div class="setting">
                 <div><strong>{{tr "Two-factor sign-in"}}</strong><p class="muted">{{if not $.MFAAvailable}}{{tr "Not set up on this server (AUTH_MFA_KEY)."}}{{else if $row.MFAPolicyBound}}{{tr "Required by the deployment policy; {0}." (tr $row.MFAStatus)}}{{else if $row.MFARequired}}{{tr "Required for this account; {0}. They cannot turn it off." (tr $row.MFAStatus)}}{{else if $row.MFAEnrolled}}{{tr "Enrolled voluntarily. Requiring it means they cannot turn it off."}}{{else}}{{tr "Not enrolled. Requiring it signs them out now; they set up an authenticator at their next sign-in."}}{{end}}</p></div>
@@ -295,7 +275,7 @@
     <dialog id="add-user" class="modal" aria-labelledby="add-user-title"{{if eq .Reopen "add-user"}} open{{end}}>
       <div class="modal__header">
         <h3 id="add-user-title" class="modal__title">{{tr "Add user"}}</h3>
-        <p class="modal__description">{{if .EmailLinks}}{{tr "They are emailed a link to choose their own password, or you set a temporary password to share yourself."}}{{else}}{{tr "A temporary password is shown once; they choose their own at first sign-in."}}{{end}}</p>
+        <p class="modal__description">{{if .EmailLinks}}{{tr "They are emailed a link to choose their own password; it works once, for {0}." .InviteLifetime}}{{else}}{{tr "Email is not set up on this server, so accounts are created and passwords reset with the auth CLI on the server."}}{{end}}</p>
       </div>
       <button class="icon-action modal__close" type="button" commandfor="add-user" command="close" aria-label="{{tr "Close"}}">{{template "icon" "close"}}</button>
       <div class="modal__body">
@@ -307,13 +287,6 @@
             <input id="new-email" name="email" type="email" required autocomplete="off" placeholder="name@company.com"{{with .Draft}} value="{{.Email}}"{{end}}></div>
           <div class="field"><label for="new-team">{{tr "Team"}} <span class="muted">{{tr "(optional)"}}</span></label>
             <input id="new-team" name="team" type="text" list="teams" maxlength="64" placeholder="{{tr "e.g. Trading"}}"{{with .Draft}} value="{{.Team}}"{{end}}></div>
-          {{if .EmailLinks}}{{$temp := and .Draft (eq .Draft.Delivery "password")}}<div class="seg-group"><span class="seg-label">{{tr "Password"}}</span>
-            <label class="permission-choice"><input type="radio" name="delivery" value="email"{{if not $temp}} checked{{end}}> {{tr "Email an invite link"}}<small>{{tr "They choose their own password through a link that works once, for {0}." .InviteLifetime}}</small></label>
-            <label class="permission-choice"><input type="radio" name="delivery" value="password"{{if $temp}} checked{{end}}> {{tr "Set a temporary password"}}<small>{{tr "Shown to you once to share; they change it at first sign-in."}}</small></label>
-          </div>{{end}}
-          <div class="field" data-temp-password><label for="new-password">{{tr "Temporary password"}}</label>
-            <div class="with-btn"><input id="new-password" name="password" type="text" autocomplete="off" minlength="12" placeholder="{{tr "Leave blank to generate one"}}"{{with .Draft}} value="{{.Password}}"{{end}}><button class="btn btn-ghost" type="button" data-generate="new-password">{{tr "Generate"}}</button></div>
-            <p class="hint">{{if .EmailLinks}}<span data-temp-hint>{{tr "Only with Set a temporary password."}} </span>{{end}}{{tr "At least 12 characters, not built from their name or {0}. Blank means a strong one is generated for you." .Brand}}</p></div>
           <div class="seg-group"><span class="seg-label">{{tr "Auth Admin"}}</span>
             <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"{{if and .Draft .Draft.Admin}} checked{{end}}> {{tr "Auth Admin"}}<small>{{tr "Full permissions: opens this console and manages every account."}}</small></label>
           </div>
@@ -345,7 +318,7 @@
               <p class="hint">{{tr "Saved with the account when you choose Create account."}}</p>
             </div>
           </dialog>{{end}}
-          <button class="btn btn-primary" type="submit">{{tr "Create account"}}</button>
+          {{if .EmailLinks}}<button class="btn btn-primary" type="submit">{{tr "Create account"}}</button>{{end}}
         </form>
       </div>
     </dialog>
@@ -362,7 +335,7 @@
         {{if $.Error}}<div class="alert alert--destructive" role="alert">{{tr $.Error}}</div>{{else if $.Notice}}<div class="alert alert--success" role="status">{{tr $.Notice}}</div>{{end}}
         <form method="post" action="/admin" autocomplete="off">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="step-up">
-          <input type="hidden" name="email" value="{{.Email}}"><input type="hidden" name="team" value="{{.Team}}"><input type="hidden" name="delivery" value="{{.Delivery}}"><input type="hidden" name="password" value="{{.Password}}">
+          <input type="hidden" name="email" value="{{.Email}}"><input type="hidden" name="team" value="{{.Team}}">
           {{if .Admin}}<input type="hidden" name="admin" value="on">{{end}}{{range $id, $on := .Apps}}{{if $on}}<input type="hidden" name="apps" value="{{$id}}">{{end}}{{end}}
           {{if .FleetAdmin}}<input type="hidden" name="fleet_admin" value="on">{{end}}<input type="hidden" name="fleet_chat_role" value="{{.FleetChatRole}}"><input type="hidden" name="fleet_ops_role" value="{{.FleetOpsRole}}">
           <div class="field"><label for="add-user-code-input">{{if $.ActorEmailFactor}}{{tr "Verification code"}}{{else}}{{tr "Authenticator code"}}{{end}}</label>

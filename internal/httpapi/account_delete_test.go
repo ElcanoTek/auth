@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/elcanotek/auth/internal/store"
 )
 
 // A deleted account (deleted from the CLI; the console has no delete) cannot
@@ -39,10 +41,10 @@ func TestConsoleAndSignInTreatADeletedAccountAsGone(t *testing.T) {
 		}
 	}
 
-	// Add user with the same email restores bob, with a generated
-	// temporary password that signs in and must be changed.
+	// Add user with the same email restores bob and emails him an invite
+	// link to choose a password.
 	_, body := alice.post(url.Values{"action": {"create"}, "email": {"bob@example.com"}, "apps": {"explorer"}})
-	if !strings.Contains(body, "Restored bob@example.com (deleted earlier) with its history and team. Share the temporary password") {
+	if !strings.Contains(body, "Restored bob@example.com (deleted earlier) with its history and team. An invite email is on its way to them") {
 		t.Fatalf("restore notice:\n%s", body)
 	}
 	restored, err := st.PasswordAccountByEmail(ctx, "bob@example.com")
@@ -52,24 +54,13 @@ func TestConsoleAndSignInTreatADeletedAccountAsGone(t *testing.T) {
 	if ids, _ := st.ApplicationAccess(ctx, bob.ID); strings.Join(ids, ",") != "explorer" {
 		t.Fatalf("access after restore = %v (fleet must not come back)", ids)
 	}
-	fresh, freshSession, _ := passwordLogin(t, ts, cfg, "bob@example.com", shownSecret(t, body))
-	_ = fresh.Body.Close()
-	if freshSession == nil || fresh.Header.Get("Location") != "/change-password" {
-		t.Fatalf("restored sign-in: session=%v location=%q", freshSession != nil, fresh.Header.Get("Location"))
+	if link, ok, err := st.PasswordLinkFor(ctx, bob.ID); err != nil || !ok || link.Purpose != store.LinkInvite {
+		t.Fatalf("restored account's invite link = %+v %v %v", link, ok, err)
 	}
 	old, oldSession, _ := passwordLogin(t, ts, cfg, "bob@example.com", plain)
 	_ = old.Body.Close()
 	if oldSession != nil {
 		t.Fatal("the old password signs in to the restored account")
-	}
-
-	// A typed password reads naturally on a restore too.
-	if _, _, err := st.DeleteAccount(ctx, "bob@example.com", time.Now().Unix()); err != nil {
-		t.Fatal(err)
-	}
-	_, body = alice.post(url.Values{"action": {"create"}, "email": {"bob@example.com"}, "password": {"Quartz-Harbor-Lantern-4471"}}) // gitleaks:allow -- synthetic test password
-	if !strings.Contains(body, "Restored bob@example.com (deleted earlier) with its history and team, and the password you entered; they must change it at first sign-in.") {
-		t.Fatalf("typed restore notice:\n%s", body)
 	}
 
 	// A server without AUTH_MFA_KEY cannot restore an account that requires
