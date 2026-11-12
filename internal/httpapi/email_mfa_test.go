@@ -60,6 +60,38 @@ func newEmailMFATestServer(t *testing.T) (*httptest.Server, *store.Store, *confi
 	return ts, st, cfg, sender, plain
 }
 
+// sentCount is how many emails the sender has captured so far.
+func sentCount(sender *captureSender) int {
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	return len(sender.sent)
+}
+
+// nextEmailCode waits for an email to to, captured after the first after
+// messages, that carries a six-digit code, and returns the newest such code.
+// Codes are sent from a goroutine, so the message may land after the
+// response that triggered it.
+func nextEmailCode(t *testing.T, sender *captureSender, to string, after int) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sender.mu.Lock()
+		for i := len(sender.sent) - 1; i >= after; i-- {
+			if strings.EqualFold(sender.sent[i].to, to) {
+				if m := emailCodeRE.FindStringSubmatch(sender.sent[i].text); m != nil {
+					sender.mu.Unlock()
+					return m[1]
+				}
+			}
+		}
+		sender.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatalf("no code emailed to %s after message %d", to, after)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func lastEmailCode(t *testing.T, sender *captureSender, to string) string {
 	t.Helper()
 	sender.mu.Lock()
@@ -146,8 +178,8 @@ func TestEmailMFALoginEnrollmentAndSignInFlow(t *testing.T) {
 	}
 }
 
-func TestEmailMFASecurityPageSwitchAndAdminRestriction(t *testing.T) {
-	ts, st, cfg, sender, plain := newEmailMFATestServer(t)
+func TestEmailMFASecurityPageSwitchAndAdministrators(t *testing.T) {
+	ts, st, _, sender, plain := newEmailMFATestServer(t)
 
 	// Standard user enrolls in email codes from /account/security.
 	bob := newBrowser(t, ts)
@@ -172,36 +204,127 @@ func TestEmailMFASecurityPageSwitchAndAdminRestriction(t *testing.T) {
 		t.Fatalf("security page after email enroll:\n%s", page)
 	}
 
-	// Administrators do not get the email 2FA option on /account/security or /login/enroll.
+	// Administrators get the same choice and enroll email codes the same way.
 	alice := newBrowser(t, ts)
 	alice.login("alice@example.com", plain)
 	_, alicePage := alice.get("/account/security")
-	if strings.Contains(alicePage, "Use email codes") || strings.Contains(alicePage, "Switch to email codes") {
-		t.Fatalf("admin security page must not offer email codes:\n%s", alicePage)
+	if !strings.Contains(alicePage, "Use email codes") {
+		t.Fatalf("admin security page must offer email codes:\n%s", alicePage)
 	}
-	resp, alicePage = alice.post("/account/security", url.Values{"action": {"start_email"}})
-	if resp.StatusCode != http.StatusOK || !strings.Contains(alicePage, "Email verification codes are not available for this account.") {
-		t.Fatalf("admin start_email status=%d:\n%s", resp.StatusCode, alicePage)
-	}
+	enrollEmailFromSecurity(t, alice, sender, "alice@example.com")
 
-	// Promoting Bob to administrator via the store disables his email factor, requires TOTP, and revokes his session.
+	// Promoting Bob keeps his email factor: he signs in with an emailed
+	// code, not by setting up an authenticator app.
 	if err := st.SetAccountAdmin(context.Background(), "bob@example.com", true, time.Now().Unix()+5); err != nil {
 		t.Fatal(err)
 	}
-	if resp, _ := bob.get("/account"); resp.StatusCode != http.StatusSeeOther || !bob.has(cfg.PasswordCookieName) == true {
-		// Bob's old session cookie is rejected and redirects to sign-in.
-		if !strings.HasPrefix(resp.Header.Get("Location"), "/?return_to=") {
-			t.Fatalf("promoted bob old session GET /account = %d %q", resp.StatusCode, resp.Header.Get("Location"))
-		}
+	if b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); !b.IsAdmin || b.MFAKind != store.AuthenticatorEmail {
+		t.Fatalf("promoted bob: admin=%v kind=%q", b.IsAdmin, b.MFAKind)
 	}
-	// When promoted Bob signs in again, he is sent to /login/enroll with only the authenticator app setup.
 	bobAdmin := newBrowser(t, ts)
+	before := sentCount(sender)
 	resp, _ = bobAdmin.login("bob@example.com", plain)
-	if resp.Header.Get("Location") != "/login/enroll" {
-		t.Fatalf("promoted bob login location = %q, want /login/enroll", resp.Header.Get("Location"))
+	if resp.Header.Get("Location") != "/login/verify" {
+		t.Fatalf("promoted bob login location = %q, want /login/verify", resp.Header.Get("Location"))
 	}
-	_, enrollPage := bobAdmin.get("/login/enroll")
-	if strings.Contains(enrollPage, "Use email verification codes") {
-		t.Fatalf("promoted admin /login/enroll must not offer email verification codes:\n%s", enrollPage)
+	resp, _ = bobAdmin.post("/login/verify", url.Values{"code": {nextEmailCode(t, sender, "bob@example.com", before)}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("promoted bob's emailed code: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp, page := bobAdmin.get("/admin"); resp.StatusCode != http.StatusOK || !strings.Contains(page, "bob@example.com") {
+		t.Fatalf("promoted bob on email codes cannot open the console: %d", resp.StatusCode)
+	}
+}
+
+// enrollEmailFromSecurity turns on email codes for a signed-in browser.
+func enrollEmailFromSecurity(t *testing.T, b *browser, sender *captureSender, email string) {
+	t.Helper()
+	before := sentCount(sender)
+	if resp, page := b.post("/account/security", url.Values{"action": {"start_email"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Set up email verification") {
+		t.Fatalf("%s start_email status=%d:\n%s", email, resp.StatusCode, page)
+	}
+	code := nextEmailCode(t, sender, email, before)
+	if resp, _ := b.post("/account/security", url.Values{"action": {"confirm_email"}, "code": {code}}); resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "email_on=1") {
+		t.Fatalf("%s confirm_email status=%d location=%q", email, resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// An administrator on email codes confirms a gated console change with a
+// code emailed when the popup opens; a resend inside the cooldown is
+// refused; and their own password can never be reset from the console.
+func TestEmailAdminConsoleStepUp(t *testing.T) {
+	ts, st, cfg, sender, plain := newEmailMFATestServer(t)
+	alice := newBrowser(t, ts)
+	alice.login("alice@example.com", plain)
+	enrollEmailFromSecurity(t, alice, sender, "alice@example.com")
+
+	// Own password: refused outright, before any code is asked for.
+	_, page := alice.post("/admin", url.Values{"action": {"reset-password"}, "email": {"alice@example.com"}, "delivery": {"password"}})
+	if !strings.Contains(page, "Use Change password for your own account.") {
+		t.Fatalf("self reset not refused:\n%s", page)
+	}
+
+	cfg.MFAReauthWindow = 2 * time.Second
+	time.Sleep(2100 * time.Millisecond)
+	before := sentCount(sender)
+	_, page = alice.post("/admin", url.Values{"action": {"reset-password"}, "email": {"bob@example.com"}, "delivery": {"password"}})
+	popup := dialogForm(t, page, "step-up")
+	if !strings.Contains(popup, "Verification code") || !strings.Contains(popup, `name="resend"`) {
+		t.Fatalf("email admin's code popup:\n%s", popup)
+	}
+	// Opening the popup emails the code.
+	code := nextEmailCode(t, sender, "alice@example.com", before)
+
+	// Resend straight away: refused by the cooldown, the popup stays.
+	_, page = alice.post("/admin", withValues(renderedForm(t, page, "step-up"), url.Values{"resend": {"1"}}))
+	if !strings.Contains(dialogForm(t, page, "step-up"), "A verification code was just sent.") {
+		t.Fatalf("resend inside the cooldown:\n%s", page)
+	}
+	// A wrong code is refused; the emailed one opens the confirm popup.
+	wrong := "000000"
+	if code == wrong {
+		wrong = "111111"
+	}
+	_, page = alice.post("/admin", withValues(renderedForm(t, page, "step-up"), url.Values{"code": {wrong}}))
+	if !strings.Contains(dialogForm(t, page, "step-up"), "That code did not match or has expired.") {
+		t.Fatalf("wrong code:\n%s", page)
+	}
+	_, page = alice.post("/admin", withValues(renderedForm(t, page, "step-up"), url.Values{"code": {code}}))
+	_, page = alice.post("/admin", renderedForm(t, page, "confirm-change"))
+	expectTempPasswordPopup(t, page, "Password reset", "bob@example.com")
+	if b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com"); !b.MustChangePassword {
+		t.Fatal("bob's password was not reset")
+	}
+	// The code proved the factor only: the Security page still asks for
+	// the password before the factor can be removed.
+	if resp, _ := alice.post("/account/security", url.Values{"action": {"disable"}}); resp.StatusCode != http.StatusSeeOther || !strings.HasPrefix(resp.Header.Get("Location"), "/account/security/verify") {
+		t.Fatalf("disable after a console code: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// Under "Required for administrators" an administrator without a factor can
+// choose email codes during the sign-in enrollment, as anyone else can.
+func TestEmailMFAAdminSignInEnrollment(t *testing.T) {
+	ts, st, cfg, sender, plain := newEmailMFATestServer(t)
+	if _, _, err := st.SetMFAPolicy(context.Background(), mfa.ModeAdmins, "test", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	alice := newBrowser(t, ts)
+	if resp, _ := alice.login("alice@example.com", plain); resp.Header.Get("Location") != "/login/enroll" {
+		t.Fatalf("admin login under ModeAdmins location = %q, want /login/enroll", resp.Header.Get("Location"))
+	}
+	if resp, page := alice.get("/login/enroll"); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Use email verification codes instead") {
+		t.Fatalf("admin /login/enroll status=%d missing email option:\n%s", resp.StatusCode, page)
+	}
+	before := sentCount(sender)
+	if resp, page := alice.post("/login/enroll", url.Values{"action": {"start_email"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Set up email verification") {
+		t.Fatalf("admin start_email status=%d:\n%s", resp.StatusCode, page)
+	}
+	resp, _ := alice.post("/login/enroll", url.Values{"action": {"confirm_email"}, "code": {nextEmailCode(t, sender, "alice@example.com", before)}})
+	if resp.StatusCode != http.StatusSeeOther || !alice.has(cfg.PasswordCookieName) {
+		t.Fatalf("admin confirm_email status=%d location=%q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp, _ := alice.get("/admin"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin enrolled on email codes cannot open the console: %d", resp.StatusCode)
 	}
 }

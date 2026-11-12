@@ -486,7 +486,7 @@ func userCmd(dataDir string, args []string) {
 			if err != nil {
 				fatalf("admin on: %v", err)
 			}
-			if (policy.Mode == mfa.ModeAdmins && !a.MFAEnrolled) || a.MFAKind == store.AuthenticatorEmail {
+			if policy.Mode == mfa.ModeAdmins && !a.MFAEnrolled {
 				requireMFAKeyConfigured("promoting an account that must then enroll")
 			}
 		}

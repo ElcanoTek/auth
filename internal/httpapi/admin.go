@@ -450,9 +450,6 @@ func (s *Server) promotionSignOut(r *http.Request, email string) string {
 	if err != nil || target.IsAdmin {
 		return ""
 	}
-	if target.MFAKind == store.AuthenticatorEmail {
-		return translate(requestLanguage(r), " Administrators must use an authenticator app, so their email two-factor is replaced and they are signed out now to set up an app at their next sign-in.")
-	}
 	if target.MFAEnrolled || s.mfaPolicy(r).Mode != mfa.ModeAdmins {
 		return ""
 	}
@@ -721,12 +718,25 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	res := adminResult{Tab: tab}
 	ipHash := s.rateKey("ip", clientIP(r))
 	// Sensitive actions (see sensitiveActions) need the administrator's own
-	// authenticator code entered within the re-verification window: a
-	// sign-in that used the code counts, a step-up on the verify page
-	// counts, Add user's code popup counts, a recovery-code sign-in or a
-	// password-only re-verification does not. An administrator without an
-	// authenticator is sent to set one up first.
+	// second-factor code (authenticator app or email) entered within the
+	// re-verification window: a sign-in that used the code counts, a
+	// step-up on the verify page counts, Add user's code popup counts, a
+	// recovery-code sign-in or a password-only re-verification does not. An
+	// administrator without a factor is sent to set one up first.
 	fresh := actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow())
+	emailFactor := actor.MFAEnrolled && actor.MFAKind == store.AuthenticatorEmail
+	// sendCode emails an email-factor administrator the step-up code the
+	// popup asks for, unless one sent for this session is still live.
+	sendCode := func() {
+		if !emailFactor {
+			return
+		}
+		if err := s.sendMFAEmailChallenge(r, actor, store.EmailPurposeStepUp, identity.Session.TokenHash, challengeTTL, false, now); errors.Is(err, errEnrollLimited) {
+			res.Error = translate(requestLanguage(r), "Too many verification emails sent. Wait a few minutes and try again.")
+		} else if err != nil && !errors.Is(err, store.ErrEmailCooldown) {
+			logUnlessCancelled("console step-up email", err)
+		}
+	}
 	// The same facts, re-checked inside the store transactions that accept
 	// an actor proof.
 	// Window makes the store judge freshness when each write's transaction
@@ -746,6 +756,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			return res
 		}
 		res.Tab, res.Reopen, res.Pending, res.Error = adminAccountsTab, reopenStepUp, p, ""
+		sendCode()
 		return res
 	}
 	needVerify := stepUp
@@ -754,6 +765,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	// popup says why; Error is kept for a refused code.
 	askForCode := func() adminResult {
 		res.Tab, res.Reopen, res.Draft, res.Error = adminAccountsTab, reopenAddUserCode, draft, ""
+		sendCode()
 		return res
 	}
 	// gate returns the page to show instead of performing a sensitive
@@ -800,6 +812,24 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		if !s.mfaAvailable() || !actor.MFAEnrolled {
 			r, _ := gate(sensitiveActions["create"])
 			return r
+		}
+		if emailFactor && r.PostFormValue("resend") != "" {
+			res.Tab, res.Draft, res.Pending, res.Reopen = adminAccountsTab, draft, pending, reopenAddUserCode
+			if pending != nil {
+				res.Reopen = reopenStepUp
+			}
+			err := s.sendMFAEmailChallenge(r, actor, store.EmailPurposeStepUp, identity.Session.TokenHash, challengeTTL, true, now)
+			switch {
+			case errors.Is(err, store.ErrEmailCooldown):
+				res.Error = translate(requestLanguage(r), "A verification code was just sent. Check your email or wait a minute before requesting another.")
+			case errors.Is(err, errEnrollLimited):
+				res.Error = translate(requestLanguage(r), "Too many verification emails sent. Wait a few minutes and try again.")
+			case err != nil:
+				return res.failed("console step-up email", err)
+			default:
+				res.Notice = translate(requestLanguage(r), "We sent a new six-digit code to your email.")
+			}
+			return res
 		}
 		return s.adminStepUp(r, identity, res, draft, pending, now)
 	}
@@ -1031,6 +1061,9 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 	self := target.ID == actor.ID
 	switch action {
 	case "reset-password":
+		// Never one's own: another administrator resets it (the store
+		// refuses it too, ErrSelfReset), so whoever holds one of an
+		// administrator's factors cannot replace the other.
 		if self {
 			res.Error = translate(requestLanguage(r), "Use Change password for your own account.")
 			return res
@@ -1278,7 +1311,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		wantAdmin := r.FormValue("admin") == "on"
 		adminChange := wantAdmin != target.IsAdmin
 		policy := s.mfaPolicy(r)
-		promotionNeedsFactor := adminChange && wantAdmin && (target.MFAKind == store.AuthenticatorEmail || (!target.MFAEnrolled && policy.Mode == mfa.ModeAdmins))
+		promotionNeedsFactor := adminChange && wantAdmin && !target.MFAEnrolled && policy.Mode == mfa.ModeAdmins
 		if adminChange && self && !wantAdmin {
 			res.Error = translate(requestLanguage(r), "You cannot remove your own administrator access.")
 			return res
@@ -1363,7 +1396,13 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 // Create account to be chosen again; refused, the popup reopens with why.
 func (s *Server) adminStepUp(r *http.Request, identity *passwordIdentity, res adminResult, draft *addUserDraft, pending *pendingChange, now time.Time) adminResult {
 	res.Tab, res.Draft, res.Pending = adminAccountsTab, draft, pending
-	refusal, err := s.verifySessionCode(r, identity, r.FormValue("code"), now, false)
+	var refusal string
+	var err error
+	if identity.Account.MFAKind == store.AuthenticatorEmail {
+		refusal, err = s.verifySessionEmailCode(r, identity, r.FormValue("code"), now, false)
+	} else {
+		refusal, err = s.verifySessionCode(r, identity, r.FormValue("code"), now, false)
+	}
 	switch {
 	case errors.Is(err, store.ErrInvalidSession):
 		res.Redirect = "/"
@@ -1601,8 +1640,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 		"Tabs":  tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
 		"Secret": result.Secret, "SecretTitle": result.SecretTitle, "SecretFor": result.ForEmail, "Reopen": result.Reopen, "Draft": result.Draft,
 		"Pending": result.Pending, "NeedEnroll": result.NeedEnroll,
-		"ActorFresh": actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
-		"MFAPolicy":  translate(requestLanguage(r), policy.Mode.Label()), "MFARevision": policy.Revision,
+		"ActorFresh":       actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
+		"ActorEmailFactor": actor.MFAEnrolled && actor.MFAKind == store.AuthenticatorEmail,
+		"MFAPolicy":        translate(requestLanguage(r), policy.Mode.Label()), "MFARevision": policy.Revision,
 	}, actor, csrf, "/admin")
 
 	if tab == adminAccountsTab {

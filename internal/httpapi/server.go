@@ -831,8 +831,8 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// people only: someone completing the forced change of a temporary
 	// password, and an administrator changing their own (the console refuses
 	// to reset its own operator). Everyone else is sent back to their apps
-	// without anything being read or processed; an administrator resets
-	// their password from the console when they need a new one.
+	// without anything being read or processed. An administrator who has
+	// lost their password asks another administrator to reset it.
 	if !identity.Account.MustChangePassword && !identity.Account.IsAdmin {
 		http.Redirect(w, r, "/account", http.StatusSeeOther)
 		return

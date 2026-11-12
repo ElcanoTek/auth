@@ -396,7 +396,12 @@ of being handed a temporary one:
   is not an option.
 - **Reset password** emails a reset link. The current password stops working
   at once and every session is signed out, as before; the person chooses the
-  next one. "Show a temporary password instead" is the fallback.
+  next one. "Show a temporary password instead" is the fallback. It is never
+  offered for one's own account (the store refuses it too): an administrator
+  who has lost their password asks another administrator, or the operator
+  runs `auth user reset-password` on the box. The same holds for Reset
+  two-factor. With email two-factor, this is what keeps the password and
+  the code from both coming out of one mailbox on the person's own request.
 - **Settings** shows each link's state (sending, emailed and until when,
   expired, or why it failed) and **Send a new link** for an account still
   waiting to choose its password. A new link replaces the old one, which stops
@@ -650,8 +655,12 @@ password. What people see:
   (the strongest rule wins; the button is absent when the policy already
   requires it); the batch bar above the table requires it of several
   accounts at once. Every sensitive change in the console (see the admin
-  console section) needs the acting administrator's own authenticator code
-  entered less than five minutes ago; otherwise a popup asks for the code,
+  console section) needs the acting administrator's own second-factor code
+  (authenticator app, or email code) entered less than five minutes ago;
+  otherwise a popup asks for the code (an administrator on email codes is
+  sent one when it opens, with **Send a new code** to resend; that code
+  proves the factor only and never stands in for the password the Security
+  page asks for),
   then a second popup says what will change (for example "Change the
   two-factor policy from Optional to Required for administrators?") and
   **Confirm** makes it. **Create account** instead reopens Add user with
@@ -1181,6 +1190,16 @@ sudo auth rebuild --from-source         # compile from source + restart at that 
 
 `update.sh` prints the roll-back command in its final status card,
 naming the previous release tag (or commit SHA for `--from-source`).
+
+> **Administrators on email codes.** Releases before administrator email
+> two-factor ignore an administrator's email factor yet still see it as the
+> active one: under the Optional policy such an administrator signs in with
+> the password alone, and under Required for administrators they are sent
+> to set up an authenticator app that the older release then refuses to
+> save, so they cannot sign in. Before rolling back past that release, have
+> each administrator on email codes switch to an authenticator app from
+> Security, or reset their two-factor (console, or `auth user mfa-reset
+> <email> --reason "..."`) so the older release enrolls them afresh.
 
 ### Database migrations
 

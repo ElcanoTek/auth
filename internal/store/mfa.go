@@ -178,6 +178,11 @@ var (
 	// ErrActorNotFresh: the administrator's session is gone, no longer an
 	// administrator's, or its proof is older than the window the caller set.
 	ErrActorNotFresh = errors.New("administrator session is not fresh")
+	// ErrSelfReset: an administrator tried to reset their own password or
+	// two-factor sign-in. Only another administrator (or the operator CLI,
+	// which acts as nobody) may, so that whoever holds one factor of an
+	// administrator cannot use the console to replace the other.
+	ErrSelfReset = errors.New("administrators cannot reset their own password or two-factor sign-in")
 	// ErrInvalidReason: a reset reason is empty, too long or has control
 	// characters.
 	ErrInvalidReason = errors.New("reason must be 1-200 printable characters")
@@ -220,7 +225,7 @@ func requireActorTx(ctx context.Context, tx *sql.Tx, actorID string, proof *Acto
 	var amr string
 	err := tx.QueryRowContext(ctx, `
 		SELECT a.is_admin, a.disabled_at, s.revoked_at, s.idle_expires_at, s.absolute_expires_at, s.created_at, s.amr, s.reauth_at, s.mfa_verified_at,
-		       EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind = 'totp' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)
+		       `+activeFactorExistsExpr+`
 		FROM auth_sessions s JOIN accounts a ON a.id = s.user_id
 		WHERE s.token_hash = ? AND s.user_id = ?`, proof.SessionHash, actorID).
 		Scan(&isAdmin, &disabled, &revoked, &idle, &absolute, &created, &amr, &reauthAt, &mfaAt, &enrolled)
@@ -914,6 +919,9 @@ func (s *Store) ResetMFA(ctx context.Context, userID, actorID, reason string, no
 // ResetMFABy is ResetMFA with the in-transaction actor check (the console
 // requires the acting administrator's fresh authenticator proof).
 func (s *Store) ResetMFABy(ctx context.Context, userID, actorID, reason string, proof *ActorProof, now int64) error {
+	if actorID == userID {
+		return ErrSelfReset
+	}
 	reason, err := NormalizeReason(reason)
 	if err != nil {
 		return err
@@ -1874,7 +1882,7 @@ func (s *Store) SaveAccountAccess(ctx context.Context, email string, save Access
 			return AccessSaveResult{}, err
 		}
 		out.AdminChanged = true
-		if *save.Admin && (a.MFAKind == AuthenticatorEmail || (!a.MFAEnrolled && policy.Mode == mfa.ModeAdmins)) {
+		if *save.Admin && !a.MFAEnrolled && policy.Mode == mfa.ModeAdmins {
 			out.SignedOut = true
 		}
 		a.IsAdmin = *save.Admin

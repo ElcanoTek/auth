@@ -12,13 +12,11 @@ import (
 
 // Email-based second-factor storage (schema v17).
 //
-// Standard (non-administrator) accounts may enroll an email second factor
+// Any account, administrators included, may enroll an email second factor
 // (kind "email" in authenticators) as an alternative to an authenticator app
-// (kind "totp"). Administrators must always use an authenticator app: the
-// store refuses email factor activation for administrator accounts, and
-// promoting an email-enrolled account to administrator disables its email
-// factor, marks mfa_required = 1, bumps security_version and signs the
-// account out so it enrolls an authenticator app at next sign-in.
+// (kind "totp"). A mailbox alone still cannot take over an account: there is
+// no self-service password reset, and an administrator's password is only
+// ever reset by another administrator (ErrSelfReset) or the operator CLI.
 //
 // Challenges live in mfa_email_challenges, keyed by (user_id, purpose) so
 // issuing a new code for the same purpose replaces any earlier one. The
@@ -40,8 +38,6 @@ var (
 	// ErrEmailCooldown: a verification email for this scope was sent
 	// moments ago; the existing code stays active.
 	ErrEmailCooldown = errors.New("email verification code was just sent")
-	// ErrAdminRequiresTOTP: administrators must use an authenticator app.
-	ErrAdminRequiresTOTP = errors.New("administrators must use an authenticator app")
 )
 
 const emailMFASchema = `
@@ -64,13 +60,12 @@ CREATE TABLE IF NOT EXISTS mfa_email_challenges (
 `
 
 // activeFactorKindExpr evaluates to the account's active second-factor kind
-// ('totp' or 'email'), or ” when none is active. Administrator accounts
-// only ever qualify with 'totp'.
-const activeFactorKindExpr = `COALESCE((SELECT f.kind FROM authenticators f WHERE f.user_id = a.id AND (f.kind = 'totp' OR (a.is_admin = 0 AND f.kind = 'email')) AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL), '')`
+// ('totp' or 'email'), or ” when none is active.
+const activeFactorKindExpr = `COALESCE((SELECT f.kind FROM authenticators f WHERE f.user_id = a.id AND f.kind IN ('totp', 'email') AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL), '')`
 
-// activeFactorExistsExpr reports whether the account has a qualifying active
-// second factor ('totp', or 'email' for non-administrators).
-const activeFactorExistsExpr = `EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND (f.kind = 'totp' OR (a.is_admin = 0 AND f.kind = 'email')) AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)`
+// activeFactorExistsExpr reports whether the account has an active second
+// factor ('totp' or 'email').
+const activeFactorExistsExpr = `EXISTS (SELECT 1 FROM authenticators f WHERE f.user_id = a.id AND f.kind IN ('totp', 'email') AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL)`
 
 // migrateEmailMFA is schema v17: broadens idx_authenticators_one_active to
 // cover 'email' factors alongside 'totp' and creates mfa_email_challenges.
@@ -139,9 +134,8 @@ func (s *Store) IssueMFAEmailChallenge(ctx context.Context, userID, purpose, sco
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var isAdmin int
 	var disabled sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT is_admin, disabled_at FROM accounts WHERE id = ? AND deleted_at IS NULL`, userID).Scan(&isAdmin, &disabled); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT disabled_at FROM accounts WHERE id = ? AND deleted_at IS NULL`, userID).Scan(&disabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrAccountNotFound
 		}
@@ -149,9 +143,6 @@ func (s *Store) IssueMFAEmailChallenge(ctx context.Context, userID, purpose, sco
 	}
 	if disabled.Valid {
 		return ErrAccountNotFound
-	}
-	if isAdmin != 0 {
-		return ErrAdminRequiresTOTP
 	}
 	if cooldownSeconds > 0 {
 		var existingScope string
@@ -253,8 +244,8 @@ func consumeEmailChallengeTx(ctx context.Context, tx *sql.Tx, userID, purpose, s
 
 // ActivateEmailAuthenticator confirms a pending email 2FA enrollment after
 // the person proved the emailed six-digit code. It mirrors
-// ActivateAuthenticator in one transaction: refuses administrator accounts
-// (ErrAdminRequiresTOTP), disables any previous active factor, removes any
+// ActivateAuthenticator in one transaction: disables any previous active
+// factor, removes any
 // unconfirmed TOTP secret or old recovery codes, inserts the verified
 // 'email' authenticator row, bumps security_version, revokes every other
 // session, upgrades keepSessionHash or completes completion, queues a
@@ -275,9 +266,8 @@ func (s *Store) ActivateEmailAuthenticator(ctx context.Context, userID, scopeID 
 	if err := consumeEmailChallengeTx(ctx, tx, userID, EmailPurposeEnroll, scopeID, macFor, now); err != nil {
 		return 0, err
 	}
-	var isAdmin int
 	var disabled sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT is_admin, disabled_at FROM accounts WHERE id = ? AND deleted_at IS NULL`, userID).Scan(&isAdmin, &disabled); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT disabled_at FROM accounts WHERE id = ? AND deleted_at IS NULL`, userID).Scan(&disabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, ErrAccountNotFound
 		}
@@ -285,9 +275,6 @@ func (s *Store) ActivateEmailAuthenticator(ctx context.Context, userID, scopeID 
 	}
 	if disabled.Valid {
 		return 0, ErrAccountNotFound
-	}
-	if isAdmin != 0 {
-		return 0, ErrAdminRequiresTOTP
 	}
 	if completion != nil {
 		var txCredential, credential string
@@ -332,13 +319,13 @@ func (s *Store) ActivateEmailAuthenticator(ctx context.Context, userID, scopeID 
 	}
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO authenticators(id, user_id, kind, label, created_at, verified_at)
-		SELECT ?, a.id, 'email', 'Email', ?, ? FROM accounts a WHERE a.id = ? AND a.disabled_at IS NULL AND a.is_admin = 0`,
+		SELECT ?, a.id, 'email', 'Email', ?, ? FROM accounts a WHERE a.id = ? AND a.disabled_at IS NULL`,
 		authID, now, now, userID)
 	if err != nil {
 		return 0, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return 0, ErrAdminRequiresTOTP
+		return 0, ErrAccountNotFound
 	}
 	version, err := bumpSecurityVersionTx(ctx, tx, userID, now)
 	if err != nil {
@@ -380,11 +367,23 @@ func (s *Store) ActivateEmailAuthenticator(ctx context.Context, userID, scopeID 
 	return revoked, tx.Commit()
 }
 
-// VerifyEmailFactorAndStampReauth is VerifyFactorAndStampReauth for a
-// non-administrator account enrolled in email 2FA: consumes the session-bound
-// step_up email challenge and stamps reauth_at and mfa_verified_at on the
-// session.
+// VerifyEmailFactorAndStampReauth is VerifyFactorAndStampReauth for an
+// account enrolled in email 2FA: consumes the session-bound step_up email
+// challenge and stamps reauth_at and mfa_verified_at on the session. Only
+// the Security page's step-up, which also checked the password, calls it.
 func (s *Store) VerifyEmailFactorAndStampReauth(ctx context.Context, tokenHash string, macFor func(nonce string) string, now int64) error {
+	return s.verifyEmailFactorOnSession(ctx, tokenHash, macFor, now, true)
+}
+
+// VerifyEmailFactorOnSession is VerifyFactorOnSession for an account
+// enrolled in email 2FA: the admin console's code-only step-up. It writes
+// mfa_verified_at but leaves reauth_at alone, so an emailed code by itself
+// never unlocks replacing or removing the factor on the Security page.
+func (s *Store) VerifyEmailFactorOnSession(ctx context.Context, tokenHash string, macFor func(nonce string) string, now int64) error {
+	return s.verifyEmailFactorOnSession(ctx, tokenHash, macFor, now, false)
+}
+
+func (s *Store) verifyEmailFactorOnSession(ctx context.Context, tokenHash string, macFor func(nonce string) string, now int64, stampReauth bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -404,7 +403,7 @@ func (s *Store) VerifyEmailFactorAndStampReauth(ctx context.Context, tokenHash s
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM accounts a
 		JOIN authenticators f ON f.user_id = a.id
-		WHERE a.id = ? AND a.disabled_at IS NULL AND a.is_admin = 0
+		WHERE a.id = ? AND a.disabled_at IS NULL
 		  AND f.kind = 'email' AND f.verified_at IS NOT NULL AND f.disabled_at IS NULL`,
 		userID).Scan(&activeEmail); err != nil {
 		return err
@@ -412,9 +411,13 @@ func (s *Store) VerifyEmailFactorAndStampReauth(ctx context.Context, tokenHash s
 	if activeEmail != 1 {
 		return ErrInvalidProof
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = ?, amr = 'pwd otp', mfa_verified_at = ?,
+	var reauth any
+	if stampReauth {
+		reauth = now
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE auth_sessions SET reauth_at = COALESCE(?, reauth_at), amr = 'pwd otp', mfa_verified_at = ?,
 		security_version = (SELECT a.security_version FROM accounts a WHERE a.id = auth_sessions.user_id)
-		WHERE token_hash = ? AND user_id = ? AND revoked_at IS NULL`, now, now, tokenHash, userID)
+		WHERE token_hash = ? AND user_id = ? AND revoked_at IS NULL`, reauth, now, tokenHash, userID)
 	if err != nil {
 		return err
 	}

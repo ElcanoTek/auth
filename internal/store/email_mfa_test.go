@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -136,23 +137,46 @@ func TestEmailMFALoginChallengeAndAttemptLimit(t *testing.T) {
 	}
 }
 
-func TestEmailMFAAdminPolicyAndPromotion(t *testing.T) {
+// enrollEmail activates an email factor for a, keeping session keep (if any).
+func enrollEmail(t *testing.T, s *Store, a Account, keep string, now int64) {
+	t.Helper()
+	ctx := context.Background()
+	scope := "enroll-" + a.ID
+	if err := s.IssueMFAEmailChallenge(ctx, a.ID, EmailPurposeEnroll, scope, "n-"+a.ID, "mac-"+a.ID, 0, now, now+600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ActivateEmailAuthenticator(ctx, a.ID, scope, func(string) string { return "mac-" + a.ID }, keep, nil, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Administrators may use email codes: an administrator enrolls one like
+// anyone else, an email factor satisfies "Required for administrators",
+// and promoting an email-enrolled account keeps its factor and sessions.
+func TestEmailMFAAdministrators(t *testing.T) {
 	s, a, now := mfaFixture(t)
 	ctx := context.Background()
+	newlyRequired := func(when string, want int64) {
+		t.Helper()
+		if n, err := s.CountNewlyRequiredWithoutFactor(ctx, mfa.ModeAdmins); err != nil || n != want {
+			t.Fatalf("%s: CountNewlyRequiredWithoutFactor(admins) = %d, %v, want %d", when, n, err, want)
+		}
+	}
 
-	// Enroll standard user in email 2FA and create an active session.
-	if err := s.IssueMFAEmailChallenge(ctx, a.ID, EmailPurposeEnroll, "init", "n1", "mac-init", 0, now, now+600); err != nil {
+	// Carol, an administrator without a factor, is the positive control.
+	carol, err := s.CreatePasswordAccount(ctx, "carol@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Y2Fyb2w", false, now)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := s.SetAccountAdmin(ctx, carol.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	newlyRequired("carol unenrolled", 1)
+
+	// Bob (a) on email codes is promoted under the Optional policy: he
+	// keeps the factor and his session, and does not add to the count.
 	session(t, s, a, "bob-sess", now)
-	if _, err := s.ActivateEmailAuthenticator(ctx, a.ID, "init", func(string) string { return "mac-init" }, "bob-sess", nil, now+1); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := s.CountNewlyRequiredWithoutFactor(ctx, mfa.ModeEveryone); err != nil || n != 0 {
-		t.Fatalf("CountNewlyRequiredWithoutFactor with email user = %d, %v, want 0", n, err)
-	}
-
-	// Promote the user to administrator: email 2FA must be disabled, mfa_required=1, and sessions revoked.
+	enrollEmail(t, s, a, "bob-sess", now+1)
 	if err := s.SetAccountAdmin(ctx, a.Email, true, now+10); err != nil {
 		t.Fatalf("SetAccountAdmin: %v", err)
 	}
@@ -160,16 +184,123 @@ func TestEmailMFAAdminPolicyAndPromotion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !promoted.IsAdmin || !promoted.MFARequired || promoted.MFAEnrolled || promoted.MFAKind != "" {
+	if !promoted.IsAdmin || promoted.MFARequired || !promoted.MFAEnrolled || promoted.MFAKind != AuthenticatorEmail {
 		t.Fatalf("promoted account: admin=%v required=%v enrolled=%v kind=%q", promoted.IsAdmin, promoted.MFARequired, promoted.MFAEnrolled, promoted.MFAKind)
 	}
-	if liveSessions(t, s, a.ID, now+11) != 0 {
-		t.Fatal("promoting an email-2FA user to admin must sign out their active sessions")
+	if liveSessions(t, s, a.ID, now+11) != 1 {
+		t.Fatal("promoting an email-enrolled account must not sign it out")
 	}
+	newlyRequired("bob promoted on email codes", 1)
 
-	// An administrator cannot issue or activate an email authenticator.
-	if err := s.IssueMFAEmailChallenge(ctx, a.ID, EmailPurposeEnroll, "admin-try", "n2", "mac-admin", 0, now+20, now+620); !errors.Is(err, ErrAdminRequiresTOTP) {
-		t.Fatalf("IssueMFAEmailChallenge for admin = %v, want ErrAdminRequiresTOTP", err)
+	// Carol enrolls email codes directly as an administrator.
+	session(t, s, carol, "carol-sess", now+19)
+	enrollEmail(t, s, carol, "carol-sess", now+20)
+	if c, _ := s.PasswordAccountByID(ctx, carol.ID); !c.MFAEnrolled || c.MFAKind != AuthenticatorEmail {
+		t.Fatalf("admin email enrollment: enrolled=%v kind=%q", c.MFAEnrolled, c.MFAKind)
+	}
+	newlyRequired("every admin on email codes", 0)
+
+	// Requiring a factor of administrators signs neither of them out.
+	if _, signedOut, err := s.SetMFAPolicyBy(ctx, mfa.ModeAdmins, -1, "", nil, now+22); err != nil || signedOut != 0 {
+		t.Fatalf("SetMFAPolicy(admins) signed out %d, %v; want 0", signedOut, err)
+	}
+	if liveSessions(t, s, a.ID, now+23) != 1 || liveSessions(t, s, carol.ID, now+23) != 1 {
+		t.Fatal("an email factor did not satisfy Required for administrators")
+	}
+}
+
+// The console's code-only step-up proves an email administrator's factor
+// for console writes but, unlike the Security page's password-and-code
+// step-up, never stamps the session as password-verified.
+func TestEmailStepUpOnSessionProvesTheFactorWithoutReauth(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	if err := s.SetAccountAdmin(ctx, alice.Email, true, now); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := s.CreatePasswordAccount(ctx, "bob@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$Ym9i", false, now)
+	enroll(t, s, bob, "", now)
+	session(t, s, alice, "alice-s", now)
+	enrollEmail(t, s, alice, "alice-s", now+1)
+	reauth := func() sql.NullInt64 {
+		t.Helper()
+		var v sql.NullInt64
+		if err := s.db.QueryRowContext(ctx, `SELECT reauth_at FROM auth_sessions WHERE token_hash = 'alice-s'`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	enrolledReauth := reauth()
+	stale := &ActorProof{SessionHash: "alice-s", FreshAfter: now + 30, RequireFactor: true}
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", stale, now+31); !errors.Is(err, ErrActorNotFresh) {
+		t.Fatalf("stale email proof accepted: %v", err)
+	}
+	if err := s.IssueMFAEmailChallenge(ctx, alice.ID, EmailPurposeStepUp, "alice-s", "n-step", "mac-step", 0, now+40, now+340); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyEmailFactorOnSession(ctx, "alice-s", func(string) string { return "wrong" }, now+41); !errors.Is(err, ErrInvalidProof) {
+		t.Fatalf("wrong email code: %v", err)
+	}
+	if err := s.VerifyEmailFactorOnSession(ctx, "alice-s", func(string) string { return "mac-step" }, now+42); err != nil {
+		t.Fatalf("email step-up: %v", err)
+	}
+	if reauth() != enrolledReauth {
+		t.Fatalf("the console's code-only step-up moved reauth_at from %v to %v", enrolledReauth, reauth())
+	}
+	if err := s.ResetMFABy(ctx, bob.ID, alice.ID, "verified by call", stale, now+43); err != nil {
+		t.Fatalf("fresh email proof refused: %v", err)
+	}
+	if err := s.IssueMFAEmailChallenge(ctx, alice.ID, EmailPurposeStepUp, "alice-s", "n-step2", "mac-step2", 0, now+50, now+350); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyEmailFactorAndStampReauth(ctx, "alice-s", func(string) string { return "mac-step2" }, now+51); err != nil {
+		t.Fatalf("security step-up: %v", err)
+	}
+	if v := reauth(); !v.Valid || v.Int64 != now+51 {
+		t.Fatalf("security step-up reauth_at = %v, want %d", v, now+51)
+	}
+}
+
+// No administrator resets their own password or two-factor sign-in, by
+// any console write: only another administrator (or the operator CLI).
+func TestAdministratorsCannotResetThemselves(t *testing.T) {
+	s, alice, now := mfaFixture(t)
+	ctx := context.Background()
+	dave, err := s.CreatePasswordAccount(ctx, "dave@example.com", "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$ZGF2ZQ", false, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, email := range []string{alice.Email, dave.Email} {
+		if err := s.SetAccountAdmin(ctx, email, true, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session(t, s, alice, "alice-s", now)
+	enrollEmail(t, s, alice, "alice-s", now+1)
+	session(t, s, dave, "dave-s", now)
+	enrollEmail(t, s, dave, "dave-s", now+1)
+	fresh := func(hash string) *ActorProof {
+		return &ActorProof{SessionHash: hash, FreshAfter: now - 60, RequireFactor: true}
+	}
+	const newHash = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$bmV3"
+	if err := s.SetPasswordBy(ctx, alice.Email, newHash, true, alice.ID, fresh("alice-s"), now+2); !errors.Is(err, ErrSelfReset) {
+		t.Fatalf("self SetPasswordBy = %v, want ErrSelfReset", err)
+	}
+	if _, err := s.ResetPasswordWithLinkBy(ctx, alice.Email, newHash, alice.ID, fresh("alice-s"), now+3); !errors.Is(err, ErrSelfReset) {
+		t.Fatalf("self ResetPasswordWithLinkBy = %v, want ErrSelfReset", err)
+	}
+	if err := s.ResetMFABy(ctx, alice.ID, alice.ID, "lost it", fresh("alice-s"), now+4); !errors.Is(err, ErrSelfReset) {
+		t.Fatalf("self ResetMFABy = %v, want ErrSelfReset", err)
+	}
+	if a, _ := s.PasswordAccountByID(ctx, alice.ID); a.PasswordHash == newHash || a.MustChangePassword || !a.MFAEnrolled {
+		t.Fatalf("a refused self-reset changed the account: %+v", a)
+	}
+	// Another administrator may.
+	if _, err := s.ResetPasswordWithLinkBy(ctx, alice.Email, newHash, dave.ID, fresh("dave-s"), now+5); err != nil {
+		t.Fatalf("another administrator's reset: %v", err)
+	}
+	if a, _ := s.PasswordAccountByID(ctx, alice.ID); a.PasswordHash != newHash || !a.MustChangePassword {
+		t.Fatalf("reset by another administrator did not apply: %+v", a)
 	}
 }
 
