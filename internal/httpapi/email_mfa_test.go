@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -123,7 +124,7 @@ func TestEmailMFALoginEnrollmentAndSignInFlow(t *testing.T) {
 		t.Fatalf("login under ModeEveryone location = %q, want /login/enroll", resp.Header.Get("Location"))
 	}
 	resp, page := bob.get("/login/enroll")
-	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Use email verification codes instead") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(page, `name="method" value="email"`) {
 		t.Fatalf("GET /login/enroll status=%d missing email option:\n%s", resp.StatusCode, page)
 	}
 
@@ -315,7 +316,7 @@ func TestEmailMFAAdminSignInEnrollment(t *testing.T) {
 	if resp, _ := alice.login("alice@example.com", plain); resp.Header.Get("Location") != "/login/enroll" {
 		t.Fatalf("admin login under ModeAdmins location = %q, want /login/enroll", resp.Header.Get("Location"))
 	}
-	if resp, page := alice.get("/login/enroll"); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Use email verification codes instead") {
+	if resp, page := alice.get("/login/enroll"); resp.StatusCode != http.StatusOK || !strings.Contains(page, `name="method" value="email"`) {
 		t.Fatalf("admin /login/enroll status=%d missing email option:\n%s", resp.StatusCode, page)
 	}
 	before := sentCount(sender)
@@ -328,5 +329,80 @@ func TestEmailMFAAdminSignInEnrollment(t *testing.T) {
 	}
 	if resp, _ := alice.get("/admin"); resp.StatusCode != http.StatusOK {
 		t.Fatalf("admin enrolled on email codes cannot open the console: %d", resp.StatusCode)
+	}
+}
+
+// With email codes on offer, sign-in enrollment starts by choosing a
+// method: nothing is created or sent until Continue opens the chosen set-up,
+// and each set-up links back to the choice.
+func TestEnrollmentStartsWithAMethodChoice(t *testing.T) {
+	ts, st, _, sender, plain := newEmailMFATestServer(t)
+	if _, _, err := st.SetMFAPolicy(context.Background(), mfa.ModeEveryone, "test", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	bob := newBrowser(t, ts)
+	if resp, _ := bob.login("bob@example.com", plain); resp.Header.Get("Location") != "/login/enroll" {
+		t.Fatalf("login location = %q, want /login/enroll", resp.Header.Get("Location"))
+	}
+	before := sentCount(sender)
+	_, page := bob.get("/login/enroll")
+	for _, want := range []string{
+		"<h1>Set up two-factor sign-in</h1>", `<form method="get" action="/login/enroll">`,
+		`name="method" value="app" checked`, `name="method" value="email"`,
+		"Authenticator app", "Recommended", "Email code", "We email a code to bob@example.com each time you sign in.",
+		`<button class="btn btn-primary" type="submit">Continue</button>`, "Cancel sign-in",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("method choice lacks %s:\n%s", want, page)
+		}
+	}
+	if strings.Contains(page, `class="qr"`) || strings.Contains(page, `id="manual-key"`) {
+		t.Fatalf("the choice already shows an authenticator secret:\n%s", page)
+	}
+	b, _ := st.PasswordAccountByEmail(context.Background(), "bob@example.com")
+	if b.MFAEnrolled {
+		t.Fatal("choosing enrolled something")
+	}
+	if _, err := st.PendingAuthenticator(context.Background(), b.ID, time.Now().Unix()); !errors.Is(err, store.ErrPendingNotFound) {
+		t.Fatalf("the choice page created an authenticator secret: %v", err)
+	}
+	// Codes go out from a goroutine: give a stray send time to land.
+	time.Sleep(200 * time.Millisecond)
+	if sentCount(sender) != before {
+		t.Fatal("the choice page sent an email")
+	}
+
+	// Authenticator app: the QR set-up, with the way back to the choice.
+	_, page = bob.get("/login/enroll?method=app")
+	if !strings.Contains(page, `class="qr"`) || !strings.Contains(page, `<a href="/login/enroll">Choose a different method</a>`) || strings.Contains(page, "Use email verification codes instead") {
+		t.Fatalf("app set-up:\n%s", page)
+	}
+	// Email: a code is sent, and the way back is there too.
+	_, page = bob.get("/login/enroll?method=email")
+	if !strings.Contains(page, "Set up email verification") || !strings.Contains(page, `<a href="/login/enroll">Choose a different method</a>`) {
+		t.Fatalf("email set-up:\n%s", page)
+	}
+	if nextEmailCode(t, sender, "bob@example.com", before) == "" {
+		t.Fatal("no code emailed")
+	}
+	// An unknown method is just the choice again.
+	if _, page = bob.get("/login/enroll?method=sms"); !strings.Contains(page, "<h1>Set up two-factor sign-in</h1>") {
+		t.Fatalf("unknown method:\n%s", page)
+	}
+}
+
+// Without email codes there is nothing to choose: sign-in enrollment opens
+// the authenticator set-up directly, with no way to a choice.
+func TestEnrollmentWithoutEmailSkipsTheChoice(t *testing.T) {
+	ts, st, cfg, _, plain := newEmailMFATestServer(t)
+	cfg.EmailDriver = "stdout"
+	if _, _, err := st.SetMFAPolicy(context.Background(), mfa.ModeEveryone, "test", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	bob := newBrowser(t, ts)
+	bob.login("bob@example.com", plain)
+	_, page := bob.get("/login/enroll")
+	if !strings.Contains(page, `class="qr"`) || strings.Contains(page, `name="method"`) || strings.Contains(page, "Choose a different method") {
+		t.Fatalf("enrollment without email:\n%s", page)
 	}
 }

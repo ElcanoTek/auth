@@ -813,9 +813,27 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 			log.Printf("render mfa enroll: %v", err)
 		}
 	}
+	// Step 1, when both methods are on offer: choose one. Its Continue is a
+	// GET to ?method=app or ?method=email (step 2); nothing is created or
+	// sent until then. Without email codes there is nothing to choose, so
+	// the authenticator set-up opens directly, as before.
+	renderChoose := func() {
+		view := map[string]any{
+			"Brand": s.cfg.BrandName, "Email": account.Email, "CSRF": csrf,
+			"Action": "/login/enroll", "Required": true, "Choose": true, "EmailAvailable": canEmail,
+		}
+		if err := s.render(w, "mfa-enroll.html", view); err != nil {
+			log.Printf("render mfa method choice: %v", err)
+		}
+	}
 	switch r.Method {
 	case http.MethodGet:
-		if canEmail && r.URL.Query().Get("method") == "email" {
+		method := r.URL.Query().Get("method")
+		if canEmail && method != "email" && method != "app" {
+			renderChoose()
+			return
+		}
+		if canEmail && method == "email" {
 			err := s.sendMFAEmailChallenge(r, account, store.EmailPurposeEnroll, tr.ID, enrollTTL, false, now)
 			if errors.Is(err, errEnrollLimited) {
 				_, _ = s.store.RecordAuditIfAbsent(r.Context(), "mfa.enroll_rate_limited", account.ID, s.rateKey("ip", clientIP(r)), now.Unix(), now.Add(-passwordRateWindow).Unix())
