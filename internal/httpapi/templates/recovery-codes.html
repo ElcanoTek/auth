@@ -17,7 +17,7 @@
     <h1>{{tr .Title}}</h1>
     <p class="muted">{{tr "Save these recovery codes somewhere safe, such as a password manager. Each one signs you in once if you lose your authenticator. They are shown only now."}}</p>
     <ol class="codes">{{range .Codes}}<li>{{.}}</li>{{end}}</ol>
-    <a class="btn" href="{{.ContinueTo}}">{{tr "I have saved them, continue"}}</a>
+    <a class="btn btn-primary" href="{{.ContinueTo}}">{{tr "I have saved them, continue"}}</a>
   </main>
 </body>
 </html>

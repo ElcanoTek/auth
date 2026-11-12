@@ -17,31 +17,33 @@
     {{if .EmailMode}}
     <h1>{{if .Replace}}{{tr "Use email verification codes"}}{{else}}{{tr "Set up email verification"}}{{end}}</h1>
     <p class="muted">{{if .Required}}{{tr "Your account requires a second step at sign-in."}} {{end}}{{tr "We sent a six-digit verification code to"}} <strong>{{.Email}}</strong>. {{tr "Enter it below to turn on email two-factor sign-in."}}</p>
-    {{if .Notice}}<div class="banner" role="status"><strong>{{tr "Done."}}</strong> {{tr .Notice}}</div>{{end}}
-    {{if .Error}}<div class="err" role="alert">{{tr .Error}}</div>{{end}}
+    {{if .Notice}}<div class="alert alert--success" role="status"><div class="alert__description"><strong>{{tr "Done."}}</strong> {{tr .Notice}}</div></div>{{end}}
+    {{if .Error}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
     <form method="post" action="{{.Action}}" autocomplete="off">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <input type="hidden" name="action" value="confirm_email">
       {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
-      <label for="code">{{tr "Email verification code"}}</label>
-      <input id="code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000">
-      <button class="btn" type="submit">{{if .Replace}}{{tr "Use email verification"}}{{else}}{{tr "Turn on two-factor sign-in"}}{{end}}</button>
+      <div class="field">
+        <label for="code">{{tr "Email verification code"}}</label>
+        <input id="code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000">
+      </div>
+      <button class="btn btn-primary" type="submit">{{if .Replace}}{{tr "Use email verification"}}{{else}}{{tr "Turn on two-factor sign-in"}}{{end}}</button>
     </form>
     <div class="link-row">
-      <form method="post" action="{{.Action}}"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="resend_email">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}<button class="linkish" type="submit">{{tr "Send a new code"}}</button></form>
+      <form method="post" action="{{.Action}}"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="resend_email">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}<button class="btn btn-link" type="submit">{{tr "Send a new code"}}</button></form>
       {{if eq .Action "/login/enroll"}}<a href="/login/enroll">{{tr "Use an authenticator app instead"}}</a>
-      {{else}}<form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="start">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}<button class="linkish" type="submit">{{tr "Use an authenticator app instead"}}</button></form>{{end}}
+      {{else}}<form method="post" action="/account/security"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="start">{{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}<button class="btn btn-link" type="submit">{{tr "Use an authenticator app instead"}}</button></form>{{end}}
     </div>
     {{else}}
     <h1>{{if .Replace}}{{tr "Replace your authenticator"}}{{else}}{{tr "Set up your authenticator"}}{{end}}</h1>
     <p class="muted">{{if .Required}}{{tr "Your account requires a second step at sign-in."}} {{end}}{{tr "Open your authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others all work), tap + and scan this code from inside the app, not with your phone's camera. Then enter the six-digit code it shows."}}</p>
-    {{if .Error}}<div class="err" role="alert">{{tr .Error}}</div>{{end}}
+    {{if .Error}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
     {{if .EmailAvailable}}
     <form method="post" action="{{.Action}}" class="actions">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <input type="hidden" name="action" value="start_email">
       {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
-      <button class="btn-ghost" type="submit">{{tr "Use email verification codes instead"}}</button>
+      <button class="btn btn-ghost" type="submit">{{tr "Use email verification codes instead"}}</button>
     </form>
     {{end}}
     <p class="muted">{{tr "Added {0} to an app before? Add this code as a new entry, and once it works, delete the older {1} entries: only this one will work." .Issuer .Issuer}}</p>
@@ -56,12 +58,14 @@
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <input type="hidden" name="action" value="confirm">
       {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
-      <label for="code">{{tr "Code from the app"}}</label>
-      <input id="code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000">
-      <button class="btn" type="submit">{{if .Replace}}{{tr "Replace authenticator"}}{{else}}{{tr "Turn on two-factor sign-in"}}{{end}}</button>
+      <div class="field">
+        <label for="code">{{tr "Code from the app"}}</label>
+        <input id="code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000">
+      </div>
+      <button class="btn btn-primary" type="submit">{{if .Replace}}{{tr "Replace authenticator"}}{{else}}{{tr "Turn on two-factor sign-in"}}{{end}}</button>
     </form>
     {{end}}
-    {{if eq .Action "/login/enroll"}}<div class="link-row"><span></span><form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="linkish" type="submit">{{tr "Cancel sign-in"}}</button></form></div>
+    {{if eq .Action "/login/enroll"}}<div class="link-row"><span></span><form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-link" type="submit">{{tr "Cancel sign-in"}}</button></form></div>
     {{else}}<div class="link-row"><a href="/account/security">{{tr "Back to security settings"}}</a><span></span></div>{{end}}
   </main>
 </body>

@@ -44,7 +44,7 @@ type adminAccountRow struct {
 	Email         string
 	Status        string // Active | Disabled | Invited | Reset pending
 	StatusTitle   string // when Invited or Reset pending began, on hover
-	StatusClass   string // ok | off | warn
+	StatusClass   string // badge-success | badge-cancelled | badge-warning
 	IsAdmin       bool
 	Team          string
 	Created       string
@@ -62,7 +62,7 @@ type adminAccountRow struct {
 	// Second factor: the console shows the status the issue names and lets
 	// an administrator require it per account or reset a lost one.
 	MFAStatus      string // Enabled | Enrollment required | Not enrolled
-	MFAClass       string // ok | warn | off
+	MFAClass       string // badge-success | badge-warning | badge-cancelled
 	MFAEnrolled    bool
 	MFARequired    bool // the per-user flag
 	MFAPolicyBound bool // the deployment policy already requires it (pill locked)
@@ -1647,16 +1647,16 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 			}
 			switch {
 			case a.DisabledAt != nil:
-				row.Status, row.StatusClass = "Disabled", "off"
+				row.Status, row.StatusClass = "Disabled", "badge-cancelled"
 			case a.PasswordResetPending():
-				row.Status, row.StatusClass = translate(requestLanguage(r), "Reset pending"), "warn"
+				row.Status, row.StatusClass = translate(requestLanguage(r), "Reset pending"), "badge-warning"
 				row.StatusTitle = translate(requestLanguage(r), "Password reset ") + displayDate(*a.PasswordResetAt, requestLanguage(r), true) + translate(requestLanguage(r), " UTC; they have not set a new one yet.")
 			case a.MustChangePassword:
 				// A new account still on the temporary password it was created with.
-				row.Status, row.StatusClass = "Invited", "warn"
+				row.Status, row.StatusClass = "Invited", "badge-warning"
 				row.StatusTitle = translate(requestLanguage(r), "Created ") + displayDate(a.CreatedAt, requestLanguage(r), true) + translate(requestLanguage(r), " UTC; they have not signed in and chosen a password yet.")
 			default:
-				row.Status, row.StatusClass = "Active", "ok"
+				row.Status, row.StatusClass = "Active", "badge-success"
 			}
 			if links != nil {
 				l, ok := links[a.ID]
@@ -1669,11 +1669,11 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 			row.MFAPolicyBound = mfa.Required(policy.Mode, a.IsAdmin, false)
 			switch mfa.StatusFor(mfa.Required(policy.Mode, a.IsAdmin, a.MFARequired), a.MFAEnrolled) {
 			case mfa.StatusEnabled:
-				row.MFAStatus, row.MFAClass = string(mfa.StatusEnabled), "ok"
+				row.MFAStatus, row.MFAClass = string(mfa.StatusEnabled), "badge-success"
 			case mfa.StatusEnrollmentRequired:
-				row.MFAStatus, row.MFAClass = string(mfa.StatusEnrollmentRequired), "warn"
+				row.MFAStatus, row.MFAClass = string(mfa.StatusEnrollmentRequired), "badge-warning"
 			default:
-				row.MFAStatus, row.MFAClass = string(mfa.StatusNotEnrolled), "off"
+				row.MFAStatus, row.MFAClass = string(mfa.StatusNotEnrolled), "badge-cancelled"
 			}
 			granted := accessSet(access[a.ID])
 			fleetSettings := decodeFleetSettings(accessSettings[a.ID]["fleet"])

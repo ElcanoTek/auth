@@ -21,10 +21,14 @@ import (
 // templates/  html/template pages (one file per page plus _partials.html).
 // static/     the files those pages load, served at /assets/<version>/:
 //
-//	auth.css, admin.js, admin-noscript.css  Auth's own styles and script.
+//	auth.css, admin.js, admin-noscript.css  Auth's own layout styles and scripts
+//	                                        (layered over flag/components/).
 //	flag/                                   vendored from the Flag design
 //	                                        system (ElcanoTek/flag), pinned
-//	                                        by flag.lock. Never edit these:
+//	                                        by flag.lock: fonts/, tokens/,
+//	                                        components/ (components.css and
+//	                                        shadcn-parity.css), theme/, icons/
+//	                                        and LICENSE.txt. Never edit these:
 //	                                        run scripts/flag-sync.sh sync.
 //
 // No page carries inline <style>, <script>, style="" or on*= handlers; the

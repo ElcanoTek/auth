@@ -94,7 +94,7 @@ func TestSetPasswordPageOpensALinkWithoutUsingItAndUsesItOnce(t *testing.T) {
 	if _, body, _ := set("Quartz-Harbor-Lantern-4471", "Quartz-Harbor-Lantern-4472"); !strings.Contains(body, "The passwords do not match.") { // gitleaks:allow -- synthetic test password
 		t.Fatalf("mismatch:\n%s", body)
 	}
-	if _, body, _ := set("password1234", "password1234"); !strings.Contains(body, `class="err"`) || !strings.Contains(body, `name="token"`) {
+	if _, body, _ := set("password1234", "password1234"); !strings.Contains(body, `class="alert alert--destructive"`) || !strings.Contains(body, `name="token"`) {
 		t.Fatalf("weak password:\n%s", body)
 	}
 	if _, _, err := st.PasswordLinkAccount(ctx, store.HashLinkToken(token), time.Now().Unix()); err != nil {
@@ -398,7 +398,7 @@ func TestResetPaneOffersTheTemporaryPasswordAsALinkInOneForm(t *testing.T) {
 	enableLinks(cfg)
 	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	_, page := alice.get("/admin")
-	start := strings.Index(page, `<summary aria-label="Reset password: bob@example.com">`)
+	start := strings.Index(page, `<summary class="btn btn-ghost btn-sm" aria-label="Reset password: bob@example.com">`)
 	if start < 0 {
 		t.Fatalf("no reset pane for bob:\n%s", page)
 	}
@@ -407,15 +407,15 @@ func TestResetPaneOffersTheTemporaryPasswordAsALinkInOneForm(t *testing.T) {
 	if n := strings.Count(pane, "<form"); n != 1 {
 		t.Fatalf("reset pane has %d forms, want 1:\n%s", n, pane)
 	}
-	email := `<button class="btn" type="submit" name="delivery" value="email">Email a reset link</button>`
-	temp := `<button class="linkish" type="submit" name="delivery" value="password">Show a temporary password instead</button>`
+	email := `<button class="btn btn-primary btn-sm" type="submit" name="delivery" value="email">Email a reset link</button>`
+	temp := `<button class="btn btn-link" type="submit" name="delivery" value="password">Show a temporary password instead</button>`
 	if !strings.Contains(pane, email) || !strings.Contains(pane, temp) || strings.Index(pane, email) > strings.Index(pane, temp) {
 		t.Fatalf("reset pane lacks the email button first, then the temporary password link:\n%s", pane)
 	}
 	if strings.Contains(pane, `type="hidden" name="delivery"`) {
 		t.Fatalf("a hidden delivery field would override the button pressed:\n%s", pane)
 	}
-	if !strings.Contains(componentCSS, `.confirm .pane button.linkish {`) {
+	if !strings.Contains(componentCSS, `.confirm .pane .btn-link {`) {
 		t.Fatal("the temporary password choice is not styled as a link")
 	}
 }

@@ -70,7 +70,7 @@ func settingsPopover(t *testing.T, body, email string) string {
 		if end := strings.Index(chunk, "</td>"); end >= 0 {
 			chunk = chunk[:end]
 		}
-		if strings.Contains(strings.ToLower(chunk), `<p class="who">`+strings.ToLower(email)+" ") {
+		if strings.Contains(strings.ToLower(chunk), `<p class="modal__description">`+strings.ToLower(email)+" ") {
 			return chunk
 		}
 	}
@@ -116,7 +116,7 @@ func TestAdministratorSetsUpTheirOwnAuthenticatorFromTheConsole(t *testing.T) {
 	for _, want := range []string{
 		`<strong>Your authenticator</strong>`,
 		`Not set up. Sensitive changes, such as creating or disabling accounts, resets, sign-outs and the two-factor settings, need one`,
-		`<a class="btn inline" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up</a>`,
+		`<a class="btn btn-primary btn-sm" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up</a>`,
 	} {
 		if !strings.Contains(mine, want) {
 			t.Fatalf("Your account lacks %q:\n%s", want, mine)
@@ -126,7 +126,7 @@ func TestAdministratorSetsUpTheirOwnAuthenticatorFromTheConsole(t *testing.T) {
 	// way out.
 	for _, want := range []string{
 		`and need your own authenticator, which you have not set up yet`,
-		`<a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up yours</a>`,
+		`<a class="btn btn-ghost btn-sm" href="/account/security?return_to=%2Fadmin" aria-label="Set up your authenticator">Set up yours</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("policy popup lacks %q:\n%s", want, body)
@@ -172,7 +172,7 @@ func TestAdministratorSetsUpTheirOwnAuthenticatorFromTheConsole(t *testing.T) {
 	_, body = alice.get("/admin")
 	mine = accountPopup(t, body)
 	if !strings.Contains(mine, "Set up. Sensitive changes here need a code from it entered less than five minutes ago.") ||
-		!strings.Contains(mine, `<a class="btn-ghost" href="/account/security?return_to=%2Fadmin" aria-label="Manage your authenticator">Manage</a>`) {
+		!strings.Contains(mine, `<a class="btn btn-ghost btn-sm" href="/account/security?return_to=%2Fadmin" aria-label="Manage your authenticator">Manage</a>`) {
 		t.Fatalf("Your account after enrollment:\n%s", mine)
 	}
 	for _, gone := range []string{`aria-label="Set up your authenticator"`, "which you have not set up yet"} {
@@ -650,7 +650,7 @@ func TestAddUserAsksForTheCodeInAPopupAndKeepsWhatWasTyped(t *testing.T) {
 		t.Fatalf("stale create: %d", resp.StatusCode)
 	}
 	expectPopup(page, "Creating an account needs your authenticator code from the last five minutes.")
-	if strings.Contains(dialogForm(t, page, "add-user-code"), `class="err"`) {
+	if strings.Contains(dialogForm(t, page, "add-user-code"), `alert--destructive`) {
 		t.Fatalf("the popup opens with an error before any code was tried:\n%s", page)
 	}
 	notCreated("without a fresh code")
@@ -813,7 +813,7 @@ func TestGatedChangeAsksForTheCodeThenConfirms(t *testing.T) {
 	}
 	policyIs(mfa.ModeOptional, "after a stale save")
 
-	if !strings.Contains(page, `<form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>`) {
+	if !strings.Contains(page, `<form method="dialog"><button class="btn btn-ghost cancel" type="submit">Cancel</button></form>`) {
 		t.Fatalf("code popup has no Cancel that works without script:\n%s", page)
 	}
 	stepUp := renderedForm(t, page, "step-up")
@@ -829,13 +829,13 @@ func TestGatedChangeAsksForTheCodeThenConfirms(t *testing.T) {
 		"Code accepted. Nothing has changed yet.",
 		"Change the two-factor policy from Optional to Required for administrators?",
 		`name="action" value="set-policy"`, `name="mode" value="admins"`, `name="revision" value="0"`,
-		`<button class="btn" type="submit">Confirm</button>`,
+		`<button class="btn btn-primary" type="submit">Confirm</button>`,
 	} {
 		if !strings.Contains(confirm, want) {
 			t.Fatalf("confirm popup lacks %s:\n%s", want, confirm)
 		}
 	}
-	if !strings.Contains(page, `<form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>`) || strings.Contains(confirm, `name="pending_action"`) || strings.Contains(confirm, `name="code"`) {
+	if !strings.Contains(page, `<form method="dialog"><button class="btn btn-ghost cancel" type="submit">Cancel</button></form>`) || strings.Contains(confirm, `name="pending_action"`) || strings.Contains(confirm, `name="code"`) {
 		t.Fatalf("confirm popup has no Cancel, or carries step-up fields:\n%s", page)
 	}
 	policyIs(mfa.ModeOptional, "after the code alone")
@@ -1061,7 +1061,7 @@ func TestTeamRenameFromTheConsole(t *testing.T) {
 		t.Fatalf("notice:\n%s", page)
 	}
 	// alice was on the team: Your account on this same page has the new name.
-	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag">Research</span>`) {
+	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="badge badge-secondary">Research</span>`) {
 		t.Fatalf("Your account after renaming the administrator's own team:\n%s", mine)
 	}
 	if a, _ := st.PasswordAccountByEmail(ctx, "bob@example.com"); a.Team != "Research" {
@@ -1121,14 +1121,14 @@ func TestYourAccountIsOnEveryTabWithTheTeam(t *testing.T) {
 	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
 	for _, path := range []string{"/admin", "/admin?tab=fleet"} {
 		_, body := alice.get(path)
-		if !strings.Contains(body, `<button class="icon-btn" type="button" commandfor="me" command="show-modal" aria-label="Your account" title="Your account">`) {
+		if !strings.Contains(body, `<button class="icon-action" type="button" commandfor="me" command="show-modal" aria-label="Your account" title="Your account">`) {
 			t.Fatalf("%s: no person icon for Your account:\n%s", path, body)
 		}
 		mine := accountPopup(t, body)
 		if strings.Contains(body, "Signed in as") {
 			t.Fatalf("%s: the console still says who is signed in outside Your account", path)
 		}
-		for _, want := range []string{"<strong>Team</strong></div>\n      <span class=\"chip off\">none</span>", "<strong>Reset password</strong>", "<strong>Sign out everywhere</strong>", `commandfor="sign-out" command="show-modal"`} {
+		for _, want := range []string{"<strong>Team</strong></div>\n        <span class=\"chip chip-off\">none</span>", "<strong>Reset password</strong>", "<strong>Sign out everywhere</strong>", `commandfor="sign-out" command="show-modal"`} {
 			if !strings.Contains(mine, want) {
 				t.Fatalf("%s: Your account lacks %q:\n%s", path, want, mine)
 			}
@@ -1138,7 +1138,7 @@ func TestYourAccountIsOnEveryTabWithTheTeam(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, body := alice.get("/admin?tab=fleet")
-	if mine := accountPopup(t, body); !strings.Contains(mine, "<strong>Team</strong></div>\n      <span class=\"tag\">Trading</span>") || strings.Contains(mine, `class="chip off">none<`) {
+	if mine := accountPopup(t, body); !strings.Contains(mine, "<strong>Team</strong></div>\n        <span class=\"badge badge-secondary\">Trading</span>") || strings.Contains(mine, `class="chip chip-off">none<`) {
 		t.Fatalf("Your account does not show the team as a chip:\n%s", mine)
 	}
 }
@@ -1166,7 +1166,7 @@ func TestAppsPageHasYourAccount(t *testing.T) {
 	}
 	mine := accountPopup(t, body)
 	for _, want := range []string{
-		`<p class="who">bob@example.com</p>`, `<span class="tag">Trading</span>`,
+		`<p class="modal__description">bob@example.com</p>`, `<span class="badge badge-secondary">Trading</span>`,
 		`href="/account/security?return_to=%2Faccount"`,
 		`commandfor="sign-out" command="show-modal"`,
 	} {
@@ -1179,7 +1179,7 @@ func TestAppsPageHasYourAccount(t *testing.T) {
 		t.Fatalf("a non-administrator is offered a password change:\n%s", mine)
 	}
 	makeAdmin(t, st, "bob@example.com")
-	if _, body = bob.get("/account"); !strings.Contains(accountPopup(t, body), `<a class="btn-ghost" href="/change-password?return_to=/account">Change</a>`) {
+	if _, body = bob.get("/account"); !strings.Contains(accountPopup(t, body), `<a class="btn btn-ghost btn-sm" href="/change-password?return_to=/account">Change</a>`) {
 		t.Fatalf("an administrator's Your account lacks the password change:\n%s", body)
 	}
 }
@@ -1193,7 +1193,7 @@ func TestYourAccountShowsATeamChangedOnThisRequest(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("set-team: %d\n%s", resp.StatusCode, page)
 	}
-	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="tag">Trading</span>`) {
+	if mine := accountPopup(t, page); !strings.Contains(mine, `<span class="badge badge-secondary">Trading</span>`) {
 		t.Fatalf("Your account after setting the team:\n%s", mine)
 	}
 }
@@ -1211,18 +1211,18 @@ func TestSignOutAsksFirstInAPopup(t *testing.T) {
 	token := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`)
 	for name, body := range map[string]string{"console": admin, "apps page": apps} {
 		mine := accountPopup(t, body)
-		if !strings.Contains(mine, `<button class="btn-ghost danger" type="button" commandfor="sign-out" command="show-modal" aria-label="Sign out everywhere: Alice@Example.com">Sign out</button>`) ||
+		if !strings.Contains(mine, `<button class="btn btn-danger btn-sm" type="button" commandfor="sign-out" command="show-modal" aria-label="Sign out everywhere: Alice@Example.com">Sign out</button>`) ||
 			strings.Contains(mine, `action="/logout?lang=en"`) || strings.Contains(mine, "<details") {
 			t.Errorf("%s: Your account signs out without the popup:\n%s", name, mine)
 		}
 		popup := signOutPopup(t, body)
 		for _, want := range []string{
 			`<dialog id="sign-out" class="modal confirm-change" aria-labelledby="sign-out-title" aria-describedby="sign-out-detail" closedby="any">`,
-			`<h3 id="sign-out-title">Sign out everywhere?</h3>`,
-			`<form method="dialog"><button class="icon-btn close" type="submit" aria-label="Close">`,
+			`<h3 id="sign-out-title" class="modal__title">Sign out everywhere?</h3>`,
+			`<form method="dialog" class="modal__close"><button class="icon-action" type="submit" aria-label="Close">`,
 			`<form method="post" action="/logout?lang=en">`, `name="redirect_to" value="/?notice=signed_out"`,
-			`<button class="btn" type="submit">Sign out</button>`,
-			`<form method="dialog"><button class="btn-ghost cancel" type="submit">Cancel</button></form>`,
+			`<button class="btn btn-primary" type="submit">Sign out</button>`,
+			`<form method="dialog"><button class="btn btn-ghost cancel" type="submit">Cancel</button></form>`,
 		} {
 			if !strings.Contains(popup, want) {
 				t.Errorf("%s: the Sign out popup lacks %q", name, want)
@@ -1235,7 +1235,7 @@ func TestSignOutAsksFirstInAPopup(t *testing.T) {
 			t.Errorf("%s does not load sign-out.js", name)
 		}
 	}
-	if !strings.Contains(apps, `<button class="btn" type="submit" data-sign-out>Sign out</button>`) {
+	if !strings.Contains(apps, `<button class="btn btn-primary" type="submit" data-sign-out>Sign out</button>`) {
 		t.Fatalf("the apps page's Sign out button does not open the popup:\n%s", apps)
 	}
 	script := mustStatic("sign-out.js")
@@ -1248,8 +1248,8 @@ func TestSignOutAsksFirstInAPopup(t *testing.T) {
 			t.Errorf("sign-out.js lacks %q", want)
 		}
 	}
-	if !strings.Contains(componentCSS, `.btn-ghost.danger:hover {`) {
-		t.Error("Your account's Sign out lost its red hover")
+	if !strings.Contains(mustStatic("flag/components/components.css"), `.btn-danger:where(:not(:disabled, [aria-disabled="true"], .is-disabled)):hover`) {
+		t.Error("Your account's Sign out lost its Flag .btn-danger hover")
 	}
 	// The popup's own form, as posted: every session ends, back to sign-in.
 	popupToken := token.FindStringSubmatch(signOutPopup(t, apps))
@@ -1281,7 +1281,7 @@ func TestYourAccountHoldsTheThemeChoice(t *testing.T) {
 		}
 		mine := accountPopup(t, body)
 		for _, want := range []string{
-			`class="modal account-menu"`, `<div class="setting" data-theme-choice hidden>`, `<div class="seg" role="group" aria-label="Theme">`,
+			`class="modal menu account-menu"`, `<div class="setting" data-theme-choice hidden>`, `<div class="seg" role="group" aria-label="Theme">`,
 			`data-theme-option="light"`, `data-theme-option="dark"`, `data-theme-option="system" aria-pressed="false">Auto</button>`,
 		} {
 			if !strings.Contains(mine, want) {
@@ -1311,14 +1311,14 @@ func TestYourAccountSitsBottomLeft(t *testing.T) {
 	ts, _, cfg, plain := adminFixture(t)
 	alice := loginAdmin(t, ts, cfg, "alice@example.com", plain)
 	icon := `<div class="corner-bottom">
-    <button class="icon-btn" type="button" commandfor="me" command="show-modal" aria-label="Your account"`
+    <button class="icon-action" type="button" commandfor="me" command="show-modal" aria-label="Your account"`
 	for _, path := range []string{"/admin", "/account"} {
 		_, body := alice.get(path)
 		if !strings.Contains(body, icon) {
 			t.Errorf("%s: the person icon is not in the bottom-left corner", path)
 		}
 		if strings.Contains(body, `<div class="corner-actions">
-    <button class="icon-btn" type="button" commandfor="me"`) {
+    <button class="icon-action" type="button" commandfor="me"`) {
 			t.Errorf("%s: the person icon is still at the top right", path)
 		}
 		outside := strings.Replace(strings.Replace(body, accountPopup(t, body), "", 1), signOutPopup(t, body), "", 1)

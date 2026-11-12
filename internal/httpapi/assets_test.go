@@ -202,8 +202,8 @@ func TestRenderedPagesLoadOnlyEmbeddedAssets(t *testing.T) {
 		t.Fatal("no nonce in the page CSP")
 	}
 	refs := assetRef.FindAllStringSubmatch(page, -1)
-	if len(refs) < 4 {
-		t.Fatalf("login page links %d assets, want fonts, tokens, auth.css and the theme controller:\n%s", len(refs), page)
+	if len(refs) < 6 {
+		t.Fatalf("login page links %d assets, want fonts, tokens, Flag component sheets, auth.css and the theme controller:\n%s", len(refs), page)
 	}
 	for _, ref := range refs {
 		r, _ := get(t, ts.URL+ref[1])

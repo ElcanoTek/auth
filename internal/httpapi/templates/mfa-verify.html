@@ -16,24 +16,28 @@
     <div class="brand">{{.Wordmark}}</div>
     <h1>{{tr "Enter your code"}}</h1>
     <p class="muted">{{tr "Signing in as"}} <strong>{{.Email}}</strong>. {{if .EmailFactor}}{{tr "Enter the six-digit code we sent to your email."}}{{else if .Recovery}}{{tr "Enter one of your recovery codes."}}{{else}}{{tr "Open your authenticator app and enter the six-digit code for {0}." .Brand}}{{end}}</p>
-    {{if .Notice}}<div class="banner" role="status"><strong>{{tr "Done."}}</strong> {{tr .Notice}}</div>{{end}}
-    {{if .Error}}<div class="err" role="alert">{{tr .Error}}</div>{{end}}
+    {{if .Notice}}<div class="alert alert--success" role="status"><div class="alert__description"><strong>{{tr "Done."}}</strong> {{tr .Notice}}</div></div>{{end}}
+    {{if .Error}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
     <form method="post" action="/login/verify" autocomplete="off">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       {{if .Recovery}}
       <input type="hidden" name="mode" value="recovery">
-      <label for="recovery_code">{{tr "Recovery code"}}</label>
-      <input id="recovery_code" name="recovery_code" type="text" required autofocus autocomplete="off" spellcheck="false" placeholder="{{tr "xxxxx-xxxxx-xxxxx-xxxxx-xxxxx-x"}}">
+      <div class="field">
+        <label for="recovery_code">{{tr "Recovery code"}}</label>
+        <input id="recovery_code" name="recovery_code" type="text" required autofocus autocomplete="off" spellcheck="false" placeholder="{{tr "xxxxx-xxxxx-xxxxx-xxxxx-xxxxx-x"}}">
+      </div>
       {{else}}
-      <label for="code">{{if .EmailFactor}}{{tr "Email verification code"}}{{else}}{{tr "Authenticator code"}}{{end}}</label>
-      <input id="code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000">
+      <div class="field">
+        <label for="code">{{if .EmailFactor}}{{tr "Email verification code"}}{{else}}{{tr "Authenticator code"}}{{end}}</label>
+        <input id="code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000">
+      </div>
       {{end}}
-      <button class="btn" type="submit">{{tr "Continue"}}</button>
+      <button class="btn btn-primary" type="submit">{{tr "Continue"}}</button>
     </form>
     {{if and (not .Recovery) (not .EmailFactor)}}<p class="help-link">{{tr "Code not working?"}} <a href="/help/authenticator#trouble" target="_blank" rel="noopener">{{tr "See what to try"}}<span class="sr-only"> {{tr "(opens in a new tab)"}}</span></a></p>{{end}}
     <div class="link-row">
-      {{if .EmailFactor}}<form method="post" action="/login/verify"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="resend"><button class="linkish" type="submit">{{tr "Send a new code"}}</button></form>{{else if .Recovery}}<a href="/login/verify">{{tr "Use my authenticator app"}}</a>{{else if .HasRecovery}}<a href="/login/verify?mode=recovery">{{tr "Use a recovery code"}}</a>{{else}}<span></span>{{end}}
-      <form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="linkish" type="submit">{{tr "Cancel sign-in"}}</button></form>
+      {{if .EmailFactor}}<form method="post" action="/login/verify"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="action" value="resend"><button class="btn btn-link" type="submit">{{tr "Send a new code"}}</button></form>{{else if .Recovery}}<a href="/login/verify">{{tr "Use my authenticator app"}}</a>{{else if .HasRecovery}}<a href="/login/verify?mode=recovery">{{tr "Use a recovery code"}}</a>{{else}}<span></span>{{end}}
+      <form method="post" action="/login/cancel"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="btn btn-link" type="submit">{{tr "Cancel sign-in"}}</button></form>
     </div>
   </main>
 </body>

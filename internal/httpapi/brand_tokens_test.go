@@ -16,8 +16,11 @@ var (
 	cssVar  = regexp.MustCompile(`var\((--[a-z0-9-]+)`)
 )
 
-// tokensReadByPages is every custom property the pages resolve: the ones
-// auth.css reads, plus everything those resolve through in Flag's tokens.
+// tokensReadByPages is every custom property the pages resolve: the ones the
+// page stylesheets (Flag's component sheets and auth.css) read, plus
+// everything those resolve through in Flag's tokens. direct is auth.css's own
+// references, used to prove Auth paints no gradient a client bundle cannot
+// rebrand.
 func tokensReadByPages(t *testing.T) (closure, direct map[string]bool, flagDefined map[string]bool) {
 	t.Helper()
 	deps := map[string]map[string]bool{}
@@ -35,6 +38,16 @@ func tokensReadByPages(t *testing.T) (closure, direct map[string]bool, flagDefin
 	for _, v := range cssVar.FindAllStringSubmatch(componentCSS, -1) {
 		direct[v[1]] = true
 	}
+	pageDirect := map[string]bool{}
+	for _, sheet := range []string{
+		mustStatic("flag/components/components.css"),
+		mustStatic("flag/components/shadcn-parity.css"),
+		componentCSS,
+	} {
+		for _, v := range cssVar.FindAllStringSubmatch(sheet, -1) {
+			pageDirect[v[1]] = true
+		}
+	}
 	closure = map[string]bool{}
 	var walk func(string)
 	walk = func(name string) {
@@ -46,7 +59,7 @@ func tokensReadByPages(t *testing.T) (closure, direct map[string]bool, flagDefin
 			walk(dep)
 		}
 	}
-	for name := range direct {
+	for name := range pageDirect {
 		walk(name)
 	}
 	return closure, direct, flagDefined
@@ -147,7 +160,7 @@ func TestButtonFillHasAFallbackWithoutColorMix(t *testing.T) {
 	if strings.Contains(outside, "--gradient-action-fill") {
 		t.Fatal("--gradient-action-fill is used outside the color-mix @supports block")
 	}
-	for _, sel := range []string{`(?s)\n\.btn \{[^}]*`, `\n\.btn-add \{[^}]*`} {
+	for _, sel := range []string{`(?s)\n\.btn-primary[^{]*\{[^}]*`, `(?s)\n\.btn-add \{[^}]*`} {
 		rule := regexp.MustCompile(sel).FindString(css)
 		if !strings.Contains(rule, "background: var(--gradient-action-primary);") {
 			t.Errorf("rule %q lacks the plain gradient fallback", strings.TrimSpace(rule))

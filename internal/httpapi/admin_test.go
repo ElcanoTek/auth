@@ -139,13 +139,13 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 	}
 	for _, want := range []string{
 		`— Admin Portal</title>`, `<h1>Admin Portal</h1>`,
-		`class="tab active" href="/admin"`, `href="/admin?tab=fleet"`, `href="/admin?tab=explorer"`,
-		"Alice@Example.com", "bob@example.com", `<span class="badge admin">Admin</span>`, `<span class="chip">Fleet</span>`,
+		`class="tab" href="/admin" aria-current="page"`, `href="/admin?tab=fleet"`, `href="/admin?tab=explorer"`,
+		"Alice@Example.com", "bob@example.com", `<span class="badge badge-accent">Admin</span>`, `<span class="chip">Fleet</span>`,
 		`name="action" value="create"`, `action="/logout?lang=en"`,
 		`id="account-search" type="search" placeholder="Search accounts"`, `id="account-filter" data-account-filter`,
 		`data-account-row data-account-search-value="bob@example.com`, `data-account-empty hidden`,
 		// alice has registered apps but no grants: the cell says so.
-		`<span class="chip off">none</span>`,
+		`<span class="chip chip-off">none</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("admin page lacks %s", want)
@@ -175,7 +175,7 @@ func TestAdminConsoleIsForAdministratorsOnly(t *testing.T) {
 		t.Fatal("stale form created an account")
 	}
 	// Unknown tab falls back to Accounts.
-	if _, body := alice.get("/admin?tab=nope"); !strings.Contains(body, `class="tab active" href="/admin"`) {
+	if _, body := alice.get("/admin?tab=nope"); !strings.Contains(body, `class="tab" href="/admin" aria-current="page"`) {
 		t.Fatal("unknown tab did not fall back to Accounts")
 	}
 	// Requests the UI never sends are refused outright rather than rendered.
@@ -257,12 +257,12 @@ func expectTempPasswordPopup(t *testing.T, body, title, email string) {
 	for _, want := range []string{
 		`<body data-reopen="temp-password">`,
 		`<dialog id="temp-password" class="modal temp-password" aria-labelledby="temp-password-title" aria-describedby="temp-password-for temp-password-warn" open data-keep-open>`,
-		`<h3 id="temp-password-title">` + title + `</h3>`,
+		`<h3 id="temp-password-title" class="modal__title">` + title + `</h3>`,
 		`Temporary password for <strong>` + email + `</strong>`,
-		`<div class="banner warn" id="temp-password-warn"><strong>Save it now.</strong> It is shown only this once`,
-		`<p class="who" id="temp-password-for">Temporary password for`,
+		`<div class="alert alert--warning" id="temp-password-warn"><div class="alert__description"><strong>Save it now.</strong> It is shown only this once`,
+		`<p class="modal__description" id="temp-password-for">Temporary password for`,
 		`data-copy="temp-password-value" hidden>Copy</button>`,
-		`<form method="dialog"><button class="btn" type="submit">I have saved it</button></form>`,
+		`<form method="dialog"><button class="btn btn-primary" type="submit">I have saved it</button></form>`,
 		`commandfor="temp-password" command="show-modal">Show the temporary password</button>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -372,7 +372,7 @@ func TestAdminResetRevokeDisableEnableBob(t *testing.T) {
 
 	// Disable: signs out, blocks sign-in, greys nothing else; enable restores.
 	_, body = alice.post(url.Values{"action": {"disable"}, "email": {"bob@example.com"}})
-	if !strings.Contains(body, "Disabled bob@example.com") || !strings.Contains(body, `<span class="badge off">Disabled</span>`) {
+	if !strings.Contains(body, "Disabled bob@example.com") || !strings.Contains(body, `<span class="badge badge-cancelled">Disabled</span>`) {
 		t.Fatalf("disable:\n%s", body)
 	}
 	if n, _ := st.CountActiveAuthSessions(ctx, bob.ID, time.Now().Unix()); n != 0 {
@@ -496,7 +496,7 @@ func TestAdminSetsAccessAndSignsOutOfRemovedApp(t *testing.T) {
 	if strings.Contains(tab, "Pending sign-outs") || strings.Contains(tab, "access_revoked") {
 		t.Fatalf("fleet tab exposes back-channel delivery internals:\n%s", tab)
 	}
-	if !strings.Contains(tab, `class="tab active" href="/admin?tab=fleet"`) {
+	if !strings.Contains(tab, `class="tab" href="/admin?tab=fleet" aria-current="page"`) {
 		t.Fatalf("fleet tab:\n%s", tab)
 	}
 	// Unticking everything is allowed; unknown IDs are refused.
@@ -523,7 +523,7 @@ func TestAdminApplicationTabToggleAndSignIns(t *testing.T) {
 		t.Fatalf("token exchange = %d", exch.StatusCode)
 	}
 	_, tab := alice.get("/admin?tab=fleet")
-	for _, want := range []string{`<span class="badge ok">Enabled</span>`, "bob@example.com", `<td class="num">1</td>`, `<dt>Accounts with access</dt><dd>1</dd>`, `<dt>Registered</dt>`, `value="disable-app"`} {
+	for _, want := range []string{`<span class="badge badge-success">Enabled</span>`, "bob@example.com", `<td class="num">1</td>`, `<dt>Accounts with access</dt><dd>1</dd>`, `<dt>Registered</dt>`, `value="disable-app"`} {
 		if !strings.Contains(tab, want) {
 			t.Errorf("fleet tab lacks %s", want)
 		}
@@ -535,7 +535,7 @@ func TestAdminApplicationTabToggleAndSignIns(t *testing.T) {
 	}
 	// Disable from the tab: stays on the tab, gate closes for bob.
 	_, body := alice.post(url.Values{"action": {"disable-app"}, "app": {"fleet"}})
-	if !strings.Contains(body, "Fleet is disabled.") || !strings.Contains(body, `class="tab active" href="/admin?tab=fleet"`) || !strings.Contains(body, `value="enable-app"`) {
+	if !strings.Contains(body, "Fleet is disabled.") || !strings.Contains(body, `class="tab" href="/admin?tab=fleet" aria-current="page"`) || !strings.Contains(body, `value="enable-app"`) {
 		t.Fatalf("disable-app:\n%s", body)
 	}
 	bob, _ := st.PasswordAccountByEmail(ctx, "bob@example.com")
@@ -678,8 +678,8 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		`commandfor="add-user" command="show-modal"`, `<dialog id="add-user" class="modal"`,
 		`commandfor="access-0" command="show-modal"`, `<dialog id="access-0" class="modal"`,
 		`commandfor="settings-0" command="show-modal"`, `<dialog id="settings-0" class="modal"`,
-		`<a class="icon-btn close" href="/account" aria-label="Back to your apps"`,
-		`<div class="corner-bottom">`, `action="/logout?lang=en"`, `<a class="btn-ghost" href="/change-password?return_to=/admin">Change</a>`,
+		`<a class="icon-action close" href="/account" aria-label="Back to your apps"`,
+		`<div class="corner-bottom">`, `action="/logout?lang=en"`, `<a class="btn btn-ghost btn-sm" href="/change-password?return_to=/admin">Change</a>`,
 		`data-generate="new-password"`, `name="password" type="text"`, `name="team" type="text" list="teams"`, `<datalist id="teams">`,
 	} {
 		if !strings.Contains(body, want) {
@@ -700,10 +700,10 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	// refusal must be rendered inside it, and only there.
 	dlg := body[strings.Index(body, `<dialog id="add-user"`):]
 	dlg = dlg[:strings.Index(dlg, "</dialog>")]
-	if !strings.Contains(dlg, `<div class="err" role="alert">`) || !strings.Contains(dlg, "Temporary password:") {
+	if !strings.Contains(dlg, `<div class="alert alert--destructive" role="alert">`) || !strings.Contains(dlg, "Temporary password:") {
 		t.Fatalf("refusal not inside the reopened Add user dialog:\n%s", dlg)
 	}
-	if n := strings.Count(body, `<div class="err" role="alert">`); n != 1 {
+	if n := strings.Count(body, `<div class="alert alert--destructive" role="alert">`); n != 1 {
 		t.Fatalf("refusal rendered %d times, want once (inside the dialog)", n)
 	}
 	if _, err := st.PasswordAccountByEmail(context.Background(), "dan@example.com"); err == nil {
@@ -725,7 +725,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	if ok, _, _ := passwordauth.Verify(dan.PasswordHash, "Quartz-Harbor-Lantern-4471"); !ok { // gitleaks:allow -- synthetic test password
 		t.Fatal("typed password not stored")
 	}
-	if !strings.Contains(body, `<span class="tag">Trading</span>`) || !strings.Contains(body, `<option value="Trading">`) {
+	if !strings.Contains(body, `<span class="badge badge-secondary">Trading</span>`) || !strings.Contains(body, `<option value="Trading">`) {
 		t.Fatalf("team tag / datalist missing:\n%s", body)
 	}
 	// A typed password is stored byte-for-byte: surrounding spaces are part of it.
@@ -748,7 +748,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		t.Fatalf("team text rendered unescaped:\n%s", body)
 	}
 	for _, want := range []string{
-		`<span class="tag">&lt;b onmouseover=&#34;x&#34;&gt;&#34;Ops&#34; &amp; co&lt;/b&gt;</span>`,
+		`<span class="badge badge-secondary">&lt;b onmouseover=&#34;x&#34;&gt;&#34;Ops&#34; &amp; co&lt;/b&gt;</span>`,
 		`value="&lt;b onmouseover=&#34;x&#34;&gt;&#34;Ops&#34; &amp; co&lt;/b&gt;"`,
 		`<option value="&lt;b onmouseover=&#34;x&#34;&gt;&#34;Ops&#34; &amp; co&lt;/b&gt;">`,
 	} {
@@ -807,7 +807,7 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 	}
 	loginBody, _ := io.ReadAll(page.Body)
 	_ = page.Body.Close()
-	if !strings.Contains(string(loginBody), `<div class="banner alert" role="status"><strong>Signed out.</strong>`) {
+	if !strings.Contains(string(loginBody), `<div class="alert alert--destructive" role="status"><div class="alert__description"><strong>Signed out.</strong>`) {
 		t.Fatalf("signed-out banner missing:\n%s", loginBody)
 	}
 }
@@ -827,7 +827,7 @@ func TestAccessPopupCarriesTheAdminConsoleGrant(t *testing.T) {
 		t.Fatalf("bob's row lacks the admin choice:\n%s", body)
 	}
 	if !strings.Contains(body, `<span class="seg-label">Auth Admin</span>
-          <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>`) {
+            <label class="permission-choice admin-choice"><input type="checkbox" name="admin" value="on"> Auth Admin<small>Full permissions: opens this console and manages every account.</small></label>`) {
 		t.Fatalf("add-user form lacks the described admin choice:\n%s", body)
 	}
 	if !strings.Contains(body, `<span class="seg-label">Applications</span>`) || !strings.Contains(body, `<span class="seg-label">Auth Admin</span>`) {

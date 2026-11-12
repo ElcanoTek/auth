@@ -92,13 +92,15 @@ golangci-lint at the pin, govulncheck and ShellCheck v0.11.0.
 `stack.conf` declares Tier A with a Go backend. The pages are Go
 `html/template` files in `internal/httpapi/templates/` (one per page;
 `_partials.html` holds the shared `<head>` assets, the theme toggle of the
-signed-out pages and the Your account menu of the signed-in ones). Their
-CSS and JavaScript are files in `internal/httpapi/static/`: `auth.css` (all
-page styles), `admin.js` (the admin console's only script; the console works
+signed-out pages and the Your account menu of the signed-in ones). Every page
+loads the vendored Flag component sheets (`flag/components/components.css` and
+`flag/components/shadcn-parity.css`) before Auth's own files in
+`internal/httpapi/static/`: `auth.css` (page layout and Auth-specific rules),
+`admin.js` (the admin console's only script; the console works
 without it), `theme-choice.js` (the Light, Dark and Auto choice in Your
 account; without it the row stays hidden), `sign-out.js` (the apps page's
 Sign out button opens the Sign out popup; without it the button signs out
-directly) and `admin-noscript.css`. `help/` holds the pictures of the
+directly), `language.js`, `set-password.js` and `admin-noscript.css`. `help/` holds the pictures of the
 authenticator guide (`/help/authenticator`), all `.webp`: a drawn
 illustration of an app's add menu, rendered in Chromium at 2x with the
 vendored Nebula Sans and Hack (an SVG image cannot load the self-hosted
@@ -154,6 +156,7 @@ runtime.
 `internal/httpapi/static/flag/` is a byte-identical copy of parts of the Flag
 design system (`ElcanoTek/flag`, MIT): `fonts/` (Nebula Sans and Hack with
 their licences, plus `fonts.css`), `tokens/design-tokens.css`,
+`components/components.css`, `components/shadcn-parity.css`,
 `theme/theme-controller.js`, `icons/core-icons.svg` and Flag's MIT licence
 (`LICENSE.txt`) (every icon is
 `{{template "icon" "<id>"}}`, a `<use>` of this sprite; never inline an SVG
@@ -220,7 +223,7 @@ version `modernc.org/sqlite` requires — never bump it on its own.
 | --- | --- | --- | --- |
 | HOTP/TOTP + otpauth URI | `internal/mfa/totp.go` (own code, stdlib) | replaces github.com/pquerna/otp v1.5.0 | — |
 | QR encoder (byte mode, level M) + scaler | `internal/mfa/qr/` | github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc | MIT (`internal/mfa/qr/LICENSE`) |
-| Flag tokens, theme controller, fonts | `internal/httpapi/static/flag/` | ElcanoTek/flag, commit in `flag.lock` | MIT; fonts OFL 1.1 / MIT + Bitstream Vera (see `NOTICE`) |
+| Flag tokens, components, theme controller, fonts | `internal/httpapi/static/flag/` | ElcanoTek/flag, commit in `flag.lock` | MIT; fonts OFL 1.1 / MIT + Bitstream Vera (see `NOTICE`) |
 
 Remaining modules: `golang.org/x/crypto` (Argon2id), `golang.org/x/term`,
 `golang.org/x/sys`, `modernc.org/sqlite` and its runtime, and
