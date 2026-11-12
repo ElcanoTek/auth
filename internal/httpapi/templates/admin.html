@@ -52,17 +52,18 @@
     <dialog id="step-up" class="modal" aria-labelledby="step-up-title" open>
       <div class="modal__header">
         <h3 id="step-up-title" class="modal__title">{{tr "Confirm it is you"}}</h3>
-        <p class="modal__description">{{tr "{0} needs your authenticator code from the last five minutes. You confirm the change next." (tr .Why)}}</p>
+        <p class="modal__description">{{if $.ActorEmailFactor}}{{tr "{0} needs a verification code from your email. We sent one; enter it here. You confirm the change next." (tr .Why)}}{{else}}{{tr "{0} needs your authenticator code from the last five minutes. You confirm the change next." (tr .Why)}}{{end}}</p>
       </div>
       <button class="icon-action modal__close" type="button" commandfor="step-up" command="close" aria-label="{{tr "Close"}}">{{template "icon" "close"}}</button>
       <div class="modal__body">
-        {{if $.Error}}<div class="alert alert--destructive" role="alert">{{tr $.Error}}</div>{{end}}
+        {{if $.Error}}<div class="alert alert--destructive" role="alert">{{tr $.Error}}</div>{{else if $.Notice}}<div class="alert alert--success" role="status">{{tr $.Notice}}</div>{{end}}
         <form method="post" action="/admin" autocomplete="off">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="step-up"><input type="hidden" name="pending_action" value="{{.Action}}">
           {{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
-          <div class="field"><label for="step-up-code">{{tr "Authenticator code"}}</label>
+          <div class="field"><label for="step-up-code">{{if $.ActorEmailFactor}}{{tr "Verification code"}}{{else}}{{tr "Authenticator code"}}{{end}}</label>
             <input id="step-up-code" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000"></div>
           <button class="btn btn-primary" type="submit">{{tr "Verify"}}</button>
+          {{if $.ActorEmailFactor}}<button class="btn btn-link resend" type="submit" name="resend" value="1" formnovalidate>{{tr "Send a new code"}}</button>{{end}}
         </form>
         {{/* method="dialog" closes it with no script and no invoker-command support. */}}
         <form method="dialog"><button class="btn btn-ghost cancel" type="submit">{{tr "Cancel"}}</button></form>
@@ -354,19 +355,20 @@
     <dialog id="add-user-code" class="modal" aria-labelledby="add-user-code-title" open>
       <div class="modal__header">
         <h3 id="add-user-code-title" class="modal__title">{{tr "Confirm it is you"}}</h3>
-        <p class="modal__description">{{tr "Creating an account needs your authenticator code from the last five minutes. Then check the details and choose Create account again."}}</p>
+        <p class="modal__description">{{if $.ActorEmailFactor}}{{tr "Creating an account needs a verification code from your email. We sent one; enter it here. Then check the details and choose Create account again."}}{{else}}{{tr "Creating an account needs your authenticator code from the last five minutes. Then check the details and choose Create account again."}}{{end}}</p>
       </div>
       <button class="icon-action modal__close" type="button" commandfor="add-user-code" command="close" aria-label="{{tr "Close"}}">{{template "icon" "close"}}</button>
       <div class="modal__body">
-        {{if $.Error}}<div class="alert alert--destructive" role="alert">{{tr $.Error}}</div>{{end}}
+        {{if $.Error}}<div class="alert alert--destructive" role="alert">{{tr $.Error}}</div>{{else if $.Notice}}<div class="alert alert--success" role="status">{{tr $.Notice}}</div>{{end}}
         <form method="post" action="/admin" autocomplete="off">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="action" value="step-up">
           <input type="hidden" name="email" value="{{.Email}}"><input type="hidden" name="team" value="{{.Team}}"><input type="hidden" name="delivery" value="{{.Delivery}}"><input type="hidden" name="password" value="{{.Password}}">
           {{if .Admin}}<input type="hidden" name="admin" value="on">{{end}}{{range $id, $on := .Apps}}{{if $on}}<input type="hidden" name="apps" value="{{$id}}">{{end}}{{end}}
           {{if .FleetAdmin}}<input type="hidden" name="fleet_admin" value="on">{{end}}<input type="hidden" name="fleet_chat_role" value="{{.FleetChatRole}}"><input type="hidden" name="fleet_ops_role" value="{{.FleetOpsRole}}">
-          <div class="field"><label for="add-user-code-input">{{tr "Authenticator code"}}</label>
+          <div class="field"><label for="add-user-code-input">{{if $.ActorEmailFactor}}{{tr "Verification code"}}{{else}}{{tr "Authenticator code"}}{{end}}</label>
             <input id="add-user-code-input" name="code" class="code" type="text" inputmode="numeric" maxlength="20" required autofocus autocomplete="one-time-code" placeholder="000000"></div>
           <button class="btn btn-primary" type="submit">{{tr "Verify"}}</button>
+          {{if $.ActorEmailFactor}}<button class="btn btn-link resend" type="submit" name="resend" value="1" formnovalidate>{{tr "Send a new code"}}</button>{{end}}
         </form>
       </div>
     </dialog>{{end}}{{end}}
@@ -399,7 +401,7 @@
     <dialog id="mfa-policy" class="modal" aria-labelledby="mfa-policy-title">
       <div class="modal__header">
         <h3 id="mfa-policy-title" class="modal__title">{{tr "Two-factor policy"}}</h3>
-        <p class="modal__description">{{tr "Who must enter a code from an authenticator app after their password. Anyone may set one up from their Security page, and once they have, they always use it; this policy decides who is made to. A per-account requirement (Settings) adds to whichever policy is chosen."}}</p>
+        <p class="modal__description">{{tr "Who must enter a second code after their password, from an authenticator app or their email. Anyone may set one up from their Security page, and once they have, they always use it; this policy decides who is made to. A per-account requirement (Settings) adds to whichever policy is chosen."}}</p>
       </div>
       <button class="icon-action modal__close" type="button" commandfor="mfa-policy" command="close" aria-label="{{tr "Close"}}">{{template "icon" "close"}}</button>
       <div class="modal__body">

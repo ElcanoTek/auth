@@ -786,7 +786,7 @@ func (s *Server) handleLoginEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	canEmail := s.emailMFAAvailable(account)
+	canEmail := s.emailMFAAvailable()
 	renderEmail := func(errText, notice string) {
 		view := map[string]any{
 			"Brand": s.cfg.BrandName, "Email": account.Email, "CSRF": csrf, "Error": errText, "Notice": notice,
@@ -1185,7 +1185,7 @@ func (s *Server) handleAccountSecurity(w http.ResponseWriter, r *http.Request) {
 	if returnTo == "" {
 		returnTo = s.resolveReturnTo(r.FormValue("return_to"))
 	}
-	canEmail := s.emailMFAAvailable(account)
+	canEmail := s.emailMFAAvailable()
 	renderPage := func(notice, errText string) {
 		remaining := 0
 		if account.MFAKind == store.AuthenticatorTOTP {
@@ -1542,7 +1542,7 @@ func (s *Server) handleAccountSecurityVerify(w http.ResponseWriter, r *http.Requ
 		var refusal string
 		var err error
 		if emailFactor {
-			refusal, err = s.verifySessionEmailCode(r, identity, r.FormValue("code"), now)
+			refusal, err = s.verifySessionEmailCode(r, identity, r.FormValue("code"), now, true)
 		} else {
 			refusal, err = s.verifySessionCode(r, identity, r.FormValue("code"), now, true)
 		}

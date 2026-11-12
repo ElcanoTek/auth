@@ -214,6 +214,8 @@ body.theme-light a.btn.btn-danger:focus-visible {
 .card > .btn-primary { min-height: 2.75rem; margin-top: var(--space-5); }
 :is(.modal, .modal__body) > form > .btn-primary { margin-top: var(--space-4); }
 .modal .cancel { margin-top: var(--space-2); }
+/* The code popup's Send a new code: a link-style button under Verify. */
+.modal .resend { display: block; margin: var(--space-3) auto 0; }
 .btn-link { min-height: 0; padding: 0; border: 0; font-size: inherit; font-weight: var(--font-weight-semibold); }
 
 /* ── alerts ── */

@@ -1225,6 +1225,12 @@ func (s *Store) replacePassword(ctx context.Context, userID, expectedHash, passw
 func replacePasswordTx(ctx context.Context, tx *sql.Tx, userID, expectedHash, passwordHash string, mustChange bool, rotate *sessionRotation, actor *actorCheck, now int64) error {
 	var err error
 	if actor != nil {
+		// An administrator's write never targets their own credential:
+		// their own password changes only through the change-password
+		// form, which needs the current one.
+		if actor.id == userID {
+			return ErrSelfReset
+		}
 		if err := requireActorTx(ctx, tx, actor.id, actor.proof, now); err != nil {
 			return err
 		}
@@ -1468,25 +1474,9 @@ func setAccountAdminTx(ctx context.Context, tx *sql.Tx, a Account, admin bool, n
 	// Promotion is a policy-tightening path: under "Required for
 	// administrators" the new administrator must have a factor, so an
 	// unenrolled one is signed out now and enrolls at the next sign-in,
-	// exactly as if the policy had just been set. Administrators must use
-	// an authenticator app, so an active email factor is disabled and the
-	// account marked mfa_required = 1 before signing out.
+	// exactly as if the policy had just been set. Either factor kind
+	// (authenticator app or email) qualifies and is kept.
 	if admin {
-		resEmail, err := tx.ExecContext(ctx, `UPDATE authenticators SET disabled_at = ? WHERE user_id = ? AND kind = 'email' AND verified_at IS NOT NULL AND disabled_at IS NULL`, now, a.ID)
-		if err != nil {
-			return err
-		}
-		if n, _ := resEmail.RowsAffected(); n > 0 {
-			if _, err := tx.ExecContext(ctx, `UPDATE accounts SET mfa_required = 1, updated_at = ? WHERE id = ?`, now, a.ID); err != nil {
-				return err
-			}
-			if _, err := bumpSecurityVersionTx(ctx, tx, a.ID, now); err != nil {
-				return err
-			}
-			if err := clearFactorStateTx(ctx, tx, a.ID); err != nil {
-				return err
-			}
-		}
 		policy, err := mfaPolicyQ(ctx, tx)
 		if err != nil {
 			return err

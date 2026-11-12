@@ -22,11 +22,10 @@ const (
 	emailCodeMismatchNotice = "That code did not match or has expired. Enter the latest six-digit code from your email."
 )
 
-// emailMFAAvailable reports whether account may enroll an email second factor:
-// standard (non-administrator) accounts on a deployment with 2FA and outbound
-// email enabled.
-func (s *Server) emailMFAAvailable(account store.Account) bool {
-	return s.mfaAvailable() && !account.IsAdmin && s.sender != nil && s.cfg.PasswordLinksEnabled()
+// emailMFAAvailable reports whether accounts may enroll an email second
+// factor: a deployment with 2FA and outbound email enabled.
+func (s *Server) emailMFAAvailable() bool {
+	return s.mfaAvailable() && s.sender != nil && s.cfg.PasswordLinksEnabled()
 }
 
 // mfaEmailCodeMAC computes the keyed MAC of a 6-digit email 2FA code bound to
@@ -53,9 +52,6 @@ func (s *Server) mfaEmailCodeMAC(nonce, userID, purpose, scopeID, code string) s
 // (account, purpose, scopeID). When forceResend is false and an unexpired,
 // unexhausted challenge already exists for this scopeID, nothing is sent.
 func (s *Server) sendMFAEmailChallenge(r *http.Request, account store.Account, purpose, scopeID string, ttl time.Duration, forceResend bool, now time.Time) error {
-	if account.IsAdmin {
-		return store.ErrAdminRequiresTOTP
-	}
 	if !forceResend {
 		live, err := s.store.HasLiveMFAEmailChallenge(r.Context(), account.ID, purpose, scopeID, now.Unix())
 		if err != nil {
@@ -114,7 +110,11 @@ func (s *Server) sendMFAEmail(to, code string, ttl time.Duration, lang string) {
 	}(to, subject, text, htmlBody)
 }
 
-func (s *Server) verifySessionEmailCode(r *http.Request, identity *passwordIdentity, code string, now time.Time) (refusal string, err error) {
+// verifySessionEmailCode checks an emailed step-up code for the signed-in
+// session. stampReauth is for the Security page's step-up, which also
+// checked the password; the console's code-only step-up passes false, so an
+// emailed code alone never counts as "password re-entered".
+func (s *Server) verifySessionEmailCode(r *http.Request, identity *passwordIdentity, code string, now time.Time, stampReauth bool) (refusal string, err error) {
 	account := identity.Account
 	ids, ipKey, limited, err := s.mfaAttempt(r, account.ID, now)
 	if err != nil {
@@ -130,7 +130,11 @@ func (s *Server) verifySessionEmailCode(r *http.Request, identity *passwordIdent
 		return translate(requestLanguage(r), emailCodeFormatMessage), nil
 	}
 	scopeID := identity.Session.TokenHash
-	err = s.store.VerifyEmailFactorAndStampReauth(r.Context(), scopeID, func(nonce string) string {
+	verify := s.store.VerifyEmailFactorOnSession
+	if stampReauth {
+		verify = s.store.VerifyEmailFactorAndStampReauth
+	}
+	err = verify(r.Context(), scopeID, func(nonce string) string {
 		return s.mfaEmailCodeMAC(nonce, account.ID, store.EmailPurposeStepUp, scopeID, normalized)
 	}, now.Unix())
 	if errors.Is(err, store.ErrInvalidProof) || errors.Is(err, store.ErrTooManyAttempts) {
