@@ -414,8 +414,6 @@ table.list tr:last-child td { border-bottom: 0; }
 .setting .confirm .pane, .topline .confirm .pane { left: auto; right: 0; border-radius: var(--radius-md) 0 var(--radius-md) var(--radius-md); }
 .confirm .pane .muted { margin: 0; font-size: var(--font-size-caption); }
 .confirm .pane .btn { width: 100%; }
-.confirm .pane .btn-link { width: auto; align-self: center; font-size: var(--font-size-overline); color: var(--color-text-muted); text-decoration: underline; }
-.confirm .pane .btn-link:hover { color: var(--color-text-primary); }
 .team-list .setting { flex-wrap: wrap; }
 .team-list .confirm[open] { flex-basis: 100%; }
 .team-list .confirm .pane { position: static; width: 100%; max-width: none; box-shadow: none; }
@@ -431,11 +429,6 @@ table.list tr:last-child td { border-bottom: 0; }
   color: var(--color-text-primary); user-select: all; -webkit-user-select: all; word-break: break-all;
 }
 .secret .muted { margin: 0; font-size: var(--font-size-caption); }
-.temp-password .secret { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
-.temp-password .secret .btn { flex: 0 0 auto; }
-.temp-password .secret .btn[hidden] { display: none; }
-.temp-password .alert { margin: var(--space-4) 0 0; }
-.temp-password .hint { margin-bottom: var(--space-4); }
 .confirm-change .question { margin: var(--space-4) 0 0; font-size: var(--font-size-body); font-weight: var(--font-weight-bold); color: var(--color-text-primary); overflow-wrap: anywhere; }
 .confirm-change .hint { overflow-wrap: anywhere; }
 

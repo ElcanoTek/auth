@@ -1,6 +1,5 @@
 (function () {
   var labels = document.getElementById("admin-translations").dataset;
-  var alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_.!@*=~";
   var all = document.querySelector("[data-select-all]");
   var boxes = Array.prototype.slice.call(document.querySelectorAll("[data-select]"));
   var count = document.querySelector("[data-batch-count]");
@@ -120,45 +119,6 @@
       if (fleetAdmin) fleetAdmin.checked = false;
     });
   });
-  // Add user: the temporary password field and its Generate button belong
-  // to "Set a temporary password" only. With an invite chosen the field is
-  // hidden and its input disabled, so a value typed before switching is not
-  // sent (the server refuses a password with an invite) and cannot block the
-  // form's validation while out of sight. Without script the field stays
-  // visible with its "Only with" hint; hiding it by CSS alone would leave an
-  // enabled, invalid input nobody can see or fix.
-  document.querySelectorAll("[data-temp-password]").forEach(function (field) {
-    var form = field.closest("form");
-    var temp = form && form.querySelector('input[name="delivery"][value="password"]');
-    if (!temp) return;
-    var input = field.querySelector('input[name="password"]');
-    var only = field.querySelector("[data-temp-hint]");
-    if (only) only.hidden = true;
-    function sync() {
-      field.hidden = !temp.checked;
-      if (input) input.disabled = !temp.checked;
-    }
-    form.querySelectorAll('input[name="delivery"]').forEach(function (radio) {
-      radio.addEventListener("change", sync);
-    });
-    // A page restored from the back/forward cache keeps the radio it had
-    // without firing change.
-    window.addEventListener("pageshow", sync);
-    sync();
-  });
-  document.querySelectorAll("[data-generate]").forEach(function (button) {
-    button.addEventListener("click", function () {
-      var field = document.getElementById(button.getAttribute("data-generate"));
-      if (!field) return;
-      var bytes = new Uint8Array(20);
-      crypto.getRandomValues(bytes);
-      var out = "";
-      for (var i = 0; i < bytes.length; i++) out += alphabet[bytes[i] % 64];
-      field.type = "text";
-      field.value = out;
-      field.focus();
-    });
-  });
   // Dialog buttons carry command/commandfor, which modern browsers act on
   // without script; older ones get the same behaviour here.
   if (!("command" in HTMLButtonElement.prototype)) {
@@ -176,9 +136,7 @@
   // these replaced did.
   // Both ends of the gesture must be outside: a press inside the panel (or
   // a text-selection drag) that is released over the backdrop stays open.
-  // A dialog marked data-keep-open (the one-time password) is exempt: a
-  // stray click must not hide a password that is never shown again.
-  document.querySelectorAll("dialog.modal:not([data-keep-open])").forEach(function (dialog) {
+  document.querySelectorAll("dialog.modal").forEach(function (dialog) {
     function outside(event) {
       if (event.target !== dialog) return false;
       var r = dialog.getBoundingClientRect();
@@ -189,18 +147,6 @@
     dialog.addEventListener("click", function (event) {
       if (pressedOutside && outside(event)) dialog.close();
       pressedOutside = false;
-    });
-  });
-  // Copy buttons (the one-time password): shown only where the clipboard
-  // can be written, and they say whether it worked.
-  document.querySelectorAll("[data-copy]").forEach(function (button) {
-    var source = document.getElementById(button.getAttribute("data-copy"));
-    if (!source || !navigator.clipboard || !window.isSecureContext) return;
-    button.hidden = false;
-    button.addEventListener("click", function () {
-      navigator.clipboard.writeText(source.textContent).then(
-        function () { button.textContent = labels.copied; },
-        function () { button.textContent = labels.copyFailed; });
     });
   });
   // A reopened dialog is rendered open (non-modal) so it shows without

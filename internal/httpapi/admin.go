@@ -163,16 +163,12 @@ type adminAppView struct {
 // the page should show again (the Add user form after a rejected entry) so
 // the administrator's input is not lost behind a closed dialog.
 type adminResult struct {
-	Notice string
-	Error  string
-	Secret string // temporary password, shown once in its own popup
-	// SecretTitle heads that popup ("Password reset", "Account created").
-	SecretTitle string
-	ForEmail    string
-	Tab         string
-	Status      int
-	Reopen      string
-	Redirect    string // send the browser here instead of rendering (own sign-out)
+	Notice   string
+	Error    string
+	Tab      string
+	Status   int
+	Reopen   string
+	Redirect string // send the browser here instead of rendering (own sign-out)
 	// Pending is a gated change refused only because the administrator's
 	// code is not fresh: the code popup carries it, and once the code is
 	// accepted the confirm popup offers to repeat it.
@@ -191,9 +187,6 @@ const (
 	// reopenAddUserCode asks for the administrator's authenticator code when
 	// Create account was refused only because it is not fresh.
 	reopenAddUserCode = "add-user-code"
-	// reopenTempPassword shows a one-time temporary password in a popup, so
-	// it cannot scroll past unnoticed the way a banner can.
-	reopenTempPassword = "temp-password"
 	// reopenStepUp asks for the code before any other gated change, and
 	// reopenConfirmChange then asks to confirm that change (Pending).
 	reopenStepUp        = "step-up"
@@ -209,7 +202,7 @@ var pendingFields = map[string][]string{
 	"set-mfa-required": {"email", "required"},
 	"disable":          {"email"},
 	"enable":           {"email"},
-	"reset-password":   {"email", "delivery"},
+	"reset-password":   {"email"},
 	"revoke-sessions":  {"email"},
 	"grant-admin":      {"email"},
 	"revoke-admin":     {"email"},
@@ -332,10 +325,7 @@ func (s *Server) describeChange(r *http.Request, p *pendingChange) {
 		p.Detail = translate(requestLanguage(r), "They can sign in again with their current password.")
 	case "reset-password":
 		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Reset the password for %s?"), email)
-		p.Detail = translate(requestLanguage(r), "They are signed out everywhere, and you get a new temporary password to give them.")
-		if s.emailsResetLink(v.Get("delivery")) {
-			p.Detail = fmt.Sprintf(translate(requestLanguage(r), "Their current password stops working, they are signed out everywhere, and they are emailed a link to choose a new one (it works for %s)."), linkLifetime(store.LinkReset, requestLanguage(r)))
-		}
+		p.Detail = fmt.Sprintf(translate(requestLanguage(r), "Their current password stops working, they are signed out everywhere, and they are emailed a link to choose a new one (it works for %s)."), linkLifetime(store.LinkReset, requestLanguage(r)))
 	case "revoke-sessions":
 		p.Question = fmt.Sprintf(translate(requestLanguage(r), "Sign %s out of every app and device?"), email)
 	case "grant-admin":
@@ -486,8 +476,6 @@ func plural(n int, noun string, languages ...string) string {
 // account is chosen.
 type addUserDraft struct {
 	Email, Team   string
-	Delivery      string // "email" (an invite link) or "password" (a temporary password)
-	Password      string // the typed temporary password, byte for byte
 	Admin         bool
 	Apps          map[string]bool // ticked applications; none ticked stays none
 	FleetAdmin    bool
@@ -497,7 +485,7 @@ type addUserDraft struct {
 
 func addUserDraftFromForm(r *http.Request) *addUserDraft {
 	d := &addUserDraft{
-		Email: r.FormValue("email"), Team: r.FormValue("team"), Delivery: r.FormValue("delivery"), Password: r.FormValue("password"),
+		Email: r.FormValue("email"), Team: r.FormValue("team"),
 		Admin: r.FormValue("admin") == "on", Apps: map[string]bool{}, FleetAdmin: r.FormValue("fleet_admin") == "on",
 		FleetChatRole: r.FormValue("fleet_chat_role"), FleetOpsRole: r.FormValue("fleet_ops_role"),
 	}
@@ -511,8 +499,8 @@ func addUserDraftFromForm(r *http.Request) *addUserDraft {
 // an account, create one, or change what an account may reach. They need
 // the acting administrator's own authenticator code, entered within the
 // re-verification window: a stolen admin browser session must not be enough
-// to disable accounts, reset passwords, mint an account with a known
-// password, grant applications or change who is an administrator. Team
+// to disable accounts, reset passwords, create an account, grant
+// applications or change who is an administrator. Team
 // tags are the one console write that is not gated.
 var sensitiveActions = map[string]string{
 	"create":           "creating an account",
@@ -833,6 +821,25 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		}
 		return s.adminStepUp(r, identity, res, draft, pending, now)
 	}
+	if action == "create" || action == "reset-password" {
+		// The console never sets a password anyone sees: a new account gets
+		// an invite link and a reset gets a reset link, each emailed to the
+		// account's own address, so no administrator ever holds another
+		// person's password. A temporary password is the operator CLI's
+		// alone (`auth user create`, `auth user set-password`). A request
+		// asking for one is not something the console sends.
+		// (An empty field is tolerated: a console page loaded before this
+		// change still carries one.)
+		if r.PostFormValue("password") != "" || (r.PostFormValue("delivery") != "" && r.PostFormValue("delivery") != "email") {
+			res.Status = http.StatusBadRequest
+			return res
+		}
+		if !s.cfg.PasswordLinksEnabled() {
+			res.Tab = adminAccountsTab
+			res.Error = translate(requestLanguage(r), "Email is not set up on this server, so accounts are created and passwords reset with the auth CLI on the server.")
+			return res
+		}
+	}
 	if what, sensitive := sensitiveActions[action]; sensitive && action != "revoke-sessions" {
 		// revoke-sessions is gated below, once the target is resolved by
 		// account ID: signing yourself out is not a takeover of anyone, and
@@ -960,7 +967,6 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		res.Error = translate(requestLanguage(r), "Enter a valid email address.")
 		return res
 	}
-	res.ForEmail = email
 
 	if action == "create" {
 		team, err := store.NormalizeTeam(r.FormValue("team"))
@@ -973,29 +979,11 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Error = translate(requestLanguage(r), "Choose valid Fleet permissions.")
 			return res
 		}
-		// The administrator may type the temporary password or leave it blank
-		// to have one generated. Either way it is validated against the same
-		// policy the change-password form applies, with the new account's
-		// email as context, and set must-change. A typed value is used
-		// byte-for-byte (spaces included), exactly as the change-password form
-		// treats a password, so what the administrator shares is what works.
-		plain, typed := r.FormValue("password"), false
-		invite := s.cfg.PasswordLinksEnabled() && r.FormValue("delivery") != "password"
-		if invite && plain != "" {
-			res.Error = translate(requestLanguage(r), "Clear the temporary password, or choose Set a temporary password to use the one you typed.")
-			return res
-		}
-		if plain != "" {
-			typed = true
-			if err := passwordauth.Validate(plain, s.passwordContext(email)...); err != nil {
-				res.Error = translate(requestLanguage(r), "Temporary password: ") + translate(requestLanguage(r), passwordauth.UserMessage(err))
-				return res
-			}
-		} else {
-			plain, err = passwordauth.Generate(s.passwordContext(email)...)
-			if err != nil {
-				return res.failed("generate password", err)
-			}
+		// A random password nobody sees: nobody can sign in until the owner
+		// chooses one through the invite link.
+		plain, err := passwordauth.Generate(s.passwordContext(email)...)
+		if err != nil {
+			return res.failed("generate password", err)
 		}
 		encoded, err := s.hashPassword(ctx, plain)
 		if err != nil {
@@ -1007,7 +995,7 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		// everything chosen for it or not at all.
 		account, granted, err := s.store.CreateAccountBy(ctx, store.AccountCreate{
 			Email: email, PasswordHash: encoded, Team: team, Admin: r.FormValue("admin") == "on",
-			Applications: r.Form["apps"], ApplicationSettings: appSettings, Invite: invite,
+			Applications: r.Form["apps"], ApplicationSettings: appSettings, Invite: true,
 		}, actor.ID, proof, now.Unix())
 		switch {
 		case errors.Is(err, store.ErrActorNotFresh):
@@ -1029,24 +1017,16 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 		for _, id := range granted {
 			audit("admin.access_granted", account.ID, id)
 		}
-		created, with := translate(requestLanguage(r), "Created ")+account.Email, translate(requestLanguage(r), " with")
+		created := translate(requestLanguage(r), "Created ") + account.Email
 		if account.Restored {
 			// A deleted account with this email came back with its history
 			// and team; its old authenticator and access did not.
-			created, with = translate(requestLanguage(r), "Restored ")+account.Email+translate(requestLanguage(r), " (deleted earlier) with its history and team"), translate(requestLanguage(r), ", and")
+			created = translate(requestLanguage(r), "Restored ") + account.Email + translate(requestLanguage(r), " (deleted earlier) with its history and team")
 		}
-		switch {
-		case invite:
-			// The generated password was never shown and is not kept:
-			// nobody can sign in until they choose one through the link.
-			audit("admin.password_link_queued", account.ID, "")
-			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s. An invite email is on its way to them; its link works for %s."), created, linkLifetime(store.LinkInvite, requestLanguage(r)))
-		case typed:
-			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s%s the password you entered; they must change it at first sign-in."), created, with)
-		default:
-			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s. Share the temporary password with them; they must change it at first sign-in."), created)
-			res.Secret, res.SecretTitle, res.Reopen = plain, translate(requestLanguage(r), "Account created"), reopenTempPassword
-		}
+		// The generated password was never shown and is not kept: nobody
+		// can sign in until they choose one through the link.
+		audit("admin.password_link_queued", account.ID, "")
+		res.Notice = fmt.Sprintf(translate(requestLanguage(r), "%s. An invite email is on its way to them; its link works for %s."), created, linkLifetime(store.LinkInvite, requestLanguage(r)))
 		return res
 	}
 
@@ -1068,54 +1048,33 @@ func (s *Server) adminAction(r *http.Request, identity *passwordIdentity) adminR
 			res.Error = translate(requestLanguage(r), "Use Change password for your own account.")
 			return res
 		}
-		if s.emailsResetLink(r.FormValue("delivery")) {
-			if target.DisabledAt != nil {
-				res.Error = fmt.Sprintf(translate(requestLanguage(r), "%s is disabled. Enable the account first; a disabled account's link would not work."), target.Email)
-				return res
-			}
-			// A random password nobody sees replaces the current one, so
-			// it stops working now; the person chooses the next one
-			// through the emailed link.
-			plain, err := passwordauth.Generate(s.passwordContext(target.Email)...)
-			if err == nil {
-				var encoded string
-				encoded, err = s.hashPassword(ctx, plain)
-				if err == nil {
-					_, err = s.store.ResetPasswordWithLinkBy(ctx, target.Email, encoded, actor.ID, proof, now.Unix())
-				}
-			}
-			switch {
-			case errors.Is(err, store.ErrActorNotFresh):
-				return needVerify()
-			case errors.Is(err, store.ErrAccountDisabled):
-				res.Error = fmt.Sprintf(translate(requestLanguage(r), "%s is disabled. Enable the account first; a disabled account's link would not work."), target.Email)
-				return res
-			case err != nil:
-				return res.failed("reset password", err)
-			}
-			audit("admin.password_reset", target.ID, "")
-			res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Reset the password for %s and signed them out everywhere. A link to choose a new one is on its way to them; it works for %s."), target.Email, linkLifetime(store.LinkReset, requestLanguage(r)))
-			break
+		if target.DisabledAt != nil {
+			res.Error = fmt.Sprintf(translate(requestLanguage(r), "%s is disabled. Enable the account first; a disabled account's link would not work."), target.Email)
+			return res
 		}
+		// A random password nobody sees replaces the current one, so it
+		// stops working now; the person chooses the next one through the
+		// emailed link. The administrator is re-checked in the same
+		// transaction, when it runs (after the hashing).
 		plain, err := passwordauth.Generate(s.passwordContext(target.Email)...)
 		if err == nil {
 			var encoded string
 			encoded, err = s.hashPassword(ctx, plain)
 			if err == nil {
-				// The administrator is re-checked in the same transaction,
-				// when it runs (after the hashing).
-				err = s.store.SetPasswordBy(ctx, target.Email, encoded, true, actor.ID, proof, now.Unix())
+				_, err = s.store.ResetPasswordWithLinkBy(ctx, target.Email, encoded, actor.ID, proof, now.Unix())
 			}
 		}
-		if errors.Is(err, store.ErrActorNotFresh) {
+		switch {
+		case errors.Is(err, store.ErrActorNotFresh):
 			return needVerify()
-		}
-		if err != nil {
+		case errors.Is(err, store.ErrAccountDisabled):
+			res.Error = fmt.Sprintf(translate(requestLanguage(r), "%s is disabled. Enable the account first; a disabled account's link would not work."), target.Email)
+			return res
+		case err != nil:
 			return res.failed("reset password", err)
 		}
 		audit("admin.password_reset", target.ID, "")
-		res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Reset the password for %s and signed them out everywhere. Share the temporary password with them."), target.Email)
-		res.Secret, res.SecretTitle, res.Reopen = plain, translate(requestLanguage(r), "Password reset"), reopenTempPassword
+		res.Notice = fmt.Sprintf(translate(requestLanguage(r), "Reset the password for %s and signed them out everywhere. A link to choose a new one is on its way to them; it works for %s."), target.Email, linkLifetime(store.LinkReset, requestLanguage(r)))
 	case "send-link":
 		// Not gated: it emails the account's own address a new link and
 		// changes no password; the earlier link stops working.
@@ -1638,7 +1597,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 	data := s.withAccountMenu(map[string]any{
 		"Brand": s.cfg.BrandName,
 		"Tabs":  tabs, "Tab": tab, "Notice": result.Notice, "Error": result.Error,
-		"Secret": result.Secret, "SecretTitle": result.SecretTitle, "SecretFor": result.ForEmail, "Reopen": result.Reopen, "Draft": result.Draft,
+		"Reopen": result.Reopen, "Draft": result.Draft,
 		"Pending": result.Pending, "NeedEnroll": result.NeedEnroll,
 		"ActorFresh":       actor.MFAEnrolled && factorRecentlyVerified(identity.Session, now, s.reauthWindow()),
 		"ActorEmailFactor": actor.MFAEnrolled && actor.MFAKind == store.AuthenticatorEmail,
@@ -1692,7 +1651,8 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, identity *p
 				row.Status, row.StatusClass = translate(requestLanguage(r), "Reset pending"), "badge-warning"
 				row.StatusTitle = translate(requestLanguage(r), "Password reset ") + displayDate(*a.PasswordResetAt, requestLanguage(r), true) + translate(requestLanguage(r), " UTC; they have not set a new one yet.")
 			case a.MustChangePassword:
-				// A new account still on the temporary password it was created with.
+				// A new account that has not chosen its password yet (an invite
+				// link, or a temporary password from the CLI).
 				row.Status, row.StatusClass = "Invited", "badge-warning"
 				row.StatusTitle = translate(requestLanguage(r), "Created ") + displayDate(a.CreatedAt, requestLanguage(r), true) + translate(requestLanguage(r), " UTC; they have not signed in and chosen a password yet.")
 			default:
@@ -1844,13 +1804,6 @@ func joinMessages(parts ...string) string {
 	}
 	sort.Strings(kept)
 	return strings.Join(kept, " ")
-}
-
-// emailsResetLink reports whether a reset with this delivery choice emails a
-// link: when the deployment sends them, unless the administrator chose a
-// temporary password instead.
-func (s *Server) emailsResetLink(delivery string) bool {
-	return s.cfg.PasswordLinksEnabled() && delivery != "password"
 }
 
 // linkLifetime is how long a link of purpose works, in words.

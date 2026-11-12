@@ -367,7 +367,8 @@ A deleted account is kept for 30 days and listed under DELETED ACCOUNTS in
 `auth user list` (`auth user show` still describes it). Creating an account
 with the same email in that time, from the CLI or the console, restores it
 under the same ID with its audit history, team, two-factor requirement and
-per-application roles. It comes back with the new temporary password, no
+per-application roles. It comes back with a new invite link (or, from the
+CLI, the new temporary password), no
 authenticator (they enroll again), no administrator flag and no applications
 until they are granted again.
 
@@ -387,16 +388,19 @@ Fleet's user and its chats, is not touched: delete that in the application
 ### Emailed invites and password resets
 
 With an email driver configured (`ses` for client deployments, or `sendgrid`
-or `smtp`), people choose their own password through a one-time link instead
-of being handed a temporary one:
+or `smtp`), people choose their own password through a one-time link. The
+console never shows or takes a temporary password, so no administrator ever
+holds anyone else's password (a request asking for one is refused); a
+temporary password is the operator CLI's alone (`auth user create`,
+`auth user set-password`). Without email the console cannot add accounts or
+reset passwords and says to use the CLI.
 
-- **Add user** emails an invite by default. The account gets a random
-  password nobody sees, so nobody can sign in to it until its owner chooses one
-  through the link. "Set a temporary password" is still there for when email
-  is not an option.
+- **Add user** emails an invite. The account gets a random password nobody
+  sees, so nobody can sign in to it until its owner chooses one through the
+  link.
 - **Reset password** emails a reset link. The current password stops working
   at once and every session is signed out, as before; the person chooses the
-  next one. "Show a temporary password instead" is the fallback. It is never
+  next one. It is never
   offered for one's own account (the store refuses it too): an administrator
   who has lost their password asks another administrator, or the operator
   runs `auth user reset-password` on the box. The same holds for Reset
@@ -794,14 +798,13 @@ Tabs:
   application (deselecting one signs them out of it now) and, in its own
   Admin section, an **Auth Admin** pill (the administrator flag; your own and the
   last enabled administrator's are locked), **Settings** opens a popup with the team tag and the account
-  actions: Reset password (generates a new temporary password, shown once in
-  a popup with a Copy button that a click outside does not close, and signs
-  them out everywhere), Sign out everywhere, Disable / Enable. Destructive actions
+  actions: Reset password (the current password stops working, they are
+  signed out everywhere and emailed a reset link), Sign out everywhere,
+  Disable / Enable. Destructive actions
   ask for confirmation inside the popup. **Add user** (top right of the
   table) opens a popup: email, an optional team tag (existing tags are
-  suggested), a temporary password you type or fill with **Generate** (blank
-  means a strong one is generated and shown once, in the same popup; a typed one must meet the
-  same 12-character policy), the applications to grant as pills, and an
+  suggested), the applications to grant as pills (they are emailed an invite
+  link to choose their own password), and an
   Auth Admin pill. Selecting Auth Admin initially selects every application,
   but each application may then be unchecked. When Fleet is selected, its
   hidden permission section configures **Fleet Admin**, Chat Viewer /
@@ -819,7 +822,7 @@ Tabs:
   console or the CLI. Passwords are managed by administrators: a non-admin has
   no self-service change (the `/change-password` page admits only a forced
   first-login change and administrators); when they need a new one, an
-  administrator resets it and hands over the temporary password.
+  administrator resets it and they are emailed a link.
 - **Team tags** are free text (at most 64 bytes, the same rule as Fleet team
   labels), one per account, for grouping people in the table; they carry no
   permissions in Auth. `auth user team <email> <team|->` sets or clears one
@@ -842,12 +845,12 @@ Tabs:
   rotating secrets and setting back-channel URLs stay on the CLI because the
   secret prints once and the CLI validates the URLs.
 
-Temporary passwords do not expire on their own: an account whose holder never
-signs in keeps a valid temporary credential until an administrator resets or
-disables it, so check the Accounts tab for long-standing "Must change
-password" rows. If the one-time display is lost (closed tab, failed
-response), run Reset password again; reloading the result page repeats the
-action, which the browser warns about.
+Temporary passwords set with the CLI do not expire on their own: an account
+whose holder never signs in keeps a valid temporary credential until it is
+reset or disabled, so check the Accounts tab for long-standing "Invited"
+(`auth user create`) and "Reset pending" (`auth user set-password`) rows. An
+emailed link expires on its own; Send a new link (or Reset password) replaces
+the password and the link.
 
 Every console action is audited on the target account with the acting
 administrator in the metadata (`admin.user_created`, `admin.password_reset`,

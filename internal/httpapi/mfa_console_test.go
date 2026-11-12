@@ -609,7 +609,7 @@ func TestAddUserAsksForTheCodeInAPopupAndKeepsWhatWasTyped(t *testing.T) {
 	alice, secret := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
 	ctx := context.Background()
 	draft := url.Values{
-		"email": {"carol@example.com"}, "team": {`Ops & "Trading"`}, "password": {"Quartz-Harbor-Lantern-4471"},
+		"email": {"carol@example.com"}, "team": {`Ops & "Trading"`},
 		"apps": {"fleet"}, "fleet_chat_role": {"viewer"}, "fleet_ops_role": {"readonly"},
 	}
 	notCreated := func(when string) {
@@ -620,7 +620,7 @@ func TestAddUserAsksForTheCodeInAPopupAndKeepsWhatWasTyped(t *testing.T) {
 	}
 	carried := []string{
 		`name="action" value="step-up"`, `name="email" value="carol@example.com"`,
-		`name="team" value="Ops &amp; &#34;Trading&#34;"`, `name="password" value="Quartz-Harbor-Lantern-4471"`,
+		`name="team" value="Ops &amp; &#34;Trading&#34;"`,
 		`name="apps" value="fleet"`, `name="fleet_chat_role" value="viewer"`, `name="fleet_ops_role" value="readonly"`,
 		`name="code"`,
 	}
@@ -673,7 +673,7 @@ func TestAddUserAsksForTheCodeInAPopupAndKeepsWhatWasTyped(t *testing.T) {
 	}
 	for _, want := range []string{
 		`id="new-email" name="email" type="email" required autocomplete="off" placeholder="name@company.com" value="carol@example.com"`,
-		`value="Ops &amp; &#34;Trading&#34;"`, `value="Quartz-Harbor-Lantern-4471"`,
+		`value="Ops &amp; &#34;Trading&#34;"`,
 		`name="apps" value="fleet" data-fleet-toggle checked`, `name="apps" value="explorer">`,
 		`name="fleet_chat_role" value="viewer" checked`, `name="fleet_ops_role" value="readonly" checked`,
 		`name="admin" value="on">`,
@@ -688,12 +688,12 @@ func TestAddUserAsksForTheCodeInAPopupAndKeepsWhatWasTyped(t *testing.T) {
 	notCreated("by the code alone")
 
 	// Create account again, inside the window the code opened: created as
-	// typed.
+	// typed, with an invite.
 	_, page = alice.post("/admin", withValues(draft, url.Values{"action": {"create"}}))
-	if !strings.Contains(page, "Created carol@example.com with the password you entered") {
+	if !strings.Contains(page, "Created carol@example.com. An invite email is on its way to them") {
 		t.Fatalf("create after the code:\n%s", page)
 	}
-	if strings.Contains(page, "Quartz-Harbor-Lantern-4471") || strings.Contains(page, `data-reopen=`) {
+	if strings.Contains(page, `data-reopen=`) {
 		t.Fatalf("the draft outlived the create:\n%s", page)
 	}
 	carol, err := st.PasswordAccountByEmail(ctx, "carol@example.com")
@@ -752,7 +752,7 @@ func TestAddUserKeepsTheDraftAfterARecoverySignInOrARejectedEntry(t *testing.T) 
 		form url.Values
 		want string
 	}{
-		{url.Values{"action": {"create"}, "email": {"eve@example.com"}, "password": {"short"}, "team": {"Ops"}}, "Temporary password:"},
+		{url.Values{"action": {"create"}, "email": {"alice@example.com"}, "team": {"Ops"}}, "An account with that email already exists."},
 		{url.Values{"action": {"create"}, "email": {"not-an-email"}, "team": {"Ops"}}, "Enter a valid email address."},
 		// An application that is not registered (removed meanwhile, or a
 		// forged form) refuses the whole create: no account without it.

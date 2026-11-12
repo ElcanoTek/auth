@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +21,8 @@ import (
 func adminFixture(t *testing.T) (*httptest.Server, *store.Store, *config.Config, string) {
 	t.Helper()
 	ts, st, cfg, plain := newPasswordTestServer(t, false)
+	// The console adds accounts and resets passwords only by emailed link.
+	enableLinks(cfg)
 	ctx := context.Background()
 	now := time.Now().Unix()
 	if err := st.SetAccountAdmin(ctx, "alice@example.com", true, now); err != nil {
@@ -246,75 +247,25 @@ func TestAdminConsoleIsAbsentInMagicMode(t *testing.T) {
 	}
 }
 
-var secretRE = regexp.MustCompile(`<dialog id="temp-password"[^>]*>(?s:.*?)<code id="temp-password-value">([^<]+)</code>`)
-
-// expectTempPasswordPopup checks that a one-time password is shown in its
-// own popup and not as a banner: rendered open (it shows without script),
-// reopened modally by admin.js, exempt from click-outside dismissal, shown
-// exactly once, and reachable again from the notice behind it.
-func expectTempPasswordPopup(t *testing.T, body, title, email string) {
-	t.Helper()
-	for _, want := range []string{
-		`<body data-reopen="temp-password">`,
-		`<dialog id="temp-password" class="modal temp-password" aria-labelledby="temp-password-title" aria-describedby="temp-password-for temp-password-warn" open data-keep-open>`,
-		`<h3 id="temp-password-title" class="modal__title">` + title + `</h3>`,
-		`Temporary password for <strong>` + email + `</strong>`,
-		`<div class="alert alert--warning" id="temp-password-warn"><div class="alert__description"><strong>Save it now.</strong> It is shown only this once`,
-		`<p class="modal__description" id="temp-password-for">Temporary password for`,
-		`data-copy="temp-password-value" hidden>Copy</button>`,
-		`<form method="dialog"><button class="btn btn-primary" type="submit">I have saved it</button></form>`,
-		`commandfor="temp-password" command="show-modal">Show the temporary password</button>`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("temporary password popup lacks %s:\n%s", want, body)
-		}
-	}
-	if n := strings.Count(body, `id="temp-password-value"`); n != 1 {
-		t.Fatalf("temporary password shown %d times", n)
-	}
-	if strings.Contains(body, `<div class="secret" role="status">`) {
-		t.Fatalf("temporary password still shown as a banner:\n%s", body)
-	}
-}
-
-// shownSecret is the one-time password as the administrator would read it.
-func shownSecret(t *testing.T, body string) string {
-	t.Helper()
-	m := secretRE.FindStringSubmatch(body)
-	if m == nil {
-		t.Fatalf("no temporary password shown:\n%s", body)
-	}
-	return html.UnescapeString(m[1])
-}
-
-func TestAdminCreatesAccountWithAccessAndOneTimePassword(t *testing.T) {
+func TestAdminCreatesAccountWithAccessAndAnInvite(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	resp, body := alice.post(url.Values{"action": {"create"}, "email": {"Carol@Example.com"}, "apps": {"explorer"}})
-	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Created carol@example.com") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Created carol@example.com. An invite email is on its way to them") {
 		t.Fatalf("create = %d\n%s", resp.StatusCode, body)
 	}
-	expectTempPasswordPopup(t, body, "Account created", "carol@example.com")
-	temp := shownSecret(t, body)
-	if len(temp) != 20 {
-		t.Fatalf("temporary password %q has length %d", temp, len(temp))
+	if strings.Contains(body, "temp-password") || strings.Contains(body, "Temporary password") {
+		t.Fatalf("the console showed a temporary password:\n%s", body)
 	}
 	carol, err := st.PasswordAccountByEmail(context.Background(), "carol@example.com")
-	if err != nil || !carol.MustChangePassword || carol.IsAdmin {
+	if err != nil || carol.IsAdmin {
 		t.Fatalf("carol = %+v (%v)", carol, err)
+	}
+	if link, ok, err := st.PasswordLinkFor(context.Background(), carol.ID); err != nil || !ok || link.Purpose != store.LinkInvite {
+		t.Fatalf("carol's invite link = %+v %v %v", link, ok, err)
 	}
 	if ids, _ := st.ApplicationAccess(context.Background(), carol.ID); strings.Join(ids, ",") != "explorer" {
 		t.Fatalf("carol access = %v", ids)
-	}
-	// The temporary password signs in and is immediately forced to change.
-	login, session, _ := passwordLogin(t, ts, cfg, "carol@example.com", temp)
-	_ = login.Body.Close()
-	if session == nil || login.Header.Get("Location") != "/change-password" {
-		t.Fatalf("temp login: session=%v location=%q", session != nil, login.Header.Get("Location"))
-	}
-	// The secret is not on a fresh GET.
-	if _, again := alice.get("/admin"); strings.Contains(again, temp) {
-		t.Fatal("temporary password persisted into a later page")
 	}
 	// Attribution: the audit row on carol names alice as the actor.
 	events, _ := st.RecentAuditEvents(context.Background(), carol.ID, 10)
@@ -352,22 +303,27 @@ func TestAdminResetRevokeDisableEnableBob(t *testing.T) {
 		t.Fatalf("bob's session survived revoke: %d", resp.StatusCode)
 	}
 
-	// Reset: old password fails, temporary one works and forces a change.
+	// Reset: the old password stops working and bob is emailed a reset
+	// link; no password is shown to alice.
 	_, body = alice.post(url.Values{"action": {"reset-password"}, "email": {"bob@example.com"}})
-	if !strings.Contains(body, "Reset the password for bob@example.com") {
+	if !strings.Contains(body, "Reset the password for bob@example.com and signed them out everywhere. A link to choose a new one is on its way to them") {
 		t.Fatalf("reset:\n%s", body)
 	}
-	expectTempPasswordPopup(t, body, "Password reset", "bob@example.com")
-	m := []string{"", shownSecret(t, body)}
+	if strings.Contains(body, "temp-password") {
+		t.Fatalf("the reset showed a temporary password:\n%s", body)
+	}
+	if link, ok, err := st.PasswordLinkFor(ctx, bob.ID); err != nil || !ok || link.Purpose != store.LinkReset {
+		t.Fatalf("bob's reset link = %+v %v %v", link, ok, err)
+	}
 	old, oldSession, _ := passwordLogin(t, ts, cfg, "bob@example.com", plain)
 	_ = old.Body.Close()
 	if oldSession != nil {
 		t.Fatal("old password still signs in after reset")
 	}
-	fresh, freshSession, _ := passwordLogin(t, ts, cfg, "bob@example.com", m[1])
-	_ = fresh.Body.Close()
-	if freshSession == nil || fresh.Header.Get("Location") != "/change-password" {
-		t.Fatalf("temp password after reset: session=%v loc=%q", freshSession != nil, fresh.Header.Get("Location"))
+	// Bob chooses a new one (here directly, as the link would).
+	m := []string{"", "Quartz-Harbor-Lantern-4471"} // gitleaks:allow -- synthetic test password
+	if err := st.SetPassword(ctx, "bob@example.com", mustHash(t, m[1]), false, time.Now().Unix()); err != nil {
+		t.Fatal(err)
 	}
 
 	// Disable: signs out, blocks sign-in, greys nothing else; enable restores.
@@ -670,7 +626,7 @@ func exchangeOAuthCodeFor(t *testing.T, base, code, verifier, clientID, secret, 
 // is a popup with a typed-or-generated temporary password and a team tag,
 // the corner controls carry the way out and the sign-out, and the login page
 // shows a sign-out as a red banner.
-func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
+func TestAdminConsolePopoversAndTeams(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
 	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	_, body := alice.get("/admin")
@@ -680,65 +636,66 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		`commandfor="settings-0" command="show-modal"`, `<dialog id="settings-0" class="modal"`,
 		`<a class="icon-action close" href="/account" aria-label="Back to your apps"`,
 		`<div class="corner-bottom">`, `action="/logout?lang=en"`, `<a class="btn btn-ghost btn-sm" href="/change-password?return_to=/admin">Change</a>`,
-		`data-generate="new-password"`, `name="password" type="text"`, `name="team" type="text" list="teams"`, `<datalist id="teams">`,
+		`name="team" type="text" list="teams"`, `<datalist id="teams">`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("console lacks %s", want)
+		}
+	}
+	// No temporary password anywhere: not typed, not generated, not chosen.
+	for _, gone := range []string{`name="password"`, `data-generate=`, `name="delivery"`, "Set a temporary password", "Show a temporary password instead"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("console still offers a temporary password: %s", gone)
 		}
 	}
 	if strings.Contains(body, "footer-actions") {
 		t.Fatal("old footer actions still rendered")
 	}
 
-	// A typed temporary password that breaks the policy is refused, nothing is
-	// created, and the Add user dialog is asked to reopen.
-	_, body = alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "password": {"danexample1"}, "team": {"Trading"}})
-	if !strings.Contains(body, "Temporary password:") || !strings.Contains(body, `<body data-reopen="add-user">`) {
-		t.Fatalf("policy refusal:\n%s", body)
+	// A request asking for a temporary password, typed or chosen, is not
+	// one the console sends: 400, and nothing is created.
+	for _, forged := range []url.Values{
+		{"action": {"create"}, "email": {"dan@example.com"}, "password": {"Quartz-Harbor-Lantern-4471"}}, // gitleaks:allow -- synthetic test password
+		{"action": {"create"}, "email": {"dan@example.com"}, "delivery": {"password"}},
+	} {
+		if resp, _ := alice.post(forged); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("forged temporary-password create %v = %d, want 400", forged, resp.StatusCode)
+		}
 	}
-	// The reopened dialog is modal (the page behind it is inert), so the
-	// refusal must be rendered inside it, and only there.
+	if _, err := st.PasswordAccountByEmail(context.Background(), "dan@example.com"); err == nil {
+		t.Fatal("account created by a temporary-password request")
+	}
+	// An overlong team is refused, nothing is created, and the Add user
+	// dialog is asked to reopen with the refusal inside it, and only there
+	// (the reopened dialog is modal, so the page behind it is inert).
+	_, body = alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "team": {strings.Repeat("x", 65)}})
+	if !strings.Contains(body, "Team must be at most 64 bytes (64 plain letters) with no control characters.") || !strings.Contains(body, `<body data-reopen="add-user">`) {
+		t.Fatalf("long team:\n%s", body)
+	}
 	dlg := body[strings.Index(body, `<dialog id="add-user"`):]
 	dlg = dlg[:strings.Index(dlg, "</dialog>")]
-	if !strings.Contains(dlg, `<div class="alert alert--destructive" role="alert">`) || !strings.Contains(dlg, "Temporary password:") {
+	if !strings.Contains(dlg, `<div class="alert alert--destructive" role="alert">`) {
 		t.Fatalf("refusal not inside the reopened Add user dialog:\n%s", dlg)
 	}
 	if n := strings.Count(body, `<div class="alert alert--destructive" role="alert">`); n != 1 {
 		t.Fatalf("refusal rendered %d times, want once (inside the dialog)", n)
 	}
 	if _, err := st.PasswordAccountByEmail(context.Background(), "dan@example.com"); err == nil {
-		t.Fatal("account created despite a refused password")
+		t.Fatal("account created despite a refused team")
 	}
-	// An overlong team is refused the same way.
-	if _, body := alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "team": {strings.Repeat("x", 65)}}); !strings.Contains(body, "Team must be at most 64 bytes (64 plain letters) with no control characters.") {
-		t.Fatalf("long team:\n%s", body)
+	// Created with a trimmed team and an invite.
+	_, body = alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "team": {" Trading "}, "apps": {"fleet"}})
+	if !strings.Contains(body, "Created dan@example.com. An invite email is on its way to them") || strings.Contains(body, `<body data-reopen`) {
+		t.Fatalf("create with team:\n%s", body)
 	}
-	// A typed password that passes: created with team, must-change, no secret panel.
-	_, body = alice.post(url.Values{"action": {"create"}, "email": {"dan@example.com"}, "password": {"Quartz-Harbor-Lantern-4471"}, "team": {" Trading "}, "apps": {"fleet"}})
-	if !strings.Contains(body, "Created dan@example.com with the password you entered") || strings.Contains(body, `id="temp-password"`) || strings.Contains(body, `<body data-reopen`) {
-		t.Fatalf("typed create:\n%s", body)
-	}
-	dan, err := st.PasswordAccountByEmail(context.Background(), "dan@example.com")
-	if err != nil || !dan.MustChangePassword || dan.Team != "Trading" {
+	if dan, err := st.PasswordAccountByEmail(context.Background(), "dan@example.com"); err != nil || dan.Team != "Trading" {
 		t.Fatalf("dan = %+v (%v)", dan, err)
-	}
-	if ok, _, _ := passwordauth.Verify(dan.PasswordHash, "Quartz-Harbor-Lantern-4471"); !ok { // gitleaks:allow -- synthetic test password
-		t.Fatal("typed password not stored")
 	}
 	if !strings.Contains(body, `<span class="badge badge-secondary">Trading</span>`) || !strings.Contains(body, `<option value="Trading">`) {
 		t.Fatalf("team tag / datalist missing:\n%s", body)
 	}
-	// A typed password is stored byte-for-byte: surrounding spaces are part of it.
-	_, body = alice.post(url.Values{"action": {"create"}, "email": {"gil@example.com"}, "password": {"  Quartz-Harbor-Lantern-4471  "}})
-	if !strings.Contains(body, "Created gil@example.com with the password you entered") {
-		t.Fatalf("spaced typed create:\n%s", body)
-	}
-	gil, _ := st.PasswordAccountByEmail(context.Background(), "gil@example.com")
-	if ok, _, _ := passwordauth.Verify(gil.PasswordHash, "  Quartz-Harbor-Lantern-4471  "); !ok { // gitleaks:allow -- synthetic test password
-		t.Fatal("typed password with spaces was not stored as typed")
-	}
-	if ok, _, _ := passwordauth.Verify(gil.PasswordHash, "Quartz-Harbor-Lantern-4471"); ok { // gitleaks:allow -- synthetic test password
-		t.Fatal("typed password was trimmed before hashing")
+	if _, body = alice.post(url.Values{"action": {"create"}, "email": {"gil@example.com"}}); !strings.Contains(body, "Created gil@example.com.") {
+		t.Fatalf("create gil:\n%s", body)
 	}
 	// Team text is untrusted and appears in three contexts: the tag, the
 	// quoted value attribute, and the datalist option.
@@ -761,11 +718,6 @@ func TestAdminConsolePopoversTeamsAndTypedPasswords(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %s", want)
 		}
-	}
-	// Blank password still generates one and shows it once.
-	_, body = alice.post(url.Values{"action": {"create"}, "email": {"eve@example.com"}})
-	if shownSecret(t, body) == "" || !strings.Contains(body, "Share the temporary password with them") {
-		t.Fatalf("generated create:\n%s", body)
 	}
 	// Settings → team save and clear.
 	_, body = alice.post(url.Values{"action": {"set-team"}, "email": {"bob@example.com"}, "team": {"Ops"}})

@@ -19,40 +19,17 @@ func TestAdminPermissionDefaultsStayInSync(t *testing.T) {
 	}
 }
 
-// The one-time password popup must not close on a stray click outside it,
-// and its Copy button is wired to the password itself.
-func TestTemporaryPasswordPopupScript(t *testing.T) {
-	for _, want := range []string{
-		`document.querySelectorAll("dialog.modal:not([data-keep-open])")`,
-		`navigator.clipboard.writeText(source.textContent)`,
-	} {
-		if !strings.Contains(adminScript, want) {
-			t.Fatalf("admin script lacks %q", want)
+// The console never shows or takes a temporary password (the operator CLI
+// alone sets one), so none of the machinery for one is left: no password
+// field to toggle or generate, no one-time password popup, no Copy button.
+func TestConsoleHasNoTemporaryPasswordMachinery(t *testing.T) {
+	for _, gone := range []string{"data-temp-password", "data-generate", "data-keep-open", "navigator.clipboard"} {
+		if strings.Contains(adminScript, gone) {
+			t.Errorf("admin script still has %q", gone)
 		}
 	}
-	if !strings.Contains(componentCSS, `.temp-password .secret .btn[hidden] { display: none; }`) {
-		t.Fatal("the Copy button shows without script (.btn overrides [hidden])")
-	}
-}
-
-// With an invite chosen, Add user hides the temporary password field and
-// disables its input (a typed value is not sent, and cannot block the form's
-// validation out of sight). Only script hides it: a stylesheet rule would
-// hide an enabled input, and a too-short value left in it would stop the
-// form submitting with nothing visible to fix.
-func TestInviteHidesTheTemporaryPasswordField(t *testing.T) {
-	for _, want := range []string{
-		`document.querySelectorAll("[data-temp-password]")`,
-		`field.hidden = !temp.checked`,
-		`input.disabled = !temp.checked`,
-		`if (only) only.hidden = true`,
-	} {
-		if !strings.Contains(adminScript, want) {
-			t.Fatalf("admin script lacks %q", want)
-		}
-	}
-	if strings.Contains(componentCSS, "data-temp-password") {
-		t.Fatal("a stylesheet rule hides the temporary password field; without script its input stays enabled")
+	if strings.Contains(componentCSS, ".temp-password") {
+		t.Error("the stylesheet still styles the temporary password popup")
 	}
 }
 

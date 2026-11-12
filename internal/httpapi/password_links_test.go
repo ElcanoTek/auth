@@ -168,24 +168,15 @@ func TestConsoleInvitesAndResetsByEmail(t *testing.T) {
 	if l, ok, _ := st.PasswordLinkFor(ctx, created.ID); !ok || l.Purpose != store.LinkInvite {
 		t.Fatalf("invite link = %+v ok=%v", l, ok)
 	}
-	// A typed password with an invite is refused, not silently dropped.
-	if _, body := alice.post(url.Values{"action": {"create"}, "email": {"typed@example.com"}, "delivery": {"email"}, "password": {"Quartz-Harbor-Lantern-4471"}}); !strings.Contains(body, "Clear the temporary password") { // gitleaks:allow -- synthetic test password
-		t.Fatalf("typed password with an invite:\n%s", body)
-	}
-	if _, err := st.PasswordAccountByEmail(ctx, "typed@example.com"); err == nil {
-		t.Fatal("refused Add user created the account")
-	}
-	// Choosing a temporary password works as before, with no link.
-	_, body = alice.post(url.Values{"action": {"create"}, "email": {"temp@example.com"}, "delivery": {"password"}})
-	expectTempPasswordPopup(t, body, "Account created", "temp@example.com")
-	temp, _ := st.PasswordAccountByEmail(ctx, "temp@example.com")
-	if _, ok, _ := st.PasswordLinkFor(ctx, temp.ID); ok {
-		t.Fatal("a temporary-password account got a link")
+	// A temporary password is the operator CLI's alone: an account the CLI
+	// made with one has no link until the console sends one.
+	if _, err := st.CreatePasswordAccount(ctx, "temp@example.com", mustHash(t, "Cobalt-Meadow-Ferry-2290"), true, time.Now().Unix()); err != nil { // gitleaks:allow -- synthetic test password
+		t.Fatal(err)
 	}
 
 	// Settings offers a new link to accounts still waiting for one.
 	_, page := alice.get("/admin")
-	for _, want := range []string{"Sending the invite email.", `value="send-link"`, "Email an invite link", "Email a reset link", "Show a temporary password instead", `<div class="field" data-temp-password>`, `<span data-temp-hint>Only with Set a temporary password. </span>`} {
+	for _, want := range []string{"Sending the invite email.", `value="send-link"`, "They are emailed a link to choose their own password; it works once, for 7 days.", "Email a reset link"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("console lacks %q:\n%s", want, page)
 		}
@@ -205,7 +196,7 @@ func TestConsoleInvitesAndResetsByEmail(t *testing.T) {
 
 	// Reset by email: Bob's password stops working at once, and the link
 	// sets a new one.
-	_, body = alice.post(url.Values{"action": {"reset-password"}, "email": {"bob@example.com"}, "delivery": {"email"}})
+	_, body = alice.post(url.Values{"action": {"reset-password"}, "email": {"bob@example.com"}})
 	if !strings.Contains(body, "Reset the password for bob@example.com and signed them out everywhere. A link to choose a new one is on its way to them; it works for 24 hours.") ||
 		strings.Contains(body, "Show the temporary password") {
 		t.Fatalf("reset by email:\n%s", body)
@@ -226,9 +217,30 @@ func TestConsoleInvitesAndResetsByEmail(t *testing.T) {
 		_ = login.Body.Close()
 		t.Fatal("the password chosen through the reset link does not sign in")
 	}
-	// The temporary-password reset is still there on request.
-	_, body = alice.post(url.Values{"action": {"reset-password"}, "email": {"bob@example.com"}, "delivery": {"password"}})
-	expectTempPasswordPopup(t, body, "Password reset", "bob@example.com")
+	// A temporary-password reset is not something the console sends: 400,
+	// and nothing changes (bob's chosen password still signs in, no link is
+	// queued, no reset is recorded).
+	bobBefore, _ := st.PasswordAccountByEmail(ctx, "bob@example.com")
+	for _, forged := range []url.Values{
+		{"action": {"reset-password"}, "email": {"bob@example.com"}, "delivery": {"password"}},
+		{"action": {"reset-password"}, "email": {"bob@example.com"}, "password": {"Cobalt-Meadow-Ferry-2290"}}, // gitleaks:allow -- synthetic test password
+	} {
+		if resp, _ := alice.post(forged); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("temporary-password reset %v = %d, want 400", forged, resp.StatusCode)
+		}
+	}
+	bobAfter, _ := st.PasswordAccountByEmail(ctx, "bob@example.com")
+	if bobAfter.PasswordHash != bobBefore.PasswordHash || bobAfter.MustChangePassword || bobAfter.PasswordResetPending() {
+		t.Fatalf("a refused temporary-password reset changed bob: %+v", bobAfter)
+	}
+	if _, linked, _ := st.PasswordLinkFor(ctx, bobAfter.ID); linked {
+		t.Fatal("a refused temporary-password reset queued a link")
+	}
+	if login, session, _ := passwordLogin(t, ts, cfg, "bob@example.com", "Quartz-Harbor-Lantern-4471"); session == nil { // gitleaks:allow -- synthetic test password
+		t.Fatal("bob's chosen password stopped working after a refused reset")
+	} else {
+		_ = login.Body.Close()
+	}
 
 	// A send that failed for good is flagged in the table.
 	due, err := st.ClaimDuePasswordLinks(ctx, time.Now().Unix()+3600, 10, time.Minute)
@@ -253,22 +265,40 @@ func TestConsoleInvitesAndResetsByEmail(t *testing.T) {
 	}
 }
 
-// Without email the console is as before: no invite choice, no reset link,
-// no Send a new link.
-func TestConsoleWithoutEmailKeepsTemporaryPasswords(t *testing.T) {
+// Without email the console cannot add accounts or reset passwords at all
+// (it never falls back to a temporary password): both point at the CLI.
+func TestConsoleWithoutEmailSendsAddAndResetToTheCLI(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
+	cfg.EmailDriver = "stdout"
 	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	_, page := alice.get("/admin")
-	for _, absent := range []string{"Email an invite link", "Email a reset link", `value="send-link"`, "Emailed link"} {
+	for _, absent := range []string{"Email a reset link", `value="send-link"`, "Emailed link", `<button class="btn btn-primary" type="submit">Create account</button>`} {
 		if strings.Contains(page, absent) {
 			t.Fatalf("console offers %q without email:\n%s", absent, page)
 		}
 	}
+	if !strings.Contains(page, "Email is not set up on this server, so accounts are created and passwords reset with the auth CLI on the server.") {
+		t.Fatalf("console does not point at the CLI:\n%s", page)
+	}
 	if resp, body := alice.post(url.Values{"action": {"send-link"}, "email": {"bob@example.com"}}); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("send-link without email: %d\n%s", resp.StatusCode, body)
 	}
-	_, body := alice.post(url.Values{"action": {"create"}, "email": {"new@example.com"}})
-	expectTempPasswordPopup(t, body, "Account created", "new@example.com")
+	for _, form := range []url.Values{
+		{"action": {"create"}, "email": {"new@example.com"}},
+		{"action": {"reset-password"}, "email": {"bob@example.com"}},
+	} {
+		if _, body := alice.post(form); !strings.Contains(body, "Email is not set up on this server") {
+			t.Fatalf("%s without email:\n%s", form.Get("action"), body)
+		}
+	}
+	if _, err := st.PasswordAccountByEmail(context.Background(), "new@example.com"); err == nil {
+		t.Fatal("an account was created without email")
+	}
+	if login, session, _ := passwordLogin(t, ts, cfg, "bob@example.com", plain); session == nil {
+		t.Fatal("bob's password was reset without email")
+	} else {
+		_ = login.Body.Close()
+	}
 }
 
 // A double click on Save password: the second submit loses the race to the
@@ -323,44 +353,27 @@ func TestMagicLinkEmailOptsOutOfClickTracking(t *testing.T) {
 	}
 }
 
-// A reset made with a stale code goes through the code and confirm popups;
-// the choice of a temporary password over an emailed link must survive both,
-// or the password would be replaced and a link sent instead.
-func TestResetDeliveryChoiceSurvivesTheCodePopup(t *testing.T) {
-	for _, tc := range []struct{ delivery, detail string }{
-		{"password", "you get a new temporary password to give them"},
-		{"email", "they are emailed a link to choose a new one"},
-	} {
-		ts, st, cfg, plain := adminFixture(t)
-		enableLinks(cfg)
-		ctx := context.Background()
-		alice, secret := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
-		cfg.MFAReauthWindow = 2 * time.Second
-		time.Sleep(2100 * time.Millisecond)
-		_, page := alice.post("/admin", url.Values{"action": {"reset-password"}, "email": {"bob@example.com"}, "delivery": {tc.delivery}})
-		if !strings.Contains(dialogForm(t, page, "step-up"), `name="delivery" value="`+tc.delivery+`"`) {
-			t.Fatalf("%s: code popup lost the choice:\n%s", tc.delivery, page)
-		}
-		code := codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))
-		_, page = alice.post("/admin", withValues(renderedForm(t, page, "step-up"), url.Values{"code": {code}}))
-		confirm := dialogForm(t, page, "confirm-change")
-		if !strings.Contains(confirm, `name="delivery" value="`+tc.delivery+`"`) || !strings.Contains(confirm, tc.detail) {
-			t.Fatalf("%s: confirm popup:\n%s", tc.delivery, confirm)
-		}
-		_, page = alice.post("/admin", renderedForm(t, page, "confirm-change"))
-		bob, _ := st.PasswordAccountByEmail(ctx, "bob@example.com")
-		_, linked, _ := st.PasswordLinkFor(ctx, bob.ID)
-		switch tc.delivery {
-		case "password":
-			expectTempPasswordPopup(t, page, "Password reset", "bob@example.com")
-			if linked {
-				t.Fatal("a temporary-password reset queued a link")
-			}
-		case "email":
-			if !linked || strings.Contains(page, "Show the temporary password") {
-				t.Fatalf("an emailed reset: linked=%v\n%s", linked, page)
-			}
-		}
+// A reset made with a stale code goes through the code and confirm popups
+// and ends as an emailed link, with no password shown at any step.
+func TestResetThroughTheCodePopupEmailsALink(t *testing.T) {
+	ts, st, cfg, plain := adminFixture(t)
+	ctx := context.Background()
+	alice, secret := adminSignedInWithFactor(t, ts, st, cfg.MFAKeyring, "alice@example.com", plain)
+	cfg.MFAReauthWindow = 2 * time.Second
+	time.Sleep(2100 * time.Millisecond)
+	_, page := alice.post("/admin", url.Values{"action": {"reset-password"}, "email": {"bob@example.com"}})
+	if popup := dialogForm(t, page, "step-up"); strings.Contains(popup, `name="delivery"`) {
+		t.Fatalf("code popup carries a delivery choice:\n%s", popup)
+	}
+	code := codeFor(t, secret, time.Now().Add(mfa.Period*time.Second))
+	_, page = alice.post("/admin", withValues(renderedForm(t, page, "step-up"), url.Values{"code": {code}}))
+	if confirm := dialogForm(t, page, "confirm-change"); !strings.Contains(confirm, "they are emailed a link to choose a new one") {
+		t.Fatalf("confirm popup:\n%s", confirm)
+	}
+	_, page = alice.post("/admin", renderedForm(t, page, "confirm-change"))
+	bob, _ := st.PasswordAccountByEmail(ctx, "bob@example.com")
+	if l, linked, _ := st.PasswordLinkFor(ctx, bob.ID); !linked || l.Purpose != store.LinkReset || strings.Contains(page, "temp-password") {
+		t.Fatalf("an emailed reset: linked=%v\n%s", linked, page)
 	}
 }
 
@@ -390,12 +403,9 @@ func TestAValidLinkDoesNotResetTheFailureCount(t *testing.T) {
 	}
 }
 
-// Reset password with emailed links is one pane: the email button, then the
-// temporary password as a link-styled second choice in the same form (two
-// forms in one pane were drawn on top of each other).
-func TestResetPaneOffersTheTemporaryPasswordAsALinkInOneForm(t *testing.T) {
+// The reset pane is one form with one button: email a reset link.
+func TestResetPaneOnlyEmailsALink(t *testing.T) {
 	ts, st, cfg, plain := adminFixture(t)
-	enableLinks(cfg)
 	alice := loginAdminWithFactor(t, ts, st, cfg, "alice@example.com", plain)
 	_, page := alice.get("/admin")
 	start := strings.Index(page, `<summary class="btn btn-ghost btn-sm" aria-label="Reset password: bob@example.com">`)
@@ -407,15 +417,7 @@ func TestResetPaneOffersTheTemporaryPasswordAsALinkInOneForm(t *testing.T) {
 	if n := strings.Count(pane, "<form"); n != 1 {
 		t.Fatalf("reset pane has %d forms, want 1:\n%s", n, pane)
 	}
-	email := `<button class="btn btn-primary btn-sm" type="submit" name="delivery" value="email">Email a reset link</button>`
-	temp := `<button class="btn btn-link" type="submit" name="delivery" value="password">Show a temporary password instead</button>`
-	if !strings.Contains(pane, email) || !strings.Contains(pane, temp) || strings.Index(pane, email) > strings.Index(pane, temp) {
-		t.Fatalf("reset pane lacks the email button first, then the temporary password link:\n%s", pane)
-	}
-	if strings.Contains(pane, `type="hidden" name="delivery"`) {
-		t.Fatalf("a hidden delivery field would override the button pressed:\n%s", pane)
-	}
-	if !strings.Contains(componentCSS, `.confirm .pane .btn-link {`) {
-		t.Fatal("the temporary password choice is not styled as a link")
+	if !strings.Contains(pane, `<button class="btn btn-primary btn-sm" type="submit">Email a reset link</button>`) || strings.Count(pane, "<button") != 1 || strings.Contains(pane, "delivery") {
+		t.Fatalf("reset pane is not a single Email a reset link button:\n%s", pane)
 	}
 }
