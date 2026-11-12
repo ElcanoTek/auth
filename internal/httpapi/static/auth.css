@@ -111,6 +111,7 @@ input.code {
 }
 
 .btn { justify-content: center; font-weight: var(--font-weight-bold); text-decoration: none; }
+a.btn, a.btn:hover, a.btn:focus-visible { text-decoration: none; }
 /* Fallback for browsers without color-mix(), which Flag's fill tokens are
    computed with, and for branded light-mode deployments (internal/branding
    emits --gradient-action-primary, not --color-primary-fill). Supporting
@@ -119,6 +120,65 @@ input.code {
   background: var(--gradient-action-primary);
   border-color: transparent;
   color: var(--color-on-primary-fill);
+}
+/* Anchor controls (<a class="btn ...">) must beat Flag's light-theme inline
+   link rules ([data-theme="light"] a:hover and body.theme-light a:focus-visible
+   reach specificity (0,2,2) in components.css) so button labels never switch to
+   --color-secondary or --color-primary-hover over their button fill. */
+:root[data-theme="light"] a.btn-primary,
+:root[data-theme="light"] a.btn-primary:hover,
+:root[data-theme="light"] a.btn-primary:focus-visible,
+[data-theme="light"] a.btn.btn-primary,
+[data-theme="light"] a.btn.btn-primary:hover,
+[data-theme="light"] a.btn.btn-primary:focus-visible,
+body.theme-light a.btn.btn-primary,
+body.theme-light a.btn.btn-primary:hover,
+body.theme-light a.btn.btn-primary:focus-visible {
+  color: var(--color-on-primary-fill);
+}
+:root[data-theme="light"] a.btn-secondary,
+:root[data-theme="light"] a.btn-secondary:hover,
+:root[data-theme="light"] a.btn-secondary:focus-visible,
+:root[data-theme="light"] a.btn-outline,
+:root[data-theme="light"] a.btn-outline:hover,
+:root[data-theme="light"] a.btn-outline:focus-visible,
+[data-theme="light"] a.btn.btn-secondary,
+[data-theme="light"] a.btn.btn-secondary:hover,
+[data-theme="light"] a.btn.btn-secondary:focus-visible,
+[data-theme="light"] a.btn.btn-outline,
+[data-theme="light"] a.btn.btn-outline:hover,
+[data-theme="light"] a.btn.btn-outline:focus-visible,
+body.theme-light a.btn.btn-secondary,
+body.theme-light a.btn.btn-secondary:hover,
+body.theme-light a.btn.btn-secondary:focus-visible,
+body.theme-light a.btn.btn-outline,
+body.theme-light a.btn.btn-outline:hover,
+body.theme-light a.btn.btn-outline:focus-visible {
+  color: var(--color-text-primary);
+}
+:root[data-theme="light"] a.btn-ghost,
+[data-theme="light"] a.btn.btn-ghost,
+body.theme-light a.btn.btn-ghost {
+  color: var(--color-text-secondary);
+}
+:root[data-theme="light"] a.btn-ghost:hover,
+:root[data-theme="light"] a.btn-ghost:focus-visible,
+[data-theme="light"] a.btn.btn-ghost:hover,
+[data-theme="light"] a.btn.btn-ghost:focus-visible,
+body.theme-light a.btn.btn-ghost:hover,
+body.theme-light a.btn.btn-ghost:focus-visible {
+  color: var(--color-text-primary);
+}
+:root[data-theme="light"] a.btn-danger,
+:root[data-theme="light"] a.btn-danger:hover,
+:root[data-theme="light"] a.btn-danger:focus-visible,
+[data-theme="light"] a.btn.btn-danger,
+[data-theme="light"] a.btn.btn-danger:hover,
+[data-theme="light"] a.btn.btn-danger:focus-visible,
+body.theme-light a.btn.btn-danger,
+body.theme-light a.btn.btn-danger:hover,
+body.theme-light a.btn.btn-danger:focus-visible {
+  color: var(--color-status-error-fg);
 }
 /* The page's primary action, as an icon button: brand primary fill (a bundle
    recolors it), the same rounded square as every other icon button. */
@@ -176,6 +236,9 @@ input.code {
   background: linear-gradient(90deg, var(--color-accent), var(--color-primary)); opacity: 0.85;
 }
 a.tile:hover, a.tile:focus-visible { border-color: var(--color-border-strong); transform: translateY(-2px); box-shadow: var(--shadow-lg); color: var(--color-text-primary); }
+:root[data-theme="light"] a.tile, :root[data-theme="light"] a.tile:hover, :root[data-theme="light"] a.tile:focus-visible,
+[data-theme="light"] a.tile, [data-theme="light"] a.tile:hover, [data-theme="light"] a.tile:focus-visible,
+body.theme-light a.tile, body.theme-light a.tile:hover, body.theme-light a.tile:focus-visible { color: var(--color-text-primary); }
 a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .tile-kicker {
   margin: 0; font-size: var(--font-size-overline); line-height: var(--line-height-overline);
@@ -194,8 +257,16 @@ a.tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .corner-actions .theme-toggle { position: static; }
 .corner-bottom { position: fixed; left: var(--space-5); bottom: var(--space-5); display: flex; gap: var(--space-3); align-items: center; z-index: 3; }
 .corner-bottom form { margin: 0; }
+.icon-action { padding: 0; }
+form.modal__close { margin: 0; }
 .corner-actions .icon-action, .corner-bottom .icon-action { flex: 0 0 2.5rem; width: 2.5rem; height: 2.5rem; min-width: 2.5rem; min-height: 2.5rem; }
-.icon-action.close:hover, .modal__close:hover { color: var(--color-status-error-fg); background: var(--color-status-error-bg); border-color: var(--color-status-error-border); }
+:root[data-theme="light"] a.icon-action, :root[data-theme="light"] a.icon-action:hover, :root[data-theme="light"] a.icon-action:focus-visible,
+[data-theme="light"] a.icon-action, [data-theme="light"] a.icon-action:hover, [data-theme="light"] a.icon-action:focus-visible,
+body.theme-light a.icon-action, body.theme-light a.icon-action:hover, body.theme-light a.icon-action:focus-visible { color: var(--color-text-primary); }
+.icon-action.close:hover, .icon-action.modal__close:hover, .modal__close > .icon-action:hover,
+:root[data-theme="light"] a.icon-action.close:hover, [data-theme="light"] a.icon-action.close:hover, body.theme-light a.icon-action.close:hover {
+  color: var(--color-status-error-fg); background: var(--color-status-error-bg); border-color: var(--color-status-error-border);
+}
 
 dialog.modal {
   position: fixed; inset: 0; margin: auto;
@@ -229,6 +300,10 @@ dialog.modal.account-menu::backdrop { background: transparent; }
 .tabs::-webkit-scrollbar { display: none; }
 a.tab { flex: 0 0 auto; white-space: nowrap; text-decoration: none; text-transform: capitalize; font-size: var(--font-size-caption); font-weight: var(--font-weight-bold); }
 .tab[aria-current="page"] { color: var(--color-text-primary); border-bottom-color: var(--color-accent); }
+:root[data-theme="light"] a.tab, [data-theme="light"] a.tab, body.theme-light a.tab { color: var(--color-text-muted); }
+:root[data-theme="light"] a.tab:hover, :root[data-theme="light"] a.tab:focus-visible, :root[data-theme="light"] a.tab[aria-current="page"],
+[data-theme="light"] a.tab:hover, [data-theme="light"] a.tab:focus-visible, [data-theme="light"] a.tab[aria-current="page"],
+body.theme-light a.tab:hover, body.theme-light a.tab:focus-visible, body.theme-light a.tab[aria-current="page"] { color: var(--color-text-primary); }
 .tab:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--color-accent); }
 
 .section { margin-top: var(--space-6); }
