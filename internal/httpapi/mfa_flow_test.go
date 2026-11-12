@@ -653,7 +653,9 @@ func TestEnrollmentAttemptCapCancelCSRFAndLogoutClearTheTransaction(t *testing.T
 	alice.login("alice@example.com", plain)
 	alice.get("/login/enroll?method=app")
 	for i := 1; i <= 4; i++ {
-		if resp, page := alice.post("/login/enroll", url.Values{"code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not match") {
+		// A refused code may come from an entry left over from before an
+		// administrator reset, so the page then says to add a new entry.
+		if resp, page := alice.post("/login/enroll", url.Values{"code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not match") || !strings.Contains(page, "to an app before?") {
 			t.Fatalf("enroll attempt %d: %d", i, resp.StatusCode)
 		}
 	}

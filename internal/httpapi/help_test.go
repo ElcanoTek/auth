@@ -22,7 +22,8 @@ func TestAuthenticatorHelpPage(t *testing.T) {
 		t.Fatalf("help page: %d cache=%q csp=%q", resp.StatusCode, resp.Header.Get("Cache-Control"), resp.Header.Get("Content-Security-Policy"))
 	}
 	for _, want := range []string{
-		`id="why"`, `id="open"`, `id="add"`, `id="code"`, `id="trouble"`, "Scan from inside the app",
+		`id="why"`, `id="open"`, `id="add"`, `id="code"`, `id="trouble"`, `<strong class="caution">Scan from inside the app.</strong>`,
+		`<strong class="caution">This is an example QR code and will not work!</strong>`,
 		`id="google"`, `id="microsoft"`, `id="bitwarden"`, `id="1password"`,
 		"AI makes phishing emails", "Enter a setup key", "Other account (Google, Facebook, etc.)",
 		"account <strong>" + cfg.MFAIssuer + "</strong>",
