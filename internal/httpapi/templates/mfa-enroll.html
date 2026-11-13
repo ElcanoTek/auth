@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{if .Choose}}{{tr "{0} — Set up two-factor sign-in" .Wordmark}}{{else}}{{tr "{0} — Set up your authenticator" .Wordmark}}{{end}}</title>
+<title>{{if .Choose}}{{tr "{0} — Set up two-factor authentication" .Wordmark}}{{else}}{{tr "{0} — Set up your authenticator" .Wordmark}}{{end}}</title>
 {{if .LogoURL}}<link rel="icon" href="{{.LogoURL}}">{{end}}
 {{template "assets" .}}
 </head>
@@ -19,7 +19,7 @@
          A plain GET form: Continue opens step 2 for the chosen method
          (?method=app or ?method=email), so Back works and nothing is sent
          until a method is chosen. */}}
-    <h1>{{tr "Set up two-factor sign-in"}}</h1>
+    <h1>{{tr "Set up two-factor authentication"}}</h1>
     <p class="muted">{{if .Required}}{{tr "Your account requires a second step at sign-in."}} {{end}}{{tr "After your password, you will also enter a six-digit code. Choose where that code comes from."}}</p>
     {{if .Error}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
     <form method="get" action="/login/enroll">
@@ -40,7 +40,7 @@
       </fieldset>
       <button class="btn btn-primary" type="submit">{{tr "Continue"}}</button>
     </form>
-    <p class="help-link">{{tr "New to authenticator apps?"}} <a href="/help/authenticator" target="_blank" rel="noopener">{{tr "Step-by-step guide"}}<span class="sr-only"> {{tr "(opens in a new tab)"}}</span></a></p>
+    <p class="help-link">{{tr "New to authenticator apps?"}} <a class="caution" href="/help/authenticator" target="_blank" rel="noopener">{{tr "Step-by-step guide"}}<span class="sr-only"> {{tr "(opens in a new tab)"}}</span></a></p>
     {{else if .EmailMode}}
     <h1>{{if .Replace}}{{tr "Use email verification codes"}}{{else}}{{tr "Set up email verification"}}{{end}}</h1>
     <p class="muted">{{if .Required}}{{tr "Your account requires a second step at sign-in."}} {{end}}{{tr "We sent a six-digit verification code to"}} <strong>{{.Email}}</strong>. {{tr "Enter it below to turn on email two-factor sign-in."}}</p>
@@ -63,7 +63,7 @@
     </div>
     {{else}}
     <h1>{{if .Replace}}{{tr "Replace your authenticator"}}{{else}}{{tr "Set up your authenticator"}}{{end}}</h1>
-    <p class="muted">{{if .Required}}{{tr "Your account requires a second step at sign-in."}} {{end}}{{tr "Open your authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others all work), tap + and scan this code from inside the app, not with your phone's camera. Then enter the six-digit code it shows."}}</p>
+    <p class="muted">{{if and .Required (not .EmailAvailable)}}{{tr "Your account requires a second step at sign-in."}} {{end}}<strong class="caution">{{tr "Open your authenticator app"}}</strong>{{tr ", tap + and scan this code from inside the app, "}}<strong class="caution">{{tr "not with your phone's camera"}}</strong>{{tr ". Then enter the six-digit code it shows."}}</p>
     {{if .Error}}<div class="alert alert--destructive" role="alert">{{tr .Error}}</div>{{end}}
     {{if and .EmailAvailable (ne .Action "/login/enroll")}}
     <form method="post" action="{{.Action}}" class="actions">
@@ -73,11 +73,11 @@
       <button class="btn btn-ghost" type="submit">{{tr "Use email verification codes instead"}}</button>
     </form>
     {{end}}
-    <p class="muted">{{tr "Added {0} to an app before? Add this code as a new entry, and once it works, delete the older {1} entries: only this one will work." .Issuer .Issuer}}</p>
-    <p class="help-link">{{tr "New to authenticator apps?"}} <a href="/help/authenticator" target="_blank" rel="noopener">{{tr "Step-by-step guide"}}<span class="sr-only"> {{tr "(opens in a new tab)"}}</span></a></p>
+    {{if or (ne .Action "/login/enroll") .Error}}<p class="muted">{{tr "Added {0} to an app before? Add this code as a new entry, and once it works, delete the older {1} entries: only this one will work." .Issuer .Issuer}}</p>{{end}}
+    <p class="help-link">{{tr "New to authenticator apps?"}} <a class="caution" href="/help/authenticator" target="_blank" rel="noopener">{{tr "Step-by-step guide"}}<span class="sr-only"> {{tr "(opens in a new tab)"}}</span></a></p>
     <img class="qr" src="{{.QR}}" alt="{{tr "QR code for {0}: {1}" .Issuer .Email}}" width="264" height="264">
     <div class="secret">
-      <p class="muted">{{tr "On this phone, or cannot scan? In your authenticator app, choose to enter a setup key and type this one (time-based). It goes in the app, not in the box below."}}</p>
+      <p class="muted">{{tr "On this phone, or cannot scan? In your authenticator app, choose to enter a setup key and type this one (time-based). It goes in the app, "}}<strong class="caution">{{tr "not in the box below"}}</strong>.</p>
       <code id="manual-key">{{.ManualKey}}</code>
       <p class="muted">{{tr "Account: {0} · Issuer: {1}" .Email .Issuer}}</p>
     </div>

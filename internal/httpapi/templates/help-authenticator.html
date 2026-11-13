@@ -31,7 +31,7 @@
     <section id="open">
       <h2>{{tr "1. Open an authenticator app"}}</h2>
       <p>{{tr "Install one if you need to, then open it:"}} <strong>{{tr "Google Authenticator"}}</strong>, <strong>{{tr "Microsoft Authenticator"}}</strong> {{tr "or"}} <strong>{{tr "Bitwarden Authenticator"}}</strong> {{tr "(all free), or"}} <strong>{{tr "1Password"}}</strong>.</p>
-      <div class="alert alert--warning" role="note"><div class="alert__description"><strong>{{tr "Scan from inside the app."}}</strong> {{tr "Your phone's regular camera app cannot add the account to your authenticator."}}</div></div>
+      <div class="alert alert--warning" role="note"><div class="alert__description"><strong class="caution">{{tr "Scan from inside the app."}}</strong> {{tr "Your phone's regular camera app cannot add the account to your authenticator."}}</div></div>
     </section>
 
     <section id="add">
@@ -47,7 +47,7 @@
         </figure>
         <figure class="shot">
           <img src="{{helpAsset "setup-page.webp"}}" width="760" loading="lazy" alt="{{tr "Part of the set-up page: the QR code marked 1 and the setup key marked 2."}}">
-          <figcaption>{{tr "On the set-up page (example: this QR code and key will not work)"}}</figcaption>
+          <figcaption>{{tr "On the set-up page."}} <strong class="caution">{{tr "This QR code and key are only examples and will not work!"}}</strong></figcaption>
         </figure>
       </div>
       <p class="hint">{{tr "Exact buttons for your app:"}}</p>

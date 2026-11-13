@@ -464,9 +464,14 @@ func TestRequiredPolicyForcesEnrollmentDuringLogin(t *testing.T) {
 	if !strings.Contains(silent.Header.Get("Location"), "error=login_required") {
 		t.Fatalf("prompt=none mid-enrollment: %q", silent.Header.Get("Location"))
 	}
-	resp, page := alice.get("/login/enroll?method=app")
-	if resp.StatusCode != http.StatusOK || !strings.Contains(page, "Your account requires a second step") {
+	// The first set-up page says why: the method choice when email codes are
+	// available (the app step that follows stays short).
+	if resp, page := alice.get("/login/enroll"); resp.StatusCode != http.StatusOK || !strings.Contains(page, "Your account requires a second step") {
 		t.Fatalf("enroll page: %d\n%s", resp.StatusCode, page)
+	}
+	resp, page := alice.get("/login/enroll?method=app")
+	if resp.StatusCode != http.StatusOK || strings.Contains(page, "Your account requires a second step") {
+		t.Fatalf("app set-up page: %d\n%s", resp.StatusCode, page)
 	}
 	secret := extractSecret(t, page)
 	// Reloading keeps the same pending secret (the QR does not change under
@@ -648,7 +653,9 @@ func TestEnrollmentAttemptCapCancelCSRFAndLogoutClearTheTransaction(t *testing.T
 	alice.login("alice@example.com", plain)
 	alice.get("/login/enroll?method=app")
 	for i := 1; i <= 4; i++ {
-		if resp, page := alice.post("/login/enroll", url.Values{"code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not match") {
+		// A refused code may come from an entry left over from before an
+		// administrator reset, so the page then says to add a new entry.
+		if resp, page := alice.post("/login/enroll", url.Values{"code": {"000000"}}); resp.StatusCode != http.StatusOK || !strings.Contains(page, "did not match") || !strings.Contains(page, "to an app before?") {
 			t.Fatalf("enroll attempt %d: %d", i, resp.StatusCode)
 		}
 	}

@@ -22,7 +22,8 @@ func TestAuthenticatorHelpPage(t *testing.T) {
 		t.Fatalf("help page: %d cache=%q csp=%q", resp.StatusCode, resp.Header.Get("Cache-Control"), resp.Header.Get("Content-Security-Policy"))
 	}
 	for _, want := range []string{
-		`id="why"`, `id="open"`, `id="add"`, `id="code"`, `id="trouble"`, "Scan from inside the app",
+		`id="why"`, `id="open"`, `id="add"`, `id="code"`, `id="trouble"`, `<strong class="caution">Scan from inside the app.</strong>`,
+		`<strong class="caution">This QR code and key are only examples and will not work!</strong>`,
 		`id="google"`, `id="microsoft"`, `id="bitwarden"`, `id="1password"`,
 		"AI makes phishing emails", "Enter a setup key", "Other account (Google, Facebook, etc.)",
 		"account <strong>" + cfg.MFAIssuer + "</strong>",
@@ -106,7 +107,7 @@ func TestPagesLinkTheAuthenticatorGuide(t *testing.T) {
 	_, page := alice.post("/account/security", url.Values{"action": {"start"}})
 	guide := strings.Index(page, `href="/help/authenticator" target="_blank" rel="noopener"`)
 	qr := strings.Index(page, `class="qr"`)
-	if guide < 0 || qr < 0 || guide > qr || !strings.Contains(page, "(opens in a new tab)") || !strings.Contains(html.UnescapeString(page), "from inside the app, not with your phone's camera") {
+	if guide < 0 || qr < 0 || guide > qr || !strings.Contains(page, "(opens in a new tab)") || !strings.Contains(html.UnescapeString(page), `from inside the app, <strong class="caution">not with your phone's camera</strong>`) {
 		t.Errorf("set-up page must link the guide, in a new tab, just above the QR code:\n%s", page)
 	}
 	secret := extractSecret(t, page)
