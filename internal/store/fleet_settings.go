@@ -212,6 +212,12 @@ func (s *Store) SetFleetPermissions(ctx context.Context, email string, p FleetPe
 		}
 		want = append(want, id)
 	}
+	// An iteration error leaves want partial, and writing it would revoke
+	// every application past the failure: refuse the whole change instead.
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return out, err
+	}
 	if err := rows.Close(); err != nil {
 		return out, err
 	}
