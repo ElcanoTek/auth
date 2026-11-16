@@ -19,6 +19,7 @@ type message struct {
 // messageData is what the templates read. Every value is escaped by the HTML
 // template; the text template writes them as they are (plain text).
 type messageData struct {
+	Product   string
 	Brand     string
 	Link      string
 	SignInURL string
@@ -28,9 +29,9 @@ type messageData struct {
 
 const textBody = `{{if .Reset}}An administrator reset the password for your {{.Brand}} account. Your old password no longer works.
 
-Choose a new password here (the link works once):{{else}}You have an account for {{.Brand}}.
+Choose a new password here (the link works once):{{else}}You have been invited to {{.Product}} for {{.Brand}}.
 
-Choose your password here (the link works once):{{end}}
+Create your account by choosing your password here (the link works once):{{end}}
 {{.Link}}
 
 The link expires {{.Expires}}. Then sign in at {{.SignInURL}}
@@ -47,11 +48,11 @@ const htmlBody = `<!doctype html>
 <html lang="en">
 <body style="margin:0;padding:24px;background:#f4f5f9;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1a1a1a">
 <div style="max-width:32rem;margin:0 auto;padding:32px;background:#ffffff;border-radius:12px;border:1px solid #e1e4ee">
-<p style="margin:0 0 16px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#5b6070">{{.Brand}}</p>
+<p style="margin:0 0 16px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#5b6070">{{.Product}} &middot; {{.Brand}}</p>
 {{if .Reset}}<h1 style="margin:0 0 12px;font-size:22px">Choose a new password</h1>
 <p style="margin:0 0 20px">An administrator reset the password for your {{.Brand}} account. Your old password no longer works.</p>
-{{else}}<h1 style="margin:0 0 12px;font-size:22px">Choose your password</h1>
-<p style="margin:0 0 20px">You have an account for {{.Brand}}.</p>
+{{else}}<h1 style="margin:0 0 12px;font-size:22px">Create account</h1>
+<p style="margin:0 0 20px">You have been invited to {{.Product}} for {{.Brand}}.</p>
 {{end}}<p style="margin:0 0 20px"><a ses:no-track href="{{.Link}}" style="display:inline-block;padding:12px 20px;background:#2f2f6b;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700">{{if .Reset}}Choose a new password{{else}}Choose your password{{end}}</a></p>
 <p style="margin:0 0 8px;font-size:14px;color:#5b6070">The link works once and expires {{.Expires}}. Then sign in at <a ses:no-track href="{{.SignInURL}}" style="color:#2f2f6b">{{.SignInURL}}</a>.</p>
 <p style="margin:0;font-size:14px;color:#5b6070">{{if .Reset}}If you did not expect this email, tell your administrator.{{else}}If you were not expecting this email, you can ignore it: nothing happens unless the link is used.{{end}}</p>
@@ -84,6 +85,10 @@ func brandText(s string) string {
 	return strings.TrimSpace(b.String())
 }
 
+// product is the app an invite brings people to: every client's Auth
+// exists to sign them in to Fleet.
+const product = "Fleet"
+
 // render builds the email for a link of purpose. brand and baseURL come from
 // configuration; link carries the token.
 func render(purpose, brand, baseURL, link string, expires time.Time) (message, error) {
@@ -92,6 +97,7 @@ func render(purpose, brand, baseURL, link string, expires time.Time) (message, e
 		brand = "your organisation"
 	}
 	data := messageData{
+		Product:   product,
 		Brand:     brand,
 		Link:      link,
 		SignInURL: baseURL + "/",
@@ -105,7 +111,7 @@ func render(purpose, brand, baseURL, link string, expires time.Time) (message, e
 	if err := htmlTmpl.Execute(&html, data); err != nil {
 		return message{}, err
 	}
-	subject := "Choose your " + brand + " password"
+	subject := "You have been invited to " + product + " for " + brand
 	if data.Reset {
 		subject = "Your " + brand + " password was reset"
 	}
