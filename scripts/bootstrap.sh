@@ -1227,7 +1227,8 @@ if [[ "$LOGIN_MODE_ANSWER" == "password" ]]; then
   say "    2. Register each application (client id, its callback URL, its signed-out page), then grant access:"
   say "       ${c_dim}auth app create fleet https://fleet.${HOSTNAME_ANSWER#auth.}/api/auth/oidc/callback https://fleet.${HOSTNAME_ANSWER#auth.}/login?manual=1${c_reset}"
   say "       ${c_dim}auth app set-backchannel fleet https://fleet.${HOSTNAME_ANSWER#auth.}/api/auth/backchannel-logout${c_reset}"
-  say "       ${c_dim}auth user access you@${HOSTNAME_ANSWER#auth.} fleet on${c_reset}"
+  say "       ${c_dim}auth app team-sync fleet on${c_reset}"
+  say "       ${c_dim}auth user fleet you@${HOSTNAME_ANSWER#auth.} --admin${c_reset}   (Fleet Admin; others: --chat <role> --ops <role>)"
   say "       ${c_dim}(the secret printed by 'app create' goes into the application's config; it is shown once)${c_reset}"
   case "$MFA_POLICY_NOW" in
     admins*|everyone*)

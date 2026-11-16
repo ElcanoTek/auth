@@ -1862,8 +1862,9 @@ func (s *Store) AllApplicationAccessSettings(ctx context.Context) (map[string]ma
 // administrator flag and the two-factor requirement.
 //
 // auditMeta, when non-empty, is the JSON metadata recorded on the
-// access.granted / access.settings_changed / access.revoked events; "" (what
-// every caller passes since application reports were removed) records '{}'.
+// access.granted / access.settings_changed / access.revoked events; ""
+// records '{}'. The operator CLI's Fleet permissions (SetFleetPermissions)
+// pass {"actor_id": "cli:<user>", "via": "cli"}; every other caller passes "".
 func setApplicationAccessTx(ctx context.Context, tx *sql.Tx, userID string, applicationIDs []string, settings map[string]string, now int64, auditMeta string) (added, removed, updated []string, err error) {
 	if userID == "" {
 		return nil, nil, nil, errors.New("user id is required")

@@ -159,8 +159,10 @@ account's Auth team is sent to Fleet; nothing comes back.
   the newest team rename queued for Fleet when the push was written (`"0"`
   before any), so Fleet can ignore a team that reaches it after a rename it
   has already applied. It rides only on pushes that carry the
-  roles: an account granted Fleet before Fleet permissions existed has none,
-  and Fleet keeps its own team for it. Any Auth-side team change (the
+  roles: an account granted Fleet without permissions (before they existed,
+  or with a bare `auth user access <email> fleet on`) has none, and Fleet
+  keeps its own team and role for it until `auth user fleet` or the console
+  sets them. Any Auth-side team change (the
   account's row, a batch team change, `auth user team`) on an account granted
   Fleet queues a push. Fleet applies the team the way its own admin page did,
   which also un-shares the person's team content when the team really

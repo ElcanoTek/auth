@@ -8,6 +8,7 @@
 //	auth-admin domain list
 //	auth-admin user create|set-password|disable|enable|show|revoke-sessions <email>
 //	auth-admin user invite|reset-password <email>
+//	auth-admin user fleet <email> --admin | --chat <role> --ops <role>
 //	auth-admin user list
 //	auth-admin user delete|del <email>
 //	auth-admin audit list [email] [limit]
@@ -103,6 +104,9 @@ USERS
   auth-admin user admin <email> on|off    grant or remove administrator status
   auth-admin user team <email> <team|->   set the team (- removes it)
   auth-admin user access <email> <app-id> on|off  grant or revoke application access
+  auth-admin user fleet <email> --admin   grant Fleet as Fleet Admin (full Chat and Ops Center)
+  auth-admin user fleet <email> --chat viewer|contributor --ops none|viewer|contributor
+                                          grant Fleet with these permissions (or change them)
   auth-admin user revoke-sessions <email> revoke every central session
   auth-admin user list                    show password accounts (and deleted ones) + legacy login audit
   auth-admin user delete <email>          delete an account; kept 30 days, and creating the same email restores it
@@ -291,7 +295,7 @@ func domainCmd(dataDir string, args []string) {
 
 func userCmd(dataDir string, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|invite|set-password|reset-password|disable|enable|admin|access|team|mfa-required|mfa-reset|show|revoke-sessions|list|delete|del> [email]")
+		fmt.Fprintln(os.Stderr, "usage: auth-admin user <create|invite|set-password|reset-password|disable|enable|admin|access|fleet|team|mfa-required|mfa-reset|show|revoke-sessions|list|delete|del> [email]")
 		os.Exit(2)
 	}
 	st, ctx := openStore(dataDir)
@@ -464,6 +468,11 @@ func userCmd(dataDir string, args []string) {
 		}
 		fmt.Printf("email: %s\nid: %s\nstatus: %s\nadmin: %t\nteam: %s\nmust change password: %t\ntwo-factor: %s\nactive sessions: %d\napplications: %s\n",
 			a.Email, a.ID, status, a.IsAdmin, team, a.MustChangePassword, twoFactor, active, appList)
+		if line, err := fleetPermissionsLine(ctx, st, a.ID, apps); err != nil {
+			fatalf("show Fleet permissions: %v", err)
+		} else if line != "" {
+			fmt.Printf("fleet permissions: %s\n", line)
+		}
 		if l, ok, err := st.PasswordLinkFor(ctx, a.ID); err != nil {
 			fatalf("show emailed link: %v", err)
 		} else if ok {
@@ -561,6 +570,8 @@ func userCmd(dataDir string, args []string) {
 		default:
 			fmt.Printf("✓ no change for %s on %s\n", a.Email, appID)
 		}
+	case "fleet":
+		userFleetCmd(ctx, st, args[1:])
 	case "mfa-required":
 		if len(args) != 3 || (args[2] != "on" && args[2] != "off") {
 			fatalf("usage: auth-admin user mfa-required <email> on|off")
@@ -1490,6 +1501,134 @@ func mfaPolicyCmd(dataDir string, args []string) {
 // cliActor names the operator in audit metadata: the sudo caller when the
 // wrapper ran under sudo, else the process user. Never an account id, so the
 // console can tell a box-side emergency action from its own.
+// fleetUsage is the one usage line of `user fleet`.
+const fleetUsage = "usage: auth-admin user fleet <email> --admin | --chat viewer|contributor --ops none|viewer|contributor"
+
+// userFleetCmd sets an account's Fleet permissions, granting Fleet if it
+// does not have it yet: the console's Access popup with Fleet ticked and its
+// permissions chosen, from the box. Rerunning it with the same permissions
+// changes nothing. It prints the resulting permissions either way.
+func userFleetCmd(ctx context.Context, st *store.Store, args []string) {
+	if len(args) < 2 {
+		fatalf("%s", fleetUsage)
+	}
+	email := validateAccountEmail(args[0])
+	p, err := parseFleetPermissions(args[1:])
+	if err != nil {
+		fatalf("fleet: %v\n%s", err, fleetUsage)
+	}
+	change, err := st.SetFleetPermissions(ctx, email, p, cliActor(), time.Now().Unix())
+	switch {
+	case errors.Is(err, store.ErrAccountNotFound):
+		fatalf("fleet: no such account: %s", email)
+	case errors.Is(err, store.ErrApplicationNotFound):
+		fatalf("fleet: no fleet application is registered on this server; register it first (`auth app create fleet <callback>`), then rerun")
+	case errors.Is(err, store.ErrFleetTeamSyncOff):
+		fatalf("fleet: Fleet's team sync is off, so nothing was changed. Switch it on first (`auth app team-sync fleet on` for a Fleet with no teams yet; a Fleet that has teams imports them first, see docs/DEPLOY.md \"Fleet team sync\"), then rerun")
+	case err != nil:
+		fatalf("fleet: %v", err)
+	}
+	label := fleetPermissionsName(p)
+	switch {
+	case change.Granted:
+		fmt.Printf("✓ %s can now sign in to fleet as %s\n", email, label)
+	case change.Updated && change.PreviousSet:
+		fmt.Printf("✓ changed Fleet permissions for %s from %s to %s\n", email, fleetPermissionsName(change.Previous), label)
+	case change.Updated:
+		fmt.Printf("✓ set Fleet permissions for %s to %s (Fleet kept its own until now)\n", email, label)
+	default:
+		fmt.Printf("✓ no change for %s on fleet: already %s\n", email, label)
+	}
+	if change.Granted || change.Updated {
+		fmt.Println("  Fleet gets it within seconds; `auth app show fleet` lists a push it has not accepted yet.")
+	}
+	fmt.Printf("fleet permissions: %s\n", fleetPermissionsLabel(p))
+}
+
+// parseFleetPermissions reads `--admin` or `--chat <role> --ops <role>` into
+// Auth's stored Fleet roles. Role names are the console's (Viewer,
+// Contributor, None); Fleet's own names for the same roles (member,
+// readonly, client) are accepted too. Both planes are required unless
+// --admin, so a partial command never resets the other plane to a default.
+func parseFleetPermissions(args []string) (store.FleetPermissions, error) {
+	fs := flag.NewFlagSet("user fleet", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	admin := fs.Bool("admin", false, "Fleet Admin")
+	chat := fs.String("chat", "", "Chat role")
+	ops := fs.String("ops", "", "Ops Center role")
+	if err := fs.Parse(args); err != nil {
+		return store.FleetPermissions{}, err
+	}
+	if fs.NArg() > 0 {
+		return store.FleetPermissions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if *admin {
+		if *chat != "" || *ops != "" {
+			return store.FleetPermissions{}, errors.New("--admin is full permissions in both Chat and the Ops Center; give it alone, without --chat or --ops")
+		}
+		return store.FleetPermissions{ChatRole: "admin", OpsRole: "admin"}, nil
+	}
+	if *chat == "" || *ops == "" {
+		return store.FleetPermissions{}, errors.New("give --admin, or both --chat and --ops")
+	}
+	chatRole, ok := map[string]string{"viewer": "viewer", "contributor": "member", "member": "member"}[strings.ToLower(*chat)]
+	if !ok {
+		return store.FleetPermissions{}, fmt.Errorf("--chat must be viewer or contributor, not %q (Fleet Admin is --admin)", *chat)
+	}
+	opsRole, ok := map[string]string{"none": "none", "viewer": "readonly", "readonly": "readonly", "contributor": "client", "client": "client"}[strings.ToLower(*ops)]
+	if !ok {
+		return store.FleetPermissions{}, fmt.Errorf("--ops must be none, viewer or contributor, not %q (Fleet Admin is --admin)", *ops)
+	}
+	return store.FleetPermissions{ChatRole: chatRole, OpsRole: opsRole}, nil
+}
+
+// fleetPermissionsName words Fleet permissions as the console's Fleet
+// button does: "Fleet Admin" or "Chat Contributor · Ops None".
+func fleetPermissionsName(p store.FleetPermissions) string {
+	if p.Admin() {
+		return "Fleet Admin"
+	}
+	name := func(names map[string]string, role string) string {
+		if n, ok := names[role]; ok {
+			return n
+		}
+		return role
+	}
+	chat := name(map[string]string{"viewer": "Viewer", "member": "Contributor"}, p.ChatRole)
+	ops := name(map[string]string{"none": "None", "readonly": "Viewer", "client": "Contributor"}, p.OpsRole)
+	return fmt.Sprintf("Chat %s · Ops %s", chat, ops)
+}
+
+// fleetPermissionsLabel is fleetPermissionsName with the stored role names
+// after it, which are what Fleet itself lists ("member", "admin").
+func fleetPermissionsLabel(p store.FleetPermissions) string {
+	return fmt.Sprintf("%s (chat %s, ops %s)", fleetPermissionsName(p), p.ChatRole, p.OpsRole)
+}
+
+// fleetPermissionsLine is `user show`'s Fleet permissions: the stored roles
+// when the account has Fleet (or once had), what Fleet does when Auth holds
+// none, and "" for an account that never had Fleet.
+func fleetPermissionsLine(ctx context.Context, st *store.Store, userID string, apps []string) (string, error) {
+	granted := false
+	for _, id := range apps {
+		if id == store.FleetApplicationID {
+			granted = true
+		}
+	}
+	p, ok, err := st.FleetPermissionsFor(ctx, userID)
+	switch {
+	case err != nil:
+		return "", err
+	case ok && granted:
+		return fleetPermissionsLabel(p), nil
+	case ok:
+		return fleetPermissionsLabel(p) + ", kept while Fleet is not granted", nil
+	case granted:
+		return "not set by Auth (Fleet keeps its own; `auth user fleet` sets them)", nil
+	}
+	return "", nil
+}
+
 func cliActor() string {
 	if u := os.Getenv("SUDO_USER"); u != "" {
 		return "cli:" + u
