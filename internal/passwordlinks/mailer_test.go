@@ -68,8 +68,17 @@ func TestMailerSendsAWorkingLinkAndRecordsTheMessage(t *testing.T) {
 	if err := m.RunOnce(ctx, now); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.sent) != 1 || f.sent[0].to != "bob@example.com" || f.sent[0].subject != "Choose your Acme password" {
+	if len(f.sent) != 1 || f.sent[0].to != "bob@example.com" || f.sent[0].subject != "You have been invited to Fleet for Acme" {
 		t.Fatalf("sent = %+v", f.sent)
+	}
+	invite := f.sent[0]
+	if !strings.Contains(invite.text, "You have been invited to Fleet for Acme.") ||
+		!strings.Contains(invite.html, ">Create account</h1>") ||
+		!strings.Contains(invite.html, "You have been invited to Fleet for Acme.") ||
+		!strings.Contains(invite.html, ">Fleet &middot; Acme</p>") ||
+		!strings.Contains(invite.html, ">Choose your password</a>") ||
+		strings.Contains(invite.text+invite.html, "You have an account") {
+		t.Fatalf("invite copy:\n%s\n%s", invite.text, invite.html)
 	}
 	match := linkPattern.FindStringSubmatch(f.sent[0].text)
 	if match == nil || !ValidTokenShape(match[1]) {
