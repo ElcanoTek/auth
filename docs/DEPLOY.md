@@ -258,8 +258,26 @@ one edit; nothing here is optional for the first sign-in to work.
    Then grant the first account its applications, because an account may
    only sign in to applications it has been given (see "Per-application
    access"): `auth user access admin@<client> explorer on`, and the same for
-   `fleet` and `lens`. From here on the admin console does this with
-   checkboxes.
+   `lens`. Grant Fleet with its permissions, as the console's Add user and
+   Access popups do; a bare `auth user access <email> fleet on` sets none,
+   and Fleet then makes the account a Chat member. Switch Fleet's team sync
+   on first (a new Fleet has no teams yet; see "Fleet team sync"), so the
+   account's team reaches Fleet with its roles:
+   ```bash
+   auth app team-sync fleet on
+   auth user fleet admin@<client> --admin    # Fleet Admin: chat admin + ops admin
+   auth user show admin@<client>             # fleet permissions: Fleet Admin (chat admin, ops admin)
+   ```
+   `--admin` is the console's **Fleet Admin** (full permissions in both Chat
+   and the Ops Center). Anyone else takes `--chat viewer|contributor --ops
+   none|viewer|contributor`, the console's Chat and Ops choices. The command
+   grants Fleet if needed, keeps the account's other applications, and
+   changes nothing when rerun with the same permissions. It refuses, and
+   changes nothing, when no `fleet` application is registered or its team
+   sync is off. Every Elcano administrator who deploys or supports the
+   client gets the same: `auth user admin <email> on`,
+   `auth user team <email> Elcano` and `auth user fleet <email> --admin`.
+   From here on the admin console does this with checkboxes.
 
    A direct visit to Auth (no application in the picture) lands on the
    signed-in page at `/account`; a visit that started at an application goes
@@ -863,13 +881,16 @@ administrator in the metadata (`admin.user_created`, `admin.password_reset`,
 `admin.admin_granted` / `_revoked`, `admin.access_granted` / `_revoked`,
 `admin.application_disabled` / `_enabled`, `admin.team_set`); `auth audit list <email>` shows
 them, with the administrator in the BY column, next to the `account.*` and
-`access.*` rows the store writes itself.
+`access.*` rows the store writes itself. `auth user fleet` writes the same
+`access.granted` or `access.settings_changed` row a console save does, with
+the operator (`cli:<user>`) in the BY column.
 
 ## Per-application access (password mode)
 
 An account may sign in to an application only if it has been granted that
 application: in the console (Add user / Access) or with
-`auth user access <email> <app-id> on|off`. `/authorize` checks the grant
+`auth user access <email> <app-id> on|off` (Fleet with its permissions:
+`auth user fleet <email> --admin | --chat <role> --ops <role>`). `/authorize` checks the grant
 before issuing a code. A person without access who follows a sign-in link
 sees Auth's own "No access to <application>" page with a link back to their
 apps; a silent check (`prompt=none`) returns `error=access_denied` to the

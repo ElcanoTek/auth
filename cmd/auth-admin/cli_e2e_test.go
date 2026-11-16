@@ -807,3 +807,99 @@ func TestTheWrapperPassesEverySettingTheCLIReads(t *testing.T) {
 		}
 	}
 }
+
+// `user fleet` gives an account Fleet permissions the way the console's
+// Access popup does: it refuses until Fleet is registered with team sync
+// on, fixes a bare `user access ... fleet on` grant (which sets none, so
+// Fleet keeps its default member role), keeps the other applications, is a
+// no-op when rerun, and `user show` and `audit list` report it.
+func TestCLIUserFleetPermissions(t *testing.T) {
+	c := newCLI(t)
+	const pw = "a long enough passphrase 123\na long enough passphrase 123\n"
+	c.must(pw, "user", "create", "alice@example.com")
+	if out, code := c.run("", "user", "fleet", "alice@example.com", "--admin"); code == 0 || !strings.Contains(out, "no fleet application is registered") {
+		t.Fatalf("no fleet app exited %d:\n%s", code, out)
+	}
+	c.must("", "app", "create", "fleet", "https://fleet.example.com/api/auth/oidc/callback")
+	c.must("", "app", "create", "explorer", "https://explorer.example.com/auth/callback")
+	c.must("", "user", "access", "alice@example.com", "explorer", "on")
+	c.must("", "user", "access", "alice@example.com", "fleet", "on")
+	if show := c.must("", "user", "show", "alice@example.com"); !strings.Contains(show, "fleet permissions: not set by Auth") {
+		t.Fatalf("show after a bare grant:\n%s", show)
+	}
+	if out, code := c.run("", "user", "fleet", "alice@example.com", "--admin"); code == 0 || !strings.Contains(out, "team sync is off, so nothing was changed") {
+		t.Fatalf("team sync off exited %d:\n%s", code, out)
+	}
+	c.must("", "app", "team-sync", "fleet", "on")
+	for _, bad := range [][]string{
+		{"--admin", "--chat", "viewer"},
+		{"--chat", "viewer"},
+		{"--chat", "admin", "--ops", "admin"},
+		{"--chat", "owner", "--ops", "none"},
+		{"--chat", "viewer", "--ops", "everything"},
+		{"--admin", "extra"},
+		{"--bogus"},
+	} {
+		out, code := c.run("", append([]string{"user", "fleet", "alice@example.com"}, bad...)...)
+		if code == 0 || !strings.Contains(out, "usage: auth-admin user fleet") {
+			t.Fatalf("%v exited %d:\n%s", bad, code, out)
+		}
+	}
+	st := c.store()
+	ctx := context.Background()
+	alice, err := st.PasswordAccountByEmail(ctx, "alice@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := st.FleetPermissionsFor(ctx, alice.ID); ok {
+		t.Fatal("a refused command stored Fleet permissions")
+	}
+
+	out := c.must("", "user", "fleet", "alice@example.com", "--admin")
+	for _, want := range []string{"set Fleet permissions for alice@example.com to Fleet Admin (Fleet kept its own until now)", "fleet permissions: Fleet Admin (chat admin, ops admin)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("fleet --admin lacks %q:\n%s", want, out)
+		}
+	}
+	if p, ok, err := st.FleetPermissionsFor(ctx, alice.ID); err != nil || !ok || !p.Admin() {
+		t.Fatalf("stored = %+v %v %v", p, ok, err)
+	}
+	if apps, _ := st.ApplicationAccess(ctx, alice.ID); strings.Join(apps, ",") != "explorer,fleet" {
+		t.Fatalf("applications = %v", apps)
+	}
+	if out := c.must("", "user", "fleet", "alice@example.com", "--admin"); !strings.Contains(out, "no change for alice@example.com on fleet: already Fleet Admin") || strings.Contains(out, "within seconds") {
+		t.Fatalf("rerun:\n%s", out)
+	}
+	if show := c.must("", "user", "show", "alice@example.com"); !strings.Contains(show, "fleet permissions: Fleet Admin (chat admin, ops admin)") {
+		t.Fatalf("show:\n%s", show)
+	}
+	out = c.must("", "user", "fleet", "alice@example.com", "--chat", "contributor", "--ops=viewer")
+	if !strings.Contains(out, "changed Fleet permissions for alice@example.com from Fleet Admin to Chat Contributor · Ops Viewer\n") {
+		t.Fatalf("change:\n%s", out)
+	}
+	// Fleet's own role names work too, and a new account is granted Fleet.
+	c.must(pw, "user", "create", "bob@example.com")
+	out = c.must("", "user", "fleet", "bob@example.com", "--chat", "member", "--ops", "client")
+	if !strings.Contains(out, "bob@example.com can now sign in to fleet as Chat Contributor · Ops Contributor\n") {
+		t.Fatalf("grant:\n%s", out)
+	}
+	if out, code := c.run("", "user", "fleet", "nobody@example.com", "--admin"); code == 0 || !strings.Contains(out, "no such account") {
+		t.Fatalf("unknown account exited %d:\n%s", code, out)
+	}
+	audit := c.must("", "audit", "list", "alice@example.com")
+	if !strings.Contains(audit, "access.settings_changed") || !strings.Contains(audit, "cli:operator") {
+		t.Fatalf("audit list:\n%s", audit)
+	}
+	// Both helps list it: auth-admin's and the installed wrapper's `auth --help`.
+	if help, _ := c.run("", "help"); !strings.Contains(help, "user fleet <email> --admin") {
+		t.Fatalf("auth-admin help:\n%s", help)
+	}
+	if wrapper, err := os.ReadFile("../../deploy/auth-cli"); err != nil || !strings.Contains(string(wrapper), "auth user fleet <email> --admin") {
+		t.Fatalf("auth --help lacks user fleet: %v", err)
+	}
+	// Revoking Fleet keeps the roles for a later grant, and show says so.
+	c.must("", "user", "access", "alice@example.com", "fleet", "off")
+	if show := c.must("", "user", "show", "alice@example.com"); !strings.Contains(show, "fleet permissions: Chat Contributor · Ops Viewer (chat member, ops readonly), kept while Fleet is not granted") {
+		t.Fatalf("show after revoke:\n%s", show)
+	}
+}
